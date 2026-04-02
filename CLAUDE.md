@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Startup Sequence
+
+Upon reading this file:
+1. This document becomes active policy for the session.
+2. Read `context.md`, `WIRING_STATUS.md`, and `learnings.md` if present — they form the repo memory system.
+3. Compare current code reality against these docs. Code and evidence win over stale documentation.
+4. Do not claim success until the strongest applicable repo-native checks have been run.
+
+## Verification Discipline
+
+- Distinguish between: edited, built, linted, tested, and runtime-validated states.
+- A file that compiles is not verified. A test that passes is not runtime-validated.
+- When fixing bugs, apply root-cause reasoning (5 Whys) before patching symptoms.
+- Newly surfaced issues must be classified: direct cause, indirect exposure, pre-existing-but-blocking, or truly unrelated (with evidence).
+
 ## Project Overview
 
 RustOS is a production-ready operating system kernel written in Rust, featuring hardware abstraction, network stack, process management, GPU acceleration, and AI integration. This is a bare-metal x86_64 kernel that boots via multiboot.
@@ -146,9 +161,10 @@ The kernel follows a modular architecture with clear separation between subsyste
 ## Important Notes
 
 ### Current Build Configuration
-- Main binary path set to `src/main_simple.rs` in Cargo.toml
+- Main binary path set to `src/main.rs` in Cargo.toml (full-featured kernel)
 - Library functionality commented out (no `lib.rs`, using `lib.rs.bak`)
 - Multiboot support through assembly boot code (`src/boot.s`)
+- Build requires `-Zjson-target-spec` flag with nightly toolchain
 
 ### Key Constants and Configuration
 - Kernel heap: Starts at `memory::KERNEL_HEAP_START`, size `memory::KERNEL_HEAP_SIZE`
@@ -162,3 +178,16 @@ The kernel follows a modular architecture with clear separation between subsyste
 - Advanced memory management (virtual memory, demand paging) - Planned
 
 The kernel is approximately 35% complete with core foundation 100% ready for advanced feature development.
+
+## Governance Files
+
+This repository uses four governance files that form an interdependent repo memory system:
+
+| File | Purpose |
+|------|---------|
+| `CLAUDE.md` | Operating policy — non-negotiable agent behaviors and build commands |
+| `context.md` | Current project truth — architecture, boundaries, assumptions |
+| `WIRING_STATUS.md` | Evidence-backed verification ledger — what is proven vs. unproven |
+| `learnings.md` | Reusable lessons — recurring failure patterns and debugging heuristics |
+
+These files must be updated when repository reality changes. Do not leave optimistic status text when current evidence disproves earlier claims.
