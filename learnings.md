@@ -25,6 +25,10 @@ cargo +nightly build --bin rustos \
     --target x86_64-rustos.json
 ```
 
+### Clippy requires separate installation on nightly
+- **Pattern:** `cargo clippy` fails with `'cargo-clippy' is not installed for the toolchain`
+- **Fix:** `rustup component add clippy --toolchain nightly-x86_64-unknown-linux-gnu`
+
 ---
 
 ## Code Patterns
@@ -44,6 +48,22 @@ cargo +nightly build --bin rustos \
 - **Gotcha:** Do not use `std::println!`. The macros in `src/print.rs` route through `vga_buffer.rs`.
 - **Serial output:** For QEMU debugging, use the serial port functions, not VGA.
 
+### `kernel::init_all_subsystems()` exists but is never called from main.rs
+- **Pattern:** `src/kernel.rs` contains a sophisticated subsystem registry that initializes ACPI, PCI, memory, network, etc. But `kernel_main` in `main.rs` never calls it.
+- **Why:** It's only used in the alternative `main_integrated.rs` entry point.
+- **Impact:** 20+ subsystems are declared as modules but never initialized in the active boot path.
+- **Heuristic:** If you're adding a new subsystem, check whether you need to add an init call to `kernel_main` directly or wire through `kernel::init_all_subsystems()`.
+
+### `Vec::with_capacity()` + `set_len()` is UB
+- **Pattern:** `src/drivers/network/realtek.rs` does `Vec::with_capacity(n)` followed by `set_len(n)`, which reads uninitialized memory.
+- **Fix:** Use `vec![0u8; n]` or `Vec::resize(n, 0)` instead.
+- **Evidence:** Clippy deny-level error at lines 679 and 730.
+
+### Port number wrapping comparisons are always true for u16
+- **Pattern:** `if port >= 65535` where `port` is `u16` — this is always true when port is 65535 (the max value), making the comparison tautological.
+- **Files affected:** `src/net/tcp.rs:470`, `src/net/udp.rs:436,440,446`, `src/net/icmp.rs:236`, `src/drivers/storage/nvme.rs:490`
+- **Fix:** Use `u16::MAX` comparison or wrapping arithmetic.
+
 ---
 
 ## Verification Pitfalls
@@ -59,8 +79,13 @@ cargo +nightly build --bin rustos \
 - **Rule:** When you fix something, update the governance files. When you read a claim, verify it.
 
 ### Warning count is a health metric
-- **Pattern:** 3166 warnings is very high. Among them are `dead_code`, `unused_imports`, and critically, shared references to mutable statics (undefined behavior).
+- **Pattern:** 3166 warnings (build) / 3631 warnings (clippy) is very high. Among them are `dead_code`, `unused_imports`, and critically, 66 shared references to mutable statics (undefined behavior).
 - **Heuristic:** The warning count should decrease over time. A PR that increases warnings significantly should be scrutinized.
+
+### Clippy reveals logic bugs that `cargo build` misses
+- **Pattern:** `cargo build` passes with 0 errors, but `cargo clippy` finds 18 deny-level errors including loops that never loop, operations that always return zero, and reads of uninitialized memory.
+- **Heuristic:** Always run clippy, not just build. Build success is necessary but not sufficient.
+- **Key bugs found:** Serial receive broken (loops exit immediately), NVMe doorbells always zero, Realtek driver reads uninitialized buffers.
 
 ---
 

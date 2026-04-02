@@ -108,15 +108,21 @@ RustOS is a bare-metal x86_64 operating system kernel written in Rust. It target
 ## Risks and Assumptions
 
 - **No CI/CD:** Build status is only known by running locally. Regressions can go undetected.
-- **3166 warnings:** The build succeeds but with a very high warning count, many of which are `unsafe` and `dead_code` related.
+- **3166 warnings / 18 clippy errors:** Build succeeds but clippy finds 18 deny-level logic bugs including UB, always-zero operations, and loops that never loop.
+- **66 mutable static UB instances:** Shared/mutable references to mutable statics across 13 files — undefined behavior per Rust 2024 edition rules.
+- **~70% of subsystems are dead code:** Only 13 of 35+ subsystems are initialized from `kernel_main`. The rest compile but are never called. `kernel::init_all_subsystems()` exists as a dispatcher but is unused in the main entry point.
 - **No runtime testing in CI:** QEMU-based tests require manual execution.
 - **Stale documentation:** Many docs reference planned features as complete. Cross-check against code.
+- **Build scripts broken:** `build_rustos.sh` and `Makefile` lack `-Zjson-target-spec` flag required by current nightly.
 - **Linux compat layer:** Structurally present but many method signatures are misaligned; not functionally tested.
 
 ## Current Known State (as of 2026-04-02)
 
 - **Build:** Compiles successfully with 0 errors, 3166 warnings (nightly toolchain)
+- **Clippy:** FAILS with 18 deny-level errors and 3631 warnings
 - **Build command:** `cargo +nightly build --bin rustos -Zbuild-std=core,compiler_builtins,alloc -Zjson-target-spec --target x86_64-rustos.json`
 - **Tests:** Cannot be meaningfully run (kernel requires bare-metal / QEMU environment)
 - **Runtime validation:** Not performed in this session
 - **Binary target:** `src/main.rs` (Cargo.toml `[[bin]]` section)
+- **Init coverage:** 13 of 35+ subsystems are wired into the boot sequence; the rest are dead code
+- **Critical bugs (clippy):** Realtek driver UB, NVMe doorbell always-zero, serial receive broken
