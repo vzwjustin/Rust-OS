@@ -265,7 +265,7 @@ impl UsbMassStorageDriver {
 
         // Create Command Block Wrapper
         let tag = self.next_tag();
-        let cbw = CommandBlockWrapper::new(tag, data_length, direction_in, self.active_lun, command);
+        let _cbw = CommandBlockWrapper::new(tag, data_length, direction_in, self.active_lun, command);
 
         // In a real implementation, we would:
         // 1. Send CBW via bulk OUT endpoint

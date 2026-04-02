@@ -6,7 +6,6 @@
 
 use crate::vga_buffer::{Color, VGA_WRITER};
 use crate::{print, println};
-use alloc::format;
 use alloc::string::String;
 
 /// Display boot logo with ASCII art

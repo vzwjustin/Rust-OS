@@ -7,7 +7,7 @@
 //! - Buffer overflow protection
 //! - Access control validation
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
+use alloc::{vec, string::ToString};
 use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
 use crate::syscall::{SyscallContext, SyscallNumber};
 

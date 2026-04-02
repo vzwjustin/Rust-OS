@@ -7,8 +7,8 @@ use super::{
     FileSystem, FileSystemType, FileSystemStats, FileMetadata, FileType, FilePermissions,
     DirectoryEntry, OpenFlags, FsResult, FsError, InodeNumber,
 };
-use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
-use alloc::{vec, vec::Vec, string::{String, ToString}, collections::BTreeMap, format, boxed::Box};
+use crate::drivers::storage::{read_storage_sectors, write_storage_sectors};
+use alloc::{vec, vec::Vec, string::{String, ToString}, collections::BTreeMap};
 use spin::RwLock;
 use core::mem;
 

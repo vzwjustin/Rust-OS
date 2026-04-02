@@ -42,7 +42,7 @@ pub fn init_package_manager(manager_type: PackageManagerType) {
 /// Get a reference to the package manager
 fn get_package_manager() -> PackageResult<&'static mut PackageManager> {
     unsafe {
-        PACKAGE_MANAGER.as_mut()
+        (&mut *core::ptr::addr_of_mut!(PACKAGE_MANAGER)).as_mut()
             .ok_or_else(|| crate::package::PackageError::InvalidOperation(
                 "Package manager not initialized".into()
             ))

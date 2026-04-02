@@ -4,8 +4,6 @@
 //! for RustOS, enabling execution of userspace programs.
 
 use core::arch::asm;
-use x86_64::VirtAddr;
-use x86_64::structures::gdt::SegmentSelector;
 
 /// Switch from kernel mode (Ring 0) to user mode (Ring 3)
 ///
@@ -151,7 +149,7 @@ pub unsafe fn execute_in_user_mode(entry_point: u64, user_stack: u64) -> ! {
 ///
 /// Must only be called from interrupt/syscall context with valid kernel state.
 pub unsafe fn return_to_kernel() {
-    let kernel_code_selector = crate::gdt::get_kernel_code_selector();
+    let _kernel_code_selector = crate::gdt::get_kernel_code_selector();
     let kernel_data_selector = crate::gdt::get_kernel_data_selector();
 
     // Restore kernel data segments

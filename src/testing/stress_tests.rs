@@ -8,9 +8,8 @@
 //! - Interrupt handling under load
 
 use alloc::{vec::Vec, vec, string::{String, ToString}};
-use core::sync::atomic::{AtomicUsize, AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
-use crate::data_structures::LockFreeMpscQueue;
 
 /// Stress test configuration
 #[derive(Debug, Clone)]
@@ -322,7 +321,7 @@ fn test_memory_pressure() -> TestResult {
         let mut failure_count = 0;
 
         // Get initial memory statistics
-        let initial_stats = {
+        let _initial_stats = {
             let manager = memory_manager;
             manager.get_zone_stats()
         };
@@ -369,7 +368,7 @@ fn test_memory_pressure() -> TestResult {
         let duration_ms = (end_time - start_time) / 1000;
 
         // Get final memory statistics
-        let final_stats = {
+        let _final_stats = {
             let manager = memory_manager;
             manager.get_zone_stats()
         };
@@ -395,7 +394,7 @@ fn test_process_creation_stress() -> TestResult {
     let process_manager = crate::process::get_process_manager();
 
     let start_time = crate::time::uptime_us();
-    let initial_count = process_manager.process_count();
+    let _initial_count = process_manager.process_count();
     let mut created_processes = Vec::new();
     let mut creation_successes = 0;
     let mut creation_failures = 0;
@@ -437,7 +436,7 @@ fn test_process_creation_stress() -> TestResult {
         let _ = process_manager.terminate_process(pid, 0);
     }
 
-    let final_count = process_manager.process_count();
+    let _final_count = process_manager.process_count();
     let end_time = crate::time::uptime_us();
     let duration_ms = (end_time - start_time) / 1000;
 
@@ -610,7 +609,7 @@ fn test_io_stress() -> TestResult {
 
     // TODO: get_io_statistics is currently a stub that returns ()
     crate::io_optimized::get_io_statistics();
-    let (total_requests, completed_requests, failed_requests, queue_depth) =
+    let (total_requests, completed_requests, _failed_requests, _queue_depth) =
         (requests_submitted, requests_submitted, 0, 0);
 
     let completion_rate = if total_requests > 0 {
@@ -642,10 +641,10 @@ pub fn run_stress_tests_with_config(config: StressTestConfig) -> Vec<StressTestM
         ("I/O Stress", test_io_stress as fn() -> crate::testing_framework::TestResult),
     ];
 
-    for (name, test_fn) in &test_functions {
-        let start_time = crate::time::uptime_us();
-        let result = test_fn();
-        let end_time = crate::time::uptime_us();
+    for (_name, test_fn) in &test_functions {
+        let _start_time = crate::time::uptime_us();
+        let _result = test_fn();
+        let _end_time = crate::time::uptime_us();
 
         let metrics = StressTestMetrics {
             operations_completed: 1000, // Placeholder values

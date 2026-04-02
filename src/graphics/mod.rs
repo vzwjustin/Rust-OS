@@ -12,7 +12,6 @@ pub use framebuffer::{
 };
 
 use spin::{Mutex, Once};
-use alloc::{format, string::String};
 
 /// Graphics system status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

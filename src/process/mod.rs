@@ -774,7 +774,6 @@ pub fn tick_system_time() {
     // This function is kept for compatibility with existing code
 }
 
-use core::sync::atomic::AtomicU64;
 
 /// Get the currently running process ID
 ///
@@ -791,5 +790,3 @@ pub fn terminate_current_process() {
     let _ = process_manager.terminate_process(pid, 0);
 }
 
-/// Re-export send_signal from IPC module for convenience
-pub use ipc::send_signal;

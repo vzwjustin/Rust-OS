@@ -18,7 +18,7 @@ use spin::Mutex;
 use lazy_static::lazy_static;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicU64;
-use x86_64::structures::paging::{PhysFrame, FrameAllocator};
+use x86_64::structures::paging::PhysFrame;
 use x86_64::PhysAddr;
 
 use super::{GPUCapabilities, GPUVendor, GPUTier};
@@ -478,7 +478,7 @@ impl GPUMemoryManager {
     /// Perform DMA transfer
     pub fn dma_transfer(&mut self, dma_id: u32, offset: usize, size: usize) -> Result<(), &'static str> {
         // First, gather the information we need and validate
-        let (cpu_address, gpu_address, direction, buffer_size) = {
+        let (cpu_address, gpu_address, direction, _buffer_size) = {
             let buffer = self.dma_buffers.iter()
                 .find(|b| b.id == dma_id)
                 .ok_or("Invalid DMA buffer ID")?;

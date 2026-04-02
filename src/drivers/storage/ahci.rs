@@ -8,7 +8,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::{format, vec};
-use core::mem;
 use core::ptr;
 
 /// AHCI vendor IDs and device IDs database
@@ -326,7 +325,7 @@ impl AhciDriver {
         // Request BIOS/OS handoff if supported
         let cap2 = self.read_reg(AhciReg::Cap2);
         if (cap2 & (1 << 0)) != 0 { // BIOS/OS handoff supported
-            self.write_reg(AhciReg::Bohc, (1 << 1)); // Request OS ownership
+            self.write_reg(AhciReg::Bohc, 1 << 1); // Request OS ownership
 
             // Wait for handoff completion (simplified)
             for _ in 0..1000 {

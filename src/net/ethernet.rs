@@ -214,7 +214,7 @@ fn is_valid_mac_address(mac: &[u8; 6]) -> bool {
 }
 
 /// Process ARP packet
-fn process_arp_packet(network_stack: &NetworkStack, mut packet: PacketBuffer) -> NetworkResult<()> {
+fn process_arp_packet(_network_stack: &NetworkStack, mut packet: PacketBuffer) -> NetworkResult<()> {
     // ARP packet structure:
     // Hardware type (2 bytes)
     // Protocol type (2 bytes)

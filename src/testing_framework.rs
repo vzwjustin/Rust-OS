@@ -9,6 +9,7 @@
 //! - Proper error handling and recovery
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::ptr::addr_of_mut;
 use alloc::{
     string::{String, ToString},
     vec::Vec,
@@ -1147,7 +1148,7 @@ pub fn init_testing_framework() {
         Ordering::SeqCst,
     ).is_ok() {
         unsafe {
-            TEST_FRAMEWORK = Some(TestFramework::new());
+            *addr_of_mut!(TEST_FRAMEWORK) = Some(TestFramework::new());
         }
     }
 }
@@ -1155,10 +1156,10 @@ pub fn init_testing_framework() {
 /// Get the global test framework instance
 pub fn get_test_framework() -> &'static mut TestFramework {
     unsafe {
-        if TEST_FRAMEWORK.is_none() {
+        if (*addr_of_mut!(TEST_FRAMEWORK)).is_none() {
             init_testing_framework();
         }
-        TEST_FRAMEWORK.as_mut().expect("Test framework not initialized")
+        (*addr_of_mut!(TEST_FRAMEWORK)).as_mut().expect("Test framework not initialized")
     }
 }
 

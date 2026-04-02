@@ -1,11 +1,11 @@
 // RustOS System Health Monitoring and Diagnostics
 // Provides comprehensive system health monitoring and automatic recovery
 
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use alloc::vec::Vec;
 use alloc::vec;
 use alloc::string::{String, ToString};
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 use lazy_static::lazy_static;
 use crate::error::{KernelError, ErrorSeverity, ErrorContext, ERROR_MANAGER};
 
@@ -198,7 +198,7 @@ impl HealthMonitor {
     fn estimate_cpu_usage(&self) -> u8 {
         // Simplified CPU usage estimation
         // In a real implementation, this would use performance counters
-        let timer_stats = crate::time::get_timer_stats();
+        let _timer_stats = crate::time::get_timer_stats();
         let interrupt_count = crate::interrupts::get_interrupt_count();
         
         // Very basic estimation based on interrupt frequency

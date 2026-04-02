@@ -5,7 +5,7 @@
 
 use spin::Mutex;
 use heapless::spsc::Queue;
-use crate::keyboard::{KeyEvent, SpecialKey};
+use crate::keyboard::KeyEvent;
 use crate::drivers::ps2_mouse::{MousePacket, MouseButtons};
 
 /// Maximum number of input events in the queue

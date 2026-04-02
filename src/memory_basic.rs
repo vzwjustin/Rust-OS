@@ -72,14 +72,14 @@ static mut GLOBAL_MEMORY_STATS: Option<MemoryStats> = None;
 /// Store memory statistics for later retrieval
 pub fn store_memory_stats(stats: MemoryStats) {
     unsafe {
-        GLOBAL_MEMORY_STATS = Some(stats);
+        *core::ptr::addr_of_mut!(GLOBAL_MEMORY_STATS) = Some(stats);
     }
 }
 
 /// Get current memory statistics for health monitoring
 pub fn get_memory_stats() -> Result<MemoryStats, &'static str> {
     unsafe {
-        GLOBAL_MEMORY_STATS.clone().ok_or("Memory statistics not available")
+        (*core::ptr::addr_of!(GLOBAL_MEMORY_STATS)).clone().ok_or("Memory statistics not available")
     }
 }
 

@@ -211,8 +211,8 @@ impl MemoryIntegration {
         let base_address = 0x400000 + (pid as u64 * 0x10000000);
         let code_size = 0x100000; // 1MB code section
         let data_size = PAGE_SIZE * 16; // 64KB data section
-        let heap_size = PAGE_SIZE * 256; // 1MB heap
-        let stack_size = PAGE_SIZE * 32; // 128KB stack
+        let _heap_size = PAGE_SIZE * 256; // 1MB heap
+        let _stack_size = PAGE_SIZE * 32; // 128KB stack
 
         // List of memory regions to clean up
         let regions_to_cleanup = vec![
@@ -227,7 +227,7 @@ impl MemoryIntegration {
             let start_vaddr = VirtAddr::new(start_addr);
 
             // Find and deallocate region
-            if let Some(region) = memory_manager.find_region(start_vaddr) {
+            if let Some(_region) = memory_manager.find_region(start_vaddr) {
                 // Unmap pages in the region
                 for offset in (0..size).step_by(PAGE_SIZE) {
                     let addr = VirtAddr::new(start_addr + offset as u64);
@@ -436,14 +436,14 @@ impl ProcessIntegration {
 
     /// Fork current process with copy-on-write memory
     pub fn fork_process(&self, parent_pid: Pid) -> Result<Pid, &'static str> {
-        use crate::memory::{get_memory_manager, create_cow_mapping, MemoryProtection};
+        use crate::memory::get_memory_manager;
 
         let process_manager = get_process_manager();
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
         // Get parent process memory layout
         let (code_start, code_size, data_start, data_size, heap_start, heap_size,
-             stack_start, stack_size, vm_start, vm_size, parent_priority) = {
+             stack_start, stack_size, _vm_start, _vm_size, parent_priority) = {
             let parent_process = process_manager.get_process(parent_pid)
                 .ok_or("Parent process not found")?;
             (
@@ -514,8 +514,8 @@ impl ProcessIntegration {
     }
 
     /// Execute new program in process
-    pub fn exec_process(&self, pid: Pid, program_path: &str, program_data: &[u8]) -> Result<(), &'static str> {
-        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection, PAGE_SIZE};
+    pub fn exec_process(&self, pid: Pid, _program_path: &str, program_data: &[u8]) -> Result<(), &'static str> {
+        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection};
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
@@ -586,7 +586,7 @@ impl ProcessIntegration {
     }
 
     /// Parse ELF header and extract program information
-    fn parse_elf_header(program_data: &[u8]) -> Result<ElfInfo, &'static str> {
+    fn parse_elf_header(program_data: &[u8]) -> Result<ElfInfo<'_>, &'static str> {
         if program_data.len() < 64 {
             return Err("ELF file too small");
         }

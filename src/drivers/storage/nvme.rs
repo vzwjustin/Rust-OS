@@ -8,7 +8,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::{format, vec};
-use core::mem;
 use core::ptr;
 
 /// NVMe controller register offsets
@@ -487,7 +486,7 @@ impl NvmeDriver {
     /// Get next available command ID
     fn get_next_command_id(&mut self) -> u16 {
         let id = self.next_command_id;
-        self.next_command_id = if self.next_command_id >= 65535 { 1 } else { self.next_command_id + 1 };
+        self.next_command_id = self.next_command_id.wrapping_add(1).max(1);
         id
     }
 
@@ -679,7 +678,8 @@ impl NvmeDriver {
         self.current_sq_tail = (self.current_sq_tail + 1) % self.queue_depth;
         
         // 3. Ring submission queue doorbell
-        let doorbell_offset = 0x1000 + (0 * 2 * (4 << self.doorbell_stride)); // Queue 0 submission doorbell
+        let queue_id: u32 = 0; // I/O queue 0
+        let doorbell_offset = 0x1000 + (queue_id * 2) * (4 << self.doorbell_stride); // Submission doorbell
         self.write_reg_raw(doorbell_offset as u32, self.current_sq_tail as u32);
         
         // 4. Wait for completion queue entry
@@ -716,7 +716,7 @@ impl NvmeDriver {
         }
         
         // 5. Ring completion queue doorbell
-        let cq_doorbell_offset = 0x1000 + (0 * 2 + 1) * (4 << self.doorbell_stride); // Queue 0 completion doorbell
+        let cq_doorbell_offset = 0x1000 + (queue_id * 2 + 1) * (4 << self.doorbell_stride); // Completion doorbell
         self.write_reg_raw(cq_doorbell_offset as u32, self.current_cq_head as u32);
         
         // Update statistics
@@ -903,7 +903,7 @@ impl StorageDriver for NvmeDriver {
         // Allocate buffer for SMART data - Production DMA allocation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
-        let mut dma_buffer = DmaBuffer::allocate(512, DMA_ALIGNMENT)
+        let dma_buffer = DmaBuffer::allocate(512, DMA_ALIGNMENT)
             .map_err(|_| StorageError::HardwareError)?;
 
         // Translate virtual address to physical for hardware DMA

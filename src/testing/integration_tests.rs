@@ -7,10 +7,10 @@
 //! - Network protocol implementations
 //! - Inter-process communication
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
+use alloc::{vec::Vec, vec, string::ToString};
 use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
-use crate::syscall::{SyscallNumber, SyscallContext, SyscallResult};
-use crate::scheduler::{Pid, Priority};
+use crate::syscall::{SyscallNumber, SyscallContext};
+use crate::scheduler::Priority;
 
 /// Integration test suite for system calls
 pub fn create_syscall_integration_tests() -> TestSuite {
@@ -629,11 +629,9 @@ fn test_page_fault_handling() -> TestResult {
 
     // Page fault handling is tested indirectly through memory operations
     // For now, just verify that the page fault handler exists
-    if stats.page_fault_count >= 0 {
-        TestResult::Pass
-    } else {
-        TestResult::Fail
-    }
+    // Page fault handler exists — verify stats struct is accessible
+    let _ = stats.page_fault_count;
+    TestResult::Pass
 }
 
 /// Test heap management functionality

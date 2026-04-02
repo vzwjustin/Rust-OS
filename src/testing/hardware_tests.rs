@@ -10,7 +10,7 @@
 //! - GPU hardware acceleration
 //! - Timer and clock hardware validation
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
+use alloc::{vec, string::ToString};
 use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
 
 /// Create hardware test suite

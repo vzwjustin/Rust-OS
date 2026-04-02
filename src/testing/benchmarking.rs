@@ -8,8 +8,9 @@
 //! - Latency and throughput measurements
 //! - Resource utilization analysis
 
-use alloc::{vec::Vec, vec, string::{String, ToString}, collections::BTreeMap, format};
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
+use alloc::{vec::Vec, vec, string::{String, ToString}, collections::BTreeMap};
+use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::ptr::{addr_of, addr_of_mut};
 use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
 use crate::data_structures::{LockFreeMpscQueue, CacheFriendlyRingBuffer, CACHE_LINE_SIZE};
 
@@ -229,14 +230,14 @@ impl BenchmarkSuite {
         let measurement_start = crate::time::uptime_us();
         let duration_us = config.duration_ms * 1000;
 
-        for iteration in 0..config.iterations {
+        for _iteration in 0..config.iterations {
             if crate::time::uptime_us() - measurement_start > duration_us {
                 break;
             }
 
             let iteration_start = crate::time::uptime_us();
             let result = self.run_benchmark_iteration(config);
-            let iteration_end = crate::time::uptime_us();
+            let _iteration_end = crate::time::uptime_us();
 
             let sample = PerformanceSample {
                 timestamp: iteration_start,
@@ -407,7 +408,7 @@ impl BenchmarkSuite {
     fn measure_network_bandwidth(&self) -> f64 {
         // Measure actual network bandwidth from driver statistics
         // This would read from network driver counters in real implementation
-        let (packets_sent, bytes_sent, packets_received, bytes_received) = 
+        let (_packets_sent, bytes_sent, _packets_received, bytes_received) = 
             crate::network::get_interface_stats().unwrap_or((0, 0, 0, 0));
         
         // Calculate bandwidth based on actual traffic
@@ -708,7 +709,7 @@ fn benchmark_interrupt_latency() -> TestResult {
     }
 
     let end_tsc = crate::performance_monitor::read_tsc();
-    let end_time = crate::time::uptime_us();
+    let _end_time = crate::time::uptime_us();
     let final_stats = crate::interrupts::get_stats();
 
     // Calculate interrupt handling performance
@@ -794,8 +795,8 @@ static mut GLOBAL_PERFORMANCE_MONITOR: Option<PerformanceMonitor> = None;
 /// Initialize global performance monitoring
 pub fn init_performance_monitoring() -> Result<(), &'static str> {
     unsafe {
-        GLOBAL_PERFORMANCE_MONITOR = PerformanceMonitor::new();
-        if GLOBAL_PERFORMANCE_MONITOR.is_some() {
+        *addr_of_mut!(GLOBAL_PERFORMANCE_MONITOR) = PerformanceMonitor::new();
+        if (*addr_of!(GLOBAL_PERFORMANCE_MONITOR)).is_some() {
             Ok(())
         } else {
             Err("Failed to initialize performance monitor")
@@ -805,7 +806,7 @@ pub fn init_performance_monitoring() -> Result<(), &'static str> {
 
 /// Get global performance monitor
 pub fn get_performance_monitor() -> Option<&'static PerformanceMonitor> {
-    unsafe { GLOBAL_PERFORMANCE_MONITOR.as_ref() }
+    unsafe { (*addr_of!(GLOBAL_PERFORMANCE_MONITOR)).as_ref() }
 }
 
 /// Record a performance sample globally
@@ -822,7 +823,7 @@ pub fn get_system_performance_summary() -> BTreeMap<String, PerformanceStats> {
     // Collect metrics from various subsystems
     let interrupt_stats = crate::interrupts::get_stats();
     let syscall_stats = crate::syscall::get_syscall_stats();
-    let scheduler_stats = crate::scheduler::get_scheduler_stats();
+    let _scheduler_stats = crate::scheduler::get_scheduler_stats();
     let (memory_used, memory_total) = crate::performance_monitor::memory_usage();
 
     // Convert to performance stats format

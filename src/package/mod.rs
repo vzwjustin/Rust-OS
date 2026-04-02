@@ -19,8 +19,6 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 use core::fmt;
 
 pub mod types;
@@ -36,8 +34,6 @@ pub mod syscalls;
 pub mod tests;
 
 pub use types::*;
-pub use adapters::*;
-pub use database::*;
 pub use manager::PackageManager;
 pub use syscalls::{init_package_manager, handle_package_syscall};
 

@@ -27,16 +27,9 @@ pub fn handle_port1_interrupt() {
     // Read any available data from COM1
     let mut serial = SERIAL1.lock();
 
-    // Read and discard available data
+    // Read and discard available data to clear the interrupt
     // uart_16550 receive() returns u8 directly, not Option
-    loop {
-        // Try to receive - if no data available, this will fail
-        let _byte = serial.receive();
-        // In a full implementation, we would buffer this data
-        // For now, just consume it to clear the interrupt
-        // Break after one read to avoid blocking
-        break;
-    }
+    let _byte = serial.receive();
 }
 
 /// Handle serial port 2 interrupt
@@ -44,16 +37,9 @@ pub fn handle_port2_interrupt() {
     // Read any available data from COM2
     let mut serial = SERIAL2.lock();
 
-    // Read and discard available data
+    // Read and discard available data to clear the interrupt
     // uart_16550 receive() returns u8 directly, not Option
-    loop {
-        // Try to receive - if no data available, this will fail
-        let _byte = serial.receive();
-        // In a full implementation, we would buffer this data
-        // For now, just consume it to clear the interrupt
-        // Break after one read to avoid blocking
-        break;
-    }
+    let _byte = serial.receive();
 }
 
 /// Write formatted arguments to serial port 1

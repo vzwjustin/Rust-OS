@@ -243,7 +243,7 @@ pub fn tcsetattr(fd: Fd, optional_actions: i32, termios_p: *const Termios) -> Li
 }
 
 /// tcsendbreak - send break
-pub fn tcsendbreak(fd: Fd, duration: i32) -> LinuxResult<i32> {
+pub fn tcsendbreak(fd: Fd, _duration: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {
@@ -438,8 +438,8 @@ pub fn openpty(
     amaster: *mut Fd,
     aslave: *mut Fd,
     name: *mut u8,
-    termp: *const Termios,
-    winp: *const WinSize,
+    _termp: *const Termios,
+    _winp: *const WinSize,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -469,9 +469,9 @@ pub fn openpty(
 /// forkpty - fork with new pseudoterminal
 pub fn forkpty(
     amaster: *mut Fd,
-    name: *mut u8,
-    termp: *const Termios,
-    winp: *const WinSize,
+    _name: *mut u8,
+    _termp: *const Termios,
+    _winp: *const WinSize,
 ) -> LinuxResult<Pid> {
     inc_ops();
 

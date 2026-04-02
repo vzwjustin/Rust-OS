@@ -3,10 +3,10 @@
 //! This module provides comprehensive storage device detection,
 //! initialization, and management for the RustOS kernel.
 
-use super::{StorageDriverManager, StorageDriver, StorageDeviceType, StorageError};
+use super::{StorageDriverManager, StorageDriver, StorageError};
 use super::ahci::{AhciDriver, AHCI_DEVICE_IDS};
 use super::nvme::NvmeDriver;
-use super::ide::{IdeDriver, create_ide_drivers};
+use super::ide::create_ide_drivers;
 use super::pci_scan::{PciDevice, scan_pci_devices};
 use alloc::{vec::Vec, string::{String, ToString}, boxed::Box, format};
 
@@ -148,7 +148,7 @@ impl StorageDetector {
         let serial = format!("AHCI-{:04x}-{:04x}", device.vendor_id, device.device_id);
         let firmware = "1.0".to_string();
 
-        let device_id = self.manager.register_device(
+        let _device_id = self.manager.register_device(
             Box::new(ahci_driver) as Box<dyn StorageDriver>,
             model,
             serial,
@@ -180,7 +180,7 @@ impl StorageDetector {
         let serial = format!("NVME-{:04x}-{:04x}", device.vendor_id, device.device_id);
         let firmware = "1.0".to_string();
 
-        let device_id = self.manager.register_device(
+        let _device_id = self.manager.register_device(
             Box::new(nvme_driver) as Box<dyn StorageDriver>,
             model,
             serial,
@@ -217,7 +217,7 @@ impl StorageDetector {
                 let firmware = "1.0".to_string();
 
                 // Register the device
-                let device_id = self.manager.register_device(
+                let _device_id = self.manager.register_device(
                     driver,
                     model,
                     serial,
@@ -260,7 +260,7 @@ impl StorageDetector {
                 let firmware = "1.0".to_string();
 
                 // Register the device
-                let device_id = self.manager.register_device(
+                let _device_id = self.manager.register_device(
                     driver,
                     model,
                     serial,

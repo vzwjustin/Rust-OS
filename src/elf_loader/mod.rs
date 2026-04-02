@@ -15,12 +15,9 @@
 
 #![allow(dead_code)]
 
-use core::mem;
-use core::slice;
-use x86_64::structures::paging::{PageTableFlags, Mapper, Page, Size4KiB, FrameAllocator};
+use x86_64::structures::paging::{PageTableFlags, Mapper, Size4KiB, FrameAllocator};
 use x86_64::VirtAddr;
 use alloc::vec::Vec;
-use crate::memory::PAGE_SIZE;
 
 mod types;
 pub mod parser;
@@ -29,9 +26,6 @@ mod loader;
 #[cfg(test)]
 mod tests;
 
-pub use types::*;
-pub use parser::*;
-pub use loader::*;
 
 /// Result type for ELF operations
 pub type Result<T> = core::result::Result<T, ElfError>;

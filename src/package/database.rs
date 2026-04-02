@@ -2,11 +2,11 @@
 //!
 //! This module manages the database of installed packages and their metadata.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::format;
-use crate::package::{PackageResult, PackageError, PackageInfo, PackageMetadata, PackageStatus};
+use crate::package::{PackageResult, PackageError, PackageInfo, PackageStatus};
 
 /// Package database for tracking installed packages
 pub struct PackageDatabase {

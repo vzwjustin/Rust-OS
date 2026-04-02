@@ -7,8 +7,8 @@ use super::{
     FileSystem, FileSystemType, FileSystemStats, FileMetadata, FileType, FilePermissions,
     DirectoryEntry, OpenFlags, FsResult, FsError, InodeNumber,
 };
-use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
-use alloc::{vec, vec::Vec, string::{String, ToString}, collections::BTreeMap, format, boxed::Box};
+use crate::drivers::storage::{read_storage_sectors, write_storage_sectors};
+use alloc::{vec, vec::Vec, string::String, collections::BTreeMap};
 use spin::RwLock;
 use core::mem;
 
@@ -561,7 +561,7 @@ impl Fat32FileSystem {
     }
 
     /// Get file metadata from directory entry
-    fn get_file_metadata(&self, cluster: u32, filename: &str) -> FsResult<FileMetadata> {
+    fn get_file_metadata(&self, _cluster: u32, filename: &str) -> FsResult<FileMetadata> {
         let parent_cluster = if filename.contains('/') {
             let parent_path = filename.rsplitn(2, '/').nth(1).unwrap_or("/");
             self.resolve_path(parent_path)?

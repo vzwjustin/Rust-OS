@@ -644,7 +644,7 @@ pub fn init_global_network_drivers() -> Result<(), NetworkError> {
 
 /// Get global network driver manager
 pub fn get_network_driver_manager() -> Option<&'static mut NetworkDriverManager> {
-    unsafe { NETWORK_DRIVER_MANAGER.as_mut() }
+    unsafe { (&mut *core::ptr::addr_of_mut!(NETWORK_DRIVER_MANAGER)).as_mut() }
 }
 
 /// Network driver detection and loading

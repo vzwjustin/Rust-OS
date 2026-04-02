@@ -39,7 +39,6 @@
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use x86_64::{VirtAddr, PhysAddr};
 use spin::Mutex;
 
 use super::types::*;
@@ -549,7 +548,7 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let aligned_length = (length + 4095) & !4095;
+    let _aligned_length = (length + 4095) & !4095;
 
     // Synchronize mapped pages with backing file
     // MS_SYNC: Synchronous write - wait for write to complete
@@ -731,7 +730,7 @@ pub fn mincore(addr: *mut u8, length: usize, vec: *mut u8) -> LinuxResult<i32> {
     // We need to check if pages are actually mapped
     unsafe {
         for i in 0..pages {
-            let page_addr = addr_val + (i << 12);
+            let _page_addr = addr_val + (i << 12);
 
             // Try to determine if page is mapped
             // In a real implementation, would check page tables
@@ -952,7 +951,7 @@ pub fn get_mempolicy(
     mode: *mut i32,
     nodemask: *mut u64,
     maxnode: u64,
-    addr: *mut u8,
+    _addr: *mut u8,
     flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();

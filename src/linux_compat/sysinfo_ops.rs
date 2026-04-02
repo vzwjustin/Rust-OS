@@ -8,9 +8,7 @@
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::string::String;
 
-use super::types::*;
 use super::{LinuxResult, LinuxError};
 
 /// Operation counter for statistics
@@ -322,7 +320,7 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
 // ============================================================================
 
 /// syslog - read/control kernel ring buffer
-pub fn syslog(log_type: i32, bufp: *mut u8, len: i32) -> LinuxResult<i32> {
+pub fn syslog(log_type: i32, bufp: *mut u8, _len: i32) -> LinuxResult<i32> {
     inc_ops();
 
     // Syslog command types
@@ -361,7 +359,7 @@ pub fn syslog(log_type: i32, bufp: *mut u8, len: i32) -> LinuxResult<i32> {
 // ============================================================================
 
 /// reboot - reboot or enable/disable Ctrl-Alt-Del
-pub fn reboot(magic: i32, magic2: i32, cmd: u32, arg: *mut u8) -> LinuxResult<i32> {
+pub fn reboot(magic: i32, magic2: i32, cmd: u32, _arg: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Magic numbers for reboot

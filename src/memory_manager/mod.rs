@@ -11,19 +11,15 @@ pub mod examples;
 #[cfg(test)]
 mod tests;
 
-pub use page_table::{PageTable, PageTableManager, PageTableFlags};
+pub use page_table::{PageTable, PageTableFlags};
 pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
-pub use memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
+pub use memory_region::ProtectionFlags;
 
 use x86_64::{
-    structures::paging::{
-        FrameAllocator, Mapper, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB,
-    },
+    structures::paging::Mapper,
     PhysAddr, VirtAddr,
 };
 use spin::Mutex;
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 
 /// Global virtual memory manager instance
 static VIRTUAL_MEMORY_MANAGER: Mutex<Option<VirtualMemoryManager>> = Mutex::new(None);

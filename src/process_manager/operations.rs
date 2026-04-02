@@ -2,7 +2,6 @@
 //!
 //! Implements POSIX-like process management operations.
 
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::process::Pid;
@@ -87,46 +86,37 @@ pub fn wait(
     parent_pid: Pid,
     process_table: &Mutex<ProcessTable>,
 ) -> Result<(Pid, i32), &'static str> {
-    loop {
-        let mut table = process_table.lock();
+    let table = process_table.lock();
 
-        // Get parent process
-        let parent = table.get(parent_pid)
-            .ok_or("Parent process not found")?;
+    // Get parent process
+    let parent = table.get(parent_pid)
+        .ok_or("Parent process not found")?;
 
-        // Check if parent has any children
-        if parent.child_count == 0 {
-            return Err("No child processes");
-        }
-
-        // Look for zombie children
-        let zombie_children = table.get_zombie_children(parent_pid);
-
-        if let Some(&child_pid) = zombie_children.first() {
-            // Found a zombie child - collect its exit status
-            let child = table.get(child_pid)
-                .ok_or("Child process not found")?;
-
-            let exit_status = child.exit_status.unwrap_or(-1);
-
-            // Remove zombie child from process table
-            drop(table);
-            cleanup_process(child_pid, process_table)?;
-
-            return Ok((child_pid, exit_status));
-        }
-
-        // No zombie children yet - in full implementation, would block here
-        // For now, return error to indicate would block
-        drop(table);
-
-        // Yield CPU to allow children to exit
-        crate::process::scheduler::yield_cpu();
-
-        // In a real implementation, we would block the process here
-        // and wake it up when a child exits via signal
-        break;
+    // Check if parent has any children
+    if parent.child_count == 0 {
+        return Err("No child processes");
     }
+
+    // Look for zombie children
+    let zombie_children = table.get_zombie_children(parent_pid);
+
+    if let Some(&child_pid) = zombie_children.first() {
+        // Found a zombie child - collect its exit status
+        let child = table.get(child_pid)
+            .ok_or("Child process not found")?;
+
+        let exit_status = child.exit_status.unwrap_or(-1);
+
+        // Remove zombie child from process table
+        drop(table);
+        cleanup_process(child_pid, process_table)?;
+
+        return Ok((child_pid, exit_status));
+    }
+
+    // No zombie children yet - yield and return would-block
+    drop(table);
+    crate::process::scheduler::yield_cpu();
 
     Err("Would block waiting for child")
 }
@@ -137,36 +127,31 @@ pub fn waitpid(
     child_pid: Pid,
     process_table: &Mutex<ProcessTable>,
 ) -> Result<i32, &'static str> {
-    loop {
-        let table = process_table.lock();
+    let table = process_table.lock();
 
-        // Verify child exists and parent is correct
-        let child = table.get(child_pid)
-            .ok_or("Child process not found")?;
+    // Verify child exists and parent is correct
+    let child = table.get(child_pid)
+        .ok_or("Child process not found")?;
 
-        if child.parent_pid != Some(parent_pid) {
-            return Err("Not a child of this process");
-        }
+    if child.parent_pid != Some(parent_pid) {
+        return Err("Not a child of this process");
+    }
 
-        // Check if child is zombie
-        if child.is_zombie() {
-            let exit_status = child.exit_status.unwrap_or(-1);
-            drop(table);
-
-            // Cleanup zombie
-            cleanup_process(child_pid, process_table)?;
-
-            return Ok(exit_status);
-        }
-
+    // Check if child is zombie
+    if child.is_zombie() {
+        let exit_status = child.exit_status.unwrap_or(-1);
         drop(table);
 
-        // Yield CPU to allow child to exit
-        crate::process::scheduler::yield_cpu();
+        // Cleanup zombie
+        cleanup_process(child_pid, process_table)?;
 
-        // In real implementation, would block here
-        break;
+        return Ok(exit_status);
     }
+
+    drop(table);
+
+    // Yield CPU to allow child to exit
+    crate::process::scheduler::yield_cpu();
 
     Err("Would block waiting for specific child")
 }
@@ -213,7 +198,7 @@ pub fn exit(
 }
 
 /// Get process ID
-pub fn getpid(process_table: &Mutex<ProcessTable>) -> Pid {
+pub fn getpid(_process_table: &Mutex<ProcessTable>) -> Pid {
     // In real implementation, would get from CPU-local storage
     let pm = crate::process_manager::get_process_manager();
     pm.current_pid()

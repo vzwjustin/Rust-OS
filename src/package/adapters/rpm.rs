@@ -3,8 +3,7 @@
 //! Experimental adapter for RPM package format used by Fedora, RHEL, CentOS.
 //! RPM packages use a binary format with headers and compressed payload.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::ToString;
 use crate::package::{PackageResult, PackageError, PackageMetadata, ExtractedPackage};
 use crate::package::adapters::PackageAdapter;
 

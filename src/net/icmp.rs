@@ -233,7 +233,7 @@ impl IcmpManager {
         let identifier = {
             let mut next_id = self.next_ping_id.write();
             let id = *next_id;
-            *next_id = if id >= 65535 { 1 } else { id + 1 };
+            *next_id = if id == u16::MAX { 1 } else { id + 1 };
             id
         };
 

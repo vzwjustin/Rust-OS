@@ -245,7 +245,7 @@ impl BroadcomDriver {
     /// Initialize transmit engine
     fn init_tx(&mut self) -> Result<(), NetworkError> {
         // Configure transmit mode
-        let mut tx_mode = 0x02; // Enable transmit
+        let tx_mode = 0x02; // Enable transmit
         self.write_reg(BCM_TX_MODE, tx_mode);
 
         Ok(())

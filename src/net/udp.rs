@@ -433,17 +433,17 @@ impl UdpManager {
         // Find an unused port
         loop {
             if !port_usage.contains_key(&port) {
-                *next_port = if port >= 65535 { 32768 } else { port + 1 };
+                *next_port = if port == u16::MAX { 32768 } else { port + 1 };
                 return port;
             }
 
-            port = if port >= 65535 { 32768 } else { port + 1 };
+            port = if port == u16::MAX { 32768 } else { port + 1 };
 
             // Prevent infinite loop
             if port == start_port {
                 stats.port_allocation_failures += 1;
                 // Return the original port even if in use - higher layer will handle conflict
-                *next_port = if port >= 65535 { 32768 } else { port + 1 };
+                *next_port = if port == u16::MAX { 32768 } else { port + 1 };
                 return port;
             }
         }
@@ -678,7 +678,7 @@ impl UdpManager {
         src_addr: &NetworkAddress,
         src_port: u16,
     ) -> Vec<(NetworkAddress, u16)> {
-        let mut receivers = self.find_receiving_sockets(dest_addr, dest_port);
+        let receivers = self.find_receiving_sockets(dest_addr, dest_port);
 
         // If multiple sockets can receive the packet, apply load balancing
         if receivers.len() > 1 {

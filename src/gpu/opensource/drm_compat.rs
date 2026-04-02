@@ -189,7 +189,7 @@ impl DRMCompatLayer {
     }
 
     /// Register a new DRM device
-    pub fn register_device(&mut self, card_number: u32, driver_name: &str) -> Result<(), &'static str> {
+    pub fn register_device(&mut self, card_number: u32, _driver_name: &str) -> Result<(), &'static str> {
         let device_path = format!("/dev/dri/card{}", card_number);
         self.device_nodes.insert(card_number, device_path);
 
@@ -555,7 +555,7 @@ static mut DRM_COMPAT: Option<DRMCompatLayer> = None;
 /// Initialize DRM compatibility layer
 pub fn init_drm_compat() -> Result<(), &'static str> {
     unsafe {
-        if DRM_COMPAT.is_none() {
+        if (&*core::ptr::addr_of!(DRM_COMPAT)).is_none() {
             DRM_COMPAT = Some(DRMCompatLayer::new());
         }
     }
@@ -564,7 +564,7 @@ pub fn init_drm_compat() -> Result<(), &'static str> {
 
 /// Get DRM compatibility layer instance
 pub fn get_drm_compat() -> Option<&'static mut DRMCompatLayer> {
-    unsafe { DRM_COMPAT.as_mut() }
+    unsafe { (&mut *core::ptr::addr_of_mut!(DRM_COMPAT)).as_mut() }
 }
 
 /// Register a new GPU with DRM compatibility layer

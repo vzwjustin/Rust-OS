@@ -467,7 +467,7 @@ impl TcpManager {
     pub fn allocate_port(&self) -> u16 {
         let mut next_port = self.next_port.write();
         let port = *next_port;
-        *next_port = if port >= 65535 { 32768 } else { port + 1 };
+        *next_port = if port == u16::MAX { 32768 } else { port + 1 };
         port
     }
 

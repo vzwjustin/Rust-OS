@@ -2,8 +2,7 @@
 //!
 //! This adapter handles native RustOS package format, optimized for the kernel.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::ToString;
 use crate::package::{PackageResult, PackageError, PackageMetadata, ExtractedPackage};
 use crate::package::adapters::PackageAdapter;
 

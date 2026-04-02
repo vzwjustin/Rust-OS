@@ -131,7 +131,7 @@ static mut BOOT_PROGRESS: BootProgress = BootProgress::new();
 
 /// Get mutable reference to boot progress
 pub fn boot_progress() -> &'static mut BootProgress {
-    unsafe { &mut BOOT_PROGRESS }
+    unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PROGRESS) }
 }
 
 // ============================================================================

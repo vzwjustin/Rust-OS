@@ -4,7 +4,6 @@
 //! and privilege level management for RustOS.
 
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::instructions::segmentation::{Segment, CS, DS, ES, FS, GS, SS};
 use x86_64::instructions::tables::load_tss;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector as GdtSegmentSelector};
@@ -55,7 +54,7 @@ lazy_static! {
         let user_code_selector = gdt.add_entry(Descriptor::user_code_segment());
 
         // Entry 5 (0x28): Task State Segment (takes 2 entries for 64-bit TSS)
-        let tss_selector = gdt.add_entry(Descriptor::tss_segment(unsafe { &TSS }));
+        let tss_selector = gdt.add_entry(Descriptor::tss_segment(unsafe { &*core::ptr::addr_of!(TSS) }));
 
         (gdt, Selectors {
             kernel_code_selector,
@@ -71,7 +70,7 @@ lazy_static! {
 pub fn init() {
     // Initialize TSS with double fault stack
     unsafe {
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
+        (*core::ptr::addr_of_mut!(TSS)).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
             let stack_end = stack_start + STACK_SIZE;
             stack_end
@@ -210,13 +209,13 @@ pub fn get_stack_info() -> StackInfo {
             kernel_stack: VirtAddr::new(0), // Would be set during task switching
             user_stack: None, // Would be set during task switching
             interrupt_stacks: [
-                TSS.interrupt_stack_table[0],
-                TSS.interrupt_stack_table[1],
-                TSS.interrupt_stack_table[2],
-                TSS.interrupt_stack_table[3],
-                TSS.interrupt_stack_table[4],
-                TSS.interrupt_stack_table[5],
-                TSS.interrupt_stack_table[6],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[0],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[1],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[2],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[3],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[4],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[5],
+                (*core::ptr::addr_of!(TSS)).interrupt_stack_table[6],
             ],
         }
     }
@@ -231,12 +230,12 @@ pub fn get_stack_info() -> StackInfo {
 ///
 /// The stack pointer must point to a valid, mapped kernel stack.
 pub fn set_kernel_stack(stack_ptr: VirtAddr) {
-    use core::ptr;
+    
 
     // Get a mutable reference to TSS
     // Safety: We have exclusive access during init
     unsafe {
-        TSS.privilege_stack_table[0] = stack_ptr;
+        (*core::ptr::addr_of_mut!(TSS)).privilege_stack_table[0] = stack_ptr;
     }
 
     crate::serial_println!("Kernel stack set to {:?} in TSS", stack_ptr);

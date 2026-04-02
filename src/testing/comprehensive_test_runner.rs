@@ -3,7 +3,7 @@
 //! This module provides a comprehensive test runner that validates all real
 //! implementations against the requirements specified in the design document.
 
-use alloc::{vec::Vec, vec, string::{String, ToString}, collections::BTreeMap};
+use alloc::{vec::Vec, string::{String, ToString}, collections::BTreeMap};
 use crate::println;
 use crate::testing_framework::{TestFramework, TestStats, TestResult, TestExecutionResult};
 use crate::testing::{
@@ -278,7 +278,7 @@ impl ComprehensiveTestRunner {
     }
 
     /// Collect failed tests from framework
-    fn collect_failed_tests(&self, failed_tests: &mut Vec<TestExecutionResult>, category: &str) {
+    fn collect_failed_tests(&self, failed_tests: &mut Vec<TestExecutionResult>, _category: &str) {
         let results = self.framework.get_results();
         for result in results {
             if result.result == TestResult::Fail || result.result == TestResult::Timeout {

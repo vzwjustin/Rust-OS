@@ -33,8 +33,7 @@ use core::fmt;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
-use super::elf_loader::{Elf64Header, Elf64ProgramHeader, elf_constants};
-use crate::memory::{MemoryRegionType, MemoryProtection};
+use super::elf_loader::{Elf64ProgramHeader, elf_constants};
 
 /// Dynamic linker for loading shared libraries and resolving symbols
 #[derive(Clone)]
@@ -483,7 +482,7 @@ impl DynamicLinker {
     }
     
     /// Check if a file exists in the filesystem
-    fn check_file_exists(&self, path: &str) -> bool {
+    fn check_file_exists(&self, _path: &str) -> bool {
         // Try to get file metadata to check existence
         // In a full implementation, we would use the VFS
         // For now, return true to maintain compatibility

@@ -5,10 +5,9 @@
 use x86_64::{PhysAddr, VirtAddr};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 use super::memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
-use super::page_table::{PageTable, PageTableFlags, PageTableManager};
+use super::page_table::{PageTableFlags, PageTableManager};
 use super::{MmapFlags, MemoryStats};
 
 /// Virtual memory error types
@@ -281,7 +280,7 @@ impl VirtualMemoryManager {
         let mut virt_addr = region.start;
         for _ in 0..page_count {
             // In a real implementation, allocate a physical frame here
-            let phys_addr = PhysAddr::new(0x1000_0000); // Placeholder
+            let _phys_addr = PhysAddr::new(0x1000_0000); // Placeholder
 
             // Map the page (would use actual page table here)
             // page_table.map(virt_addr, phys_addr, pt_flags)?;
@@ -411,7 +410,7 @@ impl VirtualMemoryManager {
     }
 
     /// Handle copy-on-write page fault
-    fn handle_cow_fault(&self, addr: VirtAddr, region: &MemoryRegion) -> VmResult<()> {
+    fn handle_cow_fault(&self, _addr: VirtAddr, _region: &MemoryRegion) -> VmResult<()> {
         // Allocate new physical frame
         // Copy old page contents to new frame
         // Update page table entry to point to new frame and mark writable

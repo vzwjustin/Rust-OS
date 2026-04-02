@@ -799,8 +799,8 @@ fn attempt_page_fault_recovery(
 
 /// Attempt to swap in a page from disk
 fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static str> {
-    use crate::memory::{get_memory_manager, MemoryZone, PAGE_SIZE};
-    use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+    use crate::memory::get_memory_manager;
+    use x86_64::structures::paging::{Page, Size4KiB};
 
     crate::serial_println!("Attempting swap-in for address {:?}", fault_address);
 
@@ -808,7 +808,7 @@ fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static 
     let memory_manager = get_memory_manager().ok_or("Memory manager not available")?;
 
     // Get the page that caused the fault
-    let page: Page<Size4KiB> = Page::containing_address(fault_address);
+    let _page: Page<Size4KiB> = Page::containing_address(fault_address);
     
     // Step 1: Use the existing memory manager's swap-in functionality
     // The memory manager already has a handle_swap_in method we can use

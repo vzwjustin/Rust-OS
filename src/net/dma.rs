@@ -6,7 +6,6 @@
 use alloc::{vec::Vec, boxed::Box};
 use core::ptr;
 use spin::{Mutex, RwLock};
-use lazy_static::lazy_static;
 
 use super::{NetworkError, NetworkResult, PacketBuffer};
 

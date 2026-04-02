@@ -278,7 +278,7 @@ impl NetworkDevice for LoopbackDevice {
         }
 
         // For loopback, perform real packet processing
-        let mut loopback_packet = self.process_loopback_packet(packet_data)?;
+        let loopback_packet = self.process_loopback_packet(packet_data)?;
 
         // Add processed packet to receive queue
         self.recv_queue.push(loopback_packet);

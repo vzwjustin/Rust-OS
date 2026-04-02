@@ -309,7 +309,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // Record boot start time (after basic init)
-    let boot_start_time = 0u64; // Will use time::uptime_ms() after time init
+    let _boot_start_time = 0u64; // Will use time::uptime_ms() after time init
 
     // SAFETY: Debug output
     unsafe { early_serial_write_str("RustOS: About to show boot splash...\r\n"); }
@@ -345,7 +345,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Note: bootloader v0.9.33 doesn't provide rsdp_addr or physical_memory_offset
     // We'll use manual ACPI detection and a default physical offset
     let physical_memory_offset = x86_64::VirtAddr::new(phys_mem_offset);
-    let acpi_result = {
+    let _acpi_result = {
         unsafe { early_serial_write_str("RustOS: ACPI begin_stage...\r\n"); }
         boot_ui::begin_stage(boot_ui::BootStage::AcpiInit, 1);
         unsafe { early_serial_write_str("RustOS: ACPI report_warning...\r\n"); }
@@ -364,7 +364,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // ========================================================================
     // SAFETY: Debug output
     unsafe { early_serial_write_str("RustOS: Starting PCI enumeration...\r\n"); }
-    let pci_result = boot_ui::pci_enum_progress();
+    let _pci_result = boot_ui::pci_enum_progress();
     // SAFETY: Debug output
     unsafe { early_serial_write_str("RustOS: PCI enumeration done\r\n"); }
 
@@ -427,7 +427,74 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe { early_serial_write_str("RustOS: Short delay done\r\n"); }
 
     // SAFETY: Debug output
-    unsafe { early_serial_write_str("RustOS: Phase 6 complete, starting Phase 7...\r\n"); }
+    unsafe { early_serial_write_str("RustOS: Phase 6 complete, starting subsystem init...\r\n"); }
+
+    // ========================================================================
+    // PHASE 6.5: Core Subsystem Initialization
+    // ========================================================================
+    // Initialize subsystems that were previously only declared but never called.
+    // Some of these have idempotency guards; others are called only here.
+
+    // CPU feature detection
+    if let Err(e) = arch::init() {
+        unsafe { early_serial_write_str("RustOS: WARNING - arch::init() failed\r\n"); }
+        log_warn!("kernel", "CPU feature detection failed: {}", e);
+    } else {
+        unsafe { early_serial_write_str("RustOS: arch::init() OK\r\n"); }
+    }
+
+    // Security framework (has idempotency guard)
+    if let Err(e) = security::init() {
+        unsafe { early_serial_write_str("RustOS: WARNING - security::init() failed\r\n"); }
+        log_warn!("kernel", "Security init failed: {}", e);
+    } else {
+        unsafe { early_serial_write_str("RustOS: security::init() OK\r\n"); }
+    }
+
+    // SMP support (has idempotency guard)
+    if let Err(e) = smp::init() {
+        unsafe { early_serial_write_str("RustOS: WARNING - smp::init() failed\r\n"); }
+        log_warn!("kernel", "SMP init failed: {}", e);
+    } else {
+        unsafe { early_serial_write_str("RustOS: smp::init() OK\r\n"); }
+    }
+
+    // Scheduler (lazy_static guard, safe to call multiple times)
+    if let Err(e) = scheduler::init() {
+        unsafe { early_serial_write_str("RustOS: WARNING - scheduler::init() failed\r\n"); }
+        log_warn!("kernel", "Scheduler init failed: {}", e);
+    } else {
+        unsafe { early_serial_write_str("RustOS: scheduler::init() OK\r\n"); }
+    }
+
+    // Process management
+    if let Err(e) = process::init() {
+        unsafe { early_serial_write_str("RustOS: WARNING - process::init() failed\r\n"); }
+        log_warn!("kernel", "Process init failed: {}", e);
+    } else {
+        unsafe { early_serial_write_str("RustOS: process::init() OK\r\n"); }
+    }
+
+    // Device drivers (PCI, storage, network)
+    if let Err(e) = drivers::init_drivers() {
+        unsafe { early_serial_write_str("RustOS: WARNING - drivers::init_drivers() failed\r\n"); }
+        log_warn!("kernel", "Driver init failed: {}", e);
+    } else {
+        unsafe { early_serial_write_str("RustOS: drivers::init_drivers() OK\r\n"); }
+    }
+
+    // Filesystem
+    if let Err(_e) = fs::init() {
+        unsafe { early_serial_write_str("RustOS: WARNING - fs::init() failed\r\n"); }
+        log_warn!("kernel", "Filesystem init failed");
+    } else {
+        unsafe { early_serial_write_str("RustOS: fs::init() OK\r\n"); }
+    }
+
+    // Register with kernel subsystem tracker
+    let _ = kernel::init();
+
+    unsafe { early_serial_write_str("RustOS: Subsystem initialization complete\r\n"); }
 
     // ========================================================================
     // PHASE 7: Driver Loading
@@ -471,7 +538,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // PHASE 8: File System Mount
     // ========================================================================
     unsafe { early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n"); }
-    let fs_result = boot_ui::filesystem_mount_progress();
+    let _fs_result = boot_ui::filesystem_mount_progress();
     unsafe { early_serial_write_str("RustOS: Phase 8 complete\r\n"); }
 
     // Initialize Linux integration layer
@@ -849,7 +916,7 @@ fn desktop_main_loop() -> ! {
             if current_time > last_time_display + 5000 {
                 last_time_display = current_time;
                 // Update desktop with current time info
-                simple_desktop::with_desktop(|desktop| {
+                simple_desktop::with_desktop(|_desktop| {
                     // The desktop will show uptime in its status
                 });
             }

@@ -340,7 +340,7 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
 }
 
 /// faccessat - check file accessibility relative to directory fd
-pub fn faccessat(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
+pub fn faccessat(_dirfd: Fd, path: *const u8, mode: i32, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -388,7 +388,7 @@ pub fn dup2(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
 }
 
 /// dup3 - duplicate file descriptor with flags
-pub fn dup3(oldfd: Fd, newfd: Fd, flags: i32) -> LinuxResult<Fd> {
+pub fn dup3(oldfd: Fd, newfd: Fd, _flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
     if oldfd < 0 || newfd < 0 || oldfd == newfd {
@@ -472,9 +472,9 @@ pub fn rename(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
 
 /// renameat - rename file relative to directory fds
 pub fn renameat(
-    olddirfd: Fd,
+    _olddirfd: Fd,
     oldpath: *const u8,
-    newdirfd: Fd,
+    _newdirfd: Fd,
     newpath: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -488,7 +488,7 @@ pub fn renameat(
 }
 
 /// chmod - change file permissions
-pub fn chmod(path: *const u8, mode: Mode) -> LinuxResult<i32> {
+pub fn chmod(path: *const u8, _mode: Mode) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -502,7 +502,7 @@ pub fn chmod(path: *const u8, mode: Mode) -> LinuxResult<i32> {
 }
 
 /// fchmod - change file permissions by fd
-pub fn fchmod(fd: Fd, mode: Mode) -> LinuxResult<i32> {
+pub fn fchmod(fd: Fd, _mode: Mode) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {
@@ -516,7 +516,7 @@ pub fn fchmod(fd: Fd, mode: Mode) -> LinuxResult<i32> {
 }
 
 /// fchmodat - change file permissions relative to directory fd
-pub fn fchmodat(dirfd: Fd, path: *const u8, mode: Mode, flags: i32) -> LinuxResult<i32> {
+pub fn fchmodat(_dirfd: Fd, path: *const u8, mode: Mode, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -528,7 +528,7 @@ pub fn fchmodat(dirfd: Fd, path: *const u8, mode: Mode, flags: i32) -> LinuxResu
 }
 
 /// chown - change file owner and group
-pub fn chown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
+pub fn chown(path: *const u8, _owner: Uid, _group: Gid) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -542,7 +542,7 @@ pub fn chown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
 }
 
 /// fchown - change file owner and group by fd
-pub fn fchown(fd: Fd, owner: Uid, group: Gid) -> LinuxResult<i32> {
+pub fn fchown(fd: Fd, _owner: Uid, _group: Gid) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {
@@ -556,7 +556,7 @@ pub fn fchown(fd: Fd, owner: Uid, group: Gid) -> LinuxResult<i32> {
 }
 
 /// lchown - change file owner and group (don't follow symlinks)
-pub fn lchown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
+pub fn lchown(path: *const u8, _owner: Uid, _group: Gid) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -659,7 +659,7 @@ pub fn fdatasync(fd: Fd) -> LinuxResult<i32> {
 }
 
 /// getdents - read directory entries
-pub fn getdents(fd: Fd, dirp: *mut Dirent, count: usize) -> LinuxResult<isize> {
+pub fn getdents(fd: Fd, dirp: *mut Dirent, _count: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {

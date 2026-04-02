@@ -451,7 +451,7 @@ impl GraphicsAccelerationEngine {
     }
     
     /// Map GPU memory regions for hardware access
-    fn map_gpu_memory_regions(&self, gpu_id: u32, gpu: &GPUCapabilities) -> Result<u64, &'static str> {
+    fn map_gpu_memory_regions(&self, gpu_id: u32, _gpu: &GPUCapabilities) -> Result<u64, &'static str> {
         // Read GPU BAR (Base Address Register) from PCI configuration
         let pci_address = self.get_gpu_pci_address(gpu_id)?;
         let bar0 = self.read_pci_config(pci_address, 0x10)?;
@@ -762,7 +762,7 @@ impl GraphicsAccelerationEngine {
         }
     }
     
-    fn map_physical_to_virtual(&self, physical_addr: u64, size: usize) -> Result<u64, &'static str> {
+    fn map_physical_to_virtual(&self, physical_addr: u64, _size: usize) -> Result<u64, &'static str> {
         // In production, this would use the memory manager to map physical to virtual
         // For now, return a direct mapping (assuming identity mapping in kernel space)
         if physical_addr < 0x100000000 { // Below 4GB
@@ -1633,7 +1633,7 @@ impl GraphicsAccelerationEngine {
     }
     
     /// Write to GPU control/status register
-    fn write_gpu_csr(&mut self, register_offset: u32, value: u32) -> Result<(), &'static str> {
+    fn write_gpu_csr(&mut self, register_offset: u32, _value: u32) -> Result<(), &'static str> {
         // In a real implementation, this would write to memory-mapped GPU registers
         // For now, validate register access bounds
         if register_offset > 0x10000 {

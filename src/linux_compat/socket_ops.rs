@@ -27,7 +27,7 @@ fn inc_ops() {
 }
 
 /// send - send message on socket
-pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<isize> {
+pub fn send(sockfd: Fd, buf: *const u8, len: usize, _flags: i32) -> LinuxResult<isize> {
     inc_ops();
 
     if buf.is_null() {
@@ -47,9 +47,9 @@ pub fn sendto(
     sockfd: Fd,
     buf: *const u8,
     len: usize,
-    flags: i32,
-    dest_addr: *const SockAddr,
-    addrlen: u32,
+    _flags: i32,
+    _dest_addr: *const SockAddr,
+    _addrlen: u32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -66,7 +66,7 @@ pub fn sendto(
 }
 
 /// sendmsg - send message using message structure
-pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
+pub fn sendmsg(sockfd: Fd, msg: *const u8, _flags: i32) -> LinuxResult<isize> {
     inc_ops();
 
     if msg.is_null() {
@@ -82,7 +82,7 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
 }
 
 /// recv - receive message from socket
-pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isize> {
+pub fn recv(sockfd: Fd, buf: *mut u8, _len: usize, _flags: i32) -> LinuxResult<isize> {
     inc_ops();
 
     if buf.is_null() {
@@ -101,10 +101,10 @@ pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isi
 pub fn recvfrom(
     sockfd: Fd,
     buf: *mut u8,
-    len: usize,
-    flags: i32,
-    src_addr: *mut SockAddr,
-    addrlen: *mut u32,
+    _len: usize,
+    _flags: i32,
+    _src_addr: *mut SockAddr,
+    _addrlen: *mut u32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -121,7 +121,7 @@ pub fn recvfrom(
 }
 
 /// recvmsg - receive message using message structure
-pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
+pub fn recvmsg(sockfd: Fd, msg: *mut u8, _flags: i32) -> LinuxResult<isize> {
     inc_ops();
 
     if msg.is_null() {
@@ -139,8 +139,8 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
 /// getsockopt - get socket option
 pub fn getsockopt(
     sockfd: Fd,
-    level: i32,
-    optname: i32,
+    _level: i32,
+    _optname: i32,
     optval: *mut u8,
     optlen: *mut u32,
 ) -> LinuxResult<i32> {
@@ -161,10 +161,10 @@ pub fn getsockopt(
 /// setsockopt - set socket option
 pub fn setsockopt(
     sockfd: Fd,
-    level: i32,
-    optname: i32,
+    _level: i32,
+    _optname: i32,
     optval: *const u8,
-    optlen: u32,
+    _optlen: u32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -235,7 +235,7 @@ pub fn shutdown(sockfd: Fd, how: i32) -> LinuxResult<i32> {
 }
 
 /// poll - wait for events on file descriptors
-pub fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> LinuxResult<i32> {
+pub fn poll(fds: *mut PollFd, nfds: u64, _timeout: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if fds.is_null() && nfds > 0 {
@@ -250,10 +250,10 @@ pub fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> LinuxResult<i32> {
 /// select - synchronous I/O multiplexing
 pub fn select(
     nfds: i32,
-    readfds: *mut u64,   // fd_set
-    writefds: *mut u64,  // fd_set
-    exceptfds: *mut u64, // fd_set
-    timeout: *mut TimeVal,
+    _readfds: *mut u64,   // fd_set
+    _writefds: *mut u64,  // fd_set
+    _exceptfds: *mut u64, // fd_set
+    _timeout: *mut TimeVal,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -269,11 +269,11 @@ pub fn select(
 /// pselect - synchronous I/O multiplexing with signal mask
 pub fn pselect(
     nfds: i32,
-    readfds: *mut u64,
-    writefds: *mut u64,
-    exceptfds: *mut u64,
-    timeout: *const TimeSpec,
-    sigmask: *const SigSet,
+    _readfds: *mut u64,
+    _writefds: *mut u64,
+    _exceptfds: *mut u64,
+    _timeout: *const TimeSpec,
+    _sigmask: *const SigSet,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -299,7 +299,7 @@ pub fn epoll_create(size: i32) -> LinuxResult<Fd> {
 }
 
 /// epoll_create1 - create an epoll file descriptor with flags
-pub fn epoll_create1(flags: i32) -> LinuxResult<Fd> {
+pub fn epoll_create1(_flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
     // TODO: Create epoll instance with flags
@@ -307,7 +307,7 @@ pub fn epoll_create1(flags: i32) -> LinuxResult<Fd> {
 }
 
 /// epoll_ctl - control an epoll file descriptor
-pub fn epoll_ctl(epfd: Fd, op: i32, fd: Fd, event: *mut u8) -> LinuxResult<i32> {
+pub fn epoll_ctl(epfd: Fd, op: i32, fd: Fd, _event: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     if epfd < 0 || fd < 0 {
@@ -333,7 +333,7 @@ pub fn epoll_wait(
     epfd: Fd,
     events: *mut u8, // struct epoll_event
     maxevents: i32,
-    timeout: i32,
+    _timeout: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 

@@ -3,7 +3,6 @@
 //! Defines the ProcessControlBlock structure and related types for managing process state.
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use crate::process::{Pid, Priority, CpuContext, MemoryInfo};
 
 /// Process states

@@ -4,7 +4,7 @@
 //! and other Intel Gigabit Ethernet controllers (E1000 and E1000E series).
 
 use super::{ExtendedNetworkCapabilities, EnhancedNetworkStats, PowerState, WakeOnLanConfig};
-use crate::net::{NetworkError, NetworkAddress, MacAddress};
+use crate::net::{NetworkError, MacAddress};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

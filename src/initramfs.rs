@@ -74,7 +74,7 @@ fn is_gzipped(data: &[u8]) -> bool {
 /// (entry_point, stack_pointer) tuple
 pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsError> {
     use crate::elf_loader::{elf_validate, elf_load};
-    use x86_64::VirtAddr;
+    
 
     // Validate ELF binary format
     elf_validate(binary_data).map_err(|_| InitramfsError::InvalidFormat)?;
@@ -153,7 +153,7 @@ where
     A: x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
 {
     use crate::elf_loader::{elf_validate, elf_load, elf_map_segments, elf_create_stack};
-    use x86_64::VirtAddr;
+    
 
     // Validate ELF binary format
     elf_validate(binary_data).map_err(|_| InitramfsError::InvalidFormat)?;
@@ -196,7 +196,7 @@ pub fn start_init() -> Result<(), InitramfsError> {
         .map_err(|_| InitramfsError::VfsError)?;
 
     // 3. Load and validate the ELF binary
-    let (entry_point, stack_pointer) = load_and_execute_elf(&binary_data)?;
+    let (_entry_point, _stack_pointer) = load_and_execute_elf(&binary_data)?;
 
     // 4. Set up user mode execution context
     // This would involve:

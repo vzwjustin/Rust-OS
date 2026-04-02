@@ -212,13 +212,13 @@ build_kernel() {
     # Build the kernel
     if [ "$CHECK_ONLY" = true ]; then
         print_status "Checking compilation only..."
-        cargo check $target_flag $build_args
+        cargo check -Zjson-target-spec $target_flag $build_args
         print_success "Compilation check passed"
         return 0
     fi
 
     print_status "Compiling kernel..."
-    cargo build -Zbuild-std=core,compiler_builtins,alloc $target_flag $build_args
+    cargo build -Zbuild-std=core,compiler_builtins,alloc -Zjson-target-spec $target_flag $build_args
 
     local binary_name="rustos"
     # Extract target name without .json extension for path
@@ -258,7 +258,7 @@ create_bootimage() {
     fi
 
     print_status "Building bootimage for target: $TARGET"
-    cargo bootimage --target "$TARGET" $build_args
+    cargo bootimage -Zjson-target-spec --target "$TARGET" $build_args
 
     local target_path="${TARGET%.json}"
     local profile_dir="debug"
@@ -288,7 +288,7 @@ run_tests() {
     print_header "Running Kernel Tests"
 
     print_status "Running unit tests..."
-    cargo test --target "$TARGET"
+    cargo test -Zjson-target-spec --target "$TARGET"
 
     print_success "All tests passed"
 }

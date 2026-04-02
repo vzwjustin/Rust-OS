@@ -4,4 +4,3 @@
 
 pub mod ar;
 
-pub use ar::ArArchive;

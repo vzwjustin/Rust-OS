@@ -7,8 +7,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec::Vec;
 
 pub mod file_ops;
 pub mod process_ops;
@@ -26,7 +24,6 @@ pub mod resource_ops;
 pub mod sysinfo_ops;
 pub mod types;
 
-pub use types::*;
 
 /// Linux API compatibility result type
 pub type LinuxResult<T> = Result<T, LinuxError>;

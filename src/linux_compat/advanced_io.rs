@@ -8,7 +8,6 @@
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::vec::Vec;
 
 use super::types::*;
 use super::{LinuxResult, LinuxError};
@@ -43,7 +42,7 @@ pub struct IoVec {
 // ============================================================================
 
 /// pread - read from file at given offset without changing file position
-pub fn pread(fd: Fd, buf: *mut u8, count: usize, offset: Off) -> LinuxResult<isize> {
+pub fn pread(fd: Fd, buf: *mut u8, _count: usize, offset: Off) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
@@ -173,7 +172,7 @@ pub fn writev(fd: Fd, iov: *const IoVec, iovcnt: i32) -> LinuxResult<isize> {
 pub fn sendfile(
     out_fd: Fd,
     in_fd: Fd,
-    offset: *mut Off,
+    _offset: *mut Off,
     count: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
@@ -190,9 +189,9 @@ pub fn sendfile(
 /// splice - splice data to/from a pipe
 pub fn splice(
     fd_in: Fd,
-    off_in: *mut Off,
+    _off_in: *mut Off,
     fd_out: Fd,
-    off_out: *mut Off,
+    _off_out: *mut Off,
     len: usize,
     flags: u32,
 ) -> LinuxResult<isize> {
@@ -218,7 +217,7 @@ pub fn splice(
 }
 
 /// tee - duplicate pipe content
-pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, flags: u32) -> LinuxResult<isize> {
+pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, _flags: u32) -> LinuxResult<isize> {
     inc_ops();
 
     if fd_in < 0 || fd_out < 0 {
@@ -232,9 +231,9 @@ pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, flags: u32) -> LinuxResult<isize> 
 /// copy_file_range - copy range of data from one file to another
 pub fn copy_file_range(
     fd_in: Fd,
-    off_in: *mut Off,
+    _off_in: *mut Off,
     fd_out: Fd,
-    off_out: *mut Off,
+    _off_out: *mut Off,
     len: usize,
     flags: u32,
 ) -> LinuxResult<isize> {
@@ -260,8 +259,8 @@ pub fn copy_file_range(
 pub fn getxattr(
     path: *const u8,
     name: *const u8,
-    value: *mut u8,
-    size: usize,
+    _value: *mut u8,
+    _size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -278,8 +277,8 @@ pub fn getxattr(
 pub fn lgetxattr(
     path: *const u8,
     name: *const u8,
-    value: *mut u8,
-    size: usize,
+    _value: *mut u8,
+    _size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -295,8 +294,8 @@ pub fn lgetxattr(
 pub fn fgetxattr(
     fd: Fd,
     name: *const u8,
-    value: *mut u8,
-    size: usize,
+    _value: *mut u8,
+    _size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -317,7 +316,7 @@ pub fn setxattr(
     path: *const u8,
     name: *const u8,
     value: *const u8,
-    size: usize,
+    _size: usize,
     flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -343,8 +342,8 @@ pub fn lsetxattr(
     path: *const u8,
     name: *const u8,
     value: *const u8,
-    size: usize,
-    flags: i32,
+    _size: usize,
+    _flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -361,8 +360,8 @@ pub fn fsetxattr(
     fd: Fd,
     name: *const u8,
     value: *const u8,
-    size: usize,
-    flags: i32,
+    _size: usize,
+    _flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -379,7 +378,7 @@ pub fn fsetxattr(
 }
 
 /// listxattr - list extended attribute names
-pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn listxattr(path: *const u8, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if path.is_null() {
@@ -392,7 +391,7 @@ pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isi
 }
 
 /// llistxattr - list extended attributes (don't follow symlinks)
-pub fn llistxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn llistxattr(path: *const u8, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if path.is_null() {
@@ -404,7 +403,7 @@ pub fn llistxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<is
 }
 
 /// flistxattr - list extended attributes by file descriptor
-pub fn flistxattr(fd: Fd, list: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn flistxattr(fd: Fd, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
@@ -460,7 +459,7 @@ pub fn fremovexattr(fd: Fd, name: *const u8) -> LinuxResult<i32> {
 // ============================================================================
 
 /// mkdir - create directory
-pub fn mkdir(path: *const u8, mode: Mode) -> LinuxResult<i32> {
+pub fn mkdir(path: *const u8, _mode: Mode) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -484,7 +483,7 @@ pub fn rmdir(path: *const u8) -> LinuxResult<i32> {
 }
 
 /// getdents64 - get directory entries (64-bit version)
-pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
+pub fn getdents64(fd: Fd, dirp: *mut u8, _count: u32) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {

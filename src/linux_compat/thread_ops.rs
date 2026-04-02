@@ -121,9 +121,9 @@ pub mod futex_op {
 pub fn clone(
     flags: u64,
     stack: *mut u8,
-    parent_tid: *mut Pid,
-    child_tid: *mut Pid,
-    tls: u64,
+    _parent_tid: *mut Pid,
+    _child_tid: *mut Pid,
+    _tls: u64,
 ) -> LinuxResult<Pid> {
     inc_ops();
 
@@ -154,7 +154,7 @@ pub fn clone(
 }
 
 /// set_tid_address - set pointer to thread ID
-pub fn set_tid_address(tidptr: *mut Pid) -> Pid {
+pub fn set_tid_address(_tidptr: *mut Pid) -> Pid {
     inc_ops();
 
     // TODO: Set clear_child_tid address
@@ -212,7 +212,7 @@ pub fn futex(
     uaddr: *mut i32,
     futex_op: i32,
     val: i32,
-    timeout: *const TimeSpec,
+    _timeout: *const TimeSpec,
     uaddr2: *mut i32,
     val3: i32,
 ) -> LinuxResult<i32> {
@@ -314,7 +314,7 @@ pub fn set_robust_list(head: *mut RobustListHead, len: usize) -> LinuxResult<i32
 
 /// get_robust_list - get robust futex list
 pub fn get_robust_list(
-    pid: Pid,
+    _pid: Pid,
     head_ptr: *mut *mut RobustListHead,
     len_ptr: *mut usize,
 ) -> LinuxResult<i32> {
@@ -406,7 +406,7 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
 pub type CpuSet = u64;
 
 /// sched_setaffinity - set CPU affinity
-pub fn sched_setaffinity(pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> LinuxResult<i32> {
+pub fn sched_setaffinity(_pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> LinuxResult<i32> {
     inc_ops();
 
     if mask.is_null() {
@@ -422,7 +422,7 @@ pub fn sched_setaffinity(pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> Li
 }
 
 /// sched_getaffinity - get CPU affinity
-pub fn sched_getaffinity(pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> LinuxResult<i32> {
+pub fn sched_getaffinity(_pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> LinuxResult<i32> {
     inc_ops();
 
     if mask.is_null() {
@@ -445,7 +445,7 @@ pub fn sched_getaffinity(pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> Linu
 // ============================================================================
 
 /// exit - terminate current thread
-pub fn exit(status: i32) -> ! {
+pub fn exit(_status: i32) -> ! {
     inc_ops();
 
     // TODO: Exit thread
@@ -460,7 +460,7 @@ pub fn exit(status: i32) -> ! {
 }
 
 /// exit_group - terminate all threads in process
-pub fn exit_group(status: i32) -> ! {
+pub fn exit_group(_status: i32) -> ! {
     inc_ops();
 
     // TODO: Exit entire process
@@ -477,7 +477,7 @@ pub fn exit_group(status: i32) -> ! {
 // ============================================================================
 
 /// membarrier - issue memory barriers on set of threads
-pub fn membarrier(cmd: i32, flags: i32) -> LinuxResult<i32> {
+pub fn membarrier(cmd: i32, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const MEMBARRIER_CMD_QUERY: i32 = 0;

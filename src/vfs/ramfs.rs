@@ -7,7 +7,6 @@ use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
-use alloc::boxed::Box;
 use spin::RwLock;
 
 use super::{

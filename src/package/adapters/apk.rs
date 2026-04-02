@@ -3,8 +3,7 @@
 //! Experimental adapter for Alpine Linux APK package format.
 //! APK packages are tar.gz archives with a specific structure.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::ToString;
 use crate::package::{PackageResult, PackageError, PackageMetadata, ExtractedPackage};
 use crate::package::adapters::PackageAdapter;
 

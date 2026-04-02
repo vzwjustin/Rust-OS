@@ -2,9 +2,9 @@
 //!
 //! This module provides test functions to validate user/kernel mode switching.
 
-use crate::usermode::{UserContext, switch_to_user_mode, is_valid_user_address};
+use crate::usermode::{UserContext, is_valid_user_address};
 use crate::serial_println;
-use x86_64::VirtAddr;
+use core::ptr::{addr_of, addr_of_mut};
 
 /// Allocate a simple user stack for testing
 const USER_STACK_SIZE: usize = 4096 * 4; // 16KB stack
@@ -76,7 +76,8 @@ fn init_test_program() {
 
     unsafe {
         // Copy test program to the user program buffer
-        USER_TEST_PROGRAM.code[..code.len()].copy_from_slice(code);
+        let program = &mut *addr_of_mut!(USER_TEST_PROGRAM);
+        program.code[..code.len()].copy_from_slice(code);
     }
 }
 
@@ -250,8 +251,8 @@ pub fn demonstrate_user_mode_setup() {
     serial_println!("[OK] Test user program initialized");
 
     // Get addresses
-    let code_addr = unsafe { USER_TEST_PROGRAM.code.as_ptr() as u64 };
-    let stack_addr = unsafe { USER_STACK.as_ptr() as u64 + USER_STACK_SIZE as u64 };
+    let code_addr = unsafe { (*addr_of!(USER_TEST_PROGRAM)).code.as_ptr() as u64 };
+    let stack_addr = unsafe { addr_of!(USER_STACK) as *const u8 as u64 + USER_STACK_SIZE as u64 };
 
     serial_println!("User code would be at: 0x{:x}", code_addr);
     serial_println!("User stack would be at: 0x{:x}", stack_addr);

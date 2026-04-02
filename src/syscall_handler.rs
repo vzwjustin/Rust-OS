@@ -282,7 +282,7 @@ fn syscall_shmdt(shmaddr: *const u8) -> i64 {
 /// - R9:  arg6
 ///
 /// Return value goes in RAX
-pub extern "x86-interrupt" fn syscall_0x80_handler(mut stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn syscall_0x80_handler(_stack_frame: InterruptStackFrame) {
     // Extract syscall arguments from registers using inline assembly
     let syscall_num: u64;
     let arg1: u64;

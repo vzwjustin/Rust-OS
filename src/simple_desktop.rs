@@ -1300,7 +1300,7 @@ pub fn init_pixel_desktop() {
 
 /// Draw the complete pixel-based 32-bit style desktop
 fn draw_pixel_desktop() {
-    use crate::vga_mode13h::{colors, clear_screen, fill_rect, draw_3d_rect, draw_string, hline, SCREEN_WIDTH, SCREEN_HEIGHT};
+    use crate::vga_mode13h::{colors, clear_screen};
 
     // Clear screen with classic teal desktop color (Windows 95 style)
     clear_screen(colors::DESKTOP_TEAL);
@@ -1393,7 +1393,7 @@ fn draw_pixel_taskbar() {
 
 /// Draw a classic Windows 95-style window
 fn draw_pixel_window(x: usize, y: usize, w: usize, h: usize, title: &str, active: bool) {
-    use crate::vga_mode13h::{colors, fill_rect, draw_3d_rect, draw_string, hline, vline};
+    use crate::vga_mode13h::{colors, fill_rect, draw_3d_rect, draw_string};
 
     // Window background
     fill_rect(x, y, w, h, colors::BUTTON_FACE);

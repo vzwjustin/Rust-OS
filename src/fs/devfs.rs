@@ -5,7 +5,6 @@
 //! null, zero, random, and console.
 // Import handled by parent module
 
-use crate::print;
 
 use super::{
     FileSystem, FileSystemType, FileSystemStats, FileMetadata, FileType, FilePermissions,

@@ -274,7 +274,7 @@ pub fn prlimit(
 // ============================================================================
 
 /// getpriority - get program scheduling priority
-pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
+pub fn getpriority(which: i32, _who: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const PRIO_PROCESS: i32 = 0;
@@ -292,7 +292,7 @@ pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
 }
 
 /// setpriority - set program scheduling priority
-pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
+pub fn setpriority(which: i32, _who: i32, prio: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const PRIO_PROCESS: i32 = 0;
@@ -315,7 +315,7 @@ pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
 }
 
 /// nice - change process priority
-pub fn nice(inc: i32) -> LinuxResult<i32> {
+pub fn nice(_inc: i32) -> LinuxResult<i32> {
     inc_ops();
 
     // TODO: Adjust process priority by inc
@@ -351,7 +351,7 @@ pub struct SchedParam {
 }
 
 /// sched_setscheduler - set scheduling policy and parameters
-pub fn sched_setscheduler(pid: Pid, policy: i32, param: *const SchedParam) -> LinuxResult<i32> {
+pub fn sched_setscheduler(_pid: Pid, policy: i32, param: *const SchedParam) -> LinuxResult<i32> {
     inc_ops();
 
     if param.is_null() {
@@ -371,7 +371,7 @@ pub fn sched_setscheduler(pid: Pid, policy: i32, param: *const SchedParam) -> Li
 }
 
 /// sched_getscheduler - get scheduling policy
-pub fn sched_getscheduler(pid: Pid) -> LinuxResult<i32> {
+pub fn sched_getscheduler(_pid: Pid) -> LinuxResult<i32> {
     inc_ops();
 
     // TODO: Get scheduler policy for process
@@ -379,7 +379,7 @@ pub fn sched_getscheduler(pid: Pid) -> LinuxResult<i32> {
 }
 
 /// sched_setparam - set scheduling parameters
-pub fn sched_setparam(pid: Pid, param: *const SchedParam) -> LinuxResult<i32> {
+pub fn sched_setparam(_pid: Pid, param: *const SchedParam) -> LinuxResult<i32> {
     inc_ops();
 
     if param.is_null() {
@@ -391,7 +391,7 @@ pub fn sched_setparam(pid: Pid, param: *const SchedParam) -> LinuxResult<i32> {
 }
 
 /// sched_getparam - get scheduling parameters
-pub fn sched_getparam(pid: Pid, param: *mut SchedParam) -> LinuxResult<i32> {
+pub fn sched_getparam(_pid: Pid, param: *mut SchedParam) -> LinuxResult<i32> {
     inc_ops();
 
     if param.is_null() {
@@ -428,7 +428,7 @@ pub fn sched_get_priority_min(policy: i32) -> LinuxResult<i32> {
 }
 
 /// sched_rr_get_interval - get SCHED_RR interval
-pub fn sched_rr_get_interval(pid: Pid, tp: *mut TimeSpec) -> LinuxResult<i32> {
+pub fn sched_rr_get_interval(_pid: Pid, tp: *mut TimeSpec) -> LinuxResult<i32> {
     inc_ops();
 
     if tp.is_null() {

@@ -4,12 +4,10 @@
 //! between adapters, database, and operations.
 
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::format;
 use crate::package::{
     PackageResult, PackageError, PackageOperation, PackageManagerType,
-    PackageInfo, PackageMetadata, PackageStatus, ExtractedPackage,
 };
 use crate::package::database::{PackageDatabase, PackageCache};
 use crate::package::adapters::{PackageAdapter, DebAdapter, RpmAdapter, ApkAdapter, NativeAdapter};
@@ -72,7 +70,7 @@ impl PackageManager {
 
     /// Remove a package
     fn remove(&mut self, package_name: &str) -> PackageResult<String> {
-        let package_info = self.database.remove_package(package_name)?;
+        let _package_info = self.database.remove_package(package_name)?;
         
         // This is experimental - actual removal requires:
         // 1. Check for reverse dependencies

@@ -5,7 +5,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use x86_64::instructions::port::Port;
-use x86_64::{VirtAddr, PhysAddr};
+use x86_64::VirtAddr;
 use alloc::vec::Vec;
 use spin::Mutex;
 use lazy_static::lazy_static;
@@ -562,7 +562,7 @@ impl TimerManager {
                 
                 Ok(())
             }
-            Err(e) => {
+            Err(_e) => {
                 // If even PIT fails, we have a serious problem
                 Err("All timer initialization failed - system cannot continue")
             }

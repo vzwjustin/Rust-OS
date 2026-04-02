@@ -4,6 +4,7 @@
 //! Supports GPU-accelerated operations, multiple pixel formats, and high-resolution displays.
 
 use alloc::vec::Vec;
+use core::ptr::{addr_of, addr_of_mut};
 
 /// Maximum supported resolution width
 pub const MAX_WIDTH: usize = 7680; // 8K width
@@ -734,13 +735,13 @@ pub fn init(info: FramebufferInfo, double_buffered: bool) -> Result<(), &'static
     
     // Initialize framebuffer structure
     unsafe {
-        GLOBAL_FRAMEBUFFER = Some(SimpleFramebuffer::new(
+        *addr_of_mut!(GLOBAL_FRAMEBUFFER) = Some(SimpleFramebuffer::new(
             virtual_address as *mut u8,
             info.width,
             info.height,
             info.pixel_format,
         ));
-        GLOBAL_FRAMEBUFFER_INITIALIZED = true;
+        *addr_of_mut!(GLOBAL_FRAMEBUFFER_INITIALIZED) = true;
     }
     
     // Enable hardware acceleration if available
@@ -998,22 +999,22 @@ pub fn init_with_buffer(
     _double_buffered: bool,
 ) -> Result<(), &'static str> {
     unsafe {
-        GLOBAL_FRAMEBUFFER = Some(SimpleFramebuffer::new(
+        *addr_of_mut!(GLOBAL_FRAMEBUFFER) = Some(SimpleFramebuffer::new(
             buffer.as_mut_ptr(),
             info.width,
             info.height,
             info.pixel_format,
         ));
-        GLOBAL_FRAMEBUFFER_INITIALIZED = true;
+        *addr_of_mut!(GLOBAL_FRAMEBUFFER_INITIALIZED) = true;
     }
     Ok(())
 }
 
 /// Get a reference to the global framebuffer
 pub fn framebuffer() -> Option<&'static mut SimpleFramebuffer> {
-    unsafe { 
-        if GLOBAL_FRAMEBUFFER_INITIALIZED {
-            GLOBAL_FRAMEBUFFER.as_mut()
+    unsafe {
+        if *addr_of!(GLOBAL_FRAMEBUFFER_INITIALIZED) {
+            (*addr_of_mut!(GLOBAL_FRAMEBUFFER)).as_mut()
         } else {
             None
         }
@@ -1023,7 +1024,7 @@ pub fn framebuffer() -> Option<&'static mut SimpleFramebuffer> {
 /// Get framebuffer information if initialized
 pub fn get_info() -> Option<FramebufferInfo> {
     unsafe {
-        if let Some(ref fb) = GLOBAL_FRAMEBUFFER {
+        if let Some(ref fb) = *addr_of!(GLOBAL_FRAMEBUFFER) {
             Some(FramebufferInfo::new(
                 fb.width,
                 fb.height,
@@ -1040,7 +1041,7 @@ pub fn get_info() -> Option<FramebufferInfo> {
 /// Clear the screen with a color
 pub fn clear_screen(color: Color) {
     unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
+        if let Some(ref mut fb) = *addr_of_mut!(GLOBAL_FRAMEBUFFER) {
             fb.clear(color);
         }
     }
@@ -1049,7 +1050,7 @@ pub fn clear_screen(color: Color) {
 /// Set a pixel on the screen
 pub fn set_pixel(x: usize, y: usize, color: Color) {
     unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
+        if let Some(ref mut fb) = *addr_of_mut!(GLOBAL_FRAMEBUFFER) {
             fb.set_pixel(x, y, color);
         }
     }
@@ -1058,7 +1059,7 @@ pub fn set_pixel(x: usize, y: usize, color: Color) {
 /// Fill a rectangle on the screen
 pub fn fill_rect(rect: Rect, color: Color) {
     unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
+        if let Some(ref mut fb) = *addr_of_mut!(GLOBAL_FRAMEBUFFER) {
             fb.fill_rect(rect, color);
         }
     }
@@ -1067,7 +1068,7 @@ pub fn fill_rect(rect: Rect, color: Color) {
 /// Draw a rectangle outline on the screen
 pub fn draw_rect(rect: Rect, color: Color, thickness: usize) {
     unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
+        if let Some(ref mut fb) = *addr_of_mut!(GLOBAL_FRAMEBUFFER) {
             fb.draw_rect(rect, color, thickness);
         }
     }
@@ -1076,7 +1077,7 @@ pub fn draw_rect(rect: Rect, color: Color, thickness: usize) {
 /// Present the current frame
 pub fn present() {
     unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
+        if let Some(ref mut fb) = *addr_of_mut!(GLOBAL_FRAMEBUFFER) {
             // Flush CPU caches to ensure GPU sees the latest data
             flush_framebuffer_cache(fb.buffer, fb.height * fb.stride);
             
@@ -1119,7 +1120,7 @@ fn present_hardware_frame(framebuffer_addr: u64) {
     // This would be GPU-specific in a real implementation
     
     // For VBE/VESA, we might need to update display start address
-    if let Some(vbe_driver) = crate::drivers::vbe::driver().get_current_mode() {
+    if let Some(_vbe_driver) = crate::drivers::vbe::driver().get_current_mode() {
         // Update display start address if double buffering is used
         update_display_start_address(framebuffer_addr);
     }
@@ -1395,7 +1396,7 @@ mod gpu_interface {
             unsafe {
                 let mut timeout = 10000;
                 while timeout > 0 {
-                    let status = core::ptr::read_volatile(blt_base.add(0x4 / 4));
+                    let status = core::ptr::read_volatile(blt_base.add(1)); // offset 0x4 in u32 units
                     if (status & 0x1) == 0 { // Engine idle
                         return Ok(());
                     }
@@ -1608,10 +1609,10 @@ mod gpu_interface {
     
     pub fn get_gpu_manager() -> Option<&'static mut GPUManager> {
         unsafe {
-            if GLOBAL_GPU_MANAGER.is_none() {
-                GLOBAL_GPU_MANAGER = GPUManager::new();
+            if (*core::ptr::addr_of!(GLOBAL_GPU_MANAGER)).is_none() {
+                *core::ptr::addr_of_mut!(GLOBAL_GPU_MANAGER) = GPUManager::new();
             }
-            GLOBAL_GPU_MANAGER.as_mut()
+            (*core::ptr::addr_of_mut!(GLOBAL_GPU_MANAGER)).as_mut()
         }
     }
 }

@@ -47,10 +47,9 @@
 //! 5. Setting up page fault handling contexts for safe operations
 
 use x86_64::{VirtAddr, PhysAddr, structures::paging::{Page, PageTable, PageTableFlags, Size4KiB}};
-use crate::memory::{get_memory_manager, MemoryError, PAGE_SIZE};
+use crate::memory::{get_memory_manager, PAGE_SIZE};
 use crate::gdt::{is_kernel_mode, get_current_privilege_level};
 use crate::syscall::SyscallError;
-use core::slice;
 
 /// User space memory boundaries
 const USER_SPACE_START: u64 = 0x0000_1000_0000;
@@ -247,7 +246,7 @@ impl UserSpaceMemory {
         // Walk through all pages in the range
         for page in Page::range_inclusive(start_page, end_page) {
             // Check if page is mapped
-            let phys_addr = memory_manager.translate_addr(page.start_address())
+            let _phys_addr = memory_manager.translate_addr(page.start_address())
                 .ok_or(SyscallError::InvalidAddress)?;
 
             // Validate page permissions
@@ -268,7 +267,7 @@ impl UserSpaceMemory {
     /// Walk page table hierarchy to validate permissions
     fn walk_page_table_for_permissions(virt_addr: VirtAddr, write_access: bool) -> Result<(), SyscallError> {
         use x86_64::registers::control::Cr3;
-        use x86_64::structures::paging::{PageTableIndex, PageTableFlags};
+        use x86_64::structures::paging::PageTableFlags;
         
         // Get the current page table from CR3
         let (level_4_table_frame, _) = Cr3::read();
@@ -521,7 +520,7 @@ impl UserSpaceMemory {
                     copied += BLOCK_SIZE;
                     context.update_progress(copied);
                 },
-                Err(e) => {
+                Err(_e) => {
                     // Fall back to byte-by-byte copying for the failed block
                     for i in 0..BLOCK_SIZE {
                         match Self::safe_read_user_byte_with_context(unsafe { src_block.add(i) }, context) {

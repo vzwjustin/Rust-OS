@@ -535,7 +535,7 @@ static mut MESA_COMPAT: Option<MesaCompatLayer> = None;
 /// Initialize Mesa compatibility layer
 pub fn init_mesa_compat() -> Result<(), &'static str> {
     unsafe {
-        if MESA_COMPAT.is_none() {
+        if (&*core::ptr::addr_of!(MESA_COMPAT)).is_none() {
             MESA_COMPAT = Some(MesaCompatLayer::new());
         }
     }
@@ -544,7 +544,7 @@ pub fn init_mesa_compat() -> Result<(), &'static str> {
 
 /// Get Mesa compatibility layer instance
 pub fn get_mesa_compat() -> Option<&'static mut MesaCompatLayer> {
-    unsafe { MESA_COMPAT.as_mut() }
+    unsafe { (&mut *core::ptr::addr_of_mut!(MESA_COMPAT)).as_mut() }
 }
 
 /// Create Mesa screen for GPU

@@ -51,7 +51,7 @@ pub fn init() {
     // SYSRET loads:
     // - CS = STAR[63:48] + 16
     // - SS = STAR[63:48] + 8
-    let star_value = (user_code - 16) << 48 | kernel_code << 32;
+    let _star_value = (user_code - 16) << 48 | kernel_code << 32;
 
     unsafe {
         Star::write(
@@ -64,7 +64,7 @@ pub fn init() {
 
     // Configure LSTAR MSR - points to syscall entry point
     unsafe {
-        LStar::write(VirtAddr::new(syscall_entry as u64));
+        LStar::write(VirtAddr::new(syscall_entry as *const () as u64));
     }
 
     // Configure FMASK MSR - RFLAGS bits to clear on syscall

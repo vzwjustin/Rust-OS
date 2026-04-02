@@ -9,7 +9,6 @@
 
 use alloc::{collections::VecDeque, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use core::arch::naked_asm;
 use spin::{Mutex, RwLock};
 use lazy_static::lazy_static;
 use x86_64::VirtAddr;
@@ -561,7 +560,7 @@ impl GlobalScheduler {
     }
 
     /// Check if current process should be preempted by higher priority process
-    fn should_preempt_process(&self, current_pid: Pid, cpu_id: CpuId, cpu_scheduler: &CpuScheduler) -> bool {
+    fn should_preempt_process(&self, current_pid: Pid, _cpu_id: CpuId, cpu_scheduler: &CpuScheduler) -> bool {
         // Check for higher priority processes in ready queue
         let current_priority = self.with_process(current_pid, |process| process.priority);
         
@@ -1216,7 +1215,7 @@ pub fn migrate_process_to_cpu(pid: Pid, target_cpu: CpuId) -> Result<(), &'stati
     // Remove from current CPU's ready queue
     let process_priority = GLOBAL_SCHEDULER.with_process(pid, |process| process.priority);
     if let Some(priority) = process_priority {
-        for (cpu_id, cpu_scheduler_mutex) in GLOBAL_SCHEDULER.cpu_schedulers.iter().enumerate() {
+        for (_cpu_id, cpu_scheduler_mutex) in GLOBAL_SCHEDULER.cpu_schedulers.iter().enumerate() {
             if let Some(mut cpu_scheduler) = cpu_scheduler_mutex.try_lock() {
                 if cpu_scheduler.ready_queues[priority as usize].iter().position(|&p| p == pid).is_some() {
                     cpu_scheduler.ready_queues[priority as usize].retain(|&p| p != pid);
@@ -1252,7 +1251,7 @@ pub fn get_cpu_loads() -> Vec<(CpuId, usize, u8)> {
 }
 
 /// Enable or disable load balancing
-pub fn set_load_balancing(enabled: bool) {
+pub fn set_load_balancing(_enabled: bool) {
     // This would require making load_balancing_enabled mutable
     // For now, it's a compile-time setting
 }

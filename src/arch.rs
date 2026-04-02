@@ -3,6 +3,7 @@
 //! Real CPU detection and architecture-specific features
 
 use core::arch::x86_64::{__cpuid, __cpuid_count, _xgetbv};
+use core::ptr::{addr_of, addr_of_mut};
 use alloc::string::{String, ToString};
 
 /// CPU information structure
@@ -57,9 +58,9 @@ pub fn init() -> Result<(), &'static str> {
 /// Get CPU information
 pub fn cpu_info() -> CpuInfo {
     unsafe {
-        CPU_INFO.clone().unwrap_or_else(|| {
+        (*addr_of!(CPU_INFO)).clone().unwrap_or_else(|| {
             detect_cpu_info();
-            CPU_INFO.clone().unwrap()
+            (*addr_of!(CPU_INFO)).clone().unwrap()
         })
     }
 }
@@ -67,9 +68,9 @@ pub fn cpu_info() -> CpuInfo {
 /// Get CPU features
 pub fn cpu_features() -> CpuFeatures {
     unsafe {
-        CPU_FEATURES.unwrap_or_else(|| {
+        (*addr_of!(CPU_FEATURES)).unwrap_or_else(|| {
             detect_cpu_features();
-            CPU_FEATURES.unwrap()
+            (*addr_of!(CPU_FEATURES)).unwrap()
         })
     }
 }
@@ -124,7 +125,7 @@ fn detect_cpu_info() {
             "Unknown CPU".to_string()
         };
         
-        CPU_INFO = Some(CpuInfo {
+        *addr_of_mut!(CPU_INFO) = Some(CpuInfo {
             vendor: vendor_str,
             brand,
             family,
@@ -140,7 +141,7 @@ fn detect_cpu_info() {
 fn detect_cpu_features() {
     unsafe {
         let cpuid1 = __cpuid(1);
-        let cpuid7 = if CPU_INFO.as_ref().map_or(false, |i| i.max_cpuid >= 7) {
+        let cpuid7 = if (*addr_of!(CPU_INFO)).as_ref().map_or(false, |i| i.max_cpuid >= 7) {
             __cpuid_count(7, 0)
         } else {
             core::mem::zeroed()
@@ -175,7 +176,7 @@ fn detect_cpu_features() {
             smap: cpuid7.ebx & (1 << 20) != 0,
         };
         
-        CPU_FEATURES = Some(features);
+        *addr_of_mut!(CPU_FEATURES) = Some(features);
     }
 }
 

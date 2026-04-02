@@ -7,7 +7,6 @@ use crate::elf_loader::types::*;
 use crate::elf_loader::parser::*;
 use x86_64::structures::paging::{
     PageTableFlags, Mapper, Page, Size4KiB, FrameAllocator,
-    mapper::MapToError,
 };
 use x86_64::VirtAddr;
 use alloc::vec::Vec;

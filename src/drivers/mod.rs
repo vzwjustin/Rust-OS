@@ -13,57 +13,31 @@ pub mod ps2_mouse;
 pub mod input_manager;
 
 // Removed unused imports
-use alloc::format;
 use alloc::string::String;
 use core::fmt;
 
 // Re-export VBE driver functionality
-pub use vbe::{
-    driver as vbe_driver, get_current_framebuffer_info, init as init_vbe, set_desktop_mode,
-    VbeDriver, VbeStatus, VideoMode,
-};
 
 // Re-export PCI functionality
 pub use pci::{
-    init as init_pci, pci_bus, scan_devices as scan_pci_devices,
-    list_devices as list_pci_devices, get_pci_stats, PciDevice, PciAddress,
+    init as init_pci, get_pci_stats,
 };
 
 // Re-export hot-plug functionality
 pub use hotplug::{
-    init as init_hotplug, hotplug_manager, add_device as add_hotplug_device,
-    remove_device as remove_hotplug_device, process_events as process_hotplug_events,
-    get_hotplug_stats, HotplugDevice, HotplugEvent, DeviceState,
+    init as init_hotplug, process_events as process_hotplug_events,
+    get_hotplug_stats,
 };
 
 // Re-export input functionality
-pub use ps2_controller::{init as init_ps2_controller, Ps2Port, Ps2DeviceType};
-pub use ps2_mouse::{init as init_ps2_mouse, MousePacket, MouseButtons, MouseProtocol};
 pub use input_manager::{
-    init as init_input_manager, InputEvent, MouseButton, CursorBounds,
-    get_event as get_input_event, get_cursor_position, set_cursor_position,
-    set_cursor_bounds, handle_mouse_packet, handle_keyboard_event,
+    InputEvent, MouseButton,
+    get_event as get_input_event, get_cursor_position,
+    set_cursor_bounds,
 };
 
 // Re-export storage functionality
-pub use storage::{
-    // Core types
-    StorageError, StorageDeviceType, StorageDeviceState, StorageCapabilities, StorageStats,
-    StorageDriver, StorageDevice, StorageDeviceInfo, StorageDriverManager, StorageManagerStats,
-    // Device-specific read/write with device_id
-    read_storage_sectors, write_storage_sectors,
-    // Unified interface (uses default device)
-    read_sectors, write_sectors, flush_storage,
-    set_default_device, get_default_device,
-    // Block device abstraction
-    BlockDevice, list_block_devices, get_device_by_type,
-    // Partition support
-    PartitionInfo, PartitionType, read_mbr_partitions, is_gpt_device,
-    // Subsystem control
-    StorageSubsystemStatus, get_subsystem_status, get_storage_device_list,
-    init_storage_manager, with_storage_manager, init_storage_subsystem,
-    reset_device, standby_device, wake_device, get_device_smart_data,
-};
+pub use storage::StorageDriver;
 
 /// Driver types supported by RustOS
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
