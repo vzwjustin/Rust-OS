@@ -18,9 +18,9 @@
 //! Current implementation supports Ethernet II frames. IEEE 802.2 LLC and SNAP frame formats
 //! are planned for future releases. VLAN tagging (802.1Q) is recognized but not fully processed.
 
-use super::{NetworkAddress, NetworkResult, NetworkError, PacketBuffer, NetworkStack};
-use alloc::vec::Vec;
+use super::{NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer};
 use alloc::string::ToString;
+use alloc::vec::Vec;
 
 /// Ethernet frame header size
 pub const ETHERNET_HEADER_SIZE: usize = 14;
@@ -127,25 +127,19 @@ impl EthernetHeader {
 pub fn process_frame(network_stack: &NetworkStack, mut packet: PacketBuffer) -> NetworkResult<()> {
     // Parse Ethernet header
     let header = EthernetHeader::parse(&mut packet)?;
-    
+
     // Production: Ethernet frame processed silently
 
     // Check if frame is for us (broadcast, multicast, or our MAC)
     if !is_frame_for_us(&header.destination) {
-        return Ok(()) // Silently drop
+        return Ok(()); // Silently drop
     }
 
     // Process based on EtherType
     match header.ether_type {
-        EtherType::IPv4 => {
-            super::ip::process_ipv4_packet(network_stack, packet)
-        }
-        EtherType::IPv6 => {
-            super::ip::process_ipv6_packet(network_stack, packet)
-        }
-        EtherType::ARP => {
-            process_arp_packet(network_stack, packet)
-        }
+        EtherType::IPv4 => super::ip::process_ipv4_packet(network_stack, packet),
+        EtherType::IPv6 => super::ip::process_ipv6_packet(network_stack, packet),
+        EtherType::ARP => process_arp_packet(network_stack, packet),
         EtherType::VLAN => {
             // Note: VLAN tagging (IEEE 802.1Q) is not yet implemented.
             // Future enhancement will parse VLAN tags and route to appropriate virtual interface.
@@ -282,16 +276,12 @@ fn process_arp_packet(network_stack: &NetworkStack, mut packet: PacketBuffer) ->
                 sender_proto_addr,
                 sender_hw_addr,
                 _target_proto_addr,
-                "eth0".to_string()
+                "eth0".to_string(),
             )?;
         }
         2 => {
             // ARP Reply
-            super::arp::process_arp_reply(
-                sender_proto_addr,
-                sender_hw_addr,
-                "eth0".to_string()
-            )?;
+            super::arp::process_arp_reply(sender_proto_addr, sender_hw_addr, "eth0".to_string())?;
         }
         _ => {
             // Unknown ARP operation - ignore
@@ -309,7 +299,7 @@ pub fn create_frame(
     payload: &[u8],
 ) -> NetworkResult<PacketBuffer> {
     let total_size = ETHERNET_HEADER_SIZE + payload.len();
-    
+
     if total_size > ETHERNET_MAX_SIZE {
         return Err(NetworkError::BufferOverflow);
     }
@@ -346,16 +336,16 @@ pub fn create_arp_request(
 
     // Hardware type (Ethernet = 1)
     arp_payload.extend_from_slice(&1u16.to_be_bytes());
-    
+
     // Protocol type (IPv4 = 0x0800)
     arp_payload.extend_from_slice(&0x0800u16.to_be_bytes());
-    
+
     // Hardware address length (6 for MAC)
     arp_payload.push(6);
-    
+
     // Protocol address length (4 for IPv4)
     arp_payload.push(4);
-    
+
     // Operation (Request = 1)
     arp_payload.extend_from_slice(&1u16.to_be_bytes());
 
@@ -399,16 +389,16 @@ pub fn create_arp_reply(
 
     // Hardware type (Ethernet = 1)
     arp_payload.extend_from_slice(&1u16.to_be_bytes());
-    
+
     // Protocol type (IPv4 = 0x0800)
     arp_payload.extend_from_slice(&0x0800u16.to_be_bytes());
-    
+
     // Hardware address length (6 for MAC)
     arp_payload.push(6);
-    
+
     // Protocol address length (4 for IPv4)
     arp_payload.push(4);
-    
+
     // Operation (Reply = 2)
     arp_payload.extend_from_slice(&2u16.to_be_bytes());
 

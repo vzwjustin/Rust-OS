@@ -4,8 +4,8 @@
 //! including CPU register saving/restoring, stack switching, and FPU state management.
 
 use super::{CpuContext, Pid};
-use core::arch::{asm, naked_asm};
 use core::arch::x86_64::__cpuid;
+use core::arch::{asm, naked_asm};
 
 /// FPU/SSE state structure
 #[derive(Debug, Clone)]
@@ -128,10 +128,9 @@ impl ContextSwitcher {
     ) -> Result<(), &'static str> {
         self.switch_count += 1;
 
-        // Save current CPU context
-        self.save_cpu_context(&mut current_context.cpu);
-
-        // Handle FPU context switching
+        // Handle FPU context switching. This must run BEFORE the register switch
+        // below, because `context_switch_asm` does not return here until this task
+        // is scheduled back in.
         if self.fpu_lazy_switching {
             // Lazy FPU switching - only save/restore when necessary
             if self.fpu_owner.is_some() {
@@ -155,13 +154,26 @@ impl ContextSwitcher {
             self.switch_kernel_stack(target_context.kernel_stack);
         }
 
-        // Restore target CPU context and jump to it
-        self.restore_cpu_context(&target_context.cpu);
+        // ponytail: route the actual register/stack switch through the working
+        // naked `context_switch_asm` instead of the broken `save_cpu_context` /
+        // `restore_cpu_context` pair (whose out operands aliased the GP regs being
+        // read and which saved/restored the switch routine's own RSP). The naked
+        // routine saves the current GP regs + RSP + the return RIP into
+        // `current_context.cpu`, loads `target_context.cpu`, and `ret`s onto the
+        // target stack. It does not return to this point until `current` is
+        // switched back in later.
+        context_switch_asm(&mut current_context.cpu, &target_context.cpu);
 
         Ok(())
     }
 
     /// Save current CPU context
+    ///
+    /// ponytail: BROKEN and now unused — `switch_context` routes through the naked
+    /// `context_switch_asm` instead. The out operands below alias the same GP
+    /// registers being read, and it saves this routine's own RSP rather than the
+    /// task's. Kept (allow-dead-code) only for reference; do not call it.
+    #[allow(dead_code)]
     unsafe fn save_cpu_context(&self, context: &mut CpuContext) {
         asm!(
             "mov {rax}, rax",
@@ -212,6 +224,10 @@ impl ContextSwitcher {
     }
 
     /// Restore CPU context
+    ///
+    /// ponytail: BROKEN and now unused — see `save_cpu_context`. It `ret`s off the
+    /// wrong stack. Kept (allow-dead-code) for reference; do not call it.
+    #[allow(dead_code)]
     unsafe fn restore_cpu_context(&self, context: &CpuContext) {
         // Restore segment registers
         asm!(
@@ -386,7 +402,11 @@ impl ContextSwitcher {
     }
 
     /// Handle FPU exception (for lazy switching)
-    pub unsafe fn handle_fpu_exception(&mut self, current_pid: Pid, context: &ProcessContext) -> Result<(), &'static str> {
+    pub unsafe fn handle_fpu_exception(
+        &mut self,
+        current_pid: Pid,
+        context: &ProcessContext,
+    ) -> Result<(), &'static str> {
         if self.fpu_lazy_switching {
             // Clear task switched flag to allow FPU access
             self.clear_task_switched_flag();
@@ -501,12 +521,12 @@ pub fn create_process_context(
     context.cpu.rip = entry_point;
     context.cpu.rsp = stack_pointer;
     context.cpu.rflags = 0x202; // Enable interrupts
-    context.cpu.cs = 0x08;      // Kernel code segment
-    context.cpu.ds = 0x10;      // Kernel data segment
+    context.cpu.cs = 0x08; // Kernel code segment
+    context.cpu.ds = 0x10; // Kernel data segment
     context.cpu.es = 0x10;
     context.cpu.fs = 0x10;
     context.cpu.gs = 0x10;
-    context.cpu.ss = 0x10;      // Kernel stack segment
+    context.cpu.ss = 0x10; // Kernel stack segment
 
     // Set up memory management
     context.kernel_stack = kernel_stack;
@@ -529,7 +549,5 @@ pub fn get_context_switcher() -> &'static mut ContextSwitcher {
 
 /// Initialize the context switching system
 pub fn init() -> Result<(), &'static str> {
-    unsafe {
-        (&mut *core::ptr::addr_of_mut!(CONTEXT_SWITCHER)).init()
-    }
+    unsafe { (&mut *core::ptr::addr_of_mut!(CONTEXT_SWITCHER)).init() }
 }

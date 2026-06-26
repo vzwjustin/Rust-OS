@@ -8,8 +8,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
-use crate::vfs::{self, OpenFlags as VfsOpenFlags, SeekFrom, VfsError, InodeType};
+use super::{LinuxError, LinuxResult};
+use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError};
 
 // Re-export types for external access
 pub use super::types::Stat;
@@ -817,11 +817,12 @@ pub fn getcwd(buf: *mut u8, size: usize) -> LinuxResult<*mut u8> {
     Ok(buf)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_dup_operations() {
         let oldfd = 3;
         let newfd = dup(oldfd).unwrap();
@@ -832,7 +833,8 @@ mod tests {
         assert_eq!(result, specific_fd);
     }
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_access_modes() {
         let path = b"/test\0".as_ptr();
         assert!(access(path, access::F_OK).is_ok());

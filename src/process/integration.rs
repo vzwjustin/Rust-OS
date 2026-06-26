@@ -3,7 +3,7 @@
 //! This module provides integration between the process management system
 //! and other kernel subsystems like memory management and interrupts.
 
-use super::{Pid, get_process_manager};
+use super::{get_process_manager, Pid};
 use alloc::vec;
 
 /// Process management integration with timer interrupts
@@ -68,17 +68,22 @@ pub struct MemoryIntegration;
 
 impl MemoryIntegration {
     /// Handle page fault for process
-    pub fn handle_page_fault(pid: Pid, fault_address: u64, error_code: u64) -> Result<(), &'static str> {
+    pub fn handle_page_fault(
+        pid: Pid,
+        fault_address: u64,
+        error_code: u64,
+    ) -> Result<(), &'static str> {
         let process_manager = get_process_manager();
 
         // Get process information
-        let process = process_manager.get_process(pid)
+        let process = process_manager
+            .get_process(pid)
             .ok_or("Process not found")?;
 
         // Check if fault address is within process memory space
-        if fault_address >= process.memory.vm_start &&
-           fault_address < process.memory.vm_start + process.memory.vm_size {
-
+        if fault_address >= process.memory.vm_start
+            && fault_address < process.memory.vm_start + process.memory.vm_size
+        {
             // Handle different types of page faults
             if (error_code & 0x1) == 0 {
                 // Page not present - allocate page
@@ -97,7 +102,7 @@ impl MemoryIntegration {
 
     /// Allocate a new page for process using production memory manager
     fn allocate_page_for_process(_pid: Pid, fault_address: u64) -> Result<(), &'static str> {
-        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection, PAGE_SIZE};
+        use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType, PAGE_SIZE};
         use x86_64::VirtAddr;
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
@@ -113,11 +118,13 @@ impl MemoryIntegration {
         } else {
             // Create a new memory region for this process
             let _page_addr = fault_address & !(PAGE_SIZE as u64 - 1); // Align to page boundary
-            let _region = memory_manager.allocate_region(
-                PAGE_SIZE,
-                MemoryRegionType::UserData,
-                MemoryProtection::USER_DATA
-            ).map_err(|_| "Failed to allocate memory region")?;
+            let _region = memory_manager
+                .allocate_region(
+                    PAGE_SIZE,
+                    MemoryRegionType::UserData,
+                    MemoryProtection::USER_DATA,
+                )
+                .map_err(|_| "Failed to allocate memory region")?;
         }
 
         Ok(())
@@ -146,46 +153,52 @@ impl MemoryIntegration {
     /// Set up complete memory space for new process
     pub fn setup_process_memory(pid: Pid, size: u64) -> Result<u64, &'static str> {
         use crate::memory::{
-            get_memory_manager, MemoryRegionType, MemoryProtection, PAGE_SIZE,
-            allocate_memory_with_guards
+            allocate_memory_with_guards, get_memory_manager, MemoryProtection, MemoryRegionType,
+            PAGE_SIZE,
         };
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
         // Calculate memory layout
         let base_address = 0x400000 + (pid as u64 * 0x10000000); // 256MB per process
-        let code_size = MemoryIntegration::align_up_u64(size.max(PAGE_SIZE as u64), PAGE_SIZE as u64);
+        let code_size =
+            MemoryIntegration::align_up_u64(size.max(PAGE_SIZE as u64), PAGE_SIZE as u64);
         let data_size = PAGE_SIZE as u64 * 16; // 64KB data section
         let heap_size = PAGE_SIZE as u64 * 256; // 1MB heap
         let stack_size = PAGE_SIZE as u64 * 32; // 128KB stack
 
         // Allocate code region
-        let _code_region = memory_manager.allocate_region(
-            code_size as usize,
-            MemoryRegionType::UserCode,
-            MemoryProtection::USER_CODE
-        ).map_err(|_| "Failed to allocate code region")?;
+        let _code_region = memory_manager
+            .allocate_region(
+                code_size as usize,
+                MemoryRegionType::UserCode,
+                MemoryProtection::USER_CODE,
+            )
+            .map_err(|_| "Failed to allocate code region")?;
 
         // Allocate data region with guard pages
         let _data_addr = allocate_memory_with_guards(
             data_size as usize,
             MemoryRegionType::UserData,
-            MemoryProtection::USER_DATA
-        ).map_err(|_| "Failed to allocate data region")?;
+            MemoryProtection::USER_DATA,
+        )
+        .map_err(|_| "Failed to allocate data region")?;
 
         // Allocate heap region with guard pages
         let _heap_addr = allocate_memory_with_guards(
             heap_size as usize,
             MemoryRegionType::UserHeap,
-            MemoryProtection::USER_DATA
-        ).map_err(|_| "Failed to allocate heap region")?;
+            MemoryProtection::USER_DATA,
+        )
+        .map_err(|_| "Failed to allocate heap region")?;
 
         // Allocate stack region with guard pages (grows downward)
         let _stack_addr = allocate_memory_with_guards(
             stack_size as usize,
             MemoryRegionType::UserStack,
-            MemoryProtection::USER_DATA
-        ).map_err(|_| "Failed to allocate stack region")?;
+            MemoryProtection::USER_DATA,
+        )
+        .map_err(|_| "Failed to allocate stack region")?;
 
         Ok(base_address)
     }
@@ -197,14 +210,15 @@ impl MemoryIntegration {
 
     /// Clean up memory space for terminated process
     pub fn cleanup_process_memory(pid: Pid) -> Result<(), &'static str> {
-        use crate::memory::{get_memory_manager, deallocate_memory, PAGE_SIZE};
+        use crate::memory::{deallocate_memory, get_memory_manager, PAGE_SIZE};
         use x86_64::VirtAddr;
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
         let process_manager = get_process_manager();
 
         // Get process information for detailed cleanup
-        let process = process_manager.get_process(pid)
+        let process = process_manager
+            .get_process(pid)
             .ok_or("Process not found")?;
 
         // Calculate process memory layout
@@ -216,10 +230,13 @@ impl MemoryIntegration {
 
         // List of memory regions to clean up
         let regions_to_cleanup = vec![
-            (base_address, code_size), // Code region
+            (base_address, code_size),                    // Code region
             (base_address + code_size as u64, data_size), // Data region
             (process.memory.heap_start, process.memory.heap_size as usize), // Heap
-            (process.memory.stack_start, process.memory.stack_size as usize), // Stack
+            (
+                process.memory.stack_start,
+                process.memory.stack_size as usize,
+            ), // Stack
         ];
 
         // Clean up each memory region
@@ -289,10 +306,8 @@ impl InterruptIntegration {
                         // This is a simplified implementation - real kernels have more complex TTY handling
                         if let Ok(msgq_id) = ipc_manager.create_message_queue(64, 256) {
                             let _ = ipc_manager.send_message(
-                                msgq_id,
-                                1, // Message type for keyboard input
-                                input_data,
-                                0, // Kernel PID
+                                msgq_id, 1, // Message type for keyboard input
+                                input_data, 0, // Kernel PID
                             );
 
                             // Wake up the blocked process
@@ -342,7 +357,8 @@ impl InterruptIntegration {
         let ipc_manager = super::ipc::get_ipc_manager();
 
         // Check if process exists
-        let process = process_manager.get_process(pid)
+        let process = process_manager
+            .get_process(pid)
             .ok_or("Process not found")?;
 
         // Convert signal number to IPC signal enum
@@ -436,15 +452,27 @@ impl ProcessIntegration {
 
     /// Fork current process with copy-on-write memory
     pub fn fork_process(&self, parent_pid: Pid) -> Result<Pid, &'static str> {
-        use crate::memory::{get_memory_manager, create_cow_mapping, MemoryProtection};
+        use crate::memory::{create_cow_mapping, get_memory_manager, MemoryProtection};
 
         let process_manager = get_process_manager();
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
         // Get parent process memory layout
-        let (code_start, code_size, data_start, data_size, heap_start, heap_size,
-             stack_start, stack_size, vm_start, vm_size, parent_priority) = {
-            let parent_process = process_manager.get_process(parent_pid)
+        let (
+            code_start,
+            code_size,
+            data_start,
+            data_size,
+            heap_start,
+            heap_size,
+            stack_start,
+            stack_size,
+            vm_start,
+            vm_size,
+            parent_priority,
+        ) = {
+            let parent_process = process_manager
+                .get_process(parent_pid)
                 .ok_or("Parent process not found")?;
             (
                 parent_process.memory.code_start,
@@ -463,47 +491,52 @@ impl ProcessIntegration {
 
         // Create child process with same priority as parent
         let child_name = "forked_process";
-        let child_pid = process_manager.create_process(
-            child_name,
-            Some(parent_pid),
-            parent_priority
-        )?;
+        let child_pid =
+            process_manager.create_process(child_name, Some(parent_pid), parent_priority)?;
 
         // Clone parent's memory space with proper COW (share physical frames)
         // 1. Clone code segment (read-only, directly shared)
         if code_size > 0 {
-            memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(code_start),
-                code_size as usize,
-                x86_64::VirtAddr::new(code_start),
-            ).map_err(|_| "Failed to clone code segment")?;
+            memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(code_start),
+                    code_size as usize,
+                    x86_64::VirtAddr::new(code_start),
+                )
+                .map_err(|_| "Failed to clone code segment")?;
         }
 
         // 2. Clone data segment with COW
         if data_size > 0 {
-            memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(data_start),
-                data_size as usize,
-                x86_64::VirtAddr::new(data_start),
-            ).map_err(|_| "Failed to clone data segment")?;
+            memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(data_start),
+                    data_size as usize,
+                    x86_64::VirtAddr::new(data_start),
+                )
+                .map_err(|_| "Failed to clone data segment")?;
         }
 
         // 3. Clone heap with COW
         if heap_size > 0 {
-            memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(heap_start),
-                heap_size as usize,
-                x86_64::VirtAddr::new(heap_start),
-            ).map_err(|_| "Failed to clone heap")?;
+            memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(heap_start),
+                    heap_size as usize,
+                    x86_64::VirtAddr::new(heap_start),
+                )
+                .map_err(|_| "Failed to clone heap")?;
         }
 
         // 4. Clone stack with COW
         if stack_size > 0 {
-            memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(stack_start),
-                stack_size as usize,
-                x86_64::VirtAddr::new(stack_start),
-            ).map_err(|_| "Failed to clone stack")?;
+            memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(stack_start),
+                    stack_size as usize,
+                    x86_64::VirtAddr::new(stack_start),
+                )
+                .map_err(|_| "Failed to clone stack")?;
         }
 
         // 5. Update child process memory info through process manager's internal access
@@ -514,8 +547,13 @@ impl ProcessIntegration {
     }
 
     /// Execute new program in process
-    pub fn exec_process(&self, pid: Pid, program_path: &str, program_data: &[u8]) -> Result<(), &'static str> {
-        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection, PAGE_SIZE};
+    pub fn exec_process(
+        &self,
+        pid: Pid,
+        program_path: &str,
+        program_data: &[u8],
+    ) -> Result<(), &'static str> {
+        use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType, PAGE_SIZE};
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
@@ -526,51 +564,51 @@ impl ProcessIntegration {
         let elf_info = Self::parse_elf_header(program_data)?;
 
         // Allocate code segment
-        let code_region = memory_manager.allocate_region(
-            elf_info.code_size as usize,
-            MemoryRegionType::UserCode,
-            MemoryProtection::USER_CODE
-        ).map_err(|_| "Failed to allocate code region for exec")?;
+        let code_region = memory_manager
+            .allocate_region(
+                elf_info.code_size as usize,
+                MemoryRegionType::UserCode,
+                MemoryProtection::USER_CODE,
+            )
+            .map_err(|_| "Failed to allocate code region for exec")?;
 
         // Allocate data segment
         let data_region = if elf_info.data_size > 0 {
-            Some(memory_manager.allocate_region(
-                elf_info.data_size as usize,
-                MemoryRegionType::UserData,
-                MemoryProtection::USER_DATA
-            ).map_err(|_| "Failed to allocate data region for exec")?)
+            Some(
+                memory_manager
+                    .allocate_region(
+                        elf_info.data_size as usize,
+                        MemoryRegionType::UserData,
+                        MemoryProtection::USER_DATA,
+                    )
+                    .map_err(|_| "Failed to allocate data region for exec")?,
+            )
         } else {
             None
         };
 
         // Allocate stack (default 8MB)
         let stack_size = 8 * 1024 * 1024; // 8MB stack
-        let stack_region = memory_manager.allocate_region(
-            stack_size,
-            MemoryRegionType::UserStack,
-            MemoryProtection::USER_DATA
-        ).map_err(|_| "Failed to allocate stack for exec")?;
+        let stack_region = memory_manager
+            .allocate_region(
+                stack_size,
+                MemoryRegionType::UserStack,
+                MemoryProtection::USER_DATA,
+            )
+            .map_err(|_| "Failed to allocate stack for exec")?;
 
         // Load program sections into memory
         unsafe {
             // Load code section
             let code_ptr = code_region.start.as_u64() as *mut u8;
             if let Some(code_data) = elf_info.code_data {
-                core::ptr::copy_nonoverlapping(
-                    code_data.as_ptr(),
-                    code_ptr,
-                    code_data.len()
-                );
+                core::ptr::copy_nonoverlapping(code_data.as_ptr(), code_ptr, code_data.len());
             }
 
             // Load data section
             if let (Some(ref data_region), Some(data_data)) = (data_region, elf_info.data_data) {
                 let data_ptr = data_region.start.as_u64() as *mut u8;
-                core::ptr::copy_nonoverlapping(
-                    data_data.as_ptr(),
-                    data_ptr,
-                    data_data.len()
-                );
+                core::ptr::copy_nonoverlapping(data_data.as_ptr(), data_ptr, data_data.len());
             }
 
             // Initialize stack with program arguments
@@ -603,14 +641,26 @@ impl ProcessIntegration {
 
         // Extract entry point (64-bit)
         let entry_point = u64::from_le_bytes([
-            program_data[24], program_data[25], program_data[26], program_data[27],
-            program_data[28], program_data[29], program_data[30], program_data[31]
+            program_data[24],
+            program_data[25],
+            program_data[26],
+            program_data[27],
+            program_data[28],
+            program_data[29],
+            program_data[30],
+            program_data[31],
         ]);
 
         // Extract program header table offset and size
         let ph_offset = u64::from_le_bytes([
-            program_data[32], program_data[33], program_data[34], program_data[35],
-            program_data[36], program_data[37], program_data[38], program_data[39]
+            program_data[32],
+            program_data[33],
+            program_data[34],
+            program_data[35],
+            program_data[36],
+            program_data[37],
+            program_data[38],
+            program_data[39],
         ]) as usize;
 
         let ph_entry_size = u16::from_le_bytes([program_data[54], program_data[55]]) as usize;
@@ -629,7 +679,7 @@ impl ProcessIntegration {
             }
 
             let ph = &program_data[ph_start..ph_start + 56];
-            
+
             // Check if this is a loadable segment (PT_LOAD = 1)
             let p_type = u32::from_le_bytes([ph[0], ph[1], ph[2], ph[3]]);
             if p_type != 1 {
@@ -638,19 +688,19 @@ impl ProcessIntegration {
 
             // Extract segment information
             let p_flags = u32::from_le_bytes([ph[4], ph[5], ph[6], ph[7]]);
-            let p_offset = u64::from_le_bytes([
-                ph[8], ph[9], ph[10], ph[11], ph[12], ph[13], ph[14], ph[15]
-            ]) as usize;
+            let p_offset =
+                u64::from_le_bytes([ph[8], ph[9], ph[10], ph[11], ph[12], ph[13], ph[14], ph[15]])
+                    as usize;
             let p_filesz = u64::from_le_bytes([
-                ph[32], ph[33], ph[34], ph[35], ph[36], ph[37], ph[38], ph[39]
+                ph[32], ph[33], ph[34], ph[35], ph[36], ph[37], ph[38], ph[39],
             ]);
             let p_memsz = u64::from_le_bytes([
-                ph[40], ph[41], ph[42], ph[43], ph[44], ph[45], ph[46], ph[47]
+                ph[40], ph[41], ph[42], ph[43], ph[44], ph[45], ph[46], ph[47],
             ]);
 
             // Determine if this is code or data segment based on flags
             let is_executable = (p_flags & 0x1) != 0; // PF_X
-            let is_writable = (p_flags & 0x2) != 0;   // PF_W
+            let is_writable = (p_flags & 0x2) != 0; // PF_W
 
             if is_executable && !is_writable {
                 // Code segment
@@ -708,7 +758,12 @@ impl ProcessIntegration {
     }
 
     /// Handle page fault
-    pub fn handle_page_fault(&self, pid: Pid, fault_address: u64, error_code: u64) -> Result<(), &'static str> {
+    pub fn handle_page_fault(
+        &self,
+        pid: Pid,
+        fault_address: u64,
+        error_code: u64,
+    ) -> Result<(), &'static str> {
         MemoryIntegration::handle_page_fault(pid, fault_address, error_code)
     }
 
@@ -744,16 +799,22 @@ impl ProcessIntegration {
     /// Comprehensive system health check
     pub fn system_health_check(&self) -> Result<SystemHealthReport, &'static str> {
         let process_manager = get_process_manager();
-        let memory_manager = crate::memory::get_memory_manager()
-            .ok_or("Memory manager not initialized")?;
+        let memory_manager =
+            crate::memory::get_memory_manager().ok_or("Memory manager not initialized")?;
         let ipc_manager = super::ipc::get_ipc_manager();
         let thread_manager = super::thread::get_thread_manager();
 
         // Check process system health
         let processes = process_manager.list_processes();
         let total_processes = processes.len();
-        let active_processes = processes.iter()
-            .filter(|(_, _, state, _)| matches!(state, super::ProcessState::Running | super::ProcessState::Ready))
+        let active_processes = processes
+            .iter()
+            .filter(|(_, _, state, _)| {
+                matches!(
+                    state,
+                    super::ProcessState::Running | super::ProcessState::Ready
+                )
+            })
             .count();
 
         // Check memory system health

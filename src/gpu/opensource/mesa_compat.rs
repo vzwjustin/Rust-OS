@@ -3,18 +3,18 @@
 //! This module provides compatibility interfaces for Mesa3D drivers
 //! and OpenGL/Vulkan implementations on RustOS.
 
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::{String, ToString};
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Mesa driver types
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MesaDriverType {
-    Gallium,     // Modern unified driver architecture
-    Classic,     // Legacy DRI drivers
-    Software,    // Software rasterizer (swrast)
+    Gallium,  // Modern unified driver architecture
+    Classic,  // Legacy DRI drivers
+    Software, // Software rasterizer (swrast)
 }
 
 /// Mesa pipe driver information
@@ -244,10 +244,13 @@ impl MesaCompatLayer {
             max_uniform_locations: 1024,
         };
 
-        self.pipe_drivers.insert("radeonsi".to_string(), radeonsi_driver);
+        self.pipe_drivers
+            .insert("radeonsi".to_string(), radeonsi_driver);
         self.pipe_drivers.insert("iris".to_string(), iris_driver);
-        self.pipe_drivers.insert("nouveau".to_string(), nouveau_driver);
-        self.pipe_drivers.insert("swrast".to_string(), swrast_driver);
+        self.pipe_drivers
+            .insert("nouveau".to_string(), nouveau_driver);
+        self.pipe_drivers
+            .insert("swrast".to_string(), swrast_driver);
     }
 
     /// Initialize format support database
@@ -263,40 +266,46 @@ impl MesaCompatLayer {
             (0x8051, true, true, true, false, true, true, false, true),    // GL_RGB8
             (0x1908, true, true, true, false, true, true, false, true),    // GL_RGBA
             (0x8058, true, true, true, false, true, true, false, true),    // GL_RGBA8
-
             // 16-bit formats
             (0x822A, true, true, false, false, false, false, false, true), // GL_R16
             (0x822C, true, true, false, false, false, false, false, true), // GL_RG16
             (0x8054, true, true, true, false, true, true, false, true),    // GL_RGB16
             (0x805B, true, true, true, false, true, true, false, true),    // GL_RGBA16
-
             // Floating point formats
-            (0x822D, true, true, false, false, false, false, true, true),  // GL_R16F
-            (0x822F, true, true, false, false, false, false, true, true),  // GL_RG16F
-            (0x881B, true, true, true, false, false, true, true, true),    // GL_RGB16F
-            (0x881A, true, true, true, false, false, true, true, true),    // GL_RGBA16F
-            (0x822E, true, true, false, false, false, false, true, true),  // GL_R32F
-            (0x8230, true, true, false, false, false, false, true, true),  // GL_RG32F
-            (0x8815, true, true, false, false, false, false, true, true),  // GL_RGB32F
-            (0x8814, true, true, true, false, false, false, true, true),   // GL_RGBA32F
-
+            (0x822D, true, true, false, false, false, false, true, true), // GL_R16F
+            (0x822F, true, true, false, false, false, false, true, true), // GL_RG16F
+            (0x881B, true, true, true, false, false, true, true, true),   // GL_RGB16F
+            (0x881A, true, true, true, false, false, true, true, true),   // GL_RGBA16F
+            (0x822E, true, true, false, false, false, false, true, true), // GL_R32F
+            (0x8230, true, true, false, false, false, false, true, true), // GL_RG32F
+            (0x8815, true, true, false, false, false, false, true, true), // GL_RGB32F
+            (0x8814, true, true, true, false, false, false, true, true),  // GL_RGBA32F
             // Compressed formats
             (0x83F0, false, true, false, false, false, false, false, true), // GL_COMPRESSED_RGB_S3TC_DXT1_EXT
             (0x83F1, false, true, false, false, false, false, false, true), // GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
             (0x83F2, false, true, false, false, false, false, false, true), // GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
             (0x83F3, false, true, false, false, false, false, false, true), // GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-
             // Depth/stencil formats
-            (0x1902, false, true, false, true, false, false, false, true),  // GL_DEPTH_COMPONENT
-            (0x81A5, false, true, false, true, false, false, false, true),  // GL_DEPTH_COMPONENT16
-            (0x81A6, false, true, false, true, false, false, false, true),  // GL_DEPTH_COMPONENT24
-            (0x81A7, false, true, false, true, false, false, false, true),  // GL_DEPTH_COMPONENT32
-            (0x88F0, false, true, false, true, false, false, false, true),  // GL_DEPTH32F_STENCIL8
-            (0x84F9, false, true, false, true, false, false, false, true),  // GL_DEPTH24_STENCIL8
+            (0x1902, false, true, false, true, false, false, false, true), // GL_DEPTH_COMPONENT
+            (0x81A5, false, true, false, true, false, false, false, true), // GL_DEPTH_COMPONENT16
+            (0x81A6, false, true, false, true, false, false, false, true), // GL_DEPTH_COMPONENT24
+            (0x81A7, false, true, false, true, false, false, false, true), // GL_DEPTH_COMPONENT32
+            (0x88F0, false, true, false, true, false, false, false, true), // GL_DEPTH32F_STENCIL8
+            (0x84F9, false, true, false, true, false, false, false, true), // GL_DEPTH24_STENCIL8
         ];
 
-        for &(format, vertex_buffer, texture, color_attachment, depth_stencil_attachment,
-               blendable, multisample, storage_image, sampled_image) in &formats {
+        for &(
+            format,
+            vertex_buffer,
+            texture,
+            color_attachment,
+            depth_stencil_attachment,
+            blendable,
+            multisample,
+            storage_image,
+            sampled_image,
+        ) in &formats
+        {
             self.format_support.push(MesaFormatSupport {
                 format,
                 vertex_buffer,
@@ -312,7 +321,12 @@ impl MesaCompatLayer {
     }
 
     /// Create a Mesa screen for a GPU
-    pub fn create_screen(&mut self, gpu_id: u32, driver_name: &str, gpu_caps: &super::super::GPUCapabilities) -> Result<(), &'static str> {
+    pub fn create_screen(
+        &mut self,
+        gpu_id: u32,
+        driver_name: &str,
+        gpu_caps: &super::super::GPUCapabilities,
+    ) -> Result<(), &'static str> {
         let screen = MesaScreen {
             name: gpu_caps.device_name.clone(),
             vendor: match gpu_caps.vendor {
@@ -341,7 +355,10 @@ impl MesaCompatLayer {
     }
 
     /// Create context capabilities based on GPU capabilities
-    fn create_context_capabilities(&self, gpu_caps: &super::super::GPUCapabilities) -> MesaContextCaps {
+    fn create_context_capabilities(
+        &self,
+        gpu_caps: &super::super::GPUCapabilities,
+    ) -> MesaContextCaps {
         let tier_multiplier = match gpu_caps.tier {
             super::super::GPUTier::Entry => 0.5,
             super::super::GPUTier::Budget => 0.7,
@@ -396,7 +413,7 @@ impl MesaCompatLayer {
         uuid[5] = 0x74; // 't'
         uuid[6] = 0x4F; // 'O'
         uuid[7] = 0x53; // 'S'
-        // Rest remain zero
+                        // Rest remain zero
         uuid
     }
 
@@ -427,27 +444,32 @@ impl MesaCompatLayer {
     /// Check format support
     pub fn is_format_supported(&self, format: u32, usage: FormatUsage) -> bool {
         self.format_support.iter().any(|support| {
-            support.format == format && match usage {
-                FormatUsage::VertexBuffer => support.vertex_buffer,
-                FormatUsage::Texture => support.texture,
-                FormatUsage::ColorAttachment => support.color_attachment,
-                FormatUsage::DepthStencilAttachment => support.depth_stencil_attachment,
-                FormatUsage::Blendable => support.blendable,
-                FormatUsage::Multisample => support.multisample,
-                FormatUsage::StorageImage => support.storage_image,
-                FormatUsage::SampledImage => support.sampled_image,
-            }
+            support.format == format
+                && match usage {
+                    FormatUsage::VertexBuffer => support.vertex_buffer,
+                    FormatUsage::Texture => support.texture,
+                    FormatUsage::ColorAttachment => support.color_attachment,
+                    FormatUsage::DepthStencilAttachment => support.depth_stencil_attachment,
+                    FormatUsage::Blendable => support.blendable,
+                    FormatUsage::Multisample => support.multisample,
+                    FormatUsage::StorageImage => support.storage_image,
+                    FormatUsage::SampledImage => support.sampled_image,
+                }
         })
     }
 
     /// Get OpenGL version string
     pub fn get_gl_version_string(&self, gpu_id: u32) -> String {
         if let Some(screen) = self.get_screen(gpu_id) {
-            if let Some(driver) = self.pipe_drivers.values().find(|d| d.vendor == screen.vendor) {
-                format!("{}.{}.{} Mesa 23.2.0",
-                    driver.opengl_version.0,
-                    driver.opengl_version.1,
-                    driver.opengl_version.2)
+            if let Some(driver) = self
+                .pipe_drivers
+                .values()
+                .find(|d| d.vendor == screen.vendor)
+            {
+                format!(
+                    "{}.{}.{} Mesa 23.2.0",
+                    driver.opengl_version.0, driver.opengl_version.1, driver.opengl_version.2
+                )
             } else {
                 "4.6.0 Mesa 23.2.0".to_string()
             }
@@ -459,10 +481,15 @@ impl MesaCompatLayer {
     /// Get OpenGL ES version string
     pub fn get_gles_version_string(&self, gpu_id: u32) -> String {
         if let Some(screen) = self.get_screen(gpu_id) {
-            if let Some(driver) = self.pipe_drivers.values().find(|d| d.vendor == screen.vendor) {
-                format!("OpenGL ES {}.{} Mesa 23.2.0",
-                    driver.opengl_es_version.0,
-                    driver.opengl_es_version.1)
+            if let Some(driver) = self
+                .pipe_drivers
+                .values()
+                .find(|d| d.vendor == screen.vendor)
+            {
+                format!(
+                    "OpenGL ES {}.{} Mesa 23.2.0",
+                    driver.opengl_es_version.0, driver.opengl_es_version.1
+                )
             } else {
                 "OpenGL ES 3.2 Mesa 23.2.0".to_string()
             }
@@ -474,7 +501,11 @@ impl MesaCompatLayer {
     /// Get GLSL version string
     pub fn get_glsl_version_string(&self, gpu_id: u32) -> String {
         if let Some(screen) = self.get_screen(gpu_id) {
-            if let Some(driver) = self.pipe_drivers.values().find(|d| d.vendor == screen.vendor) {
+            if let Some(driver) = self
+                .pipe_drivers
+                .values()
+                .find(|d| d.vendor == screen.vendor)
+            {
                 format!("{} core", driver.glsl_version)
             } else {
                 "460 core".to_string()
@@ -505,7 +536,11 @@ impl MesaCompatLayer {
     /// Get supported extensions
     pub fn get_extensions(&self, gpu_id: u32) -> Vec<String> {
         if let Some(screen) = self.get_screen(gpu_id) {
-            if let Some(driver) = self.pipe_drivers.values().find(|d| d.vendor == screen.vendor) {
+            if let Some(driver) = self
+                .pipe_drivers
+                .values()
+                .find(|d| d.vendor == screen.vendor)
+            {
                 driver.supported_extensions.clone()
             } else {
                 Vec::new()
@@ -548,7 +583,11 @@ pub fn get_mesa_compat() -> Option<&'static mut MesaCompatLayer> {
 }
 
 /// Create Mesa screen for GPU
-pub fn create_mesa_screen(gpu_id: u32, driver_name: &str, gpu_caps: &super::super::GPUCapabilities) -> Result<(), &'static str> {
+pub fn create_mesa_screen(
+    gpu_id: u32,
+    driver_name: &str,
+    gpu_caps: &super::super::GPUCapabilities,
+) -> Result<(), &'static str> {
     if let Some(mesa) = get_mesa_compat() {
         mesa.create_screen(gpu_id, driver_name, gpu_caps)
     } else {

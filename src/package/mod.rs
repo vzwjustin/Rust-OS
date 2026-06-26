@@ -18,28 +18,28 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 use core::fmt;
 
-pub mod types;
 pub mod adapters;
-pub mod database;
+pub mod api;
 pub mod archive;
 pub mod compression;
-pub mod api;
+pub mod database;
 pub mod manager;
 pub mod syscalls;
+pub mod types;
 
 #[cfg(test)]
 pub mod tests;
 
-pub use types::*;
 pub use adapters::*;
 pub use database::*;
 pub use manager::PackageManager;
-pub use syscalls::{init_package_manager, handle_package_syscall};
+pub use syscalls::{handle_package_syscall, init_package_manager};
+pub use types::*;
 
 /// Result type for package operations
 pub type PackageResult<T> = Result<T, PackageError>;

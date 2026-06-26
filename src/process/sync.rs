@@ -3,10 +3,10 @@
 //! This module provides synchronization primitives and thread safety mechanisms
 //! for RustOS processes, including mutexes, semaphores, and condition variables.
 
-use super::{Pid, get_process_manager};
+use super::{get_process_manager, Pid};
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 
@@ -104,7 +104,10 @@ impl SyncObject {
 
         if current_owner == 0 {
             // Mutex is free, try to acquire it
-            match self.owner.compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire) {
+            match self
+                .owner
+                .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => {
                     self.value.store(1, Ordering::Release);
                     Ok(true)
@@ -163,7 +166,12 @@ impl SyncObject {
         let current_value = self.value.load(Ordering::Acquire);
 
         if current_value > 0 {
-            match self.value.compare_exchange(current_value, current_value - 1, Ordering::AcqRel, Ordering::Acquire) {
+            match self.value.compare_exchange(
+                current_value,
+                current_value - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => Ok(true),
                 Err(_) => Ok(false), // Value changed, try again later
             }
@@ -174,13 +182,27 @@ impl SyncObject {
 
     /// Release semaphore
     fn release_semaphore(&self, _pid: Pid) -> Result<Vec<Pid>, &'static str> {
-        let current_value = self.value.load(Ordering::Acquire);
-
-        if current_value >= self.max_value {
-            return Err("Semaphore value exceeds maximum");
+        // ponytail: CAS loop so two concurrent releases can't both observe
+        // value < max and then both fetch_add, exceeding max_value. The
+        // increment only commits while value is still below max at compare time.
+        loop {
+            let current_value = self.value.load(Ordering::Acquire);
+            if current_value >= self.max_value {
+                return Err("Semaphore value exceeds maximum");
+            }
+            if self
+                .value
+                .compare_exchange(
+                    current_value,
+                    current_value + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                break;
+            }
         }
-
-        self.value.fetch_add(1, Ordering::AcqRel);
 
         // Wake up one waiting process
         let mut wait_queue = self.wait_queue.lock();
@@ -198,7 +220,12 @@ impl SyncObject {
         if write_lock {
             // Try to acquire write lock
             if current_value == 0 {
-                match self.value.compare_exchange(0, 0x80000000, Ordering::AcqRel, Ordering::Acquire) {
+                match self.value.compare_exchange(
+                    0,
+                    0x80000000,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
                     Ok(_) => {
                         self.owner.store(pid, Ordering::Release);
                         Ok(true)
@@ -211,7 +238,12 @@ impl SyncObject {
         } else {
             // Try to acquire read lock
             if (current_value & 0x80000000) == 0 && current_value < 0x7FFFFFFF {
-                match self.value.compare_exchange(current_value, current_value + 1, Ordering::AcqRel, Ordering::Acquire) {
+                match self.value.compare_exchange(
+                    current_value,
+                    current_value + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
                     Ok(_) => Ok(true),
                     Err(_) => Ok(false),
                 }
@@ -365,8 +397,10 @@ impl SyncManager {
                 // Successfully acquired
                 {
                     let mut states = self.process_states.write();
-                    states.entry(pid).or_insert_with(BTreeMap::new)
-                          .insert(sync_id, SyncState::Acquired);
+                    states
+                        .entry(pid)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(sync_id, SyncState::Acquired);
                 }
                 Ok(true)
             }
@@ -379,8 +413,10 @@ impl SyncManager {
 
                     {
                         let mut states = self.process_states.write();
-                        states.entry(pid).or_insert_with(BTreeMap::new)
-                              .insert(sync_id, SyncState::Waiting);
+                        states
+                            .entry(pid)
+                            .or_insert_with(BTreeMap::new)
+                            .insert(sync_id, SyncState::Waiting);
                     }
                 }
                 Ok(false)
@@ -482,11 +518,19 @@ impl DeadlockDetector {
     }
 
     /// Check if acquiring a resource would cause deadlock
-    fn would_deadlock(&mut self, pid: Pid, sync_id: SyncId, objects: &BTreeMap<SyncId, SyncObject>) -> Result<bool, &'static str> {
+    fn would_deadlock(
+        &mut self,
+        pid: Pid,
+        sync_id: SyncId,
+        objects: &BTreeMap<SyncId, SyncObject>,
+    ) -> Result<bool, &'static str> {
         // Simple deadlock detection: check for cycles in wait-for graph
 
         // Add the potential wait edge
-        self.waiting_graph.entry(pid).or_insert_with(Vec::new).push(sync_id);
+        self.waiting_graph
+            .entry(pid)
+            .or_insert_with(Vec::new)
+            .push(sync_id);
 
         // Check for cycles using DFS
         let result = self.has_cycle(pid, objects);

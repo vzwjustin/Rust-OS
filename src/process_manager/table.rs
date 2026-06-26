@@ -3,12 +3,12 @@
 //! Manages the collection of all processes in the system.
 
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use super::pcb::{FileDescriptor, FileDescriptorType, ProcessControlBlock, ProcessState};
 use crate::process::{Pid, Priority};
-use super::pcb::{ProcessControlBlock, ProcessState, FileDescriptor, FileDescriptorType};
 
 /// Maximum number of processes
 const MAX_PROCESSES: usize = 4096;
@@ -108,14 +108,16 @@ impl ProcessTable {
 
     /// List all processes
     pub fn list_all(&self) -> Vec<(Pid, String, ProcessState, Priority)> {
-        self.processes.iter().map(|(&pid, pcb)| {
-            (pid, String::from(pcb.name_str()), pcb.state, pcb.priority)
-        }).collect()
+        self.processes
+            .iter()
+            .map(|(&pid, pcb)| (pid, String::from(pcb.name_str()), pcb.state, pcb.priority))
+            .collect()
     }
 
     /// Get all children of a process
     pub fn get_children(&self, parent_pid: Pid) -> Vec<Pid> {
-        self.processes.iter()
+        self.processes
+            .iter()
             .filter(|(_, pcb)| pcb.parent_pid == Some(parent_pid))
             .map(|(&pid, _)| pid)
             .collect()
@@ -123,10 +125,9 @@ impl ProcessTable {
 
     /// Get zombie children of a process
     pub fn get_zombie_children(&self, parent_pid: Pid) -> Vec<Pid> {
-        self.processes.iter()
-            .filter(|(_, pcb)| {
-                pcb.parent_pid == Some(parent_pid) && pcb.is_zombie()
-            })
+        self.processes
+            .iter()
+            .filter(|(_, pcb)| pcb.parent_pid == Some(parent_pid) && pcb.is_zombie())
             .map(|(&pid, _)| pid)
             .collect()
     }
@@ -142,7 +143,11 @@ impl ProcessTable {
     }
 
     /// Allocate file descriptor for process
-    pub fn allocate_fd(&mut self, pid: Pid, fd_type: FileDescriptorType) -> Result<u32, &'static str> {
+    pub fn allocate_fd(
+        &mut self,
+        pid: Pid,
+        fd_type: FileDescriptorType,
+    ) -> Result<u32, &'static str> {
         if let Some(pcb) = self.processes.get_mut(&pid) {
             Ok(pcb.allocate_fd(fd_type))
         } else {
@@ -161,12 +166,15 @@ impl ProcessTable {
 
     /// Get file descriptor
     pub fn get_fd(&self, pid: Pid, fd: u32) -> Option<FileDescriptor> {
-        self.processes.get(&pid).and_then(|pcb| pcb.get_fd(fd).cloned())
+        self.processes
+            .get(&pid)
+            .and_then(|pcb| pcb.get_fd(fd).cloned())
     }
 
     /// Get process by state
     pub fn get_by_state(&self, state: ProcessState) -> Vec<Pid> {
-        self.processes.iter()
+        self.processes
+            .iter()
             .filter(|(_, pcb)| pcb.state == state)
             .map(|(&pid, _)| pid)
             .collect()
@@ -174,14 +182,16 @@ impl ProcessTable {
 
     /// Count processes in a specific state
     pub fn count_by_state(&self, state: ProcessState) -> usize {
-        self.processes.values()
+        self.processes
+            .values()
             .filter(|pcb| pcb.state == state)
             .count()
     }
 
     /// Get orphaned processes (parent no longer exists)
     pub fn get_orphaned(&self) -> Vec<Pid> {
-        self.processes.iter()
+        self.processes
+            .iter()
             .filter(|(_, pcb)| {
                 if let Some(parent_pid) = pcb.parent_pid {
                     !self.processes.contains_key(&parent_pid)
@@ -196,7 +206,11 @@ impl ProcessTable {
     /// Reparent orphaned processes to init (PID 1 or 0)
     pub fn reparent_orphaned(&mut self) {
         let orphaned = self.get_orphaned();
-        let init_pid = if self.processes.contains_key(&1) { 1 } else { 0 };
+        let init_pid = if self.processes.contains_key(&1) {
+            1
+        } else {
+            0
+        };
 
         for pid in orphaned {
             if let Some(pcb) = self.processes.get_mut(&pid) {

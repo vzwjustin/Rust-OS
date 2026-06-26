@@ -3,7 +3,7 @@
 //! This module provides the socket abstraction layer for network communication,
 //! supporting TCP, UDP, and raw sockets with a POSIX-like interface.
 
-use super::{NetworkAddress, Protocol, NetworkError, NetworkResult};
+use super::{NetworkAddress, NetworkError, NetworkResult, Protocol};
 use alloc::collections::VecDeque;
 use core::fmt;
 
@@ -66,7 +66,10 @@ impl SocketAddress {
 
     /// Validate that address is either IPv4 or IPv6
     pub fn is_valid(&self) -> bool {
-        matches!(self.address, NetworkAddress::IPv4(_) | NetworkAddress::IPv6(_))
+        matches!(
+            self.address,
+            NetworkAddress::IPv4(_) | NetworkAddress::IPv6(_)
+        )
     }
 }
 
@@ -225,7 +228,7 @@ impl Socket {
                     let _local_port = crate::net::tcp::tcp_connect(
                         local_addr.address,
                         address.address,
-                        address.port
+                        address.port,
                     )?;
                     self.state = SocketState::Connected;
                 } else {
@@ -239,7 +242,7 @@ impl Socket {
                         local_addr.address,
                         local_addr.port,
                         address.address,
-                        address.port
+                        address.port,
                     )?;
                 }
                 self.state = SocketState::Connected;
@@ -286,12 +289,10 @@ impl Socket {
             }
             SocketType::Datagram => {
                 // UDP send - use real UDP stack
-                if let (Some(local_addr), Some(_remote_addr)) = (self.local_address, self.remote_address) {
-                    crate::net::udp::udp_send(
-                        local_addr.address,
-                        local_addr.port,
-                        data
-                    )?
+                if let (Some(local_addr), Some(_remote_addr)) =
+                    (self.local_address, self.remote_address)
+                {
+                    crate::net::udp::udp_send(local_addr.address, local_addr.port, data)?
                 } else {
                     return Err(NetworkError::InvalidAddress);
                 }
@@ -314,7 +315,7 @@ impl Socket {
         }
 
         let bytes_to_read = core::cmp::min(buffer.len(), self.recv_buffer.len());
-        
+
         if bytes_to_read == 0 {
             return Ok(0); // No data available
         }
@@ -344,7 +345,7 @@ impl Socket {
                 local_addr.port,
                 address.address,
                 address.port,
-                data
+                data,
             )?
         } else {
             return Err(NetworkError::InvalidAddress);
@@ -364,10 +365,9 @@ impl Socket {
 
         // Real UDP packet reception
         if let Some(local_addr) = self.local_address {
-            if let Some((data, src_addr, src_port)) = crate::net::udp::udp_recv(
-                local_addr.address,
-                local_addr.port
-            )? {
+            if let Some((data, src_addr, src_port)) =
+                crate::net::udp::udp_recv(local_addr.address, local_addr.port)?
+            {
                 let bytes_to_copy = core::cmp::min(buffer.len(), data.len());
                 buffer[..bytes_to_copy].copy_from_slice(&data[..bytes_to_copy]);
 
@@ -395,14 +395,17 @@ impl Socket {
 
                 // Implement proper TCP connection teardown
                 if self.socket_type == SocketType::Stream {
-                    if let (Some(local_addr), Some(remote_addr)) = (self.local_address, self.remote_address) {
+                    if let (Some(local_addr), Some(remote_addr)) =
+                        (self.local_address, self.remote_address)
+                    {
                         // Initiate TCP close sequence (FIN handshake)
                         crate::net::tcp::tcp_close(
                             local_addr.address,
                             local_addr.port,
                             remote_addr.address,
-                            remote_addr.port
-                        ).ok(); // Ignore errors during close
+                            remote_addr.port,
+                        )
+                        .ok(); // Ignore errors during close
                     }
                 }
 
@@ -456,8 +459,12 @@ impl Socket {
             SocketOptionType::ReusePort => SocketOption::ReusePort(self.options.reuse_port),
             SocketOptionType::KeepAlive => SocketOption::KeepAlive(self.options.keep_alive),
             SocketOptionType::NoDelay => SocketOption::NoDelay(self.options.no_delay),
-            SocketOptionType::RecvBufferSize => SocketOption::RecvBufferSize(self.options.recv_buffer_size),
-            SocketOptionType::SendBufferSize => SocketOption::SendBufferSize(self.options.send_buffer_size),
+            SocketOptionType::RecvBufferSize => {
+                SocketOption::RecvBufferSize(self.options.recv_buffer_size)
+            }
+            SocketOptionType::SendBufferSize => {
+                SocketOption::SendBufferSize(self.options.send_buffer_size)
+            }
             SocketOptionType::RecvTimeout => SocketOption::RecvTimeout(self.options.recv_timeout),
             SocketOptionType::SendTimeout => SocketOption::SendTimeout(self.options.send_timeout),
         };

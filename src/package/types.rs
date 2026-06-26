@@ -1,8 +1,8 @@
 //! Package type definitions and metadata structures
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 
 /// Package metadata information
 #[derive(Debug, Clone)]

@@ -9,12 +9,12 @@
 //! **EXPERIMENTAL**: This is a foundational implementation. Full functionality
 //! requires archive extraction support (ar, tar, gzip) and filesystem operations.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-use crate::package::{PackageResult, PackageError, PackageMetadata, ExtractedPackage};
 use crate::package::adapters::PackageAdapter;
 use crate::package::archive::ar::ArArchive;
-use crate::package::compression::{TarArchive, decompress};
+use crate::package::compression::{decompress, TarArchive};
+use crate::package::{ExtractedPackage, PackageError, PackageMetadata, PackageResult};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Debian package adapter
 pub struct DebAdapter;
@@ -56,8 +56,12 @@ impl DebAdapter {
                     "Depends" => {
                         // Parse dependencies (simplified)
                         for dep in value.split(',') {
-                            let dep_name = dep.trim().split_whitespace().next()
-                                .unwrap_or("").to_string();
+                            let dep_name = dep
+                                .trim()
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or("")
+                                .to_string();
                             if !dep_name.is_empty() {
                                 dependencies.push(dep_name);
                             }
@@ -67,7 +71,8 @@ impl DebAdapter {
                         size = value.parse().unwrap_or(0);
                     }
                     "Installed-Size" => {
-                        installed_size = value.parse::<u64>().unwrap_or(0) * 1024; // Convert KB to bytes
+                        installed_size = value.parse::<u64>().unwrap_or(0) * 1024;
+                        // Convert KB to bytes
                     }
                     _ => {}
                 }
@@ -76,7 +81,7 @@ impl DebAdapter {
 
         if name.is_empty() || version.is_empty() {
             return Err(PackageError::InvalidFormat(
-                "Missing required fields in control file".to_string()
+                "Missing required fields in control file".to_string(),
             ));
         }
 
@@ -97,7 +102,7 @@ impl PackageAdapter for DebAdapter {
         // Validate .deb format (ar archive)
         if !self.validate(data)? {
             return Err(PackageError::InvalidFormat(
-                ".deb file format validation failed".to_string()
+                ".deb file format validation failed".to_string(),
             ));
         }
 
@@ -109,11 +114,12 @@ impl PackageAdapter for DebAdapter {
         let mut package = ExtractedPackage::new(metadata);
 
         // Find and extract control scripts
-        let control_compressed = ar_archive.find_member("control.tar.gz")
+        let control_compressed = ar_archive
+            .find_member("control.tar.gz")
             .or_else(|| ar_archive.find_member("control.tar.xz"))
-            .ok_or_else(|| PackageError::InvalidFormat(
-                "Missing control archive in .deb".to_string()
-            ))?;
+            .ok_or_else(|| {
+                PackageError::InvalidFormat("Missing control archive in .deb".to_string())
+            })?;
 
         let control_tar = decompress(control_compressed)?;
         let control_archive = TarArchive::parse(&control_tar)?;
@@ -129,12 +135,13 @@ impl PackageAdapter for DebAdapter {
         }
 
         // Find and extract data archive
-        let data_compressed = ar_archive.find_member("data.tar.gz")
+        let data_compressed = ar_archive
+            .find_member("data.tar.gz")
             .or_else(|| ar_archive.find_member("data.tar.xz"))
             .or_else(|| ar_archive.find_member("data.tar.bz2"))
-            .ok_or_else(|| PackageError::InvalidFormat(
-                "Missing data archive in .deb".to_string()
-            ))?;
+            .ok_or_else(|| {
+                PackageError::InvalidFormat("Missing data archive in .deb".to_string())
+            })?;
 
         let data_tar = decompress(data_compressed)?;
         let data_archive = TarArchive::parse(&data_tar)?;
@@ -152,11 +159,10 @@ impl PackageAdapter for DebAdapter {
         let ar_archive = ArArchive::parse(data)?;
 
         // Find control.tar.gz or control.tar.xz
-        let control_compressed = ar_archive.find_member("control.tar.gz")
+        let control_compressed = ar_archive
+            .find_member("control.tar.gz")
             .or_else(|| ar_archive.find_member("control.tar.xz"))
-            .ok_or_else(|| PackageError::InvalidFormat(
-                "Missing control archive".to_string()
-            ))?;
+            .ok_or_else(|| PackageError::InvalidFormat("Missing control archive".to_string()))?;
 
         // Decompress the control archive
         let control_tar = decompress(control_compressed)?;
@@ -165,17 +171,17 @@ impl PackageAdapter for DebAdapter {
         let tar_archive = TarArchive::parse(&control_tar)?;
 
         // Find the control file
-        let control_entry = tar_archive.find_entry("control")
+        let control_entry = tar_archive
+            .find_entry("control")
             .or_else(|| tar_archive.find_entry("./control"))
-            .ok_or_else(|| PackageError::InvalidFormat(
-                "Missing control file in control archive".to_string()
-            ))?;
+            .ok_or_else(|| {
+                PackageError::InvalidFormat("Missing control file in control archive".to_string())
+            })?;
 
         // Parse control file content
-        let control_content = core::str::from_utf8(&control_entry.data)
-            .map_err(|_| PackageError::InvalidFormat(
-                "Invalid UTF-8 in control file".to_string()
-            ))?;
+        let control_content = core::str::from_utf8(&control_entry.data).map_err(|_| {
+            PackageError::InvalidFormat("Invalid UTF-8 in control file".to_string())
+        })?;
 
         self.parse_control_file(control_content)
     }

@@ -3,12 +3,15 @@
 //! Driver for Broadcom NetXtreme BCM5700/5701/5702/5703/5704/5705/5714/5715/5717/5718/5719/5720
 //! and other Broadcom Gigabit Ethernet controllers.
 
-use super::{ExtendedNetworkCapabilities, EnhancedNetworkStats, NetworkDriver, DeviceState, DeviceCapabilities, DeviceType, NetworkStats};
-use crate::net::{NetworkError, MacAddress};
+use super::{
+    DeviceCapabilities, DeviceState, DeviceType, EnhancedNetworkStats, ExtendedNetworkCapabilities,
+    NetworkDriver, NetworkStats,
+};
+use crate::net::{MacAddress, NetworkError};
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 /// Broadcom device information
 #[derive(Debug, Clone, Copy)]
@@ -51,54 +54,315 @@ pub enum BroadcomSeries {
 /// Broadcom NetXtreme device database (50+ entries)
 pub const BROADCOM_DEVICES: &[BroadcomDeviceInfo] = &[
     // BCM5700 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1644, name: "NetXtreme BCM5700 Gigabit Ethernet", series: BroadcomSeries::Bcm5700, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1645, name: "NetXtreme BCM5701 Gigabit Ethernet", series: BroadcomSeries::Bcm5701, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1646, name: "NetXtreme BCM5702 Gigabit Ethernet", series: BroadcomSeries::Bcm5701, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1647, name: "NetXtreme BCM5703 Gigabit Ethernet", series: BroadcomSeries::Bcm5703, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1648, name: "NetXtreme BCM5704 Gigabit Ethernet", series: BroadcomSeries::Bcm5704, max_speed_mbps: 1000, supports_tso: true, supports_rss: false, queue_count: 1 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1644,
+        name: "NetXtreme BCM5700 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5700,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1645,
+        name: "NetXtreme BCM5701 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5701,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1646,
+        name: "NetXtreme BCM5702 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5701,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1647,
+        name: "NetXtreme BCM5703 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5703,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1648,
+        name: "NetXtreme BCM5704 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5704,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: false,
+        queue_count: 1,
+    },
     // BCM5705 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1653, name: "NetXtreme BCM5705 Gigabit Ethernet", series: BroadcomSeries::Bcm5705, max_speed_mbps: 1000, supports_tso: true, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1654, name: "NetXtreme BCM5705_2 Gigabit Ethernet", series: BroadcomSeries::Bcm5705, max_speed_mbps: 1000, supports_tso: true, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x165D, name: "NetXtreme BCM5705M Gigabit Ethernet", series: BroadcomSeries::Bcm5705, max_speed_mbps: 1000, supports_tso: true, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x165E, name: "NetXtreme BCM5705M_2 Gigabit Ethernet", series: BroadcomSeries::Bcm5705, max_speed_mbps: 1000, supports_tso: true, supports_rss: false, queue_count: 1 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1653,
+        name: "NetXtreme BCM5705 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5705,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1654,
+        name: "NetXtreme BCM5705_2 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5705,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x165D,
+        name: "NetXtreme BCM5705M Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5705,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x165E,
+        name: "NetXtreme BCM5705M_2 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5705,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: false,
+        queue_count: 1,
+    },
     // BCM5714 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1668, name: "NetXtreme BCM5714 Gigabit Ethernet", series: BroadcomSeries::Bcm5714, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1669, name: "NetXtreme BCM5714S Gigabit Ethernet", series: BroadcomSeries::Bcm5714, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1668,
+        name: "NetXtreme BCM5714 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5714,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1669,
+        name: "NetXtreme BCM5714S Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5714,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
     // BCM5715 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1678, name: "NetXtreme BCM5715 Gigabit Ethernet", series: BroadcomSeries::Bcm5715, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1679, name: "NetXtreme BCM5715S Gigabit Ethernet", series: BroadcomSeries::Bcm5715, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1678,
+        name: "NetXtreme BCM5715 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5715,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1679,
+        name: "NetXtreme BCM5715S Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5715,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
     // BCM5717 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1655, name: "NetXtreme BCM5717 Gigabit PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1656, name: "NetXtreme BCM5718 Gigabit PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1657, name: "NetXtreme BCM5719 Gigabit PCIe", series: BroadcomSeries::Bcm5719, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1659, name: "NetXtreme BCM5721 Gigabit Ethernet", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1655,
+        name: "NetXtreme BCM5717 Gigabit PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1656,
+        name: "NetXtreme BCM5718 Gigabit PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1657,
+        name: "NetXtreme BCM5719 Gigabit PCIe",
+        series: BroadcomSeries::Bcm5719,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1659,
+        name: "NetXtreme BCM5721 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
     // BCM5719 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1657, name: "NetXtreme BCM5719 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5719, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x165A, name: "NetXtreme BCM5722 Gigabit Ethernet", series: BroadcomSeries::Bcm5719, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x165B, name: "NetXtreme BCM5723 Gigabit Ethernet", series: BroadcomSeries::Bcm5719, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1657,
+        name: "NetXtreme BCM5719 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5719,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x165A,
+        name: "NetXtreme BCM5722 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5719,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x165B,
+        name: "NetXtreme BCM5723 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5719,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
     // BCM5720 series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x165F, name: "NetXtreme BCM5720 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5720, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1660, name: "NetXtreme BCM5720 2-port Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5720, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x165F,
+        name: "NetXtreme BCM5720 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5720,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1660,
+        name: "NetXtreme BCM5720 2-port Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5720,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
     // Additional variants
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1641, name: "NetXtreme BCM5701 Gigabit Ethernet", series: BroadcomSeries::Bcm5701, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1642, name: "NetXtreme BCM5702 Gigabit Ethernet", series: BroadcomSeries::Bcm5701, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1643, name: "NetXtreme BCM5703 Gigabit Ethernet", series: BroadcomSeries::Bcm5703, max_speed_mbps: 1000, supports_tso: false, supports_rss: false, queue_count: 1 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1641,
+        name: "NetXtreme BCM5701 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5701,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1642,
+        name: "NetXtreme BCM5702 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5701,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1643,
+        name: "NetXtreme BCM5703 Gigabit Ethernet",
+        series: BroadcomSeries::Bcm5703,
+        max_speed_mbps: 1000,
+        supports_tso: false,
+        supports_rss: false,
+        queue_count: 1,
+    },
     // More BCM57xx variants
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x16A6, name: "NetXtreme BCM57801 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x16A7, name: "NetXtreme BCM57802 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x16A8, name: "NetXtreme BCM57804 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 4 },
-
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x16A6,
+        name: "NetXtreme BCM57801 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x16A7,
+        name: "NetXtreme BCM57802 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x16A8,
+        name: "NetXtreme BCM57804 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 4,
+    },
     // NetLink series
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1684, name: "NetLink BCM57780 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
-    BroadcomDeviceInfo { vendor_id: 0x14E4, device_id: 0x1686, name: "NetLink BCM57788 Gigabit Ethernet PCIe", series: BroadcomSeries::Bcm5717, max_speed_mbps: 1000, supports_tso: true, supports_rss: true, queue_count: 2 },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1684,
+        name: "NetLink BCM57780 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
+    BroadcomDeviceInfo {
+        vendor_id: 0x14E4,
+        device_id: 0x1686,
+        name: "NetLink BCM57788 Gigabit Ethernet PCIe",
+        series: BroadcomSeries::Bcm5717,
+        max_speed_mbps: 1000,
+        supports_tso: true,
+        supports_rss: true,
+        queue_count: 2,
+    },
 ];
 
 /// Broadcom register offsets (common across series)
@@ -134,12 +398,7 @@ pub struct BroadcomDriver {
 
 impl BroadcomDriver {
     /// Create new Broadcom driver instance
-    pub fn new(
-        name: String,
-        device_info: BroadcomDeviceInfo,
-        base_addr: u64,
-        irq: u8,
-    ) -> Self {
+    pub fn new(name: String, device_info: BroadcomDeviceInfo, base_addr: u64, irq: u8) -> Self {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.max_mtu = 9000;
         capabilities.hw_checksum = true;
@@ -155,7 +414,10 @@ impl BroadcomDriver {
         extended_capabilities.wake_on_lan = true;
         extended_capabilities.energy_efficient = true;
         extended_capabilities.pxe_boot = true;
-        extended_capabilities.sriov = matches!(device_info.series, BroadcomSeries::Bcm5719 | BroadcomSeries::Bcm5720);
+        extended_capabilities.sriov = matches!(
+            device_info.series,
+            BroadcomSeries::Bcm5719 | BroadcomSeries::Bcm5720
+        );
 
         Self {
             name,
@@ -174,9 +436,7 @@ impl BroadcomDriver {
 
     /// Read register
     fn read_reg(&self, offset: u32) -> u32 {
-        unsafe {
-            core::ptr::read_volatile((self.base_addr + offset as u64) as *const u32)
-        }
+        unsafe { core::ptr::read_volatile((self.base_addr + offset as u64) as *const u32) }
     }
 
     /// Write register
@@ -264,10 +524,10 @@ impl BroadcomDriver {
         // Set MAC address
         let mac_bytes = &self.mac_address;
         let mac_high = ((mac_bytes[0] as u32) << 8) | (mac_bytes[1] as u32);
-        let mac_low = ((mac_bytes[2] as u32) << 24) |
-                      ((mac_bytes[3] as u32) << 16) |
-                      ((mac_bytes[4] as u32) << 8) |
-                      (mac_bytes[5] as u32);
+        let mac_low = ((mac_bytes[2] as u32) << 24)
+            | ((mac_bytes[3] as u32) << 16)
+            | ((mac_bytes[4] as u32) << 8)
+            | (mac_bytes[5] as u32);
 
         self.write_reg(BCM_MAC_ADDR_0_HIGH, mac_high);
         self.write_reg(BCM_MAC_ADDR_0_LOW, mac_low);
@@ -427,9 +687,13 @@ impl NetworkDriver for BroadcomDriver {
 
         // Read link speed and duplex from MAC status register
         let mac_status = self.read_reg(BCM_MAC_STATUS);
-        let speed = if (mac_status & 0x10) != 0 { 1000 }
-                   else if (mac_status & 0x08) != 0 { 100 }
-                   else { 10 };
+        let speed = if (mac_status & 0x10) != 0 {
+            1000
+        } else if (mac_status & 0x08) != 0 {
+            100
+        } else {
+            10
+        };
         let full_duplex = (mac_status & 0x02) != 0;
 
         (true, speed, full_duplex)
@@ -492,7 +756,8 @@ impl NetworkDriver for BroadcomDriver {
         // Read and handle MAC events
         let mac_event = self.read_reg(BCM_MAC_EVENT);
 
-        if (mac_event & 0x01) != 0 { // Link state change
+        if (mac_event & 0x01) != 0 {
+            // Link state change
             self.stats.link_changes += 1;
         }
 
@@ -511,7 +776,8 @@ pub fn create_broadcom_driver(
     irq: u8,
 ) -> Option<(Box<dyn NetworkDriver>, ExtendedNetworkCapabilities)> {
     // Find matching device in database
-    let device_info = BROADCOM_DEVICES.iter()
+    let device_info = BROADCOM_DEVICES
+        .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)
         .copied()?;
 
@@ -524,12 +790,17 @@ pub fn create_broadcom_driver(
 
 /// Check if PCI device is a Broadcom NetXtreme controller
 pub fn is_broadcom_device(vendor_id: u16, device_id: u16) -> bool {
-    BROADCOM_DEVICES.iter()
+    BROADCOM_DEVICES
+        .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id)
 }
 
 /// Get Broadcom device information
-pub fn get_broadcom_device_info(vendor_id: u16, device_id: u16) -> Option<&'static BroadcomDeviceInfo> {
-    BROADCOM_DEVICES.iter()
+pub fn get_broadcom_device_info(
+    vendor_id: u16,
+    device_id: u16,
+) -> Option<&'static BroadcomDeviceInfo> {
+    BROADCOM_DEVICES
+        .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)
 }

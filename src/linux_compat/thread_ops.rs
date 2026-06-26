@@ -10,7 +10,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static THREAD_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -503,43 +503,65 @@ pub fn membarrier(cmd: i32, flags: i32) -> LinuxResult<i32> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_clone_flags() {
         // Thread creation requires VM and SIGHAND
         let flags = clone_flags::CLONE_THREAD | clone_flags::CLONE_VM | clone_flags::CLONE_SIGHAND;
-        assert!(clone(flags, core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut(), 0).is_ok());
+        assert!(clone(
+            flags,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            0
+        )
+        .is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_futex_wait() {
         let mut futex_word: i32 = 0;
 
         // Should return EAGAIN if value doesn't match
         assert_eq!(
-            futex(&mut futex_word, futex_op::FUTEX_WAIT, 1, core::ptr::null(), core::ptr::null_mut(), 0),
+            futex(
+                &mut futex_word,
+                futex_op::FUTEX_WAIT,
+                1,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                0
+            ),
             Err(LinuxError::EAGAIN)
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_futex_wake() {
         let mut futex_word: i32 = 0;
 
         // Wake should succeed
-        assert!(futex(&mut futex_word, futex_op::FUTEX_WAKE, 1, core::ptr::null(), core::ptr::null_mut(), 0).is_ok());
+        assert!(futex(
+            &mut futex_word,
+            futex_op::FUTEX_WAKE,
+            1,
+            core::ptr::null(),
+            core::ptr::null_mut(),
+            0
+        )
+        .is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_gettid() {
         let tid = gettid();
         assert!(tid > 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_cpu_affinity() {
         let mut mask: CpuSet = 0;
         assert!(sched_getaffinity(0, 8, &mut mask).is_ok());

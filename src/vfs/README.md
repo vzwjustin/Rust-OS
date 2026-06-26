@@ -251,7 +251,7 @@ The VFS can be tested using the kernel's testing framework:
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_vfs_basic_operations() {
         vfs::init().unwrap();
 

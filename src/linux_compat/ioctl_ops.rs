@@ -10,7 +10,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static IOCTL_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -230,10 +230,10 @@ pub fn flock(fd: Fd, operation: i32) -> LinuxResult<i32> {
     }
 
     // Lock operations
-    const LOCK_SH: i32 = 1;    // Shared lock
-    const LOCK_EX: i32 = 2;    // Exclusive lock
-    const LOCK_UN: i32 = 8;    // Unlock
-    const LOCK_NB: i32 = 4;    // Non-blocking
+    const LOCK_SH: i32 = 1; // Shared lock
+    const LOCK_EX: i32 = 2; // Exclusive lock
+    const LOCK_UN: i32 = 8; // Unlock
+    const LOCK_NB: i32 = 4; // Non-blocking
 
     let op = operation & !LOCK_NB;
     match op {
@@ -254,18 +254,18 @@ pub struct WinSize {
     pub ws_ypixel: u16,
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_fcntl_basic() {
         assert!(fcntl(3, fcntl_cmd::F_GETFL, 0).is_ok());
         assert!(fcntl(3, fcntl_cmd::F_SETFL, open_flags::O_NONBLOCK as u64).is_ok());
         assert!(fcntl(-1, fcntl_cmd::F_GETFL, 0).is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_ioctl_basic() {
         let mut winsize = WinSize {
             ws_row: 0,

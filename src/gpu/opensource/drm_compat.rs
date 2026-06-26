@@ -3,18 +3,18 @@
 //! This module provides a compatibility layer that emulates Linux DRM
 //! functionality for RustOS, enabling opensource drivers to work.
 
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::{String, ToString};
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// DRM device types
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DRMDeviceType {
-    Primary,     // /dev/dri/cardN
-    Control,     // /dev/dri/controlD64+N
-    Render,      // /dev/dri/renderD128+N
+    Primary, // /dev/dri/cardN
+    Control, // /dev/dri/controlD64+N
+    Render,  // /dev/dri/renderD128+N
 }
 
 /// DRM capability flags
@@ -189,7 +189,11 @@ impl DRMCompatLayer {
     }
 
     /// Register a new DRM device
-    pub fn register_device(&mut self, card_number: u32, driver_name: &str) -> Result<(), &'static str> {
+    pub fn register_device(
+        &mut self,
+        card_number: u32,
+        driver_name: &str,
+    ) -> Result<(), &'static str> {
         let device_path = format!("/dev/dri/card{}", card_number);
         self.device_nodes.insert(card_number, device_path);
 
@@ -210,7 +214,7 @@ impl DRMCompatLayer {
             vtotal: 1125,
             vscan: 0,
             vrefresh: 60,
-            flags: 0x5, // DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC
+            flags: 0x5,       // DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC
             type_flags: 0x40, // DRM_MODE_TYPE_DRIVER
             name: "1920x1080".to_string(),
         };
@@ -296,7 +300,13 @@ impl DRMCompatLayer {
     }
 
     /// Create a framebuffer object
-    pub fn create_framebuffer(&mut self, width: u32, height: u32, format: u32, handle: u32) -> Result<u32, &'static str> {
+    pub fn create_framebuffer(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: u32,
+        handle: u32,
+    ) -> Result<u32, &'static str> {
         let fb_id = self.next_object_id;
         self.next_object_id += 1;
 
@@ -320,9 +330,15 @@ impl DRMCompatLayer {
     }
 
     /// Set CRTC configuration
-    pub fn set_crtc(&mut self, crtc_id: u32, fb_id: u32, x: u32, y: u32, mode: Option<DRMDisplayMode>) -> Result<(), &'static str> {
-        let crtc = self.crtcs.get_mut(&crtc_id)
-            .ok_or("Invalid CRTC ID")?;
+    pub fn set_crtc(
+        &mut self,
+        crtc_id: u32,
+        fb_id: u32,
+        x: u32,
+        y: u32,
+        mode: Option<DRMDisplayMode>,
+    ) -> Result<(), &'static str> {
+        let crtc = self.crtcs.get_mut(&crtc_id).ok_or("Invalid CRTC ID")?;
 
         crtc.fb_id = fb_id;
         crtc.x = x;
@@ -340,8 +356,7 @@ impl DRMCompatLayer {
 
     /// Page flip operation
     pub fn page_flip(&mut self, crtc_id: u32, fb_id: u32, flags: u32) -> Result<(), &'static str> {
-        let crtc = self.crtcs.get_mut(&crtc_id)
-            .ok_or("Invalid CRTC ID")?;
+        let crtc = self.crtcs.get_mut(&crtc_id).ok_or("Invalid CRTC ID")?;
 
         if !self.framebuffers.contains_key(&fb_id) {
             return Err("Invalid framebuffer ID");
@@ -351,18 +366,23 @@ impl DRMCompatLayer {
 
         // Handle page flip flags
         if flags & 0x1 != 0 { // DRM_MODE_PAGE_FLIP_EVENT
-            // Would queue vblank event in real implementation
+             // Would queue vblank event in real implementation
         }
 
         if flags & 0x2 != 0 { // DRM_MODE_PAGE_FLIP_ASYNC
-            // Immediate flip without waiting for vblank
+             // Immediate flip without waiting for vblank
         }
 
         Ok(())
     }
 
     /// Create a dumb buffer
-    pub fn create_dumb_buffer(&mut self, width: u32, height: u32, bpp: u32) -> Result<DumbBuffer, &'static str> {
+    pub fn create_dumb_buffer(
+        &mut self,
+        width: u32,
+        height: u32,
+        bpp: u32,
+    ) -> Result<DumbBuffer, &'static str> {
         let handle = self.next_object_id;
         self.next_object_id += 1;
 
@@ -439,19 +459,47 @@ impl DRMCompatLayer {
     pub fn get_capability(&self, capability: u64) -> Result<u64, &'static str> {
         match capability {
             0x1 => Ok(if self.capabilities.dumb_buffer { 1 } else { 0 }),
-            0x2 => Ok(if self.capabilities.vblank_high_crtc { 1 } else { 0 }),
+            0x2 => Ok(if self.capabilities.vblank_high_crtc {
+                1
+            } else {
+                0
+            }),
             0x3 => Ok(self.capabilities.dumb_preferred_depth as u64),
-            0x4 => Ok(if self.capabilities.dumb_prefer_shadow { 1 } else { 0 }),
+            0x4 => Ok(if self.capabilities.dumb_prefer_shadow {
+                1
+            } else {
+                0
+            }),
             0x5 => Ok(if self.capabilities.prime { 1 } else { 0 }),
             0x6 => Ok(if self.capabilities.timestamping { 1 } else { 0 }),
-            0x7 => Ok(if self.capabilities.async_page_flip { 1 } else { 0 }),
+            0x7 => Ok(if self.capabilities.async_page_flip {
+                1
+            } else {
+                0
+            }),
             0x8 => Ok(self.capabilities.cursor_width as u64),
             0x9 => Ok(self.capabilities.cursor_height as u64),
-            0xA => Ok(if self.capabilities.addfb2_modifiers { 1 } else { 0 }),
-            0xB => Ok(if self.capabilities.page_flip_target { 1 } else { 0 }),
-            0xC => Ok(if self.capabilities.crtc_in_vblank_event { 1 } else { 0 }),
+            0xA => Ok(if self.capabilities.addfb2_modifiers {
+                1
+            } else {
+                0
+            }),
+            0xB => Ok(if self.capabilities.page_flip_target {
+                1
+            } else {
+                0
+            }),
+            0xC => Ok(if self.capabilities.crtc_in_vblank_event {
+                1
+            } else {
+                0
+            }),
             0xD => Ok(if self.capabilities.syncobj { 1 } else { 0 }),
-            0xE => Ok(if self.capabilities.syncobj_timeline { 1 } else { 0 }),
+            0xE => Ok(if self.capabilities.syncobj_timeline {
+                1
+            } else {
+                0
+            }),
             _ => Err("Unknown capability"),
         }
     }
@@ -465,7 +513,7 @@ impl DRMCompatLayer {
             0x34324152 => (32, 32), // DRM_FORMAT_AR24
             0x34325242 => (32, 24), // DRM_FORMAT_XB24
             0x34324142 => (32, 32), // DRM_FORMAT_AB24
-            _ => (32, 24), // Default to XRGB8888
+            _ => (32, 24),          // Default to XRGB8888
         }
     }
 }

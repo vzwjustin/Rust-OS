@@ -59,7 +59,8 @@ pub fn init() {
             crate::gdt::get_user_data_selector(),
             crate::gdt::get_kernel_code_selector(),
             crate::gdt::get_kernel_data_selector(),
-        ).expect("Failed to write STAR MSR");
+        )
+        .expect("Failed to write STAR MSR");
     }
 
     // Configure LSTAR MSR - points to syscall entry point
@@ -142,108 +143,108 @@ unsafe fn write_msr(msr: u32, value: u64) {
 pub unsafe extern "C" fn syscall_entry() {
     use core::arch::naked_asm;
 
+    // ponytail: push the full user GP register set to form a `SyscallFrame` the
+    // Rust handler reads through a pointer. The old code `call`ed a plain
+    // `extern "C"` wrapper that then re-read rax/rdi/rsi/... via `asm!` — but the
+    // wrapper's own C prologue had already clobbered those arg registers, so the
+    // handler saw garbage. Passing a pointer to a frame we control fixes the
+    // calling convention without needing 7-argument stack-alignment juggling.
+    //
+    // SYSCALL entry state: RAX=num, RDI/RSI/RDX/R10/R8/R9=args,
+    // RCX=user RIP, R11=user RFLAGS (RCX/R11 must survive for SYSRETQ).
     naked_asm!(
-        // Save user space registers
-        // We're now on the kernel stack (from TSS RSP0)
-
-        // Save the return address (RCX) and RFLAGS (R11)
-        "push rcx",           // User RIP
-        "push r11",           // User RFLAGS
-
-        // Save user stack pointer (will be in a per-CPU or per-task structure)
-        // For now, we just preserve it on the stack
-        "push rbp",
-        "mov rbp, rsp",
-
-        // Save registers that might be clobbered
+        // Push order (high->low addr). Read from the frame pointer (rsp after the
+        // pushes) the layout is the reverse: r15 at offset 0 ... rax at offset 112.
+        "push rax",           // syscall number
         "push rbx",
+        "push rcx",           // user RIP
+        "push rdx",           // arg3
+        "push rsi",           // arg2
+        "push rdi",           // arg1
+        "push rbp",
+        "push r8",            // arg5
+        "push r9",            // arg6
+        "push r10",           // arg4
+        "push r11",           // user RFLAGS
         "push r12",
         "push r13",
         "push r14",
         "push r15",
 
-        // Arguments are already in the right registers for the handler:
-        // RAX = syscall number
-        // RDI = arg1, RSI = arg2, RDX = arg3
-        // R10 = arg4, R8 = arg5, R9 = arg6
+        // Pass &frame (current rsp) as the single SysV argument.
+        "mov rdi, rsp",
 
-        // Call the syscall dispatcher
-        // It will read arguments from registers
+        // Align the stack to 16 bytes for the call without losing the frame base.
+        "mov rbp, rsp",
+        "and rsp, -16",
+
         "call {syscall_handler}",
 
-        // Result is now in RAX
+        // Restore exact stack and overwrite the saved RAX slot (offset 14*8 = 112)
+        // with the i64 return value so the user sees it after SYSRETQ.
+        "mov rsp, rbp",
+        "mov [rsp + 112], rax",
 
-        // Restore saved registers
+        // Pop the frame back into registers (reverse of the push order).
         "pop r15",
         "pop r14",
         "pop r13",
         "pop r12",
-        "pop rbx",
-
+        "pop r11",            // user RFLAGS
+        "pop r10",
+        "pop r9",
+        "pop r8",
         "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",            // user RIP
+        "pop rbx",
+        "pop rax",            // return value
 
-        // Restore return address and RFLAGS
-        "pop r11",           // User RFLAGS
-        "pop rcx",           // User RIP
-
-        // Return to user mode with SYSRET
-        // SYSRET will:
-        // - Load RIP from RCX
-        // - Load RFLAGS from R11
-        // - Load CS from STAR[63:48]+16
-        // - Load SS from STAR[63:48]+8
-        // - Set CPL to 3
+        // Return to user mode with SYSRET (RIP<-RCX, RFLAGS<-R11, CPL<-3).
         "sysretq",
 
         syscall_handler = sym syscall_handler_wrapper
     );
 }
 
-/// Wrapper function that handles syscall dispatch
+/// Saved user register frame built by `syscall_entry` before the dispatch call.
 ///
-/// This is called from the syscall_entry assembly code.
-/// It reads arguments from registers and dispatches to the syscall handler.
+/// Field order matches the on-stack layout (lowest address first), i.e. the
+/// reverse of the push order in `syscall_entry`.
+#[repr(C)]
+struct SyscallFrame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
+}
+
+/// Wrapper function that handles syscall dispatch.
+///
+/// Called from `syscall_entry` with a pointer to the saved user register frame.
+/// Reading the args from the frame (rather than re-reading the live registers)
+/// is what makes this correct: by the time a normal `extern "C"` body runs, its
+/// prologue may already have reused the SysV arg registers.
 #[no_mangle]
-extern "C" fn syscall_handler_wrapper() -> i64 {
-    let syscall_num: u64;
-    let arg1: u64;
-    let arg2: u64;
-    let arg3: u64;
-    let arg4: u64;
-    let arg5: u64;
-    let arg6: u64;
+extern "C" fn syscall_handler_wrapper(frame: *const SyscallFrame) -> i64 {
+    // ponytail: arg mapping follows the Linux x86_64 syscall convention —
+    // num=rax, arg1=rdi, arg2=rsi, arg3=rdx, arg4=r10, arg5=r8, arg6=r9.
+    let f = unsafe { &*frame };
 
-    unsafe {
-        asm!(
-            // Read syscall arguments from registers
-            "mov {syscall_num}, rax",
-            "mov {arg1}, rdi",
-            "mov {arg2}, rsi",
-            "mov {arg3}, rdx",
-            "mov {arg4}, r10",
-            "mov {arg5}, r8",
-            "mov {arg6}, r9",
-            syscall_num = out(reg) syscall_num,
-            arg1 = out(reg) arg1,
-            arg2 = out(reg) arg2,
-            arg3 = out(reg) arg3,
-            arg4 = out(reg) arg4,
-            arg5 = out(reg) arg5,
-            arg6 = out(reg) arg6,
-            options(nostack, preserves_flags)
-        );
-    }
-
-    // Dispatch to the syscall handler
-    crate::syscall_handler::dispatch_syscall(
-        syscall_num,
-        arg1,
-        arg2,
-        arg3,
-        arg4,
-        arg5,
-        arg6,
-    )
+    crate::syscall_handler::dispatch_syscall(f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9)
 }
 
 /// Check if SYSCALL/SYSRET instructions are supported

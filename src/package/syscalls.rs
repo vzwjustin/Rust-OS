@@ -2,8 +2,8 @@
 //!
 //! This module provides syscall interface for userspace package management operations.
 
-use alloc::string::{String, ToString};
 use crate::package::{PackageManager, PackageManagerType, PackageOperation, PackageResult};
+use alloc::string::{String, ToString};
 
 /// Package management syscall numbers
 pub mod syscall_numbers {
@@ -42,10 +42,9 @@ pub fn init_package_manager(manager_type: PackageManagerType) {
 /// Get a reference to the package manager
 fn get_package_manager() -> PackageResult<&'static mut PackageManager> {
     unsafe {
-        PACKAGE_MANAGER.as_mut()
-            .ok_or_else(|| crate::package::PackageError::InvalidOperation(
-                "Package manager not initialized".into()
-            ))
+        PACKAGE_MANAGER.as_mut().ok_or_else(|| {
+            crate::package::PackageError::InvalidOperation("Package manager not initialized".into())
+        })
     }
 }
 
@@ -84,10 +83,12 @@ pub fn handle_package_syscall(
 
             match pm.execute_operation(PackageOperation::Search, &query) {
                 Ok(result) => {
-                    unsafe { write_string_to_user(arg3, arg4, &result)?; }
+                    unsafe {
+                        write_string_to_user(arg3, arg4, &result)?;
+                    }
                     Ok(result.len() as isize)
                 }
-                Err(_) => Err("Package search failed")
+                Err(_) => Err("Package search failed"),
             }
         }
 
@@ -97,10 +98,12 @@ pub fn handle_package_syscall(
 
             match pm.execute_operation(PackageOperation::Info, &name) {
                 Ok(result) => {
-                    unsafe { write_string_to_user(arg3, arg4, &result)?; }
+                    unsafe {
+                        write_string_to_user(arg3, arg4, &result)?;
+                    }
                     Ok(result.len() as isize)
                 }
-                Err(_) => Err("Package info failed")
+                Err(_) => Err("Package info failed"),
             }
         }
 
@@ -109,10 +112,12 @@ pub fn handle_package_syscall(
 
             match pm.execute_operation(PackageOperation::List, "") {
                 Ok(result) => {
-                    unsafe { write_string_to_user(arg1, arg2, &result)?; }
+                    unsafe {
+                        write_string_to_user(arg1, arg2, &result)?;
+                    }
                     Ok(result.len() as isize)
                 }
-                Err(_) => Err("Package list failed")
+                Err(_) => Err("Package list failed"),
             }
         }
 
@@ -133,7 +138,7 @@ pub fn handle_package_syscall(
                 .map_err(|_| "Package upgrade failed")
         }
 
-        _ => Err("Unknown package management syscall")
+        _ => Err("Unknown package management syscall"),
     }
 }
 

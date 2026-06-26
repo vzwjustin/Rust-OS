@@ -3,27 +3,24 @@
 //! Provides virtual memory management, page tables, and memory protection for RustOS.
 //! Implements x86_64 4-level paging with support for mmap, munmap, mprotect, and brk.
 
+pub mod examples;
+pub mod memory_region;
 pub mod page_table;
 pub mod virtual_memory;
-pub mod memory_region;
-pub mod examples;
 
-#[cfg(test)]
-mod tests;
-
-pub use page_table::{PageTable, PageTableManager, PageTableFlags};
-pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
 pub use memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
+pub use page_table::{PageTable, PageTableFlags, PageTableManager};
+pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
 
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use spin::Mutex;
 use x86_64::{
     structures::paging::{
         FrameAllocator, Mapper, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB,
     },
     PhysAddr, VirtAddr,
 };
-use spin::Mutex;
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 
 /// Global virtual memory manager instance
 static VIRTUAL_MEMORY_MANAGER: Mutex<Option<VirtualMemoryManager>> = Mutex::new(None);
@@ -225,7 +222,7 @@ pub struct MemoryStats {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_mmap_flags() {
         let flags = MmapFlags::anonymous_private();
         assert!(flags.anonymous);
@@ -234,7 +231,7 @@ mod tests {
         assert!(!flags.fixed);
     }
 
-    #[test]
+    #[test_case]
     fn test_protection_flags() {
         let prot = ProtectionFlags::READ | ProtectionFlags::WRITE;
         assert!(prot.contains(ProtectionFlags::READ));

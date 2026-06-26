@@ -49,7 +49,7 @@ fn pci_config_read_u32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     unsafe {
         // Write address to CONFIG_ADDRESS (0xCF8)
         asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") address, options(nomem, nostack, preserves_flags));
-        
+
         // Read data from CONFIG_DATA (0xCFC)
         let mut data: u32;
         asm!("in eax, dx", out("eax") data, in("dx") 0xCFCu16, options(nomem, nostack, preserves_flags));
@@ -122,7 +122,7 @@ pub fn scan_pci_devices() -> Vec<PciDevice> {
             for function in 0..8 {
                 if let Some(pci_device) = read_pci_device(bus as u8, device as u8, function as u8) {
                     devices.push(pci_device);
-                    
+
                     // If this is function 0 and it's not a multi-function device,
                     // skip the other functions
                     if function == 0 {

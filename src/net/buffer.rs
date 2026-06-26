@@ -3,9 +3,9 @@
 //! This module provides efficient buffer management for network operations,
 //! including packet buffers, ring buffers, buffer pools, and zero-copy operations.
 
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::{boxed::Box, vec::Vec};
-use alloc::collections::VecDeque;
 // use alloc::string::ToString; // Unused
 // use core::mem;
 // use core::ptr;
@@ -838,7 +838,7 @@ pub fn deallocate_buffer(buffer: PacketBuffer) {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_packet_buffer_creation() {
         let buffer = PacketBuffer::new(1024, 1, 0).unwrap();
         assert_eq!(buffer.capacity(), 1024);
@@ -846,7 +846,7 @@ mod tests {
         assert!(buffer.is_empty());
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_packet_buffer_write_read() {
         let mut buffer = PacketBuffer::new(1024, 1, 0).unwrap();
         let data = b"Hello, World!";
@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(&read_buffer[..read], data);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_ring_buffer() {
         let mut ring = RingBuffer::new(3);
         assert!(ring.is_empty());
@@ -879,7 +879,7 @@ mod tests {
         assert_eq!(popped.metadata().id, 1);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_buffer_pool() {
         let mut pool = BufferPool::new(1024, 5);
         assert_eq!(pool.available_count(), 5);
@@ -891,7 +891,7 @@ mod tests {
         assert_eq!(pool.available_count(), 5);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_buffer_chain() {
         let mut chain = BufferChain::new();
         assert!(chain.is_empty());
@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(&output[..read], b"Hello, World!");
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_buffer_flags() {
         let mut flags = BufferFlags::empty();
         assert!(!flags.contains(BufferFlags::tcp()));
@@ -923,7 +923,7 @@ mod tests {
         assert!(!flags.contains(BufferFlags::tcp()));
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_buffer_metadata() {
         let meta = BufferMetadata::new(42, 1000);
         assert_eq!(meta.id, 42);

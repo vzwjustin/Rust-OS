@@ -3,7 +3,7 @@
 //! This module implements multiple scheduling algorithms including round-robin
 //! and priority-based scheduling for RustOS processes.
 
-use super::{Pid, Priority, get_system_time};
+use super::{get_system_time, Pid, Priority};
 use alloc::collections::{BTreeMap, VecDeque};
 
 /// Scheduling algorithm types
@@ -157,11 +157,18 @@ impl Scheduler {
     /// Initialize the scheduler
     pub fn init(&mut self) -> Result<(), &'static str> {
         // Initialize priority queues
-        self.queues.insert(Priority::RealTime, ProcessQueue::new(Priority::RealTime, 50));
-        self.queues.insert(Priority::High, ProcessQueue::new(Priority::High, 25));
-        self.queues.insert(Priority::Normal, ProcessQueue::new(Priority::Normal, 10));
-        self.queues.insert(Priority::Low, ProcessQueue::new(Priority::Low, 5));
-        self.queues.insert(Priority::Idle, ProcessQueue::new(Priority::Idle, 1));
+        self.queues.insert(
+            Priority::RealTime,
+            ProcessQueue::new(Priority::RealTime, 50),
+        );
+        self.queues
+            .insert(Priority::High, ProcessQueue::new(Priority::High, 25));
+        self.queues
+            .insert(Priority::Normal, ProcessQueue::new(Priority::Normal, 10));
+        self.queues
+            .insert(Priority::Low, ProcessQueue::new(Priority::Low, 5));
+        self.queues
+            .insert(Priority::Idle, ProcessQueue::new(Priority::Idle, 1));
 
         self.stats.last_schedule_time = get_system_time();
         Ok(())
@@ -170,14 +177,17 @@ impl Scheduler {
     /// Add a process to the scheduler
     pub fn add_process(&mut self, pid: Pid, priority: Priority) -> Result<(), &'static str> {
         // Add process info
-        self.process_info.insert(pid, ProcessSchedulingInfo {
-            priority,
-            last_scheduled: 0,
-            total_cpu_time: 0,
-            ready_time: get_system_time(),
-            schedule_count: 0,
-            blocked: false,
-        });
+        self.process_info.insert(
+            pid,
+            ProcessSchedulingInfo {
+                priority,
+                last_scheduled: 0,
+                total_cpu_time: 0,
+                ready_time: get_system_time(),
+                schedule_count: 0,
+                blocked: false,
+            },
+        );
 
         // Add to appropriate queue
         if let Some(queue) = self.queues.get_mut(&priority) {
@@ -288,15 +298,14 @@ impl Scheduler {
                 info.last_scheduled = current_time;
                 info.schedule_count += 1;
 
-                wait_info = Some((
-                    current_time.saturating_sub(info.ready_time),
-                    info.priority,
-                ));
+                wait_info = Some((current_time.saturating_sub(info.ready_time), info.priority));
             }
 
             if let Some((wait_time, priority)) = wait_info {
                 self.update_average_wait_time(wait_time as f32);
-                self.current_time_slice = self.queues.get(&priority)
+                self.current_time_slice = self
+                    .queues
+                    .get(&priority)
                     .map(|q| q.time_slice)
                     .unwrap_or(self.min_time_slice);
             }
@@ -371,8 +380,9 @@ impl Scheduler {
     /// Update average wait time
     fn update_average_wait_time(&mut self, new_wait_time: f32) {
         let total_decisions = self.stats.scheduling_decisions as f32;
-        self.stats.average_wait_time =
-            (self.stats.average_wait_time * (total_decisions - 1.0) + new_wait_time) / total_decisions;
+        self.stats.average_wait_time = (self.stats.average_wait_time * (total_decisions - 1.0)
+            + new_wait_time)
+            / total_decisions;
     }
 
     /// Get current process
@@ -396,7 +406,11 @@ impl Scheduler {
     }
 
     /// Update process priority (for priority inheritance, etc.)
-    pub fn update_process_priority(&mut self, pid: Pid, new_priority: Priority) -> Result<(), &'static str> {
+    pub fn update_process_priority(
+        &mut self,
+        pid: Pid,
+        new_priority: Priority,
+    ) -> Result<(), &'static str> {
         if let Some(info) = self.process_info.get_mut(&pid) {
             let old_priority = info.priority;
             info.priority = new_priority;
@@ -431,9 +445,12 @@ impl Scheduler {
         let current_time = get_system_time();
         let time_diff = current_time.saturating_sub(self.stats.last_schedule_time);
         if time_diff > 0 {
-            let utilization = if self.current_process.is_some() { 100.0 } else { 0.0 };
-            self.stats.cpu_utilization =
-                (self.stats.cpu_utilization * 0.9) + (utilization * 0.1);
+            let utilization = if self.current_process.is_some() {
+                100.0
+            } else {
+                0.0
+            };
+            self.stats.cpu_utilization = (self.stats.cpu_utilization * 0.9) + (utilization * 0.1);
         }
 
         // Update process CPU time
@@ -462,7 +479,11 @@ pub struct ProcessSchedulingStats {
 /// Global scheduler functions for external access
 
 /// Create a new process and add it to the scheduler
-pub fn create_process(parent_pid: Option<Pid>, priority: Priority, name: &str) -> Result<Pid, &'static str> {
+pub fn create_process(
+    parent_pid: Option<Pid>,
+    priority: Priority,
+    name: &str,
+) -> Result<Pid, &'static str> {
     let process_manager = super::get_process_manager();
     process_manager.create_process(name, parent_pid, priority)
 }
@@ -473,7 +494,7 @@ pub fn schedule() -> Result<Option<Pid>, &'static str> {
     process_manager.schedule()
 }
 
-/// Get scheduler statistics 
+/// Get scheduler statistics
 pub fn get_scheduler_stats() -> SchedulingStats {
     let process_manager = super::get_process_manager();
     let scheduler = process_manager.scheduler.lock();
@@ -492,20 +513,20 @@ pub fn timer_tick(delta_ms: u64) {
 pub fn yield_cpu() {
     // Get the process manager and trigger a scheduling decision
     let process_manager = super::get_process_manager();
-    
+
     // Schedule the next process
     if let Ok(Some(next_pid)) = process_manager.schedule() {
         // In a full implementation, this would trigger a context switch
         // For now, we update the current process tracking
         process_manager.set_current_process(next_pid);
-        
+
         // Note: Actual context switching would require:
         // 1. Saving current process state (registers, stack, etc.)
         // 2. Loading next process state
         // 3. Switching page tables (CR3 register)
         // 4. Updating kernel stacks
         // 5. Jumping to next process execution point
-        
+
         // This simplified version just updates tracking
         crate::serial_println!("Yielded CPU to process {}", next_pid);
     } else {
@@ -518,13 +539,13 @@ pub fn yield_cpu() {
 pub fn block_current_process() -> Result<(), &'static str> {
     let process_manager = super::get_process_manager();
     let current_pid = process_manager.current_process();
-    
+
     // Block the current process
     process_manager.block_process(current_pid)?;
-    
+
     // Yield to the next process
     yield_cpu();
-    
+
     Ok(())
 }
 
@@ -537,15 +558,15 @@ pub fn wake_process(pid: Pid) -> Result<(), &'static str> {
 /// Terminate a process and yield to scheduler
 pub fn terminate_process(pid: Pid, exit_status: i32) -> Result<(), &'static str> {
     let process_manager = super::get_process_manager();
-    
+
     // Terminate the process
     process_manager.terminate_process(pid, exit_status)?;
-    
+
     // If we terminated the current process, yield to scheduler
     if pid == process_manager.current_process() {
         yield_cpu();
     }
-    
+
     Ok(())
 }
 
@@ -553,7 +574,7 @@ pub fn terminate_process(pid: Pid, exit_status: i32) -> Result<(), &'static str>
 pub fn set_process_priority(pid: Pid, priority: Priority) -> Result<(), &'static str> {
     let process_manager = super::get_process_manager();
     let mut scheduler = process_manager.scheduler.lock();
-    
+
     // Update priority in scheduler
     scheduler.update_process_priority(pid, priority)
 }

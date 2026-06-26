@@ -3,11 +3,11 @@
 //! This module provides comprehensive kernel threading support with synchronization
 //! primitives, thread-local storage, and advanced threading features for RustOS.
 
-use super::{Pid, Priority, CpuContext, get_system_time};
+use super::{get_system_time, CpuContext, Pid, Priority};
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 
@@ -165,7 +165,7 @@ impl ThreadControlBlock {
             sched_info: ThreadSchedulingInfo {
                 vruntime: 0,
                 nice: 0,
-                weight: 1024, // Default weight
+                weight: 1024,   // Default weight
                 time_slice: 10, // 10ms default
                 schedule_count: 0,
                 last_preempted: 0,
@@ -265,8 +265,8 @@ impl ThreadManager {
             ThreadType::Kernel,
             Priority::RealTime,
             "kernel_main",
-            0, // Will be set by kernel
-            0, // Kernel threads don't have user stacks
+            0,      // Will be set by kernel
+            0,      // Kernel threads don't have user stacks
             0x2000, // 8KB kernel stack
         );
 
@@ -408,7 +408,10 @@ impl ThreadManager {
         // Add to process thread list
         {
             let mut process_threads = self.process_threads.write();
-            process_threads.entry(pid).or_insert_with(Vec::new).push(tid);
+            process_threads
+                .entry(pid)
+                .or_insert_with(Vec::new)
+                .push(tid);
         }
 
         // Add to ready queue
@@ -574,28 +577,32 @@ impl ThreadManager {
 
     /// Allocate kernel stack
     fn allocate_stack(&self, size: usize) -> Result<u64, &'static str> {
-        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection};
+        use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
-        let region = memory_manager.allocate_region(
-            size,
-            MemoryRegionType::KernelStack,
-            MemoryProtection::KERNEL_DATA,
-        ).map_err(|_| "Failed to allocate kernel stack")?;
+        let region = memory_manager
+            .allocate_region(
+                size,
+                MemoryRegionType::KernelStack,
+                MemoryProtection::KERNEL_DATA,
+            )
+            .map_err(|_| "Failed to allocate kernel stack")?;
 
         Ok(region.start.as_u64())
     }
 
     /// Allocate user stack
     fn allocate_user_stack(&self, size: usize) -> Result<u64, &'static str> {
-        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection};
+        use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
-        let region = memory_manager.allocate_region(
-            size,
-            MemoryRegionType::UserStack,
-            MemoryProtection::USER_DATA,
-        ).map_err(|_| "Failed to allocate user stack")?;
+        let region = memory_manager
+            .allocate_region(
+                size,
+                MemoryRegionType::UserStack,
+                MemoryProtection::USER_DATA,
+            )
+            .map_err(|_| "Failed to allocate user stack")?;
 
         Ok(region.start.as_u64())
     }
@@ -603,9 +610,18 @@ impl ThreadManager {
     /// List all threads
     pub fn list_threads(&self) -> Vec<(Tid, Pid, String, ThreadState, ThreadType)> {
         let threads = self.threads.read();
-        threads.iter().map(|(&tid, tcb)| {
-            (tid, tcb.pid, tcb.name_str().to_string(), tcb.state, tcb.thread_type)
-        }).collect()
+        threads
+            .iter()
+            .map(|(&tid, tcb)| {
+                (
+                    tid,
+                    tcb.pid,
+                    tcb.name_str().to_string(),
+                    tcb.state,
+                    tcb.thread_type,
+                )
+            })
+            .collect()
     }
 
     /// Get synchronization object manager
@@ -665,7 +681,8 @@ impl SyncObjectManager {
     pub fn create_semaphore(&mut self, initial_count: u32) -> u32 {
         let id = self.next_object_id;
         self.next_object_id += 1;
-        self.semaphores.insert(id, KernelSemaphore::new(initial_count));
+        self.semaphores
+            .insert(id, KernelSemaphore::new(initial_count));
         id
     }
 
@@ -673,7 +690,8 @@ impl SyncObjectManager {
     pub fn create_condition_variable(&mut self) -> u32 {
         let id = self.next_object_id;
         self.next_object_id += 1;
-        self.condition_variables.insert(id, KernelConditionVariable::new());
+        self.condition_variables
+            .insert(id, KernelConditionVariable::new());
         id
     }
 

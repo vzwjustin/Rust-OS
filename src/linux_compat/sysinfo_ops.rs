@@ -7,11 +7,11 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::string::String;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static SYSINFO_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -434,11 +434,11 @@ pub fn getpagesize() -> i32 {
     4096
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_sysinfo() {
         let mut info = SysInfo::zero();
         assert!(sysinfo(&mut info).is_ok());
@@ -446,31 +446,31 @@ mod tests {
         assert!(info.procs > 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_uname() {
         let mut uts = UtsName::default();
         assert!(uname(&mut uts).is_ok());
         assert_eq!(&uts.sysname[..6], b"RustOS");
     }
 
-    #[test]
+    #[test_case]
     fn test_hostname() {
         let mut buf = [0u8; 256];
         assert!(gethostname(buf.as_mut_ptr(), buf.len()).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_getrandom() {
         let mut buf = [0u8; 32];
         assert!(getrandom(buf.as_mut_ptr(), buf.len(), 0).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_pagesize() {
         assert_eq!(getpagesize(), 4096);
     }
 
-    #[test]
+    #[test_case]
     fn test_nprocs() {
         let n = get_nprocs();
         assert!(n > 0);

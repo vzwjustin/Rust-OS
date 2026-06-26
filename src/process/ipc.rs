@@ -3,7 +3,7 @@
 //! This module provides comprehensive IPC support including pipes, shared memory,
 //! signals, message queues, and semaphores for RustOS processes.
 
-use super::{Pid, get_process_manager, get_system_time};
+use super::{get_process_manager, get_system_time, Pid};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -25,25 +25,25 @@ pub const MAX_SHARED_MEMORY_SIZE: usize = 16 * 1024 * 1024;
 /// Signal types (POSIX-compatible)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Signal {
-    SIGHUP = 1,     // Hangup
-    SIGINT = 2,     // Interrupt
-    SIGQUIT = 3,    // Quit
-    SIGILL = 4,     // Illegal instruction
-    SIGTRAP = 5,    // Trace trap
-    SIGABRT = 6,    // Abort
-    SIGBUS = 7,     // Bus error
-    SIGFPE = 8,     // Floating point exception
-    SIGKILL = 9,    // Kill (cannot be caught)
-    SIGUSR1 = 10,   // User signal 1
-    SIGSEGV = 11,   // Segmentation violation
-    SIGUSR2 = 12,   // User signal 2
-    SIGPIPE = 13,   // Broken pipe
-    SIGALRM = 14,   // Alarm clock
-    SIGTERM = 15,   // Termination
-    SIGCHLD = 17,   // Child status changed
-    SIGCONT = 18,   // Continue
-    SIGSTOP = 19,   // Stop (cannot be caught)
-    SIGTSTP = 20,   // Terminal stop
+    SIGHUP = 1,   // Hangup
+    SIGINT = 2,   // Interrupt
+    SIGQUIT = 3,  // Quit
+    SIGILL = 4,   // Illegal instruction
+    SIGTRAP = 5,  // Trace trap
+    SIGABRT = 6,  // Abort
+    SIGBUS = 7,   // Bus error
+    SIGFPE = 8,   // Floating point exception
+    SIGKILL = 9,  // Kill (cannot be caught)
+    SIGUSR1 = 10, // User signal 1
+    SIGSEGV = 11, // Segmentation violation
+    SIGUSR2 = 12, // User signal 2
+    SIGPIPE = 13, // Broken pipe
+    SIGALRM = 14, // Alarm clock
+    SIGTERM = 15, // Termination
+    SIGCHLD = 17, // Child status changed
+    SIGCONT = 18, // Continue
+    SIGSTOP = 19, // Stop (cannot be caught)
+    SIGTSTP = 20, // Terminal stop
 }
 
 /// Signal disposition
@@ -257,7 +257,7 @@ impl SharedMemorySegment {
         permissions: SharedMemoryPermissions,
     ) -> Result<Self, &'static str> {
         // Allocate physical memory for the segment
-        use crate::memory::{get_memory_manager, MemoryRegionType, MemoryProtection};
+        use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
@@ -272,11 +272,9 @@ impl SharedMemorySegment {
             protection |= MemoryProtection::EXECUTE;
         }
 
-        let region = memory_manager.allocate_region(
-            size,
-            MemoryRegionType::SharedMemory,
-            protection,
-        ).map_err(|_| "Failed to allocate shared memory")?;
+        let region = memory_manager
+            .allocate_region(size, MemoryRegionType::SharedMemory, protection)
+            .map_err(|_| "Failed to allocate shared memory")?;
 
         Ok(Self {
             id,
@@ -491,7 +489,12 @@ impl IpcManager {
     }
 
     /// Close pipe
-    pub fn close_pipe(&self, pipe_id: IpcId, close_read: bool, close_write: bool) -> Result<(), &'static str> {
+    pub fn close_pipe(
+        &self,
+        pipe_id: IpcId,
+        close_read: bool,
+        close_write: bool,
+    ) -> Result<(), &'static str> {
         let mut pipes = self.pipes.write();
         if let Some(pipe) = pipes.get_mut(&pipe_id) {
             if close_read {
@@ -613,7 +616,11 @@ impl IpcManager {
     }
 
     /// Receive message from queue
-    pub fn receive_message(&self, msgq_id: IpcId, msg_type: u32) -> Result<Option<Message>, &'static str> {
+    pub fn receive_message(
+        &self,
+        msgq_id: IpcId,
+        msg_type: u32,
+    ) -> Result<Option<Message>, &'static str> {
         let mut message_queues = self.message_queues.write();
         if let Some(queue) = message_queues.get_mut(&msgq_id) {
             Ok(queue.receive(msg_type))
@@ -623,7 +630,12 @@ impl IpcManager {
     }
 
     /// Send signal to process
-    pub fn send_signal(&self, target_pid: Pid, signal: Signal, sender_pid: Pid) -> Result<(), &'static str> {
+    pub fn send_signal(
+        &self,
+        target_pid: Pid,
+        signal: Signal,
+        sender_pid: Pid,
+    ) -> Result<(), &'static str> {
         let signal_info = SignalInfo {
             signal,
             sender: sender_pid,

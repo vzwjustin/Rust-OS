@@ -4,9 +4,14 @@
 //! including read-ahead, write-back, and LRU eviction policies.
 
 use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
-use alloc::{vec, vec::Vec, collections::{BTreeMap, VecDeque}, boxed::Box};
-use spin::{RwLock, Mutex};
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, VecDeque},
+    vec,
+    vec::Vec,
+};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::{Mutex, RwLock};
 
 /// Buffer cache configuration
 const BUFFER_CACHE_SIZE: usize = 1024; // Number of buffers to cache
@@ -70,7 +75,9 @@ impl Buffer {
 
     /// Check if buffer can be evicted
     fn can_evict(&self) -> bool {
-        self.ref_count == 0 && self.state != BufferState::Reading && self.state != BufferState::Writing
+        self.ref_count == 0
+            && self.state != BufferState::Reading
+            && self.state != BufferState::Writing
     }
 }
 
@@ -132,7 +139,7 @@ impl BufferCache {
             if let Some(buffer) = buffers.get_mut(&key) {
                 buffer.touch();
                 buffer.ref_count += 1;
-                
+
                 // Update statistics
                 {
                     let mut stats = self.stats.write();
@@ -188,7 +195,12 @@ impl BufferCache {
     }
 
     /// Write buffer data
-    pub fn write_buffer(&self, device_id: u32, block_num: u64, data: &[u8]) -> Result<(), StorageError> {
+    pub fn write_buffer(
+        &self,
+        device_id: u32,
+        block_num: u64,
+        data: &[u8],
+    ) -> Result<(), StorageError> {
         if data.len() != BUFFER_SIZE {
             return Err(StorageError::InvalidSector);
         }
@@ -200,7 +212,7 @@ impl BufferCache {
 
         {
             let mut buffers = self.buffers.write();
-            
+
             if let Some(buffer) = buffers.get_mut(&key) {
                 // Update existing buffer
                 buffer.data.copy_from_slice(data);
@@ -216,7 +228,7 @@ impl BufferCache {
                 buffer.dirty = true;
                 buffer.touch();
                 buffer.ref_count = 1;
-                
+
                 buffers.insert(key, Box::new(buffer));
             }
         }
@@ -255,7 +267,8 @@ impl BufferCache {
     pub fn flush_device(&self, device_id: u32) -> Result<(), StorageError> {
         let dirty_keys: Vec<(u32, u64)> = {
             let dirty = self.dirty_queue.lock();
-            dirty.iter()
+            dirty
+                .iter()
                 .filter(|(dev_id, _)| *dev_id == device_id)
                 .cloned()
                 .collect()
@@ -400,7 +413,7 @@ impl BufferCache {
 
         // Need to evict some buffers
         let evict_count = current_size - BUFFER_CACHE_SIZE + 1;
-        
+
         for _ in 0..evict_count {
             if let Some(key) = self.find_eviction_candidate() {
                 self.evict_buffer(key)?;
@@ -470,12 +483,12 @@ impl BufferCache {
     /// Update LRU queue
     fn update_lru(&self, key: (u32, u64)) {
         let mut lru = self.lru_queue.lock();
-        
+
         // Remove from current position
         if let Some(pos) = lru.iter().position(|&x| x == key) {
             lru.remove(pos);
         }
-        
+
         // Add to front
         lru.push_front(key);
     }
@@ -484,7 +497,7 @@ impl BufferCache {
     pub fn release_buffer(&self, device_id: u32, block_num: u64) {
         let key = (device_id, block_num);
         let mut buffers = self.buffers.write();
-        
+
         if let Some(buffer) = buffers.get_mut(&key) {
             buffer.ref_count = buffer.ref_count.saturating_sub(1);
         }
@@ -494,14 +507,14 @@ impl BufferCache {
     pub fn get_stats(&self) -> BufferCacheStats {
         let stats = self.stats.read();
         let mut result = stats.clone();
-        
+
         // Update current utilization
         let buffers = self.buffers.read();
         result.cache_utilization = buffers.len() as u64;
-        
+
         let dirty = self.dirty_queue.lock();
         result.dirty_buffers = dirty.len() as u64;
-        
+
         result
     }
 
@@ -509,7 +522,8 @@ impl BufferCache {
     pub fn invalidate_device(&self, device_id: u32) {
         let keys_to_remove: Vec<(u32, u64)> = {
             let buffers = self.buffers.read();
-            buffers.keys()
+            buffers
+                .keys()
                 .filter(|(dev_id, _)| *dev_id == device_id)
                 .cloned()
                 .collect()
@@ -540,32 +554,36 @@ pub fn buffer_cache() -> &'static BufferCache {
 }
 
 /// Read data through buffer cache
-pub fn buffered_read(device_id: u32, sector: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+pub fn buffered_read(
+    device_id: u32,
+    sector: u64,
+    buffer: &mut [u8],
+) -> Result<usize, StorageError> {
     let cache = buffer_cache();
     let sectors_per_buffer = SECTORS_PER_BUFFER as u64;
     let buffer_size = BUFFER_SIZE;
-    
+
     let mut bytes_read = 0;
     let mut remaining = buffer.len();
     let mut current_sector = sector;
-    
+
     while remaining > 0 {
         let block_num = current_sector / sectors_per_buffer;
         let block_offset = ((current_sector % sectors_per_buffer) * 512) as usize;
-        
+
         let block_data = cache.get_buffer(device_id, block_num)?;
-        
+
         let copy_len = core::cmp::min(remaining, buffer_size - block_offset);
         buffer[bytes_read..bytes_read + copy_len]
             .copy_from_slice(&block_data[block_offset..block_offset + copy_len]);
-        
+
         bytes_read += copy_len;
         remaining -= copy_len;
         current_sector += (copy_len / 512) as u64;
-        
+
         cache.release_buffer(device_id, block_num);
     }
-    
+
     Ok(bytes_read)
 }
 
@@ -574,35 +592,35 @@ pub fn buffered_write(device_id: u32, sector: u64, data: &[u8]) -> Result<usize,
     let cache = buffer_cache();
     let sectors_per_buffer = SECTORS_PER_BUFFER as u64;
     let buffer_size = BUFFER_SIZE;
-    
+
     let mut bytes_written = 0;
     let mut remaining = data.len();
     let mut current_sector = sector;
-    
+
     while remaining > 0 {
         let block_num = current_sector / sectors_per_buffer;
         let block_offset = ((current_sector % sectors_per_buffer) * 512) as usize;
-        
+
         // For partial block writes, read existing data first
         let mut block_data = if block_offset != 0 || remaining < buffer_size {
             cache.get_buffer(device_id, block_num)?
         } else {
             vec![0u8; buffer_size]
         };
-        
+
         let copy_len = core::cmp::min(remaining, buffer_size - block_offset);
         block_data[block_offset..block_offset + copy_len]
             .copy_from_slice(&data[bytes_written..bytes_written + copy_len]);
-        
+
         cache.write_buffer(device_id, block_num, &block_data)?;
-        
+
         bytes_written += copy_len;
         remaining -= copy_len;
         current_sector += (copy_len / 512) as u64;
-        
+
         cache.release_buffer(device_id, block_num);
     }
-    
+
     Ok(bytes_written)
 }
 

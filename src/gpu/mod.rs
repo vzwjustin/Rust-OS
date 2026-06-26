@@ -8,443 +8,2788 @@
 //! - Advanced memory management and cross-GPU sharing
 //! - Hardware-accelerated video encode/decode
 
-use spin::Mutex;
-use lazy_static::lazy_static;
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
+use lazy_static::lazy_static;
+use spin::Mutex;
 
-pub mod memory;
 pub mod accel;
-pub mod opensource;
 pub mod ai_integration;
+pub mod memory;
+pub mod opensource;
 
 /// GPU device database with comprehensive device ID support
 static GPU_DEVICE_DATABASE: &[(u16, u16, &str, GPUTier, GPUFeatures)] = &[
     // Intel GPUs - 50+ devices
-    (0x8086, 0x0042, "Intel HD Graphics (Ironlake)", GPUTier::Entry, GPUFeatures::basic()),
-    (0x8086, 0x0046, "Intel HD Graphics (Ironlake)", GPUTier::Entry, GPUFeatures::basic()),
-    (0x8086, 0x0102, "Intel HD Graphics 2000 (Sandy Bridge)", GPUTier::Entry, GPUFeatures::basic()),
-    (0x8086, 0x0106, "Intel HD Graphics 2000 (Sandy Bridge)", GPUTier::Entry, GPUFeatures::basic()),
-    (0x8086, 0x010A, "Intel HD Graphics P3000 (Sandy Bridge)", GPUTier::Entry, GPUFeatures::basic()),
-    (0x8086, 0x0112, "Intel HD Graphics 3000 (Sandy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x0116, "Intel HD Graphics 3000 (Sandy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x0122, "Intel HD Graphics 3000 (Sandy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x0126, "Intel HD Graphics 3000 (Sandy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x0152, "Intel HD Graphics 2500 (Ivy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x0156, "Intel HD Graphics 2500 (Ivy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x015A, "Intel HD Graphics 2500 (Ivy Bridge)", GPUTier::Budget, GPUFeatures::basic()),
-    (0x8086, 0x0162, "Intel HD Graphics 4000 (Ivy Bridge)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0166, "Intel HD Graphics 4000 (Ivy Bridge)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x016A, "Intel HD Graphics P4000 (Ivy Bridge)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0402, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0406, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x040A, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0412, "Intel HD Graphics 4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0416, "Intel HD Graphics 4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x041A, "Intel HD Graphics P4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x041E, "Intel HD Graphics 4400 (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0422, "Intel HD Graphics 5000 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0426, "Intel HD Graphics 5000 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x042A, "Intel HD Graphics 5000 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x042B, "Intel HD Graphics 5000 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x042E, "Intel HD Graphics 5000 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0A02, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A06, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A0A, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A0B, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A0E, "Intel HD Graphics (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A12, "Intel HD Graphics 4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0A16, "Intel HD Graphics 4400 (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A1A, "Intel HD Graphics 4200 (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A1E, "Intel HD Graphics 4200 (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0A22, "Intel Iris Graphics 5100 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0A26, "Intel HD Graphics 5000 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0A2A, "Intel Iris Graphics 5100 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0A2B, "Intel Iris Graphics 5100 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0A2E, "Intel Iris Graphics 5100 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0D12, "Intel HD Graphics 4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0D16, "Intel HD Graphics 4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0D1A, "Intel HD Graphics P4600 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0D1B, "Intel HD Graphics P4700 (Haswell)", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x8086, 0x0D1E, "Intel HD Graphics 4400 (Haswell)", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x8086, 0x0D22, "Intel Iris Pro Graphics 5200 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0D26, "Intel Iris Pro Graphics 5200 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0D2A, "Intel Iris Pro Graphics 5200 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0D2B, "Intel Iris Pro Graphics 5200 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x8086, 0x0D2E, "Intel Iris Pro Graphics 5200 (Haswell)", GPUTier::Performance, GPUFeatures::dx11()),
-
+    (
+        0x8086,
+        0x0042,
+        "Intel HD Graphics (Ironlake)",
+        GPUTier::Entry,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0046,
+        "Intel HD Graphics (Ironlake)",
+        GPUTier::Entry,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0102,
+        "Intel HD Graphics 2000 (Sandy Bridge)",
+        GPUTier::Entry,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0106,
+        "Intel HD Graphics 2000 (Sandy Bridge)",
+        GPUTier::Entry,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x010A,
+        "Intel HD Graphics P3000 (Sandy Bridge)",
+        GPUTier::Entry,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0112,
+        "Intel HD Graphics 3000 (Sandy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0116,
+        "Intel HD Graphics 3000 (Sandy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0122,
+        "Intel HD Graphics 3000 (Sandy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0126,
+        "Intel HD Graphics 3000 (Sandy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0152,
+        "Intel HD Graphics 2500 (Ivy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0156,
+        "Intel HD Graphics 2500 (Ivy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x015A,
+        "Intel HD Graphics 2500 (Ivy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::basic(),
+    ),
+    (
+        0x8086,
+        0x0162,
+        "Intel HD Graphics 4000 (Ivy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0166,
+        "Intel HD Graphics 4000 (Ivy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x016A,
+        "Intel HD Graphics P4000 (Ivy Bridge)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0402,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0406,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x040A,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0412,
+        "Intel HD Graphics 4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0416,
+        "Intel HD Graphics 4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x041A,
+        "Intel HD Graphics P4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x041E,
+        "Intel HD Graphics 4400 (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0422,
+        "Intel HD Graphics 5000 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0426,
+        "Intel HD Graphics 5000 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x042A,
+        "Intel HD Graphics 5000 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x042B,
+        "Intel HD Graphics 5000 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x042E,
+        "Intel HD Graphics 5000 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A02,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A06,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A0A,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A0B,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A0E,
+        "Intel HD Graphics (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A12,
+        "Intel HD Graphics 4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A16,
+        "Intel HD Graphics 4400 (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A1A,
+        "Intel HD Graphics 4200 (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A1E,
+        "Intel HD Graphics 4200 (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A22,
+        "Intel Iris Graphics 5100 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A26,
+        "Intel HD Graphics 5000 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A2A,
+        "Intel Iris Graphics 5100 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A2B,
+        "Intel Iris Graphics 5100 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0A2E,
+        "Intel Iris Graphics 5100 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D12,
+        "Intel HD Graphics 4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D16,
+        "Intel HD Graphics 4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D1A,
+        "Intel HD Graphics P4600 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D1B,
+        "Intel HD Graphics P4700 (Haswell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D1E,
+        "Intel HD Graphics 4400 (Haswell)",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D22,
+        "Intel Iris Pro Graphics 5200 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D26,
+        "Intel Iris Pro Graphics 5200 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D2A,
+        "Intel Iris Pro Graphics 5200 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D2B,
+        "Intel Iris Pro Graphics 5200 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x8086,
+        0x0D2E,
+        "Intel Iris Pro Graphics 5200 (Haswell)",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
     // Broadwell series
-    (0x8086, 0x1602, "Intel HD Graphics (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1606, "Intel HD Graphics (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x160A, "Intel HD Graphics (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x160B, "Intel HD Graphics (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x160D, "Intel HD Graphics (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x160E, "Intel HD Graphics (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1612, "Intel HD Graphics 5600 (Broadwell)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x1616, "Intel HD Graphics 5500 (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x161A, "Intel HD Graphics P5700 (Broadwell)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x161B, "Intel HD Graphics P5700 (Broadwell)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x161D, "Intel HD Graphics P5700 (Broadwell)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x161E, "Intel HD Graphics 5300 (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1622, "Intel Iris Pro Graphics 6200 (Broadwell)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x1626, "Intel HD Graphics 6000 (Broadwell)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x162A, "Intel Iris Pro Graphics 6200 (Broadwell)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x162B, "Intel Iris Graphics 6100 (Broadwell)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x162D, "Intel Iris Pro Graphics 6200 (Broadwell)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x162E, "Intel HD Graphics 5300 (Broadwell)", GPUTier::Budget, GPUFeatures::dx12()),
-
+    (
+        0x8086,
+        0x1602,
+        "Intel HD Graphics (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1606,
+        "Intel HD Graphics (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x160A,
+        "Intel HD Graphics (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x160B,
+        "Intel HD Graphics (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x160D,
+        "Intel HD Graphics (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x160E,
+        "Intel HD Graphics (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1612,
+        "Intel HD Graphics 5600 (Broadwell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1616,
+        "Intel HD Graphics 5500 (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x161A,
+        "Intel HD Graphics P5700 (Broadwell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x161B,
+        "Intel HD Graphics P5700 (Broadwell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x161D,
+        "Intel HD Graphics P5700 (Broadwell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x161E,
+        "Intel HD Graphics 5300 (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1622,
+        "Intel Iris Pro Graphics 6200 (Broadwell)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1626,
+        "Intel HD Graphics 6000 (Broadwell)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x162A,
+        "Intel Iris Pro Graphics 6200 (Broadwell)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x162B,
+        "Intel Iris Graphics 6100 (Broadwell)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x162D,
+        "Intel Iris Pro Graphics 6200 (Broadwell)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x162E,
+        "Intel HD Graphics 5300 (Broadwell)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
     // Skylake series
-    (0x8086, 0x1902, "Intel HD Graphics 510 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1906, "Intel HD Graphics 510 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x190A, "Intel HD Graphics P510 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x190B, "Intel HD Graphics 510 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x190E, "Intel HD Graphics 510 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1912, "Intel HD Graphics 530 (Skylake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x1913, "Intel HD Graphics 520 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1915, "Intel HD Graphics 520 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1916, "Intel HD Graphics 520 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1917, "Intel HD Graphics 520 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x191A, "Intel HD Graphics P530 (Skylake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x191B, "Intel HD Graphics 530 (Skylake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x191D, "Intel HD Graphics P530 (Skylake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x191E, "Intel HD Graphics 515 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1921, "Intel HD Graphics 520 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1923, "Intel HD Graphics 535 (Skylake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x1926, "Intel Iris Graphics 540 (Skylake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x1927, "Intel Iris Graphics 550 (Skylake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x192A, "Intel Iris Pro Graphics P555 (Skylake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x192B, "Intel Iris Graphics 555 (Skylake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x192D, "Intel Iris Pro Graphics P580 (Skylake)", GPUTier::Performance, GPUFeatures::dx12()),
-
+    (
+        0x8086,
+        0x1902,
+        "Intel HD Graphics 510 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1906,
+        "Intel HD Graphics 510 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x190A,
+        "Intel HD Graphics P510 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x190B,
+        "Intel HD Graphics 510 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x190E,
+        "Intel HD Graphics 510 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1912,
+        "Intel HD Graphics 530 (Skylake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1913,
+        "Intel HD Graphics 520 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1915,
+        "Intel HD Graphics 520 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1916,
+        "Intel HD Graphics 520 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1917,
+        "Intel HD Graphics 520 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x191A,
+        "Intel HD Graphics P530 (Skylake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x191B,
+        "Intel HD Graphics 530 (Skylake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x191D,
+        "Intel HD Graphics P530 (Skylake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x191E,
+        "Intel HD Graphics 515 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1921,
+        "Intel HD Graphics 520 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1923,
+        "Intel HD Graphics 535 (Skylake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1926,
+        "Intel Iris Graphics 540 (Skylake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x1927,
+        "Intel Iris Graphics 550 (Skylake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x192A,
+        "Intel Iris Pro Graphics P555 (Skylake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x192B,
+        "Intel Iris Graphics 555 (Skylake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x192D,
+        "Intel Iris Pro Graphics P580 (Skylake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
     // Kaby Lake and newer
-    (0x8086, 0x5902, "Intel HD Graphics 610 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5906, "Intel HD Graphics 610 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x590A, "Intel HD Graphics P610 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x590B, "Intel HD Graphics 610 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x590E, "Intel HD Graphics 610 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5912, "Intel HD Graphics 630 (Kaby Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x5913, "Intel HD Graphics 620 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5915, "Intel HD Graphics 620 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5916, "Intel HD Graphics 620 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5917, "Intel HD Graphics 620 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x591A, "Intel HD Graphics P630 (Kaby Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x591B, "Intel HD Graphics 630 (Kaby Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x591C, "Intel UHD Graphics 615 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x591D, "Intel HD Graphics P630 (Kaby Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x591E, "Intel HD Graphics 615 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5921, "Intel HD Graphics 620 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5923, "Intel HD Graphics 635 (Kaby Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x5926, "Intel Iris Plus Graphics 640 (Kaby Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x5927, "Intel Iris Plus Graphics 650 (Kaby Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-
+    (
+        0x8086,
+        0x5902,
+        "Intel HD Graphics 610 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5906,
+        "Intel HD Graphics 610 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x590A,
+        "Intel HD Graphics P610 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x590B,
+        "Intel HD Graphics 610 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x590E,
+        "Intel HD Graphics 610 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5912,
+        "Intel HD Graphics 630 (Kaby Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5913,
+        "Intel HD Graphics 620 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5915,
+        "Intel HD Graphics 620 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5916,
+        "Intel HD Graphics 620 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5917,
+        "Intel HD Graphics 620 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x591A,
+        "Intel HD Graphics P630 (Kaby Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x591B,
+        "Intel HD Graphics 630 (Kaby Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x591C,
+        "Intel UHD Graphics 615 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x591D,
+        "Intel HD Graphics P630 (Kaby Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x591E,
+        "Intel HD Graphics 615 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5921,
+        "Intel HD Graphics 620 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5923,
+        "Intel HD Graphics 635 (Kaby Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5926,
+        "Intel Iris Plus Graphics 640 (Kaby Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x5927,
+        "Intel Iris Plus Graphics 650 (Kaby Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
     // Coffee Lake
-    (0x8086, 0x3E90, "Intel UHD Graphics 610 (Coffee Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x3E91, "Intel UHD Graphics 630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3E92, "Intel UHD Graphics 630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3E93, "Intel UHD Graphics 610 (Coffee Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x3E94, "Intel UHD Graphics P630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3E96, "Intel UHD Graphics P630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3E98, "Intel UHD Graphics 630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3E9A, "Intel UHD Graphics P630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3E9B, "Intel UHD Graphics 630 (Coffee Lake)", GPUTier::Mainstream, GPUFeatures::dx12()),
-    (0x8086, 0x3EA0, "Intel UHD Graphics 620 (Whiskey Lake)", GPUTier::Budget, GPUFeatures::dx12()),
-    (0x8086, 0x3EA5, "Intel Iris Plus Graphics 655 (Coffee Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x3EA6, "Intel Iris Plus Graphics 645 (Coffee Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x3EA7, "Intel Iris Plus Graphics 645 (Coffee Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x3EA8, "Intel Iris Plus Graphics 655 (Coffee Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-
+    (
+        0x8086,
+        0x3E90,
+        "Intel UHD Graphics 610 (Coffee Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E91,
+        "Intel UHD Graphics 630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E92,
+        "Intel UHD Graphics 630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E93,
+        "Intel UHD Graphics 610 (Coffee Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E94,
+        "Intel UHD Graphics P630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E96,
+        "Intel UHD Graphics P630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E98,
+        "Intel UHD Graphics 630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E9A,
+        "Intel UHD Graphics P630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3E9B,
+        "Intel UHD Graphics 630 (Coffee Lake)",
+        GPUTier::Mainstream,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3EA0,
+        "Intel UHD Graphics 620 (Whiskey Lake)",
+        GPUTier::Budget,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3EA5,
+        "Intel Iris Plus Graphics 655 (Coffee Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3EA6,
+        "Intel Iris Plus Graphics 645 (Coffee Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3EA7,
+        "Intel Iris Plus Graphics 645 (Coffee Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x3EA8,
+        "Intel Iris Plus Graphics 655 (Coffee Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
     // Ice Lake
-    (0x8086, 0x8A50, "Intel Iris Plus Graphics G1 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A51, "Intel Iris Plus Graphics G4 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A52, "Intel Iris Plus Graphics G7 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A53, "Intel Iris Plus Graphics G7 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A5A, "Intel Iris Plus Graphics G1 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A5B, "Intel Iris Plus Graphics G4 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A5C, "Intel Iris Plus Graphics G7 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-    (0x8086, 0x8A5D, "Intel Iris Plus Graphics G7 (Ice Lake)", GPUTier::Performance, GPUFeatures::dx12()),
-
+    (
+        0x8086,
+        0x8A50,
+        "Intel Iris Plus Graphics G1 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A51,
+        "Intel Iris Plus Graphics G4 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A52,
+        "Intel Iris Plus Graphics G7 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A53,
+        "Intel Iris Plus Graphics G7 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A5A,
+        "Intel Iris Plus Graphics G1 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A5B,
+        "Intel Iris Plus Graphics G4 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A5C,
+        "Intel Iris Plus Graphics G7 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
+    (
+        0x8086,
+        0x8A5D,
+        "Intel Iris Plus Graphics G7 (Ice Lake)",
+        GPUTier::Performance,
+        GPUFeatures::dx12(),
+    ),
     // Tiger Lake
-    (0x8086, 0x9A40, "Intel Iris Xe Graphics G7 80EUs (Tiger Lake)", GPUTier::Performance, GPUFeatures::modern()),
-    (0x8086, 0x9A49, "Intel Iris Xe Graphics G7 96EUs (Tiger Lake)", GPUTier::Performance, GPUFeatures::modern()),
-    (0x8086, 0x9A60, "Intel UHD Graphics G1 (Tiger Lake)", GPUTier::Budget, GPUFeatures::modern()),
-    (0x8086, 0x9A68, "Intel UHD Graphics G1 (Tiger Lake)", GPUTier::Budget, GPUFeatures::modern()),
-    (0x8086, 0x9A70, "Intel UHD Graphics G1 (Tiger Lake)", GPUTier::Budget, GPUFeatures::modern()),
-    (0x8086, 0x9A78, "Intel UHD Graphics G1 (Tiger Lake)", GPUTier::Budget, GPUFeatures::modern()),
-
+    (
+        0x8086,
+        0x9A40,
+        "Intel Iris Xe Graphics G7 80EUs (Tiger Lake)",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x8086,
+        0x9A49,
+        "Intel Iris Xe Graphics G7 96EUs (Tiger Lake)",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x8086,
+        0x9A60,
+        "Intel UHD Graphics G1 (Tiger Lake)",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x8086,
+        0x9A68,
+        "Intel UHD Graphics G1 (Tiger Lake)",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x8086,
+        0x9A70,
+        "Intel UHD Graphics G1 (Tiger Lake)",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x8086,
+        0x9A78,
+        "Intel UHD Graphics G1 (Tiger Lake)",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
     // NVIDIA GPUs - 75+ devices
     // GeForce GTX 10 Series
-    (0x10DE, 0x1B00, "NVIDIA GeForce GTX 1080 Ti", GPUTier::Enthusiast, GPUFeatures::modern()),
-    (0x10DE, 0x1B02, "NVIDIA GeForce GTX 1080 Ti", GPUTier::Enthusiast, GPUFeatures::modern()),
-    (0x10DE, 0x1B06, "NVIDIA GeForce GTX 1080 Ti", GPUTier::Enthusiast, GPUFeatures::modern()),
-    (0x10DE, 0x1B80, "NVIDIA GeForce GTX 1080", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1B81, "NVIDIA GeForce GTX 1070", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1B82, "NVIDIA GeForce GTX 1070 Ti", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1B83, "NVIDIA GeForce GTX 1060 6GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1B84, "NVIDIA GeForce GTX 1060 3GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BA0, "NVIDIA GeForce GTX 1080 Mobile", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1BA1, "NVIDIA GeForce GTX 1070 Mobile", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1BA2, "NVIDIA GeForce GTX 1070 Mobile", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1BB0, "NVIDIA GeForce GTX 1060 Mobile 6GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB1, "NVIDIA GeForce GTX 1060 Mobile 3GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB3, "NVIDIA GeForce GTX 1060 Mobile 6GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB4, "NVIDIA GeForce GTX 1060 Mobile 6GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB5, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB6, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB7, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BB8, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1BE0, "NVIDIA GeForce GTX 1080 Mobile", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1BE1, "NVIDIA GeForce GTX 1070 Mobile", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x10DE, 0x1C02, "NVIDIA GeForce GTX 1060 3GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C03, "NVIDIA GeForce GTX 1060 6GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C04, "NVIDIA GeForce GTX 1060 5GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C06, "NVIDIA GeForce GTX 1060 6GB Rev. 2", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C07, "NVIDIA GeForce GTX 1060 5GB", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C20, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C21, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C22, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C23, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C30, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C31, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C32, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C35, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C36, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C60, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1C61, "NVIDIA GeForce GTX 1050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C62, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C81, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C82, "NVIDIA GeForce GTX 1050 Ti", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C83, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C8C, "NVIDIA GeForce GTX 1050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C8D, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C8E, "NVIDIA GeForce GTX 1050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C8F, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C90, "NVIDIA GeForce GTX 1050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C91, "NVIDIA GeForce GTX 1050 3GB", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C92, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C94, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1C96, "NVIDIA GeForce GTX 1060 Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1CA7, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CA8, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CAA, "NVIDIA GeForce GTX 1050", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CB1, "NVIDIA GeForce GTX 1050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CB2, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CB3, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CB6, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CBA, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CBB, "NVIDIA GeForce GTX 1050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CBC, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CBD, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1CBE, "NVIDIA GeForce GTX 1050 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1D01, "NVIDIA GeForce GT 1030", GPUTier::Budget, GPUFeatures::modern()),
-    (0x10DE, 0x1D10, "NVIDIA GeForce MX150", GPUTier::Budget, GPUFeatures::modern()),
-    (0x10DE, 0x1D11, "NVIDIA GeForce MX230", GPUTier::Budget, GPUFeatures::modern()),
-    (0x10DE, 0x1D12, "NVIDIA GeForce MX150", GPUTier::Budget, GPUFeatures::modern()),
-    (0x10DE, 0x1D13, "NVIDIA GeForce MX250", GPUTier::Budget, GPUFeatures::modern()),
-
+    (
+        0x10DE,
+        0x1B00,
+        "NVIDIA GeForce GTX 1080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B02,
+        "NVIDIA GeForce GTX 1080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B06,
+        "NVIDIA GeForce GTX 1080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B80,
+        "NVIDIA GeForce GTX 1080",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B81,
+        "NVIDIA GeForce GTX 1070",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B82,
+        "NVIDIA GeForce GTX 1070 Ti",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B83,
+        "NVIDIA GeForce GTX 1060 6GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1B84,
+        "NVIDIA GeForce GTX 1060 3GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BA0,
+        "NVIDIA GeForce GTX 1080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BA1,
+        "NVIDIA GeForce GTX 1070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BA2,
+        "NVIDIA GeForce GTX 1070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB0,
+        "NVIDIA GeForce GTX 1060 Mobile 6GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB1,
+        "NVIDIA GeForce GTX 1060 Mobile 3GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB3,
+        "NVIDIA GeForce GTX 1060 Mobile 6GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB4,
+        "NVIDIA GeForce GTX 1060 Mobile 6GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB5,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB6,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB7,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BB8,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BE0,
+        "NVIDIA GeForce GTX 1080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1BE1,
+        "NVIDIA GeForce GTX 1070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C02,
+        "NVIDIA GeForce GTX 1060 3GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C03,
+        "NVIDIA GeForce GTX 1060 6GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C04,
+        "NVIDIA GeForce GTX 1060 5GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C06,
+        "NVIDIA GeForce GTX 1060 6GB Rev. 2",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C07,
+        "NVIDIA GeForce GTX 1060 5GB",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C20,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C21,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C22,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C23,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C30,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C31,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C32,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C35,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C36,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C60,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C61,
+        "NVIDIA GeForce GTX 1050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C62,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C81,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C82,
+        "NVIDIA GeForce GTX 1050 Ti",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C83,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C8C,
+        "NVIDIA GeForce GTX 1050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C8D,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C8E,
+        "NVIDIA GeForce GTX 1050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C8F,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C90,
+        "NVIDIA GeForce GTX 1050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C91,
+        "NVIDIA GeForce GTX 1050 3GB",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C92,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C94,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1C96,
+        "NVIDIA GeForce GTX 1060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CA7,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CA8,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CAA,
+        "NVIDIA GeForce GTX 1050",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CB1,
+        "NVIDIA GeForce GTX 1050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CB2,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CB3,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CB6,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CBA,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CBB,
+        "NVIDIA GeForce GTX 1050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CBC,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CBD,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1CBE,
+        "NVIDIA GeForce GTX 1050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1D01,
+        "NVIDIA GeForce GT 1030",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1D10,
+        "NVIDIA GeForce MX150",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1D11,
+        "NVIDIA GeForce MX230",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1D12,
+        "NVIDIA GeForce MX150",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1D13,
+        "NVIDIA GeForce MX250",
+        GPUTier::Budget,
+        GPUFeatures::modern(),
+    ),
     // GeForce RTX 20 Series
-    (0x10DE, 0x1E02, "NVIDIA GeForce RTX 2080 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E04, "NVIDIA GeForce RTX 2080 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E07, "NVIDIA GeForce RTX 2080 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E30, "NVIDIA GeForce RTX 2080 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E78, "NVIDIA GeForce RTX 2080 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E82, "NVIDIA GeForce RTX 2080", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E84, "NVIDIA GeForce RTX 2080", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E87, "NVIDIA GeForce RTX 2080", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E89, "NVIDIA GeForce RTX 2060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E90, "NVIDIA GeForce RTX 2080 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E91, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1E93, "NVIDIA GeForce RTX 2080 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EA0, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EA1, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EA2, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EA3, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EB0, "NVIDIA GeForce RTX 2080 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EB1, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EB4, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EB5, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EB6, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EB8, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EC2, "NVIDIA GeForce RTX 2070 SUPER", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EC7, "NVIDIA GeForce RTX 2070 SUPER", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1ED0, "NVIDIA GeForce RTX 2080 SUPER Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1ED1, "NVIDIA GeForce RTX 2070 SUPER Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1ED3, "NVIDIA GeForce RTX 2080 SUPER Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EF5, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EF6, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1EF7, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F02, "NVIDIA GeForce RTX 2070", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F03, "NVIDIA GeForce RTX 2060 12GB", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F04, "NVIDIA GeForce RTX 2070", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F06, "NVIDIA GeForce RTX 2060 SUPER", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F07, "NVIDIA GeForce RTX 2070", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F08, "NVIDIA GeForce RTX 2060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F09, "NVIDIA GeForce RTX 2060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F0A, "NVIDIA GeForce RTX 2060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F10, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F11, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F12, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F14, "NVIDIA GeForce RTX 2070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F15, "NVIDIA GeForce RTX 2060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F36, "NVIDIA GeForce RTX 2060 SUPER", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F41, "NVIDIA GeForce RTX 2080 SUPER", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F42, "NVIDIA GeForce RTX 2080 SUPER", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F47, "NVIDIA GeForce RTX 2080 SUPER", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F50, "NVIDIA GeForce RTX 2070 SUPER Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F51, "NVIDIA GeForce RTX 2060 SUPER Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F54, "NVIDIA GeForce RTX 2070 SUPER Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F55, "NVIDIA GeForce RTX 2060 SUPER Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F76, "NVIDIA GeForce RTX 2060 SUPER", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x1F81, "NVIDIA GeForce GTX 1660 Ti", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1F82, "NVIDIA GeForce GTX 1660 SUPER", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1F83, "NVIDIA GeForce GTX 1660", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F91, "NVIDIA GeForce GTX 1660 Ti Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1F92, "NVIDIA GeForce GTX 1660 Ti Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1F94, "NVIDIA GeForce GTX 1660 Ti Mobile", GPUTier::Performance, GPUFeatures::modern()),
-    (0x10DE, 0x1F95, "NVIDIA GeForce GTX 1650 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F96, "NVIDIA GeForce GTX 1650 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F97, "NVIDIA GeForce GTX 1650 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F98, "NVIDIA GeForce GTX 1650 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F99, "NVIDIA GeForce GTX 1650 Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F9C, "NVIDIA GeForce GTX 1650 SUPER", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F9D, "NVIDIA GeForce GTX 1650", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x10DE, 0x1F9F, "NVIDIA GeForce GTX 1650 Ti Mobile", GPUTier::Mainstream, GPUFeatures::modern()),
-
+    (
+        0x10DE,
+        0x1E02,
+        "NVIDIA GeForce RTX 2080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E04,
+        "NVIDIA GeForce RTX 2080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E07,
+        "NVIDIA GeForce RTX 2080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E30,
+        "NVIDIA GeForce RTX 2080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E78,
+        "NVIDIA GeForce RTX 2080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E82,
+        "NVIDIA GeForce RTX 2080",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E84,
+        "NVIDIA GeForce RTX 2080",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E87,
+        "NVIDIA GeForce RTX 2080",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E89,
+        "NVIDIA GeForce RTX 2060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E90,
+        "NVIDIA GeForce RTX 2080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E91,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1E93,
+        "NVIDIA GeForce RTX 2080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EA0,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EA1,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EA2,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EA3,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EB0,
+        "NVIDIA GeForce RTX 2080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EB1,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EB4,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EB5,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EB6,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EB8,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EC2,
+        "NVIDIA GeForce RTX 2070 SUPER",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EC7,
+        "NVIDIA GeForce RTX 2070 SUPER",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1ED0,
+        "NVIDIA GeForce RTX 2080 SUPER Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1ED1,
+        "NVIDIA GeForce RTX 2070 SUPER Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1ED3,
+        "NVIDIA GeForce RTX 2080 SUPER Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EF5,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EF6,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1EF7,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F02,
+        "NVIDIA GeForce RTX 2070",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F03,
+        "NVIDIA GeForce RTX 2060 12GB",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F04,
+        "NVIDIA GeForce RTX 2070",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F06,
+        "NVIDIA GeForce RTX 2060 SUPER",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F07,
+        "NVIDIA GeForce RTX 2070",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F08,
+        "NVIDIA GeForce RTX 2060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F09,
+        "NVIDIA GeForce RTX 2060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F0A,
+        "NVIDIA GeForce RTX 2060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F10,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F11,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F12,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F14,
+        "NVIDIA GeForce RTX 2070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F15,
+        "NVIDIA GeForce RTX 2060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F36,
+        "NVIDIA GeForce RTX 2060 SUPER",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F41,
+        "NVIDIA GeForce RTX 2080 SUPER",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F42,
+        "NVIDIA GeForce RTX 2080 SUPER",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F47,
+        "NVIDIA GeForce RTX 2080 SUPER",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F50,
+        "NVIDIA GeForce RTX 2070 SUPER Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F51,
+        "NVIDIA GeForce RTX 2060 SUPER Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F54,
+        "NVIDIA GeForce RTX 2070 SUPER Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F55,
+        "NVIDIA GeForce RTX 2060 SUPER Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F76,
+        "NVIDIA GeForce RTX 2060 SUPER",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x1F81,
+        "NVIDIA GeForce GTX 1660 Ti",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F82,
+        "NVIDIA GeForce GTX 1660 SUPER",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F83,
+        "NVIDIA GeForce GTX 1660",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F91,
+        "NVIDIA GeForce GTX 1660 Ti Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F92,
+        "NVIDIA GeForce GTX 1660 Ti Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F94,
+        "NVIDIA GeForce GTX 1660 Ti Mobile",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F95,
+        "NVIDIA GeForce GTX 1650 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F96,
+        "NVIDIA GeForce GTX 1650 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F97,
+        "NVIDIA GeForce GTX 1650 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F98,
+        "NVIDIA GeForce GTX 1650 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F99,
+        "NVIDIA GeForce GTX 1650 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F9C,
+        "NVIDIA GeForce GTX 1650 SUPER",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F9D,
+        "NVIDIA GeForce GTX 1650",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x10DE,
+        0x1F9F,
+        "NVIDIA GeForce GTX 1650 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
     // GeForce RTX 30 Series
-    (0x10DE, 0x2204, "NVIDIA GeForce RTX 3090", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x2206, "NVIDIA GeForce RTX 3080", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2208, "NVIDIA GeForce RTX 3080 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x220A, "NVIDIA GeForce RTX 3080", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2216, "NVIDIA GeForce RTX 3080 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2230, "NVIDIA GeForce RTX 3080 Ti Mobile", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x2231, "NVIDIA GeForce RTX 3080 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2232, "NVIDIA GeForce RTX 3070 Mobile", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2233, "NVIDIA GeForce RTX 3060 Ti Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2234, "NVIDIA GeForce RTX 3060 Mobile", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2235, "NVIDIA GeForce RTX 3050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::raytracing()),
-    (0x10DE, 0x2236, "NVIDIA GeForce RTX 3050 Mobile", GPUTier::Mainstream, GPUFeatures::raytracing()),
-    (0x10DE, 0x2237, "NVIDIA GeForce RTX 3050 Ti Mobile", GPUTier::Mainstream, GPUFeatures::raytracing()),
-    (0x10DE, 0x2238, "NVIDIA GeForce RTX 3050 Mobile", GPUTier::Mainstream, GPUFeatures::raytracing()),
-    (0x10DE, 0x2414, "NVIDIA GeForce RTX 3060 Ti", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2420, "NVIDIA GeForce RTX 3060 Ti", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2438, "NVIDIA GeForce RTX 3060 Ti", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2482, "NVIDIA GeForce RTX 3070 Ti", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2484, "NVIDIA GeForce RTX 3070", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2486, "NVIDIA GeForce RTX 3060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2487, "NVIDIA GeForce RTX 3060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2488, "NVIDIA GeForce RTX 3070", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x10DE, 0x2489, "NVIDIA GeForce RTX 3060 12GB", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x248A, "NVIDIA GeForce RTX 3060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2490, "NVIDIA GeForce RTX 3090 Ti", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x10DE, 0x2503, "NVIDIA GeForce RTX 3060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2504, "NVIDIA GeForce RTX 3060", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x10DE, 0x2507, "NVIDIA GeForce RTX 3050", GPUTier::Mainstream, GPUFeatures::raytracing()),
-    (0x10DE, 0x2508, "NVIDIA GeForce RTX 3050", GPUTier::Mainstream, GPUFeatures::raytracing()),
-
+    (
+        0x10DE,
+        0x2204,
+        "NVIDIA GeForce RTX 3090",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2206,
+        "NVIDIA GeForce RTX 3080",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2208,
+        "NVIDIA GeForce RTX 3080 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x220A,
+        "NVIDIA GeForce RTX 3080",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2216,
+        "NVIDIA GeForce RTX 3080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2230,
+        "NVIDIA GeForce RTX 3080 Ti Mobile",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2231,
+        "NVIDIA GeForce RTX 3080 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2232,
+        "NVIDIA GeForce RTX 3070 Mobile",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2233,
+        "NVIDIA GeForce RTX 3060 Ti Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2234,
+        "NVIDIA GeForce RTX 3060 Mobile",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2235,
+        "NVIDIA GeForce RTX 3050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2236,
+        "NVIDIA GeForce RTX 3050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2237,
+        "NVIDIA GeForce RTX 3050 Ti Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2238,
+        "NVIDIA GeForce RTX 3050 Mobile",
+        GPUTier::Mainstream,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2414,
+        "NVIDIA GeForce RTX 3060 Ti",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2420,
+        "NVIDIA GeForce RTX 3060 Ti",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2438,
+        "NVIDIA GeForce RTX 3060 Ti",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2482,
+        "NVIDIA GeForce RTX 3070 Ti",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2484,
+        "NVIDIA GeForce RTX 3070",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2486,
+        "NVIDIA GeForce RTX 3060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2487,
+        "NVIDIA GeForce RTX 3060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2488,
+        "NVIDIA GeForce RTX 3070",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2489,
+        "NVIDIA GeForce RTX 3060 12GB",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x248A,
+        "NVIDIA GeForce RTX 3060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2490,
+        "NVIDIA GeForce RTX 3090 Ti",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2503,
+        "NVIDIA GeForce RTX 3060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2504,
+        "NVIDIA GeForce RTX 3060",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2507,
+        "NVIDIA GeForce RTX 3050",
+        GPUTier::Mainstream,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x10DE,
+        0x2508,
+        "NVIDIA GeForce RTX 3050",
+        GPUTier::Mainstream,
+        GPUFeatures::raytracing(),
+    ),
     // AMD GPUs - 75+ devices
     // Radeon RX 5000 Series (RDNA)
-    (0x1002, 0x7310, "AMD Radeon RX 5700", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x7312, "AMD Radeon RX 5700 XT", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x7318, "AMD Radeon RX 5700 XT", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x7319, "AMD Radeon RX 5700", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x731A, "AMD Radeon RX 5700", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x731B, "AMD Radeon RX 5700 XT", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x731E, "AMD Radeon RX 5700 XT", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x731F, "AMD Radeon RX 5700", GPUTier::HighEnd, GPUFeatures::modern()),
-    (0x1002, 0x7340, "AMD Radeon RX 5500 XT", GPUTier::Performance, GPUFeatures::modern()),
-    (0x1002, 0x7341, "AMD Radeon RX 5500", GPUTier::Mainstream, GPUFeatures::modern()),
-    (0x1002, 0x7347, "AMD Radeon RX 5500M", GPUTier::Mainstream, GPUFeatures::modern()),
-
+    (
+        0x1002,
+        0x7310,
+        "AMD Radeon RX 5700",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x7312,
+        "AMD Radeon RX 5700 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x7318,
+        "AMD Radeon RX 5700 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x7319,
+        "AMD Radeon RX 5700",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x731A,
+        "AMD Radeon RX 5700",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x731B,
+        "AMD Radeon RX 5700 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x731E,
+        "AMD Radeon RX 5700 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x731F,
+        "AMD Radeon RX 5700",
+        GPUTier::HighEnd,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x7340,
+        "AMD Radeon RX 5500 XT",
+        GPUTier::Performance,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x7341,
+        "AMD Radeon RX 5500",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
+    (
+        0x1002,
+        0x7347,
+        "AMD Radeon RX 5500M",
+        GPUTier::Mainstream,
+        GPUFeatures::modern(),
+    ),
     // Radeon RX 6000 Series (RDNA 2)
-    (0x1002, 0x73A0, "AMD Radeon RX 6950 XT", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x1002, 0x73A1, "AMD Radeon RX 6900 XT", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x1002, 0x73A2, "AMD Radeon RX 6800 XT", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73A3, "AMD Radeon RX 6800", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73A5, "AMD Radeon RX 6800 XT", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73AB, "AMD Radeon RX 6600 XT", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73AE, "AMD Radeon RX 6600", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73AF, "AMD Radeon RX 6600", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73BF, "AMD Radeon RX 6600", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73C0, "AMD Radeon RX 6700 XT", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73C1, "AMD Radeon RX 6700", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73C3, "AMD Radeon RX 6700", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73DF, "AMD Radeon RX 6700S", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73E0, "AMD Radeon RX 6600M", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73E1, "AMD Radeon RX 6600M", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73E3, "AMD Radeon RX 6600M", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x73E4, "AMD Radeon RX 6700M", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73EF, "AMD Radeon RX 6800M", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73F0, "AMD Radeon RX 6700S", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x73FF, "AMD Radeon RX 6600S", GPUTier::Performance, GPUFeatures::raytracing()),
-
+    (
+        0x1002,
+        0x73A0,
+        "AMD Radeon RX 6950 XT",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73A1,
+        "AMD Radeon RX 6900 XT",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73A2,
+        "AMD Radeon RX 6800 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73A3,
+        "AMD Radeon RX 6800",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73A5,
+        "AMD Radeon RX 6800 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73AB,
+        "AMD Radeon RX 6600 XT",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73AE,
+        "AMD Radeon RX 6600",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73AF,
+        "AMD Radeon RX 6600",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73BF,
+        "AMD Radeon RX 6600",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73C0,
+        "AMD Radeon RX 6700 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73C1,
+        "AMD Radeon RX 6700",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73C3,
+        "AMD Radeon RX 6700",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73DF,
+        "AMD Radeon RX 6700S",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73E0,
+        "AMD Radeon RX 6600M",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73E1,
+        "AMD Radeon RX 6600M",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73E3,
+        "AMD Radeon RX 6600M",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73E4,
+        "AMD Radeon RX 6700M",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73EF,
+        "AMD Radeon RX 6800M",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73F0,
+        "AMD Radeon RX 6700S",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x73FF,
+        "AMD Radeon RX 6600S",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
     // Radeon RX 7000 Series (RDNA 3)
-    (0x1002, 0x744C, "AMD Radeon RX 7900 XTX", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x1002, 0x7448, "AMD Radeon RX 7800 XT", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x7449, "AMD Radeon RX 7900 GRE", GPUTier::Enthusiast, GPUFeatures::raytracing()),
-    (0x1002, 0x747E, "AMD Radeon RX 7700 XT", GPUTier::HighEnd, GPUFeatures::raytracing()),
-    (0x1002, 0x7480, "AMD Radeon RX 7600", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x7483, "AMD Radeon RX 7600M XT", GPUTier::Performance, GPUFeatures::raytracing()),
-    (0x1002, 0x7484, "AMD Radeon RX 7600M", GPUTier::Performance, GPUFeatures::raytracing()),
-
+    (
+        0x1002,
+        0x744C,
+        "AMD Radeon RX 7900 XTX",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x7448,
+        "AMD Radeon RX 7800 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x7449,
+        "AMD Radeon RX 7900 GRE",
+        GPUTier::Enthusiast,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x747E,
+        "AMD Radeon RX 7700 XT",
+        GPUTier::HighEnd,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x7480,
+        "AMD Radeon RX 7600",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x7483,
+        "AMD Radeon RX 7600M XT",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
+    (
+        0x1002,
+        0x7484,
+        "AMD Radeon RX 7600M",
+        GPUTier::Performance,
+        GPUFeatures::raytracing(),
+    ),
     // Older AMD Radeon Series
-    (0x1002, 0x6860, "AMD Radeon R7 M260", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6861, "AMD Radeon R5 M240", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6863, "AMD Radeon R5 M240", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6864, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6867, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6868, "AMD Radeon R7 M260X", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6869, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x686A, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x686B, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x686C, "AMD Radeon R5 M240", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x686D, "AMD Radeon R7 M260DX", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x686E, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x687F, "AMD Radeon R5 M230", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6880, "AMD Radeon R9 M370X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x6888, "AMD Radeon R7 M265", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6889, "AMD Radeon R7 M270", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x688A, "AMD Radeon R7 M265", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x688C, "AMD Radeon R7 M270X", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x688D, "AMD Radeon R7 M260", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6898, "AMD Radeon R7 M265", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x6899, "AMD Radeon R7 M280", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x689A, "AMD Radeon R7 M270", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x689B, "AMD Radeon R7 M280", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x689C, "AMD Radeon R7 M270X", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x689D, "AMD Radeon R7 M260", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x689E, "AMD Radeon R7 M260", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x68A0, "AMD Radeon R9 M375", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68A1, "AMD Radeon R9 M375X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68A8, "AMD Radeon R9 M385", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68A9, "AMD Radeon R9 M385X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68B0, "AMD Radeon R9 M365X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68B8, "AMD Radeon R9 M370", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68B9, "AMD Radeon R9 M370X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68BA, "AMD Radeon R9 M370", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68BE, "AMD Radeon R9 M365X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68C0, "AMD Radeon R9 M380", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68C1, "AMD Radeon R9 M380", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68C7, "AMD Radeon R9 M380", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68C8, "AMD Radeon R9 M370X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68C9, "AMD Radeon R9 M370X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68CA, "AMD Radeon R9 M370X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68D8, "AMD Radeon R9 M365X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68D9, "AMD Radeon R9 M360", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x1002, 0x68DA, "AMD Radeon R9 M365X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68E0, "AMD Radeon R9 M390", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68E1, "AMD Radeon R9 M390X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68E4, "AMD Radeon R9 M390X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68E5, "AMD Radeon R9 M390X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68E8, "AMD Radeon R9 M390", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68E9, "AMD Radeon R9 M390", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68F1, "AMD Radeon R9 M370X", GPUTier::Performance, GPUFeatures::dx11()),
-    (0x1002, 0x68F2, "AMD Radeon R9 M360", GPUTier::Mainstream, GPUFeatures::dx11()),
-    (0x1002, 0x68F8, "AMD Radeon R7 M350", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x68F9, "AMD Radeon R7 M360", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x68FA, "AMD Radeon R7 M370", GPUTier::Budget, GPUFeatures::dx11()),
-    (0x1002, 0x68FE, "AMD Radeon R7 M350", GPUTier::Budget, GPUFeatures::dx11()),
+    (
+        0x1002,
+        0x6860,
+        "AMD Radeon R7 M260",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6861,
+        "AMD Radeon R5 M240",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6863,
+        "AMD Radeon R5 M240",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6864,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6867,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6868,
+        "AMD Radeon R7 M260X",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6869,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x686A,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x686B,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x686C,
+        "AMD Radeon R5 M240",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x686D,
+        "AMD Radeon R7 M260DX",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x686E,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x687F,
+        "AMD Radeon R5 M230",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6880,
+        "AMD Radeon R9 M370X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6888,
+        "AMD Radeon R7 M265",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6889,
+        "AMD Radeon R7 M270",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x688A,
+        "AMD Radeon R7 M265",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x688C,
+        "AMD Radeon R7 M270X",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x688D,
+        "AMD Radeon R7 M260",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6898,
+        "AMD Radeon R7 M265",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x6899,
+        "AMD Radeon R7 M280",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x689A,
+        "AMD Radeon R7 M270",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x689B,
+        "AMD Radeon R7 M280",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x689C,
+        "AMD Radeon R7 M270X",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x689D,
+        "AMD Radeon R7 M260",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x689E,
+        "AMD Radeon R7 M260",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68A0,
+        "AMD Radeon R9 M375",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68A1,
+        "AMD Radeon R9 M375X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68A8,
+        "AMD Radeon R9 M385",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68A9,
+        "AMD Radeon R9 M385X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68B0,
+        "AMD Radeon R9 M365X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68B8,
+        "AMD Radeon R9 M370",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68B9,
+        "AMD Radeon R9 M370X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68BA,
+        "AMD Radeon R9 M370",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68BE,
+        "AMD Radeon R9 M365X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68C0,
+        "AMD Radeon R9 M380",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68C1,
+        "AMD Radeon R9 M380",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68C7,
+        "AMD Radeon R9 M380",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68C8,
+        "AMD Radeon R9 M370X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68C9,
+        "AMD Radeon R9 M370X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68CA,
+        "AMD Radeon R9 M370X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68D8,
+        "AMD Radeon R9 M365X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68D9,
+        "AMD Radeon R9 M360",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68DA,
+        "AMD Radeon R9 M365X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68E0,
+        "AMD Radeon R9 M390",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68E1,
+        "AMD Radeon R9 M390X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68E4,
+        "AMD Radeon R9 M390X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68E5,
+        "AMD Radeon R9 M390X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68E8,
+        "AMD Radeon R9 M390",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68E9,
+        "AMD Radeon R9 M390",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68F1,
+        "AMD Radeon R9 M370X",
+        GPUTier::Performance,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68F2,
+        "AMD Radeon R9 M360",
+        GPUTier::Mainstream,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68F8,
+        "AMD Radeon R7 M350",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68F9,
+        "AMD Radeon R7 M360",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68FA,
+        "AMD Radeon R7 M370",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
+    (
+        0x1002,
+        0x68FE,
+        "AMD Radeon R7 M350",
+        GPUTier::Budget,
+        GPUFeatures::dx11(),
+    ),
 ];
 
 /// GPU performance tiers for intelligent selection
@@ -594,13 +2939,13 @@ pub struct GPUCapabilities {
     pub device_name: String,
     pub tier: GPUTier,
     pub features: GPUFeatures,
-    pub memory_size: u64,     // GPU memory in bytes
+    pub memory_size: u64, // GPU memory in bytes
     pub max_resolution: (u32, u32),
     pub pci_device_id: u16,
     pub compute_units: u32,
-    pub base_clock: u32,      // MHz
-    pub boost_clock: u32,     // MHz
-    pub memory_clock: u32,    // MHz
+    pub base_clock: u32,       // MHz
+    pub boost_clock: u32,      // MHz
+    pub memory_clock: u32,     // MHz
     pub memory_bandwidth: u64, // GB/s
 }
 
@@ -767,7 +3112,12 @@ impl GPUSystem {
     }
 
     /// Probe a specific PCI device
-    fn probe_pci_device(&self, bus: u8, device: u8, function: u8) -> Result<PCIDevice, &'static str> {
+    fn probe_pci_device(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Result<PCIDevice, &'static str> {
         let vendor_id = self.pci_config_read_u16(bus, device, function, 0x00)?;
 
         if vendor_id == 0xFFFF {
@@ -871,22 +3221,23 @@ impl GPUSystem {
             GPUVendor::Intel => {
                 // Intel integrated GPUs share system memory
                 match tier {
-                    GPUTier::Entry => 128 * 1024 * 1024,      // 128MB
-                    GPUTier::Budget => 256 * 1024 * 1024,     // 256MB
-                    GPUTier::Mainstream => 512 * 1024 * 1024, // 512MB
+                    GPUTier::Entry => 128 * 1024 * 1024,        // 128MB
+                    GPUTier::Budget => 256 * 1024 * 1024,       // 256MB
+                    GPUTier::Mainstream => 512 * 1024 * 1024,   // 512MB
                     GPUTier::Performance => 1024 * 1024 * 1024, // 1GB
-                    _ => 2048 * 1024 * 1024, // 2GB for high-end
+                    _ => 2048 * 1024 * 1024,                    // 2GB for high-end
                 }
             }
             GPUVendor::Nvidia => {
                 match tier {
-                    GPUTier::Entry | GPUTier::Budget => 2 * 1024 * 1024 * 1024,    // 2GB
-                    GPUTier::Mainstream => 4 * 1024 * 1024 * 1024,                 // 4GB
-                    GPUTier::Performance => 6 * 1024 * 1024 * 1024,                // 6GB
-                    GPUTier::HighEnd => 8 * 1024 * 1024 * 1024,                    // 8GB
+                    GPUTier::Entry | GPUTier::Budget => 2 * 1024 * 1024 * 1024, // 2GB
+                    GPUTier::Mainstream => 4 * 1024 * 1024 * 1024,              // 4GB
+                    GPUTier::Performance => 6 * 1024 * 1024 * 1024,             // 6GB
+                    GPUTier::HighEnd => 8 * 1024 * 1024 * 1024,                 // 8GB
                     GPUTier::Enthusiast => {
                         // RTX 3090/4090 have 24GB, RTX 3080 Ti has 12GB
-                        if device_id == 0x2204 || device_id == 0x2208 { // RTX 3090/3080 Ti
+                        if device_id == 0x2204 || device_id == 0x2208 {
+                            // RTX 3090/3080 Ti
                             24 * 1024 * 1024 * 1024
                         } else {
                             12 * 1024 * 1024 * 1024
@@ -896,13 +3247,14 @@ impl GPUSystem {
             }
             GPUVendor::AMD => {
                 match tier {
-                    GPUTier::Entry | GPUTier::Budget => 4 * 1024 * 1024 * 1024,    // 4GB
-                    GPUTier::Mainstream => 6 * 1024 * 1024 * 1024,                 // 6GB
-                    GPUTier::Performance => 8 * 1024 * 1024 * 1024,                // 8GB
-                    GPUTier::HighEnd => 12 * 1024 * 1024 * 1024,                   // 12GB
+                    GPUTier::Entry | GPUTier::Budget => 4 * 1024 * 1024 * 1024, // 4GB
+                    GPUTier::Mainstream => 6 * 1024 * 1024 * 1024,              // 6GB
+                    GPUTier::Performance => 8 * 1024 * 1024 * 1024,             // 8GB
+                    GPUTier::HighEnd => 12 * 1024 * 1024 * 1024,                // 12GB
                     GPUTier::Enthusiast => {
                         // RX 6900 XT and newer have 16GB+
-                        if device_id == 0x744C { // RX 7900 XTX
+                        if device_id == 0x744C {
+                            // RX 7900 XTX
                             24 * 1024 * 1024 * 1024
                         } else {
                             16 * 1024 * 1024 * 1024
@@ -917,33 +3269,36 @@ impl GPUSystem {
     /// Estimate maximum resolution support
     fn estimate_max_resolution(&self, vendor: GPUVendor, tier: GPUTier) -> (u32, u32) {
         match tier {
-            GPUTier::Entry => (1920, 1080),      // 1080p
-            GPUTier::Budget => (2560, 1440),     // 1440p
-            GPUTier::Mainstream => (3840, 2160), // 4K
+            GPUTier::Entry => (1920, 1080),       // 1080p
+            GPUTier::Budget => (2560, 1440),      // 1440p
+            GPUTier::Mainstream => (3840, 2160),  // 4K
             GPUTier::Performance => (5120, 2880), // 5K
             GPUTier::HighEnd | GPUTier::Enthusiast => {
                 match vendor {
                     GPUVendor::Nvidia | GPUVendor::AMD => (7680, 4320), // 8K
-                    GPUVendor::Intel => (5120, 2880), // 5K for Intel
-                    GPUVendor::Unknown => (3840, 2160), // 4K conservative
+                    GPUVendor::Intel => (5120, 2880),                   // 5K for Intel
+                    GPUVendor::Unknown => (3840, 2160),                 // 4K conservative
                 }
             }
         }
     }
 
     /// Estimate performance specifications
-    fn estimate_performance_specs(&self, vendor: GPUVendor, tier: GPUTier, device_id: u16) -> (u32, u32, u32, u32, u64) {
+    fn estimate_performance_specs(
+        &self,
+        vendor: GPUVendor,
+        tier: GPUTier,
+        device_id: u16,
+    ) -> (u32, u32, u32, u32, u64) {
         // Returns: (compute_units, base_clock, boost_clock, memory_clock, memory_bandwidth)
         match vendor {
-            GPUVendor::Intel => {
-                match tier {
-                    GPUTier::Entry => (12, 300, 700, 800, 25),
-                    GPUTier::Budget => (24, 400, 900, 1000, 35),
-                    GPUTier::Mainstream => (32, 500, 1100, 1200, 50),
-                    GPUTier::Performance => (96, 400, 1350, 1600, 70),
-                    _ => (128, 500, 1500, 2000, 100),
-                }
-            }
+            GPUVendor::Intel => match tier {
+                GPUTier::Entry => (12, 300, 700, 800, 25),
+                GPUTier::Budget => (24, 400, 900, 1000, 35),
+                GPUTier::Mainstream => (32, 500, 1100, 1200, 50),
+                GPUTier::Performance => (96, 400, 1350, 1600, 70),
+                _ => (128, 500, 1500, 2000, 100),
+            },
             GPUVendor::Nvidia => {
                 match tier {
                     GPUTier::Entry => (384, 1300, 1700, 3500, 112),
@@ -952,7 +3307,8 @@ impl GPUSystem {
                     GPUTier::Performance => (2176, 1410, 1770, 7000, 448),
                     GPUTier::HighEnd => (2944, 1440, 1800, 9500, 760),
                     GPUTier::Enthusiast => {
-                        if device_id == 0x2204 { // RTX 3090
+                        if device_id == 0x2204 {
+                            // RTX 3090
                             (10496, 1395, 1695, 9751, 936)
                         } else {
                             (8704, 1440, 1800, 9500, 760)
@@ -968,7 +3324,8 @@ impl GPUSystem {
                     GPUTier::Performance => (2048, 1500, 2000, 8000, 256),
                     GPUTier::HighEnd => (3840, 1600, 2250, 10000, 512),
                     GPUTier::Enthusiast => {
-                        if device_id == 0x744C { // RX 7900 XTX
+                        if device_id == 0x744C {
+                            // RX 7900 XTX
                             (6144, 1855, 2500, 10000, 960)
                         } else {
                             (5120, 1700, 2300, 8000, 512)
@@ -1032,7 +3389,13 @@ impl GPUSystem {
     }
 
     /// PCI configuration space access methods
-    fn pci_config_read_u16(&self, bus: u8, device: u8, function: u8, offset: u8) -> Result<u16, &'static str> {
+    fn pci_config_read_u16(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        offset: u8,
+    ) -> Result<u16, &'static str> {
         let address = 0x80000000u32
             | ((bus as u32) << 16)
             | ((device as u32) << 11)
@@ -1043,7 +3406,8 @@ impl GPUSystem {
             let mut addr_port = x86_64::instructions::port::Port::new(0xCF8);
             addr_port.write(address);
 
-            let mut data_port: x86_64::instructions::port::Port<u32> = x86_64::instructions::port::Port::new(0xCFC);
+            let mut data_port: x86_64::instructions::port::Port<u32> =
+                x86_64::instructions::port::Port::new(0xCFC);
             let data = data_port.read();
 
             let shift = (offset & 2) * 8;
@@ -1057,7 +3421,13 @@ impl GPUSystem {
         }
     }
 
-    fn pci_config_read_u8(&self, bus: u8, device: u8, function: u8, offset: u8) -> Result<u8, &'static str> {
+    fn pci_config_read_u8(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        offset: u8,
+    ) -> Result<u8, &'static str> {
         let address = 0x80000000u32
             | ((bus as u32) << 16)
             | ((device as u32) << 11)
@@ -1068,7 +3438,8 @@ impl GPUSystem {
             let mut addr_port = x86_64::instructions::port::Port::new(0xCF8);
             addr_port.write(address);
 
-            let mut data_port: x86_64::instructions::port::Port<u32> = x86_64::instructions::port::Port::new(0xCFC);
+            let mut data_port: x86_64::instructions::port::Port<u32> =
+                x86_64::instructions::port::Port::new(0xCFC);
             let data = data_port.read();
 
             let shift = (offset & 3) * 8;
@@ -1078,7 +3449,13 @@ impl GPUSystem {
         }
     }
 
-    fn pci_config_read_u32(&self, bus: u8, device: u8, function: u8, offset: u8) -> Result<u32, &'static str> {
+    fn pci_config_read_u32(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        offset: u8,
+    ) -> Result<u32, &'static str> {
         let address = 0x80000000u32
             | ((bus as u32) << 16)
             | ((device as u32) << 11)
@@ -1089,7 +3466,8 @@ impl GPUSystem {
             let mut addr_port = x86_64::instructions::port::Port::new(0xCF8);
             addr_port.write(address);
 
-            let mut data_port: x86_64::instructions::port::Port<u32> = x86_64::instructions::port::Port::new(0xCFC);
+            let mut data_port: x86_64::instructions::port::Port<u32> =
+                x86_64::instructions::port::Port::new(0xCFC);
             let data = data_port.read();
 
             Ok(data)
@@ -1120,11 +3498,17 @@ impl GPUSystem {
 
     /// Update performance monitoring data
     pub fn update_performance_stats(&mut self) {
-        let (gpu_tier, base_clock, boost_clock, memory_clock) = if let Some(active_gpu) = self.get_active_gpu() {
-            (active_gpu.tier, active_gpu.base_clock, active_gpu.boost_clock, active_gpu.memory_clock)
-        } else {
-            return;
-        };
+        let (gpu_tier, base_clock, boost_clock, memory_clock) =
+            if let Some(active_gpu) = self.get_active_gpu() {
+                (
+                    active_gpu.tier,
+                    active_gpu.base_clock,
+                    active_gpu.boost_clock,
+                    active_gpu.memory_clock,
+                )
+            } else {
+                return;
+            };
 
         // Simulate realistic performance data based on GPU tier
         let base_utilization = match gpu_tier {
@@ -1141,30 +3525,36 @@ impl GPUSystem {
         self.performance_stats.utilization_percentage = (base_utilization + variation).min(100);
 
         // Update temperature based on utilization
-        self.performance_stats.temperature_celsius = 30 + (self.performance_stats.utilization_percentage / 2);
+        self.performance_stats.temperature_celsius =
+            30 + (self.performance_stats.utilization_percentage / 2);
 
         // Update fan speed based on temperature
-        self.performance_stats.fan_speed_percentage = if self.performance_stats.temperature_celsius > 70 {
-            ((self.performance_stats.temperature_celsius - 30) * 2).min(100)
-        } else {
-            30
-        };
+        self.performance_stats.fan_speed_percentage =
+            if self.performance_stats.temperature_celsius > 70 {
+                ((self.performance_stats.temperature_celsius - 30) * 2).min(100)
+            } else {
+                30
+            };
 
         // Update power consumption
         self.performance_stats.power_consumption_watts = match gpu_tier {
             GPUTier::Entry => 15 + (self.performance_stats.utilization_percentage as u16 / 4),
             GPUTier::Budget => 50 + (self.performance_stats.utilization_percentage as u16 / 2),
             GPUTier::Mainstream => 120 + self.performance_stats.utilization_percentage as u16,
-            GPUTier::Performance => 180 + (self.performance_stats.utilization_percentage as u16 * 3 / 2),
+            GPUTier::Performance => {
+                180 + (self.performance_stats.utilization_percentage as u16 * 3 / 2)
+            }
             GPUTier::HighEnd => 250 + (self.performance_stats.utilization_percentage as u16 * 2),
             GPUTier::Enthusiast => 350 + (self.performance_stats.utilization_percentage as u16 * 3),
         };
 
         // Update clock speeds (simplified simulation)
-        self.performance_stats.clock_speeds.core_clock_mhz =
-            base_clock + (boost_clock - base_clock) * self.performance_stats.utilization_percentage as u32 / 100;
+        self.performance_stats.clock_speeds.core_clock_mhz = base_clock
+            + (boost_clock - base_clock) * self.performance_stats.utilization_percentage as u32
+                / 100;
         self.performance_stats.clock_speeds.memory_clock_mhz = memory_clock;
-        self.performance_stats.clock_speeds.shader_clock_mhz = self.performance_stats.clock_speeds.core_clock_mhz;
+        self.performance_stats.clock_speeds.shader_clock_mhz =
+            self.performance_stats.clock_speeds.core_clock_mhz;
     }
 
     /// Set GPU power state
@@ -1196,7 +3586,10 @@ impl GPUSystem {
     }
 
     /// Initialize GPU acceleration for framebuffer operations
-    pub fn initialize_acceleration(&mut self, _framebuffer_info: &crate::graphics::FramebufferInfo) -> Result<(), &'static str> {
+    pub fn initialize_acceleration(
+        &mut self,
+        _framebuffer_info: &crate::graphics::FramebufferInfo,
+    ) -> Result<(), &'static str> {
         // TODO: Implement GPU acceleration initialization
         // This would set up DMA buffers, command queues, etc.
         if self.status != GPUStatus::Ready {
@@ -1206,14 +3599,30 @@ impl GPUSystem {
     }
 
     /// Clear framebuffer using GPU acceleration
-    pub fn clear_framebuffer(&self, _buffer_addr: u64, _width: usize, _height: usize, _stride: usize, _color: u32) -> Result<(), &'static str> {
+    pub fn clear_framebuffer(
+        &self,
+        _buffer_addr: u64,
+        _width: usize,
+        _height: usize,
+        _stride: usize,
+        _color: u32,
+    ) -> Result<(), &'static str> {
         // TODO: Implement hardware-accelerated framebuffer clear
         // For now, return error to fall back to software implementation
         Err("Hardware acceleration not yet implemented")
     }
 
     /// Fill a rectangle using GPU acceleration
-    pub fn fill_rectangle(&self, _buffer_addr: u64, _stride: usize, _x: usize, _y: usize, _width: usize, _height: usize, _color: u32) -> Result<(), &'static str> {
+    pub fn fill_rectangle(
+        &self,
+        _buffer_addr: u64,
+        _stride: usize,
+        _x: usize,
+        _y: usize,
+        _width: usize,
+        _height: usize,
+        _color: u32,
+    ) -> Result<(), &'static str> {
         // TODO: Implement hardware-accelerated rectangle fill
         // For now, return error to fall back to software implementation
         Err("Hardware acceleration not yet implemented")
@@ -1229,23 +3638,64 @@ impl GPUSystem {
         report.push_str(&format!("Detected GPUs: {}\n", self.detected_gpus.len()));
 
         if let Some(active_gpu) = self.get_active_gpu() {
-            report.push_str(&format!("Active GPU: {} ({})\n", active_gpu.device_name, active_gpu.vendor));
-            report.push_str(&format!("  Memory: {:.1} GB\n", active_gpu.memory_size as f64 / (1024.0 * 1024.0 * 1024.0)));
-            report.push_str(&format!("  Max Resolution: {}x{}\n", active_gpu.max_resolution.0, active_gpu.max_resolution.1));
-            report.push_str(&format!("  DirectX: {}\n", active_gpu.features.directx_version));
-            report.push_str(&format!("  Vulkan: {}\n", if active_gpu.features.vulkan_support { "Yes" } else { "No" }));
-            report.push_str(&format!("  Ray Tracing: {}\n", if active_gpu.features.raytracing_support { "Yes" } else { "No" }));
+            report.push_str(&format!(
+                "Active GPU: {} ({})\n",
+                active_gpu.device_name, active_gpu.vendor
+            ));
+            report.push_str(&format!(
+                "  Memory: {:.1} GB\n",
+                active_gpu.memory_size as f64 / (1024.0 * 1024.0 * 1024.0)
+            ));
+            report.push_str(&format!(
+                "  Max Resolution: {}x{}\n",
+                active_gpu.max_resolution.0, active_gpu.max_resolution.1
+            ));
+            report.push_str(&format!(
+                "  DirectX: {}\n",
+                active_gpu.features.directx_version
+            ));
+            report.push_str(&format!(
+                "  Vulkan: {}\n",
+                if active_gpu.features.vulkan_support {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            ));
+            report.push_str(&format!(
+                "  Ray Tracing: {}\n",
+                if active_gpu.features.raytracing_support {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            ));
         }
 
         report.push_str("\n=== All Detected GPUs ===\n");
         for (i, gpu) in self.detected_gpus.iter().enumerate() {
-            let active_marker = if Some(i) == self.active_gpu_index { " [ACTIVE]" } else { "" };
-            report.push_str(&format!("{}. {}{}\n", i + 1, gpu.device_name, active_marker));
+            let active_marker = if Some(i) == self.active_gpu_index {
+                " [ACTIVE]"
+            } else {
+                ""
+            };
+            report.push_str(&format!(
+                "{}. {}{}\n",
+                i + 1,
+                gpu.device_name,
+                active_marker
+            ));
             report.push_str(&format!("   Vendor: {}\n", gpu.vendor));
             report.push_str(&format!("   Tier: {:?}\n", gpu.tier));
-            report.push_str(&format!("   Memory: {:.1} GB\n", gpu.memory_size as f64 / (1024.0 * 1024.0 * 1024.0)));
+            report.push_str(&format!(
+                "   Memory: {:.1} GB\n",
+                gpu.memory_size as f64 / (1024.0 * 1024.0 * 1024.0)
+            ));
             report.push_str(&format!("   Compute Units: {}\n", gpu.compute_units));
-            report.push_str(&format!("   Base/Boost Clock: {}/{} MHz\n", gpu.base_clock, gpu.boost_clock));
+            report.push_str(&format!(
+                "   Base/Boost Clock: {}/{} MHz\n",
+                gpu.base_clock, gpu.boost_clock
+            ));
         }
 
         report

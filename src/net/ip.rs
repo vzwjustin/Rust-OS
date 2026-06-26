@@ -2,7 +2,7 @@
 //!
 //! This module handles Internet Protocol packet parsing, routing, and forwarding.
 
-use super::{NetworkAddress, NetworkResult, NetworkError, PacketBuffer, NetworkStack, Protocol};
+use super::{NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer, Protocol};
 use alloc::vec::Vec;
 
 /// IPv4 header minimum size
@@ -59,7 +59,7 @@ impl IPv4Header {
         }
 
         let tos = buffer.read(1).ok_or(NetworkError::InvalidPacket)?[0];
-        
+
         let total_length_bytes = buffer.read(2).ok_or(NetworkError::InvalidPacket)?;
         let total_length = u16::from_be_bytes([total_length_bytes[0], total_length_bytes[1]]);
 
@@ -88,7 +88,9 @@ impl IPv4Header {
         // Read options if present
         let options_length = header_length - IPV4_HEADER_MIN_SIZE;
         let options = if options_length > 0 {
-            let options_bytes = buffer.read(options_length).ok_or(NetworkError::InvalidPacket)?;
+            let options_bytes = buffer
+                .read(options_length)
+                .ok_or(NetworkError::InvalidPacket)?;
             options_bytes.to_vec()
         } else {
             Vec::new()
@@ -112,7 +114,7 @@ impl IPv4Header {
     /// Calculate header checksum
     pub fn calculate_checksum(&self) -> u16 {
         let mut sum = 0u32;
-        
+
         // Add all 16-bit words in header (except checksum field)
         sum += (self.version_ihl as u32) << 8 | (self.tos as u32);
         sum += self.total_length as u32;
@@ -120,12 +122,12 @@ impl IPv4Header {
         sum += self.flags_fragment as u32;
         sum += (self.ttl as u32) << 8 | (self.protocol as u32);
         // Skip checksum field
-        
+
         if let NetworkAddress::IPv4(src) = self.source {
             sum += ((src[0] as u32) << 8) | (src[1] as u32);
             sum += ((src[2] as u32) << 8) | (src[3] as u32);
         }
-        
+
         if let NetworkAddress::IPv4(dst) = self.destination {
             sum += ((dst[0] as u32) << 8) | (dst[1] as u32);
             sum += ((dst[2] as u32) << 8) | (dst[3] as u32);
@@ -182,8 +184,9 @@ impl IPv6Header {
         }
 
         let vtf_bytes = buffer.read(4).ok_or(NetworkError::InvalidPacket)?;
-        let version_tc_fl = u32::from_be_bytes([vtf_bytes[0], vtf_bytes[1], vtf_bytes[2], vtf_bytes[3]]);
-        
+        let version_tc_fl =
+            u32::from_be_bytes([vtf_bytes[0], vtf_bytes[1], vtf_bytes[2], vtf_bytes[3]]);
+
         let version = (version_tc_fl >> 28) & 0x0f;
         if version != 6 {
             return Err(NetworkError::InvalidPacket);
@@ -217,9 +220,12 @@ impl IPv6Header {
 }
 
 /// Process IPv4 packet
-pub fn process_ipv4_packet(network_stack: &NetworkStack, mut packet: PacketBuffer) -> NetworkResult<()> {
+pub fn process_ipv4_packet(
+    network_stack: &NetworkStack,
+    mut packet: PacketBuffer,
+) -> NetworkResult<()> {
     let header = IPv4Header::parse(&mut packet)?;
-    
+
     // Production: log only errors, not every packet
 
     // Verify checksum
@@ -241,12 +247,28 @@ pub fn process_ipv4_packet(network_stack: &NetworkStack, mut packet: PacketBuffe
         return Ok(());
     }
 
+    // Trim any Ethernet padding so the upper layer (and its checksum) only sees
+    // the real IP payload. total_length covers the IP header + payload; anything
+    // beyond it in the frame is padding. Guard against a malformed header whose
+    // total_length is smaller than the header itself.
+    let header_len = ((header.version_ihl & 0x0f) as usize) * 4;
+    if (header.total_length as usize) >= header_len {
+        let payload_len = header.total_length as usize - header_len;
+        let trimmed = packet.position + payload_len;
+        if trimmed <= packet.length {
+            packet.length = trimmed;
+        }
+    }
+
     // Process based on protocol
     let protocol = Protocol::from(header.protocol);
     match protocol {
-        Protocol::ICMP => {
-            super::icmp::process_icmp_packet(network_stack, header.source, header.destination, packet)
-        }
+        Protocol::ICMP => super::icmp::process_icmp_packet(
+            network_stack,
+            header.source,
+            header.destination,
+            packet,
+        ),
         Protocol::TCP => {
             super::tcp::process_packet(network_stack, header.source, header.destination, packet)
         }
@@ -261,9 +283,12 @@ pub fn process_ipv4_packet(network_stack: &NetworkStack, mut packet: PacketBuffe
 }
 
 /// Process IPv6 packet
-pub fn process_ipv6_packet(network_stack: &NetworkStack, mut packet: PacketBuffer) -> NetworkResult<()> {
+pub fn process_ipv6_packet(
+    network_stack: &NetworkStack,
+    mut packet: PacketBuffer,
+) -> NetworkResult<()> {
     let header = IPv6Header::parse(&mut packet)?;
-    
+
     // Production: process packet without debug output
 
     // Check if packet is for us
@@ -274,13 +299,21 @@ pub fn process_ipv6_packet(network_stack: &NetworkStack, mut packet: PacketBuffe
 
     // Process based on next header
     match header.next_header {
-        58 => { // ICMPv6
-            super::icmp::process_icmpv6_packet(network_stack, header.source, header.destination, packet)
+        58 => {
+            // ICMPv6
+            super::icmp::process_icmpv6_packet(
+                network_stack,
+                header.source,
+                header.destination,
+                packet,
+            )
         }
-        6 => { // TCP
+        6 => {
+            // TCP
             super::tcp::process_packet(network_stack, header.source, header.destination, packet)
         }
-        17 => { // UDP
+        17 => {
+            // UDP
             super::udp::process_packet(network_stack, header.source, header.destination, packet)
         }
         _ => {
@@ -332,7 +365,8 @@ fn forward_ipv4_packet(
         let payload = packet.read(packet.remaining()).unwrap_or(&[]).to_vec();
 
         // Build new packet with updated header
-        let mut new_packet_data = Vec::with_capacity(IPV4_HEADER_MIN_SIZE + header.options.len() + payload.len());
+        let mut new_packet_data =
+            Vec::with_capacity(IPV4_HEADER_MIN_SIZE + header.options.len() + payload.len());
 
         // Serialize IPv4 header
         new_packet_data.push(header.version_ihl);
@@ -421,7 +455,6 @@ fn forward_ipv6_packet(
         Ok(())
     }
 }
-
 
 impl From<u8> for Protocol {
     fn from(value: u8) -> Self {
@@ -714,7 +747,7 @@ fn send_icmp_time_exceeded(src_ip: NetworkAddress, dst_ip: NetworkAddress) -> Ne
     let mut icmp_packet = Vec::new();
 
     icmp_packet.push(11u8); // Type: Time Exceeded
-    icmp_packet.push(0u8);  // Code: TTL exceeded in transit
+    icmp_packet.push(0u8); // Code: TTL exceeded in transit
     icmp_packet.extend_from_slice(&[0u8; 2]); // Checksum (calculated later)
     icmp_packet.extend_from_slice(&[0u8; 4]); // Unused
 
@@ -732,8 +765,8 @@ fn send_icmp_dest_unreachable(src_ip: NetworkAddress, dst_ip: NetworkAddress) ->
     // ICMP Destination Unreachable: Type 3, Code 0 (Network unreachable)
     let mut icmp_packet = Vec::new();
 
-    icmp_packet.push(3u8);  // Type: Destination Unreachable
-    icmp_packet.push(0u8);  // Code: Network unreachable
+    icmp_packet.push(3u8); // Type: Destination Unreachable
+    icmp_packet.push(0u8); // Code: Network unreachable
     icmp_packet.extend_from_slice(&[0u8; 2]); // Checksum (calculated later)
     icmp_packet.extend_from_slice(&[0u8; 4]); // Unused
 
@@ -783,7 +816,10 @@ fn send_icmpv6_time_exceeded(src_ip: NetworkAddress, dst_ip: NetworkAddress) -> 
 }
 
 /// Send ICMPv6 Destination Unreachable message
-fn send_icmpv6_dest_unreachable(src_ip: NetworkAddress, dst_ip: NetworkAddress) -> NetworkResult<()> {
+fn send_icmpv6_dest_unreachable(
+    src_ip: NetworkAddress,
+    dst_ip: NetworkAddress,
+) -> NetworkResult<()> {
     // ICMPv6 Destination Unreachable: Type 1, Code 0 (No route to destination)
     // RFC 4443 Section 3.1
     if let (NetworkAddress::IPv6(src), NetworkAddress::IPv6(dst)) = (src_ip, dst_ip) {
@@ -822,7 +858,7 @@ fn send_icmpv6_dest_unreachable(src_ip: NetworkAddress, dst_ip: NetworkAddress) 
 mod tests {
     use super::*;
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn process_ipv4_packet_accepts_valid_checksum() {
         let network_stack = NetworkStack::new();
 

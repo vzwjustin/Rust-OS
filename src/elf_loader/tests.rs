@@ -49,41 +49,41 @@ fn create_test_elf_header() -> [u8; 64] {
     data
 }
 
-#[test]
+#[test_case]
 fn test_valid_elf_header() {
     let data = create_test_elf_header();
     assert!(elf_validate(&data).is_ok());
 }
 
-#[test]
+#[test_case]
 fn test_invalid_magic() {
     let mut data = create_test_elf_header();
     data[0] = 0; // Corrupt magic
     assert_eq!(elf_validate(&data), Err(ElfError::InvalidMagic));
 }
 
-#[test]
+#[test_case]
 fn test_invalid_class() {
     let mut data = create_test_elf_header();
     data[EI_CLASS] = 1; // 32-bit
     assert_eq!(elf_validate(&data), Err(ElfError::InvalidClass));
 }
 
-#[test]
+#[test_case]
 fn test_invalid_endianness() {
     let mut data = create_test_elf_header();
     data[EI_DATA] = 2; // Big-endian
     assert_eq!(elf_validate(&data), Err(ElfError::InvalidEndianness));
 }
 
-#[test]
+#[test_case]
 fn test_invalid_machine() {
     let mut data = create_test_elf_header();
     data[18] = 3; // i386 instead of x86_64
     assert_eq!(elf_validate(&data), Err(ElfError::InvalidMachine));
 }
 
-#[test]
+#[test_case]
 fn test_segment_flags() {
     // Read-only
     let ro_flags = SegmentFlags {
@@ -117,7 +117,7 @@ fn test_segment_flags() {
     assert!(!page_flags.contains(PageTableFlags::NO_EXECUTE));
 }
 
-#[test]
+#[test_case]
 fn test_pie_detection() {
     let mut data = create_test_elf_header();
 
@@ -133,7 +133,7 @@ fn test_pie_detection() {
     assert!(elf_validate(&data).is_ok());
 }
 
-#[test]
+#[test_case]
 fn test_buffer_too_small() {
     let data = [0u8; 32]; // Less than header size
     assert_eq!(elf_validate(&data), Err(ElfError::BufferTooSmall));
@@ -199,7 +199,7 @@ fn create_minimal_executable() -> Vec<u8> {
     data
 }
 
-#[test]
+#[test_case]
 fn test_load_minimal_executable() {
     let binary = create_minimal_executable();
 
@@ -220,7 +220,7 @@ fn test_load_minimal_executable() {
     assert!(segment.flags.executable);
 }
 
-#[test]
+#[test_case]
 fn test_segment_type_names() {
     let load_seg = Elf64ProgramHeader {
         p_type: PT_LOAD,

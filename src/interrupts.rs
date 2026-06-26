@@ -3,8 +3,8 @@
 //! This module provides a comprehensive interrupt handling system for RustOS.
 //! It includes the IDT setup, exception handlers, and hardware interrupt management.
 
-use core::{fmt, ptr};
 use alloc::string::ToString;
+use core::{fmt, ptr};
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
@@ -110,17 +110,17 @@ static MISSED_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 /// Initialize the interrupt system
 pub fn init() {
     IDT.load();
-    
+
     // Initialize ACPI tables first for APIC configuration
     if let Err(e) = crate::acpi::init_acpi_tables() {
         crate::serial_println!("Warning: ACPI initialization failed: {}", e);
     }
-    
+
     // Initialize APIC system or fall back to PIC
     match crate::apic::init_apic_system() {
         Ok(()) => {
             crate::serial_println!("APIC system initialized successfully");
-            
+
             // Configure standard IRQs with APIC
             match configure_standard_irqs_apic() {
                 Ok(()) => {
@@ -138,7 +138,7 @@ pub fn init() {
             init_legacy_pic();
         }
     }
-    
+
     // Validate interrupt system is working
     validate_interrupt_system();
 
@@ -176,7 +176,10 @@ pub fn unmask_irq(irq: u8) {
         let mut data_port: Port<u8> = Port::new(port);
         crate::serial_println!("unmask_irq: reading current mask");
         let current_mask = data_port.read();
-        crate::serial_println!("unmask_irq: current mask = 0x{:02X}, writing new mask", current_mask);
+        crate::serial_println!(
+            "unmask_irq: current mask = 0x{:02X}, writing new mask",
+            current_mask
+        );
         data_port.write(current_mask & !(1 << irq_bit));
         crate::serial_println!("unmask_irq: IRQ {} unmasked successfully", irq);
     }
@@ -205,7 +208,7 @@ fn disable_legacy_pic() {
         // Mask all interrupts on both PICs
         let mut pic1_data: Port<u8> = Port::new(0x21);
         let mut pic2_data: Port<u8> = Port::new(0xA1);
-        
+
         pic1_data.write(0xFF);
         pic2_data.write(0xFF);
     }
@@ -215,13 +218,13 @@ fn disable_legacy_pic() {
 fn configure_standard_irqs_apic() -> Result<(), &'static str> {
     // Get current CPU ID for interrupt routing
     let cpu_id = 0; // For now, route all interrupts to CPU 0
-    
+
     // Configure timer (IRQ 0) - critical for system operation
     if let Err(e) = crate::apic::configure_irq(0, InterruptIndex::Timer.as_u8(), cpu_id) {
         crate::serial_println!("Warning: Failed to configure timer IRQ: {}", e);
         // Timer is critical, but we can continue with PIC fallback
     }
-    
+
     // Configure keyboard (IRQ 1)
     if let Err(e) = crate::apic::configure_irq(1, InterruptIndex::Keyboard.as_u8(), cpu_id) {
         crate::serial_println!("Warning: Failed to configure keyboard IRQ: {}", e);
@@ -236,15 +239,15 @@ fn configure_standard_irqs_apic() -> Result<(), &'static str> {
     if let Err(e) = crate::apic::configure_irq(4, InterruptIndex::SerialPort1.as_u8(), cpu_id) {
         crate::serial_println!("Warning: Failed to configure serial port 1 IRQ: {}", e);
     }
-    
+
     if let Err(e) = crate::apic::configure_irq(3, InterruptIndex::SerialPort2.as_u8(), cpu_id) {
         crate::serial_println!("Warning: Failed to configure serial port 2 IRQ: {}", e);
     }
-    
+
     // Validate that at least timer configuration succeeded
     // If not, we should fall back to PIC
     crate::serial_println!("APIC interrupt configuration completed");
-    
+
     Ok(())
 }
 
@@ -309,15 +312,15 @@ extern "x86-interrupt" fn double_fault_handler(
     _stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    use crate::error::{KernelError, SystemError, ErrorSeverity, ErrorContext, ERROR_MANAGER};
-    
+    use crate::error::{ErrorContext, ErrorSeverity, KernelError, SystemError, ERROR_MANAGER};
+
     let error_context = ErrorContext::new(
         KernelError::System(SystemError::InternalError),
         ErrorSeverity::Fatal,
         "double_fault_handler",
         alloc::format!("Double fault with error code: {}", error_code),
     );
-    
+
     // Try to handle the fatal error gracefully
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         let _ = manager.handle_error(error_context);
@@ -326,10 +329,12 @@ extern "x86-interrupt" fn double_fault_handler(
         crate::serial_println!("FATAL: Double fault (error code: {})", error_code);
         crate::serial_println!("Stack frame: {:#?}", _stack_frame);
     }
-    
+
     // Double fault is unrecoverable - halt system
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 
@@ -343,7 +348,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
     // Log all page faults for production debugging
     crate::serial_println!(
-        "Page fault at {:?}: present={}, write={}, user={}", 
+        "Page fault at {:?}: present={}, write={}, user={}",
         fault_address,
         !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION),
         error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE),
@@ -374,21 +379,23 @@ extern "x86-interrupt" fn page_fault_handler(
     }
 
     // If recovery fails, use error handling system
-    use crate::error::{KernelError, MemoryError, ErrorSeverity, ErrorContext, ERROR_MANAGER};
-    
+    use crate::error::{ErrorContext, ErrorSeverity, KernelError, MemoryError, ERROR_MANAGER};
+
     let error_context = ErrorContext::new(
         KernelError::Memory(MemoryError::PageFaultUnrecoverable),
         ErrorSeverity::Critical,
         "page_fault_handler",
         alloc::format!("Unrecoverable page fault at address {:?}", fault_address),
     );
-    
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             // Critical error handling failed - this is very bad
             crate::serial_println!("CRITICAL: Page fault recovery failed completely");
             loop {
-                unsafe { core::arch::asm!("hlt"); }
+                unsafe {
+                    core::arch::asm!("hlt");
+                }
             }
         }
     } else {
@@ -399,8 +406,10 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    use crate::error::{KernelError, ProcessError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, ProcessError, RecoveryAction, ERROR_MANAGER,
+    };
+
     // Log divide by zero with context information
     crate::serial_println!(
         "Divide by zero error at RIP: {:?}, RSP: {:?}",
@@ -408,14 +417,15 @@ extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame)
         stack_frame.stack_pointer
     );
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Process(ProcessError::InvalidState),
         ErrorSeverity::Error,
         "divide_error_handler",
         alloc::format!("Divide by zero at {:?}", stack_frame.instruction_pointer),
-    ).with_recovery(RecoveryAction::Isolate);
-    
+    )
+    .with_recovery(RecoveryAction::Isolate);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             // Error handling failed - terminate current process
@@ -426,25 +436,28 @@ extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame)
         crate::serial_println!("CRITICAL: Divide by zero - error manager unavailable");
         terminate_current_process("Divide by zero exception (error manager unavailable)");
     }
-} 
+}
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    use crate::error::{KernelError, ProcessError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, ProcessError, RecoveryAction, ERROR_MANAGER,
+    };
+
     // Log invalid opcode with detailed context
     crate::serial_println!(
         "Invalid opcode at RIP: {:?}, attempting instruction recovery",
         stack_frame.instruction_pointer
     );
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Process(ProcessError::InvalidState),
         ErrorSeverity::Error,
         "invalid_opcode_handler",
         alloc::format!("Invalid opcode at {:?}", stack_frame.instruction_pointer),
-    ).with_recovery(RecoveryAction::Isolate);
-    
+    )
+    .with_recovery(RecoveryAction::Isolate);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("Terminating process due to invalid opcode");
@@ -460,19 +473,22 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     _stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    use crate::error::{KernelError, SecurityError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, RecoveryAction, SecurityError, ERROR_MANAGER,
+    };
+
     // Production: critical protection fault
     crate::serial_println!("CRITICAL: General protection fault ({})", error_code);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Security(SecurityError::AccessDenied),
         ErrorSeverity::Critical,
         "general_protection_fault_handler",
         alloc::format!("General protection fault with error code: {}", error_code),
-    ).with_recovery(RecoveryAction::Isolate);
-    
+    )
+    .with_recovery(RecoveryAction::Isolate);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("CRITICAL: GPF recovery failed - system may be compromised");
@@ -492,19 +508,22 @@ extern "x86-interrupt" fn stack_segment_fault_handler(
     _stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    use crate::error::{KernelError, MemoryError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, MemoryError, RecoveryAction, ERROR_MANAGER,
+    };
+
     // Production: critical stack fault
     crate::serial_println!("CRITICAL: Stack segment fault ({})", error_code);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Memory(MemoryError::InvalidAddress),
         ErrorSeverity::Critical,
         "stack_segment_fault_handler",
         alloc::format!("Stack segment fault with error code: {}", error_code),
-    ).with_recovery(RecoveryAction::Isolate);
-    
+    )
+    .with_recovery(RecoveryAction::Isolate);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("CRITICAL: Stack fault recovery failed");
@@ -522,8 +541,10 @@ extern "x86-interrupt" fn segment_not_present_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    use crate::error::{KernelError, MemoryError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, MemoryError, RecoveryAction, ERROR_MANAGER,
+    };
+
     // Log detailed segment fault information for debugging
     crate::serial_println!(
         "Segment not present fault - Error code: 0x{:x}, RIP: {:?}",
@@ -531,14 +552,19 @@ extern "x86-interrupt" fn segment_not_present_handler(
         stack_frame.instruction_pointer
     );
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Memory(MemoryError::InvalidAddress),
         ErrorSeverity::Error,
         "segment_not_present_handler",
-        alloc::format!("Segment not present - error code: 0x{:x} at {:?}", error_code, stack_frame.instruction_pointer),
-    ).with_recovery(RecoveryAction::Retry);
-    
+        alloc::format!(
+            "Segment not present - error code: 0x{:x} at {:?}",
+            error_code,
+            stack_frame.instruction_pointer
+        ),
+    )
+    .with_recovery(RecoveryAction::Retry);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("Segment fault recovery failed - terminating process");
@@ -552,64 +578,77 @@ extern "x86-interrupt" fn segment_not_present_handler(
 
 extern "x86-interrupt" fn overflow_handler(stack_frame: InterruptStackFrame) {
     // Handle arithmetic overflow - log for debugging but continue execution
-    crate::serial_println!("Arithmetic overflow detected at RIP: {:?}", stack_frame.instruction_pointer);
+    crate::serial_println!(
+        "Arithmetic overflow detected at RIP: {:?}",
+        stack_frame.instruction_pointer
+    );
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
     // In production, overflow should be handled gracefully
 }
 
 extern "x86-interrupt" fn bound_range_exceeded_handler(stack_frame: InterruptStackFrame) {
     // Handle bounds check failure - log detailed information
-    crate::serial_println!("Bounds check failed at RIP: {:?}", stack_frame.instruction_pointer);
+    crate::serial_println!(
+        "Bounds check failed at RIP: {:?}",
+        stack_frame.instruction_pointer
+    );
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
     // Continue execution after logging - bounds checks are recoverable
 }
 
-extern "x86-interrupt" fn invalid_tss_handler(
-    _stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    use crate::error::{KernelError, SystemError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+extern "x86-interrupt" fn invalid_tss_handler(_stack_frame: InterruptStackFrame, error_code: u64) {
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, RecoveryAction, SystemError, ERROR_MANAGER,
+    };
+
     // Production: critical TSS error
     crate::serial_println!("CRITICAL: Invalid TSS ({})", error_code);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::System(SystemError::InternalError),
         ErrorSeverity::Critical,
         "invalid_tss_handler",
         alloc::format!("Invalid TSS with error code: {}", error_code),
-    ).with_recovery(RecoveryAction::Restart);
-    
+    )
+    .with_recovery(RecoveryAction::Restart);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("CRITICAL: TSS recovery failed - system unstable");
             loop {
-                unsafe { core::arch::asm!("hlt"); }
+                unsafe {
+                    core::arch::asm!("hlt");
+                }
             }
         }
     } else {
         crate::serial_println!("FATAL: Invalid TSS - error manager unavailable");
         loop {
-            unsafe { core::arch::asm!("hlt"); }
+            unsafe {
+                core::arch::asm!("hlt");
+            }
         }
     }
 }
 
 extern "x86-interrupt" fn virtualization_handler(_stack_frame: InterruptStackFrame) {
-    use crate::error::{KernelError, HardwareError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, HardwareError, KernelError, RecoveryAction, ERROR_MANAGER,
+    };
+
     // Production: virtualization error handled
     crate::serial_println!("CRITICAL: Virtualization");
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Hardware(HardwareError::HardwareFault),
         ErrorSeverity::Warning,
         "virtualization_handler",
         "Virtualization exception occurred".to_string(),
-    ).with_recovery(RecoveryAction::None);
-    
+    )
+    .with_recovery(RecoveryAction::None);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         let _ = manager.handle_error(error_context);
     } else {
@@ -621,19 +660,22 @@ extern "x86-interrupt" fn alignment_check_handler(
     _stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    use crate::error::{KernelError, ProcessError, ErrorSeverity, ErrorContext, ERROR_MANAGER, RecoveryAction};
-    
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, ProcessError, RecoveryAction, ERROR_MANAGER,
+    };
+
     // Production: alignment error handled
     crate::serial_println!("CRITICAL: Alignment check ({})", error_code);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     let error_context = ErrorContext::new(
         KernelError::Process(ProcessError::InvalidState),
         ErrorSeverity::Error,
         "alignment_check_handler",
         alloc::format!("Alignment check exception with error code: {}", error_code),
-    ).with_recovery(RecoveryAction::Isolate);
-    
+    )
+    .with_recovery(RecoveryAction::Isolate);
+
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("Alignment check recovery failed - terminating process");
@@ -664,9 +706,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // Minimal keyboard handler - read scancode and send EOI using only assembly
     unsafe {
         core::arch::asm!(
-            "in al, 0x60",   // Read scancode from keyboard port
-            "mov al, 0x20",  // EOI command
-            "out 0x20, al",  // Send EOI to PIC
+            "in al, 0x60",  // Read scancode from keyboard port
+            "mov al, 0x20", // EOI command
+            "out 0x20, al", // Send EOI to PIC
             options(nomem, nostack, preserves_flags)
         );
     }
@@ -693,10 +735,12 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFr
             if initialized {
                 crate::apic::end_of_interrupt();
             } else {
-                PICS.lock().notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
+                PICS.lock()
+                    .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
             }
         } else {
-            PICS.lock().notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
         }
     }
 }
@@ -716,10 +760,12 @@ extern "x86-interrupt" fn serial_port1_interrupt_handler(_stack_frame: Interrupt
             if initialized {
                 crate::apic::end_of_interrupt();
             } else {
-                PICS.lock().notify_end_of_interrupt(InterruptIndex::SerialPort1.as_u8());
+                PICS.lock()
+                    .notify_end_of_interrupt(InterruptIndex::SerialPort1.as_u8());
             }
         } else {
-            PICS.lock().notify_end_of_interrupt(InterruptIndex::SerialPort1.as_u8());
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::SerialPort1.as_u8());
         }
     }
 }
@@ -739,10 +785,12 @@ extern "x86-interrupt" fn serial_port2_interrupt_handler(_stack_frame: Interrupt
             if initialized {
                 crate::apic::end_of_interrupt();
             } else {
-                PICS.lock().notify_end_of_interrupt(InterruptIndex::SerialPort2.as_u8());
+                PICS.lock()
+                    .notify_end_of_interrupt(InterruptIndex::SerialPort2.as_u8());
             }
         } else {
-            PICS.lock().notify_end_of_interrupt(InterruptIndex::SerialPort2.as_u8());
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::SerialPort2.as_u8());
         }
     }
 }
@@ -775,11 +823,11 @@ pub enum PageFaultRecovery {
 
 /// Attempt to recover from a page fault
 fn attempt_page_fault_recovery(
-    fault_address: x86_64::VirtAddr, 
-    error_code: x86_64::structures::idt::PageFaultErrorCode
+    fault_address: x86_64::VirtAddr,
+    error_code: x86_64::structures::idt::PageFaultErrorCode,
 ) -> Option<PageFaultRecovery> {
     use x86_64::structures::idt::PageFaultErrorCode;
-    
+
     // Check if this is a demand paging fault (page not present)
     if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
         // Page not present - check if it's within valid memory ranges
@@ -809,16 +857,18 @@ fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static 
 
     // Get the page that caused the fault
     let page: Page<Size4KiB> = Page::containing_address(fault_address);
-    
+
     // Step 1: Use the existing memory manager's swap-in functionality
     // The memory manager already has a handle_swap_in method we can use
 
     // Find the region containing this address
-    let region = memory_manager.find_region(fault_address)
+    let region = memory_manager
+        .find_region(fault_address)
         .ok_or("No memory region found for fault address")?;
 
     // Use the existing swap-in handler
-    memory_manager.handle_swap_in(fault_address, &region)
+    memory_manager
+        .handle_swap_in(fault_address, &region)
         .map_err(|e| match e {
             crate::memory::MemoryError::OutOfMemory => "Out of memory during swap-in",
             crate::memory::MemoryError::MappingFailed => "Failed to map swapped page",
@@ -826,7 +876,6 @@ fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static 
             _ => "Memory manager swap-in failed",
         })?;
 
-    
     crate::serial_println!("Successfully swapped in page at {:?}", fault_address);
     Ok(())
 }
@@ -842,7 +891,9 @@ fn terminate_current_process(reason: &str) {
     if pid == 0 {
         crate::serial_println!("FATAL: Cannot terminate kernel process - halting system");
         loop {
-            unsafe { core::arch::asm!("hlt"); }
+            unsafe {
+                core::arch::asm!("hlt");
+            }
         }
     }
 
@@ -862,7 +913,9 @@ fn terminate_current_process(reason: &str) {
     crate::serial_println!("WARNING: Returned from yield after termination - forcing reschedule");
     loop {
         crate::scheduler::yield_cpu();
-        unsafe { core::arch::asm!("pause"); }
+        unsafe {
+            core::arch::asm!("pause");
+        }
     }
 }
 
@@ -950,11 +1003,11 @@ pub fn test_interrupts() {
 
 /// Get total interrupt count for health monitoring
 pub fn get_interrupt_count() -> u64 {
-    TIMER_COUNT.load(Ordering::Relaxed) +
-    KEYBOARD_COUNT.load(Ordering::Relaxed) +
-    EXCEPTION_COUNT.load(Ordering::Relaxed) +
-    PAGE_FAULT_COUNT.load(Ordering::Relaxed) +
-    SPURIOUS_COUNT.load(Ordering::Relaxed)
+    TIMER_COUNT.load(Ordering::Relaxed)
+        + KEYBOARD_COUNT.load(Ordering::Relaxed)
+        + EXCEPTION_COUNT.load(Ordering::Relaxed)
+        + PAGE_FAULT_COUNT.load(Ordering::Relaxed)
+        + SPURIOUS_COUNT.load(Ordering::Relaxed)
 }
 
 // =============================================================================

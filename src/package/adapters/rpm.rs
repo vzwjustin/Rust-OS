@@ -3,10 +3,10 @@
 //! Experimental adapter for RPM package format used by Fedora, RHEL, CentOS.
 //! RPM packages use a binary format with headers and compressed payload.
 
+use crate::package::adapters::PackageAdapter;
+use crate::package::{ExtractedPackage, PackageError, PackageMetadata, PackageResult};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use crate::package::{PackageResult, PackageError, PackageMetadata, ExtractedPackage};
-use crate::package::adapters::PackageAdapter;
 
 /// RPM package adapter
 pub struct RpmAdapter;
@@ -21,13 +21,13 @@ impl RpmAdapter {
 impl PackageAdapter for RpmAdapter {
     fn extract(&self, _data: &[u8]) -> PackageResult<ExtractedPackage> {
         Err(PackageError::NotImplemented(
-            "RPM extraction not yet implemented".to_string()
+            "RPM extraction not yet implemented".to_string(),
         ))
     }
 
     fn parse_metadata(&self, _data: &[u8]) -> PackageResult<PackageMetadata> {
         Err(PackageError::NotImplemented(
-            "RPM metadata parsing not yet implemented".to_string()
+            "RPM metadata parsing not yet implemented".to_string(),
         ))
     }
 

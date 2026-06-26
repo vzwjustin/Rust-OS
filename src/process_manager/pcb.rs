@@ -2,9 +2,9 @@
 //!
 //! Defines the ProcessControlBlock structure and related types for managing process state.
 
+use crate::process::{CpuContext, MemoryInfo, Pid, Priority};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use crate::process::{Pid, Priority, CpuContext, MemoryInfo};
 
 /// Process states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,21 +86,30 @@ impl ProcessControlBlock {
         let mut fd_table = BTreeMap::new();
 
         // Initialize standard file descriptors
-        fd_table.insert(0, FileDescriptor {
-            fd_type: FileDescriptorType::StandardInput,
-            flags: 0,
-            offset: 0,
-        });
-        fd_table.insert(1, FileDescriptor {
-            fd_type: FileDescriptorType::StandardOutput,
-            flags: 0,
-            offset: 0,
-        });
-        fd_table.insert(2, FileDescriptor {
-            fd_type: FileDescriptorType::StandardError,
-            flags: 0,
-            offset: 0,
-        });
+        fd_table.insert(
+            0,
+            FileDescriptor {
+                fd_type: FileDescriptorType::StandardInput,
+                flags: 0,
+                offset: 0,
+            },
+        );
+        fd_table.insert(
+            1,
+            FileDescriptor {
+                fd_type: FileDescriptorType::StandardOutput,
+                flags: 0,
+                offset: 0,
+            },
+        );
+        fd_table.insert(
+            2,
+            FileDescriptor {
+                fd_type: FileDescriptorType::StandardError,
+                flags: 0,
+                offset: 0,
+            },
+        );
 
         let mut name_bytes = [0u8; 32];
         let name_slice = name.as_bytes();
@@ -150,11 +159,14 @@ impl ProcessControlBlock {
     /// Allocate a new file descriptor
     pub fn allocate_fd(&mut self, fd_type: FileDescriptorType) -> u32 {
         let fd = self.next_fd;
-        self.fd_table.insert(fd, FileDescriptor {
-            fd_type,
-            flags: 0,
-            offset: 0,
-        });
+        self.fd_table.insert(
+            fd,
+            FileDescriptor {
+                fd_type,
+                flags: 0,
+                offset: 0,
+            },
+        );
         self.next_fd += 1;
         fd
     }
@@ -204,7 +216,8 @@ impl ProcessControlBlock {
         self.args = [0u8; 256];
         let mut offset = 0;
 
-        for arg in args.iter().take(8) { // Max 8 arguments
+        for arg in args.iter().take(8) {
+            // Max 8 arguments
             let arg_bytes = arg.as_bytes();
             let copy_len = core::cmp::min(arg_bytes.len(), 30);
             if offset + copy_len + 1 < 256 {

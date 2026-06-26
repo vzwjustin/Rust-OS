@@ -6,7 +6,7 @@ use super::*;
 use super::api::*;
 use x86_64::{PhysAddr, VirtAddr};
 
-#[test]
+#[test_case]
 fn test_protection_flags_operations() {
     let read = ProtectionFlags::READ;
     let write = ProtectionFlags::WRITE;
@@ -33,7 +33,7 @@ fn test_protection_flags_operations() {
     assert!(ProtectionFlags::READ_WRITE.is_writable());
 }
 
-#[test]
+#[test_case]
 fn test_page_table_flags() {
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
@@ -43,7 +43,7 @@ fn test_page_table_flags() {
     assert!(!flags.contains(PageTableFlags::NO_EXECUTE));
 }
 
-#[test]
+#[test_case]
 fn test_page_table_flags_conversion() {
     let flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
@@ -57,7 +57,7 @@ fn test_page_table_flags_conversion() {
     assert!(converted.contains(PageTableFlags::USER_ACCESSIBLE));
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_creation() {
     let start = VirtAddr::new(0x1000);
     let end = VirtAddr::new(0x3000);
@@ -72,7 +72,7 @@ fn test_memory_region_creation() {
     assert_eq!(region.memory_type, MemoryType::Anonymous);
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_contains() {
     let start = VirtAddr::new(0x1000);
     let end = VirtAddr::new(0x3000);
@@ -84,7 +84,7 @@ fn test_memory_region_contains() {
     assert!(!region.contains(VirtAddr::new(0x4000)));
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_overlap() {
     let region1 = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -109,7 +109,7 @@ fn test_memory_region_overlap() {
     assert!(!region1.overlaps(&region3));
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_split() {
     let start = VirtAddr::new(0x1000);
     let end = VirtAddr::new(0x5000);
@@ -125,7 +125,7 @@ fn test_memory_region_split() {
     assert_eq!(first.size() + second.size(), region.size());
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_merge() {
     let region1 = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -146,7 +146,7 @@ fn test_memory_region_merge() {
     assert_eq!(merged.size(), 0x4000);
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_merge_incompatible() {
     let region1 = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -163,7 +163,7 @@ fn test_memory_region_merge_incompatible() {
     assert!(region1.try_merge(&region2).is_none());
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_protection_update() {
     let mut region = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -179,7 +179,7 @@ fn test_memory_region_protection_update() {
     assert!(region.protection.is_readable());
 }
 
-#[test]
+#[test_case]
 fn test_mmap_flags() {
     let anon_private = MmapFlags::anonymous_private();
     assert!(anon_private.anonymous);
@@ -196,7 +196,7 @@ fn test_mmap_flags() {
     assert!(fixed.fixed);
 }
 
-#[test]
+#[test_case]
 fn test_memory_region_validation() {
     // Valid region
     let valid = MemoryRegion::anonymous(
@@ -215,7 +215,7 @@ fn test_memory_region_validation() {
     assert!(!invalid.is_valid());
 }
 
-#[test]
+#[test_case]
 fn test_memory_types() {
     assert_eq!(
         core::mem::size_of::<MemoryType>(),
@@ -243,7 +243,7 @@ fn test_memory_types() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_protection_flag_combinations() {
     // Test all valid combinations
     let none = ProtectionFlags::NONE;
@@ -262,7 +262,7 @@ fn test_protection_flag_combinations() {
     assert!(rwx.is_readable() && rwx.is_writable() && rwx.is_executable());
 }
 
-#[test]
+#[test_case]
 fn test_vm_error_types() {
     let errors = [
         VmError::InvalidAddress,
@@ -285,7 +285,7 @@ fn test_vm_error_types() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_memory_stats_default() {
     let stats = MemoryStats::default();
 
@@ -295,7 +295,7 @@ fn test_memory_stats_default() {
     assert_eq!(stats.mapped_pages, 0);
 }
 
-#[test]
+#[test_case]
 fn test_file_backed_region() {
     let region = MemoryRegion::file_backed(
         VirtAddr::new(0x1000),
@@ -310,7 +310,7 @@ fn test_file_backed_region() {
     assert_eq!(region.file_offset, 1024);
 }
 
-#[test]
+#[test_case]
 fn test_shared_region() {
     let region = MemoryRegion::shared(
         VirtAddr::new(0x1000),
@@ -322,7 +322,7 @@ fn test_shared_region() {
     assert!(region.shared);
 }
 
-#[test]
+#[test_case]
 fn test_region_copy_on_write() {
     let mut region = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -339,7 +339,7 @@ fn test_region_copy_on_write() {
     assert!(!region.copy_on_write);
 }
 
-#[test]
+#[test_case]
 fn test_region_naming() {
     let mut region = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -353,7 +353,7 @@ fn test_region_naming() {
     assert_eq!(region.name.as_ref().unwrap(), "test_heap");
 }
 
-#[test]
+#[test_case]
 fn test_region_range() {
     let region = MemoryRegion::anonymous(
         VirtAddr::new(0x1000),
@@ -366,7 +366,7 @@ fn test_region_range() {
     assert_eq!(range.end, 0x3000);
 }
 
-#[test]
+#[test_case]
 fn test_page_size_constants() {
     use super::super::memory;
     assert_eq!(memory::PAGE_SIZE, 4096);

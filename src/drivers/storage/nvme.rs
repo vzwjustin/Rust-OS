@@ -3,10 +3,13 @@
 //! Non-Volatile Memory Express (NVMe) driver for high-performance SSD storage.
 //! Supports PCIe-based NVMe controllers with queue-based command processing.
 
-use super::{StorageDriver, StorageDeviceType, StorageDeviceState, StorageCapabilities, StorageError, StorageStats};
+use super::{
+    StorageCapabilities, StorageDeviceState, StorageDeviceType, StorageDriver, StorageError,
+    StorageStats,
+};
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use alloc::{format, vec};
 use core::mem;
 use core::ptr;
@@ -414,16 +417,20 @@ impl NvmeDriver {
             capabilities: StorageCapabilities::default(),
             stats: StorageStats::default(),
             base_addr,
-            doorbell_stride: 4, // Default, will be read from CAP register
+            doorbell_stride: 4,    // Default, will be read from CAP register
             max_queue_entries: 64, // Default, will be read from CAP register
             controller_ready: false,
             active_namespace: 1, // Default to namespace 1
             namespace_count: 0,
-            lba_format: NvmeLbaFormat { ms: 0, lbads: 9, rp: 0 }, // Default 512 bytes
+            lba_format: NvmeLbaFormat {
+                ms: 0,
+                lbads: 9,
+                rp: 0,
+            }, // Default 512 bytes
             queue_depth: 64,
             current_sq_tail: 0,
             current_cq_head: 0,
-            cq_phase: 1, // Start with phase 1
+            cq_phase: 1,   // Start with phase 1
             io_sq_base: 0, // Will be set during queue initialization
             io_cq_base: 0, // Will be set during queue initialization
             next_command_id: 1,
@@ -437,9 +444,7 @@ impl NvmeDriver {
                 NvmeReg::Cap | NvmeReg::Asq | NvmeReg::Acq => {
                     ptr::read_volatile((self.base_addr + offset as u64) as *const u64)
                 }
-                _ => {
-                    ptr::read_volatile((self.base_addr + offset as u64) as *const u32) as u64
-                }
+                _ => ptr::read_volatile((self.base_addr + offset as u64) as *const u32) as u64,
             }
         }
     }
@@ -463,15 +468,15 @@ impl NvmeDriver {
 
     /// Read doorbell register
     fn read_doorbell(&self, queue_id: u16, is_completion: bool) -> u32 {
-        let offset = NVME_DOORBELL_BASE + (queue_id as u64 * 2 + is_completion as u64) * self.doorbell_stride as u64;
-        unsafe {
-            ptr::read_volatile((self.base_addr + offset) as *const u32)
-        }
+        let offset = NVME_DOORBELL_BASE
+            + (queue_id as u64 * 2 + is_completion as u64) * self.doorbell_stride as u64;
+        unsafe { ptr::read_volatile((self.base_addr + offset) as *const u32) }
     }
 
     /// Write doorbell register
     fn write_doorbell(&self, queue_id: u16, is_completion: bool, value: u32) {
-        let offset = NVME_DOORBELL_BASE + (queue_id as u64 * 2 + is_completion as u64) * self.doorbell_stride as u64;
+        let offset = NVME_DOORBELL_BASE
+            + (queue_id as u64 * 2 + is_completion as u64) * self.doorbell_stride as u64;
         unsafe {
             ptr::write_volatile((self.base_addr + offset) as *mut u32, value);
         }
@@ -487,7 +492,11 @@ impl NvmeDriver {
     /// Get next available command ID
     fn get_next_command_id(&mut self) -> u16 {
         let id = self.next_command_id;
-        self.next_command_id = if self.next_command_id >= 65535 { 1 } else { self.next_command_id + 1 };
+        self.next_command_id = if self.next_command_id >= 65535 {
+            1
+        } else {
+            self.next_command_id + 1
+        };
         id
     }
 
@@ -603,17 +612,22 @@ impl NvmeDriver {
     }
 
     /// Submit I/O command (production implementation)
-    fn submit_io_command(&mut self, opcode: NvmeIoOpcode, lba: u64, block_count: u16) -> Result<(), StorageError> {
+    fn submit_io_command(
+        &mut self,
+        opcode: NvmeIoOpcode,
+        lba: u64,
+        block_count: u16,
+    ) -> Result<(), StorageError> {
         if !self.controller_ready {
             return Err(StorageError::DeviceNotFound);
         }
 
         // Production implementation:
-        
+
         // 1. Build NVMe command in submission queue
         let sq_entry = self.current_sq_tail;
         let command_id = self.get_next_command_id();
-        
+
         // Get submission queue base address
         let sq_base = self.io_sq_base;
         if sq_base == 0 {
@@ -629,14 +643,14 @@ impl NvmeDriver {
 
         // Translate virtual address to physical for hardware DMA
         let buffer_phys = {
-            use x86_64::VirtAddr;
             use crate::memory::get_memory_manager;
+            use x86_64::VirtAddr;
 
             let virt_addr = VirtAddr::new(_dma_buffer.virtual_addr() as u64);
-            let memory_manager = get_memory_manager()
-                .ok_or(StorageError::HardwareError)?;
+            let memory_manager = get_memory_manager().ok_or(StorageError::HardwareError)?;
 
-            memory_manager.translate_addr(virt_addr)
+            memory_manager
+                .translate_addr(virt_addr)
                 .ok_or(StorageError::HardwareError)?
                 .as_u64()
         };
@@ -661,73 +675,75 @@ impl NvmeDriver {
             // 2. Set up data pointers (PRPs)
             *sq_entry_ptr.add(6) = buffer_phys; // PRP1
             *sq_entry_ptr.add(7) = 0; // PRP2 (not needed for small transfers)
-            
+
             // Command DWords 10-11: Starting LBA
             *sq_entry_ptr.add(10) = lba;
             *sq_entry_ptr.add(11) = 0;
-            
+
             // Command DWord 12: Number of logical blocks (0-based)
             *sq_entry_ptr.add(12) = (block_count - 1) as u64;
-            
+
             // Command DWords 13-15: Command-specific
             *sq_entry_ptr.add(13) = 0;
             *sq_entry_ptr.add(14) = 0;
             *sq_entry_ptr.add(15) = 0;
         }
-        
+
         // Update submission queue tail
         self.current_sq_tail = (self.current_sq_tail + 1) % self.queue_depth;
-        
+
         // 3. Ring submission queue doorbell
         let doorbell_offset = 0x1000 + (0 * 2 * (4 << self.doorbell_stride)); // Queue 0 submission doorbell
         self.write_reg_raw(doorbell_offset as u32, self.current_sq_tail as u32);
-        
+
         // 4. Wait for completion queue entry
         let mut timeout = 1000000; // Timeout counter
         let cq_base = self.io_cq_base;
-        
+
         while timeout > 0 {
             unsafe {
                 let cq_entry_ptr = (cq_base + (self.current_cq_head as u64 * 16)) as *const u32; // Each CQ entry is 16 bytes
                 let dw3 = core::ptr::read_volatile(cq_entry_ptr.add(3));
                 let phase = (dw3 >> 16) & 1;
-                
+
                 if phase == self.cq_phase {
                     // Completion found - check status
                     let status = (dw3 >> 17) & 0x7FF;
                     if status != 0 {
                         return Err(StorageError::HardwareError);
                     }
-                    
+
                     // Update completion queue head
                     self.current_cq_head = (self.current_cq_head + 1) % self.queue_depth;
                     if self.current_cq_head == 0 {
                         self.cq_phase = 1 - self.cq_phase; // Flip phase
                     }
-                    
+
                     break;
                 }
             }
             timeout -= 1;
         }
-        
+
         if timeout == 0 {
             return Err(StorageError::Timeout);
         }
-        
+
         // 5. Ring completion queue doorbell
         let cq_doorbell_offset = 0x1000 + (0 * 2 + 1) * (4 << self.doorbell_stride); // Queue 0 completion doorbell
         self.write_reg_raw(cq_doorbell_offset as u32, self.current_cq_head as u32);
-        
+
         // Update statistics
         match opcode {
             NvmeIoOpcode::Read => {
                 self.stats.reads_total += 1;
-                self.stats.bytes_read += (block_count as u64) * (self.capabilities.sector_size as u64);
+                self.stats.bytes_read +=
+                    (block_count as u64) * (self.capabilities.sector_size as u64);
             }
             NvmeIoOpcode::Write => {
                 self.stats.writes_total += 1;
-                self.stats.bytes_written += (block_count as u64) * (self.capabilities.sector_size as u64);
+                self.stats.bytes_written +=
+                    (block_count as u64) * (self.capabilities.sector_size as u64);
             }
             _ => {}
         }
@@ -796,7 +812,11 @@ impl StorageDriver for NvmeDriver {
         Ok(())
     }
 
-    fn read_sectors(&mut self, start_sector: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+    fn read_sectors(
+        &mut self,
+        start_sector: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StorageError> {
         if self.state != StorageDeviceState::Ready {
             return Err(StorageError::DeviceBusy);
         }
@@ -891,83 +911,84 @@ impl StorageDriver for NvmeDriver {
         }
 
         // Production implementation: Execute Get Log Page command for SMART data
-        
+
         // Build admin command for Get Log Page (SMART data)
         let command_id = self.get_next_command_id();
         let admin_sq_base = self.read_reg(NvmeReg::Asq); // Admin submission queue base
-        
+
         if admin_sq_base == 0 {
             return Err(StorageError::HardwareError);
         }
-        
+
         // Allocate buffer for SMART data - Production DMA allocation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
-        let mut dma_buffer = DmaBuffer::allocate(512, DMA_ALIGNMENT)
-            .map_err(|_| StorageError::HardwareError)?;
+        let mut dma_buffer =
+            DmaBuffer::allocate(512, DMA_ALIGNMENT).map_err(|_| StorageError::HardwareError)?;
 
         // Translate virtual address to physical for hardware DMA
         let buffer_phys = {
-            use x86_64::VirtAddr;
             use crate::memory::get_memory_manager;
+            use x86_64::VirtAddr;
 
             let virt_addr = VirtAddr::new(dma_buffer.virtual_addr() as u64);
-            let memory_manager = get_memory_manager()
-                .ok_or(StorageError::HardwareError)?;
+            let memory_manager = get_memory_manager().ok_or(StorageError::HardwareError)?;
 
-            memory_manager.translate_addr(virt_addr)
+            memory_manager
+                .translate_addr(virt_addr)
                 .ok_or(StorageError::HardwareError)?
                 .as_u64()
         };
 
         unsafe {
             let sq_entry_ptr = admin_sq_base as *mut u64;
-            
+
             // Command DWord 0: Opcode (Get Log Page = 0x02) and Command ID
             *sq_entry_ptr = 0x02u64 | ((command_id as u64) << 16);
-            
+
             // Command DWord 1: Namespace ID (0xFFFFFFFF for controller)
             *sq_entry_ptr.add(1) = 0xFFFFFFFFu64;
-            
+
             // Command DWords 2-3: Reserved
             *sq_entry_ptr.add(2) = 0;
             *sq_entry_ptr.add(3) = 0;
-            
+
             // Command DWords 4-5: Metadata pointer (not used)
             *sq_entry_ptr.add(4) = 0;
             *sq_entry_ptr.add(5) = 0;
-            
+
             // Command DWords 6-7: Data pointer (PRP1/PRP2)
             *sq_entry_ptr.add(6) = buffer_phys;
             *sq_entry_ptr.add(7) = 0;
-            
+
             // Command DWords 8-9: Reserved
             *sq_entry_ptr.add(8) = 0;
             *sq_entry_ptr.add(9) = 0;
-            
+
             // Command DWord 10: Log Page Identifier (0x02 = SMART/Health) and length
             *sq_entry_ptr.add(10) = 0x02u64 | ((511u64) << 16); // Log ID + Number of DWORDs - 1
-            
+
             // Command DWords 11-15: Reserved/Log-specific
             for i in 11..16 {
                 *sq_entry_ptr.add(i) = 0;
             }
         }
-        
+
         // Ring admin submission queue doorbell
         self.write_doorbell(0, false, 1); // Admin queue ID = 0, submission doorbell
-        
+
         // Wait for completion
         let mut timeout = 1000000;
         let admin_cq_base = self.read_reg(NvmeReg::Acq);
-        
+
         while timeout > 0 {
             unsafe {
                 let cq_entry_ptr = admin_cq_base as *const u32;
                 let dw3 = core::ptr::read_volatile(cq_entry_ptr.add(3));
                 let phase = (dw3 >> 16) & 1;
-                
-                if phase == 1 { // Admin queue phase is typically 1
+
+                if phase == 1 {
+                    // Admin queue phase is typically 1
                     // Check status
                     let status = (dw3 >> 17) & 0x7FF;
                     if status != 0 {
@@ -978,11 +999,11 @@ impl StorageDriver for NvmeDriver {
             }
             timeout -= 1;
         }
-        
+
         if timeout == 0 {
             return Err(StorageError::Timeout);
         }
-        
+
         // Read SMART data from buffer
         let mut smart_data = vec![0u8; 512];
         unsafe {
@@ -991,7 +1012,7 @@ impl StorageDriver for NvmeDriver {
                 smart_data[i] = core::ptr::read_volatile(data_ptr.add(i));
             }
         }
-        
+
         // Ring admin completion queue doorbell
         self.write_doorbell(0, true, 1); // Admin queue ID = 0, completion doorbell
 
@@ -1000,10 +1021,7 @@ impl StorageDriver for NvmeDriver {
 }
 
 /// Create NVMe driver from PCI device information
-pub fn create_nvme_driver(
-    base_addr: u64,
-    device_name: Option<String>,
-) -> Box<dyn StorageDriver> {
+pub fn create_nvme_driver(base_addr: u64, device_name: Option<String>) -> Box<dyn StorageDriver> {
     let name = device_name.unwrap_or_else(|| "NVMe Controller".to_string());
     let driver = NvmeDriver::new(name, base_addr);
     Box::new(driver)

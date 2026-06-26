@@ -4,17 +4,17 @@
 //! including AHCI SATA, NVMe, IDE/PATA, and USB Mass Storage support.
 
 pub mod ahci;
-pub mod nvme;
-pub mod ide;
-pub mod usb_mass_storage;
-pub mod filesystem_interface;
 pub mod detection;
+pub mod filesystem_interface;
+pub mod ide;
+pub mod nvme;
 pub mod pci_scan;
+pub mod usb_mass_storage;
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 use spin::RwLock;
 
@@ -209,7 +209,8 @@ pub trait StorageDriver: Send + Sync + core::fmt::Debug {
     fn init(&mut self) -> Result<(), StorageError>;
 
     /// Read sectors from the device
-    fn read_sectors(&mut self, start_sector: u64, buffer: &mut [u8]) -> Result<usize, StorageError>;
+    fn read_sectors(&mut self, start_sector: u64, buffer: &mut [u8])
+        -> Result<usize, StorageError>;
 
     /// Write sectors to the device
     fn write_sectors(&mut self, start_sector: u64, buffer: &[u8]) -> Result<usize, StorageError>;
@@ -412,7 +413,9 @@ impl StorageDriverManager {
         start_sector: u64,
         buffer: &mut [u8],
     ) -> Result<usize, StorageError> {
-        let device = self.devices.get_mut(&device_id)
+        let device = self
+            .devices
+            .get_mut(&device_id)
             .ok_or(StorageError::DeviceNotFound)?;
 
         let result = device.driver.read_sectors(start_sector, buffer);
@@ -432,7 +435,9 @@ impl StorageDriverManager {
         start_sector: u64,
         buffer: &[u8],
     ) -> Result<usize, StorageError> {
-        let device = self.devices.get_mut(&device_id)
+        let device = self
+            .devices
+            .get_mut(&device_id)
             .ok_or(StorageError::DeviceNotFound)?;
 
         let result = device.driver.write_sectors(start_sector, buffer);
@@ -526,11 +531,8 @@ pub fn get_default_device() -> Option<u32> {
     }
 
     // Otherwise, use the first available device
-    with_storage_manager(|manager| {
-        manager.get_all_device_info()
-            .first()
-            .map(|info| info.id)
-    }).flatten()
+    with_storage_manager(|manager| manager.get_all_device_info().first().map(|info| info.id))
+        .flatten()
 }
 
 /// Read sectors from storage using unified interface (uses default device)
@@ -566,7 +568,8 @@ pub fn read_sectors(sector: u64, count: u32, buffer: &mut [u8]) -> Result<(), St
 
         let bytes_read = with_storage_manager(|manager| {
             manager.read_sectors(device_id, current_sector, transfer_buffer)
-        }).ok_or(StorageError::DeviceNotFound)??;
+        })
+        .ok_or(StorageError::DeviceNotFound)??;
 
         if bytes_read != transfer_size {
             return Err(StorageError::MediaError);
@@ -613,7 +616,8 @@ pub fn write_sectors(sector: u64, count: u32, buffer: &[u8]) -> Result<(), Stora
 
         let bytes_written = with_storage_manager(|manager| {
             manager.write_sectors(device_id, current_sector, transfer_buffer)
-        }).ok_or(StorageError::DeviceNotFound)??;
+        })
+        .ok_or(StorageError::DeviceNotFound)??;
 
         if bytes_written != transfer_size {
             return Err(StorageError::MediaError);
@@ -637,7 +641,8 @@ pub fn flush_storage() -> Result<(), StorageError> {
         } else {
             Err(StorageError::DeviceNotFound)
         }
-    }).ok_or(StorageError::DeviceNotFound)?
+    })
+    .ok_or(StorageError::DeviceNotFound)?
 }
 
 // =============================================================================
@@ -668,7 +673,8 @@ impl BlockDevice {
             } else {
                 Err(StorageError::DeviceNotFound)
             }
-        }).ok_or(StorageError::DeviceNotFound)?
+        })
+        .ok_or(StorageError::DeviceNotFound)?
     }
 
     /// Get first available block device
@@ -748,7 +754,8 @@ impl BlockDevice {
             } else {
                 Err(StorageError::DeviceNotFound)
             }
-        }).ok_or(StorageError::DeviceNotFound)?
+        })
+        .ok_or(StorageError::DeviceNotFound)?
     }
 
     /// Get device statistics
@@ -759,28 +766,33 @@ impl BlockDevice {
             } else {
                 Err(StorageError::DeviceNotFound)
             }
-        }).ok_or(StorageError::DeviceNotFound)?
+        })
+        .ok_or(StorageError::DeviceNotFound)?
     }
 }
 
 /// List all available block devices
 pub fn list_block_devices() -> Vec<BlockDevice> {
     with_storage_manager(|manager| {
-        manager.get_all_device_info()
+        manager
+            .get_all_device_info()
             .iter()
             .filter_map(|info| BlockDevice::new(info.id).ok())
             .collect()
-    }).unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 /// Get block device by type
 pub fn get_device_by_type(device_type: StorageDeviceType) -> Option<BlockDevice> {
     with_storage_manager(|manager| {
-        manager.get_all_device_info()
+        manager
+            .get_all_device_info()
             .iter()
             .find(|info| info.device_type == device_type)
             .and_then(|info| BlockDevice::new(info.id).ok())
-    }).flatten()
+    })
+    .flatten()
 }
 
 // =============================================================================
@@ -923,9 +935,7 @@ pub struct StorageSubsystemStatus {
 pub fn get_subsystem_status() -> StorageSubsystemStatus {
     with_storage_manager(|manager| {
         let devices = manager.get_all_device_info();
-        let total_capacity: u64 = devices.iter()
-            .map(|d| d.capabilities.capacity_bytes)
-            .sum();
+        let total_capacity: u64 = devices.iter().map(|d| d.capabilities.capacity_bytes).sum();
 
         StorageSubsystemStatus {
             initialized: true,
@@ -933,7 +943,8 @@ pub fn get_subsystem_status() -> StorageSubsystemStatus {
             total_capacity_bytes: total_capacity,
             manager_stats: manager.get_stats().clone(),
         }
-    }).unwrap_or(StorageSubsystemStatus {
+    })
+    .unwrap_or(StorageSubsystemStatus {
         initialized: false,
         device_count: 0,
         total_capacity_bytes: 0,
@@ -949,7 +960,8 @@ pub fn reset_device(device_id: u32) -> Result<(), StorageError> {
         } else {
             Err(StorageError::DeviceNotFound)
         }
-    }).ok_or(StorageError::DeviceNotFound)?
+    })
+    .ok_or(StorageError::DeviceNotFound)?
 }
 
 /// Put a storage device in standby mode
@@ -960,7 +972,8 @@ pub fn standby_device(device_id: u32) -> Result<(), StorageError> {
         } else {
             Err(StorageError::DeviceNotFound)
         }
-    }).ok_or(StorageError::DeviceNotFound)?
+    })
+    .ok_or(StorageError::DeviceNotFound)?
 }
 
 /// Wake a storage device from standby
@@ -971,7 +984,8 @@ pub fn wake_device(device_id: u32) -> Result<(), StorageError> {
         } else {
             Err(StorageError::DeviceNotFound)
         }
-    }).ok_or(StorageError::DeviceNotFound)?
+    })
+    .ok_or(StorageError::DeviceNotFound)?
 }
 
 /// Get SMART data from a device
@@ -982,5 +996,6 @@ pub fn get_device_smart_data(device_id: u32) -> Result<Vec<u8>, StorageError> {
         } else {
             Err(StorageError::DeviceNotFound)
         }
-    }).ok_or(StorageError::DeviceNotFound)?
+    })
+    .ok_or(StorageError::DeviceNotFound)?
 }

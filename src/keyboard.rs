@@ -10,7 +10,7 @@
 use core::fmt;
 use heapless::spsc::Queue;
 use lazy_static::lazy_static;
-use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, KeyCode, ScancodeSet1};
+use pc_keyboard::{layouts, DecodedKey, HandleControl, KeyCode, Keyboard, ScancodeSet1};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -523,8 +523,42 @@ pub fn read_char() -> Option<char> {
 
 /// Read a line of input (blocking)
 pub fn read_line(buffer: &mut [u8]) -> usize {
-    let mut handler = KEYBOARD_HANDLER.lock();
-    handler.read_line(buffer)
+    // IMPORTANT: do NOT hold the KEYBOARD_HANDLER lock across the wait. Input only
+    // arrives via the PS/2 IRQ (handle_keyboard_interrupt -> process_scancode ->
+    // KEYBOARD_HANDLER.lock()); holding the lock here would prevent the IRQ from
+    // ever enqueuing keys, deadlocking forever. Instead, poll one event at a time
+    // via get_key_event(), which locks AND unlocks the handler each call, so the
+    // IRQ can take the lock between iterations.
+    let mut pos = 0;
+
+    loop {
+        match get_key_event() {
+            Some(KeyEvent::CharacterPress(c)) => {
+                if c == '\n' || c == '\r' {
+                    break;
+                } else if c.is_ascii() && pos < buffer.len() {
+                    buffer[pos] = c as u8;
+                    pos += 1;
+                }
+            }
+            Some(KeyEvent::SpecialPress(SpecialKey::Backspace)) => {
+                if pos > 0 {
+                    pos -= 1;
+                }
+            }
+            Some(KeyEvent::SpecialPress(SpecialKey::Enter)) => {
+                break;
+            }
+            Some(_) => {}
+            None => {
+                // Nothing buffered yet: halt until the next interrupt instead of
+                // spinning, leaving the lock free for the IRQ to enqueue input.
+                x86_64::instructions::hlt();
+            }
+        }
+    }
+
+    pos
 }
 
 /// Wait for a specific key press
@@ -590,14 +624,14 @@ pub fn get_scancode() -> Option<u8> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_special_key_conversion() {
         assert_eq!(SpecialKey::from_scancode(0x01), Some(SpecialKey::Escape));
         assert_eq!(SpecialKey::from_scancode(0x48), Some(SpecialKey::ArrowUp));
         assert_eq!(SpecialKey::from_scancode(0xFF), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_key_event_properties() {
         let press = KeyEvent::CharacterPress('a');
         let release = KeyEvent::CharacterRelease('a');
@@ -611,7 +645,7 @@ mod tests {
         assert_eq!(release.as_char(), Some('a'));
     }
 
-    #[test]
+    #[test_case]
     fn test_modifier_state() {
         let mut modifiers = ModifierState::default();
 

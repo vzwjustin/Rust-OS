@@ -4,20 +4,20 @@
 //! Includes Intel E1000/E1000E, Realtek RTL8139/RTL8169, Broadcom NetXtreme,
 //! and Qualcomm Atheros wireless drivers.
 
+pub mod atheros_wifi;
+pub mod broadcom;
 pub mod intel_e1000;
 pub mod realtek;
-pub mod broadcom;
-pub mod atheros_wifi;
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use crate::net::{MacAddress, NetworkError};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
-use crate::net::{NetworkError, MacAddress};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 // Re-export types from net::device for compatibility
-pub use crate::net::device::{DeviceType, DeviceCapabilities, NetworkDevice as NetworkDeviceTrait};
+pub use crate::net::device::{DeviceCapabilities, DeviceType, NetworkDevice as NetworkDeviceTrait};
 
 /// Device state enumeration for network drivers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,22 +518,30 @@ pub fn create_network_driver_from_pci(
     irq: u8,
 ) -> Option<(Box<dyn NetworkDriver>, ExtendedNetworkCapabilities)> {
     // Try Intel E1000 series
-    if let Some((driver, caps)) = intel_e1000::create_intel_e1000_driver(vendor_id, device_id, base_addr, irq) {
+    if let Some((driver, caps)) =
+        intel_e1000::create_intel_e1000_driver(vendor_id, device_id, base_addr, irq)
+    {
         return Some((driver, caps));
     }
 
     // Try Realtek series
-    if let Some((driver, caps)) = realtek::create_realtek_driver(vendor_id, device_id, base_addr, irq) {
+    if let Some((driver, caps)) =
+        realtek::create_realtek_driver(vendor_id, device_id, base_addr, irq)
+    {
         return Some((driver, caps));
     }
 
     // Try Broadcom NetXtreme series
-    if let Some((driver, caps)) = broadcom::create_broadcom_driver(vendor_id, device_id, base_addr, irq) {
+    if let Some((driver, caps)) =
+        broadcom::create_broadcom_driver(vendor_id, device_id, base_addr, irq)
+    {
         return Some((driver, caps));
     }
 
     // Try Atheros WiFi series
-    if let Some((driver, caps)) = atheros_wifi::create_atheros_wifi_driver(vendor_id, device_id, base_addr, irq) {
+    if let Some((driver, caps)) =
+        atheros_wifi::create_atheros_wifi_driver(vendor_id, device_id, base_addr, irq)
+    {
         return Some((driver, caps));
     }
 
@@ -656,12 +664,12 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
     // 2. Match vendor/device IDs to known network drivers
     // 3. Load and initialize appropriate drivers
     // 4. Configure hardware settings
-    
+
     use crate::pci::{get_devices_by_class, PciClass};
-    
+
     // Scan PCI bus for network devices
     let network_devices = get_devices_by_class(PciClass::Network);
-    
+
     for device in network_devices.iter() {
         let device_name = match (device.vendor_id, device.device_id) {
             // Intel network controllers
@@ -673,25 +681,25 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
             (0x8086, 0x153A) => "Intel I217-LM Gigabit Network Connection",
             (0x8086, 0x15A1) => "Intel I218-LM Gigabit Network Connection",
             (0x8086, 0x156F) => "Intel I219-LM Gigabit Network Connection",
-            
+
             // Realtek network controllers
             (0x10EC, 0x8139) => "Realtek RTL8139 Fast Ethernet",
             (0x10EC, 0x8168) => "Realtek RTL8168 Gigabit Ethernet",
             (0x10EC, 0x8169) => "Realtek RTL8169 Gigabit Ethernet",
             (0x10EC, 0x8136) => "Realtek RTL8101E Fast Ethernet",
-            
+
             // Broadcom network controllers
             (0x14E4, 0x1677) => "Broadcom NetXtreme BCM5751 Gigabit Ethernet",
             (0x14E4, 0x1659) => "Broadcom NetXtreme BCM5721 Gigabit Ethernet",
             (0x14E4, 0x1678) => "Broadcom NetXtreme BCM5715 Gigabit Ethernet",
             (0x14E4, 0x165D) => "Broadcom NetXtreme BCM5705M Gigabit Ethernet",
-            
+
             // Qualcomm Atheros wireless controllers
             (0x168C, 0x002A) => "Atheros AR928X Wireless Network Adapter",
             (0x168C, 0x0030) => "Atheros AR93xx Wireless Network Adapter",
             (0x168C, 0x0032) => "Atheros AR9485 Wireless Network Adapter",
             (0x168C, 0x0034) => "Atheros AR9462 Wireless Network Adapter",
-            
+
             // Generic/Unknown network device
             _ => {
                 // For unknown devices, create a descriptive name
@@ -702,17 +710,20 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
                     0x168C => "Qualcomm Atheros",
                     _ => "Unknown",
                 };
-                loaded_drivers.push(
-                    alloc::format!("{} Network Controller ({}:{:04X}:{:04X})", 
-                        vendor_name, device.bus, device.vendor_id, device.device_id)
-                );
+                loaded_drivers.push(alloc::format!(
+                    "{} Network Controller ({}:{:04X}:{:04X})",
+                    vendor_name,
+                    device.bus,
+                    device.vendor_id,
+                    device.device_id
+                ));
                 continue;
             }
         };
-        
+
         loaded_drivers.push(device_name.to_string());
     }
-    
+
     // If no PCI network devices found, log a warning but don't fail
     if loaded_drivers.is_empty() {
         crate::println!("[WARN] No network devices detected on PCI bus");
@@ -725,13 +736,13 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_network_driver_manager() {
         let mut manager = NetworkDriverManager::new();
 
         let dummy_driver = DummyEthernetDriver::new(
             "Test Driver".to_string(),
-            MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]),
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
         );
 
         let caps = ExtendedNetworkCapabilities::default();
@@ -742,22 +753,22 @@ mod tests {
         assert!(manager.get_capabilities(id).is_some());
     }
 
-    #[test]
+    #[test_case]
     fn test_mac_address_validation() {
         // Valid MAC
-        let valid_mac = MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        let valid_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         assert!(utils::is_valid_mac_address(&valid_mac));
 
         // Invalid MAC (all zeros)
-        let invalid_mac = MacAddress::new([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        let invalid_mac = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         assert!(!utils::is_valid_mac_address(&invalid_mac));
 
         // Invalid MAC (multicast bit set)
-        let multicast_mac = MacAddress::new([0x01, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        let multicast_mac = [0x01, 0x11, 0x22, 0x33, 0x44, 0x55];
         assert!(!utils::is_valid_mac_address(&multicast_mac));
     }
 
-    #[test]
+    #[test_case]
     fn test_link_speed_formatting() {
         assert_eq!(utils::format_link_speed(0), "Unknown");
         assert_eq!(utils::format_link_speed(10), "10 Mbps");

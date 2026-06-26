@@ -3,11 +3,11 @@
 //! This module provides cache-friendly and lock-free data structures
 //! optimized for kernel performance.
 
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use core::mem::{self, MaybeUninit};
-use core::ptr::{self, NonNull};
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::boxed::Box;
+use core::mem::{self, MaybeUninit};
+use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 /// Cache line size for x86-64 (typically 64 bytes)
 pub const CACHE_LINE_SIZE: usize = 64;
@@ -246,12 +246,10 @@ impl<T> LockFreeStack<T> {
 
             let next = unsafe { (*head).next };
 
-            match self.head.compare_exchange_weak(
-                head,
-                next,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .head
+                .compare_exchange_weak(head, next, Ordering::Release, Ordering::Relaxed)
+            {
                 Ok(_) => {
                     let data = unsafe { Box::from_raw(head).data };
                     return Some(data);
@@ -331,7 +329,9 @@ impl<K: Eq + core::hash::Hash, V> CacheFriendlyHashTable<K, V> {
 
         impl SimpleHasher {
             fn new() -> Self {
-                Self { state: 0xcbf29ce484222325 }
+                Self {
+                    state: 0xcbf29ce484222325,
+                }
             }
         }
 

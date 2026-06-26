@@ -3,10 +3,10 @@
 //! This module handles loading and extracting the initial RAM filesystem
 //! which contains the Linux userspace environment (Alpine Linux).
 
-use alloc::vec::Vec;
-use alloc::string::{String, ToString};
-use alloc::format;
 use crate::vfs::{get_vfs, InodeType, OpenFlags};
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Embedded initramfs data (included at compile time)
 /// Alpine Linux 3.19 minirootfs with busybox (3.1 MB compressed)
@@ -22,8 +22,8 @@ pub struct InitramfsInfo {
 /// Supported initramfs formats
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitramfsFormat {
-    CpioNewc,      // newc format (most common)
-    CpioOdc,       // odc format (old)
+    CpioNewc,       // newc format (most common)
+    CpioOdc,        // odc format (old)
     CompressedGzip, // gzip compressed cpio
 }
 
@@ -73,7 +73,7 @@ fn is_gzipped(data: &[u8]) -> bool {
 /// # Returns
 /// (entry_point, stack_pointer) tuple
 pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsError> {
-    use crate::elf_loader::{elf_validate, elf_load};
+    use crate::elf_loader::{elf_load, elf_validate};
     use x86_64::VirtAddr;
 
     // Validate ELF binary format
@@ -91,8 +91,8 @@ pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsE
 
     // Get all program headers for segment data extraction
     use crate::elf_loader::parser::get_loadable_segments;
-    let program_headers = get_loadable_segments(binary_data)
-        .map_err(|_| InitramfsError::InvalidFormat)?;
+    let program_headers =
+        get_loadable_segments(binary_data).map_err(|_| InitramfsError::InvalidFormat)?;
 
     // Copy segments into memory (simplified version)
     for (segment, ph) in image.segments.iter().zip(program_headers.iter()) {
@@ -109,6 +109,21 @@ pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsE
         }
 
         let segment_data = &binary_data[offset..offset + file_size];
+
+        // Validate the destination range [vaddr, vaddr + mem_size) lies entirely
+        // within the user address space before performing any raw write. vaddr comes
+        // straight from the (attacker-controlled) ELF, so without this a crafted
+        // p_vaddr would be an arbitrary kernel-memory write. mem_size covers both the
+        // file_size copy and the BSS write_bytes below (mem_size >= file_size).
+        let vaddr = segment.vaddr.as_u64();
+        let mem_end = vaddr
+            .checked_add(segment.mem_size as u64)
+            .ok_or(InitramfsError::ExtractionFailed)?;
+        if vaddr < crate::memory::USER_SPACE_START as u64
+            || mem_end > crate::memory::USER_SPACE_END as u64
+        {
+            return Err(InitramfsError::ExtractionFailed);
+        }
 
         // Copy to destination address
         unsafe {
@@ -152,7 +167,7 @@ where
     M: x86_64::structures::paging::Mapper<x86_64::structures::paging::Size4KiB>,
     A: x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
 {
-    use crate::elf_loader::{elf_validate, elf_load, elf_map_segments, elf_create_stack};
+    use crate::elf_loader::{elf_create_stack, elf_load, elf_map_segments, elf_validate};
     use x86_64::VirtAddr;
 
     // Validate ELF binary format
@@ -167,13 +182,8 @@ where
 
     // Create user stack (8 MB)
     const STACK_SIZE: usize = 8 * 1024 * 1024;
-    let stack_pointer = elf_create_stack(
-        mapper,
-        frame_allocator,
-        image.stack_address,
-        STACK_SIZE,
-    )
-    .map_err(|_| InitramfsError::ExtractionFailed)?;
+    let stack_pointer = elf_create_stack(mapper, frame_allocator, image.stack_address, STACK_SIZE)
+        .map_err(|_| InitramfsError::ExtractionFailed)?;
 
     Ok((image.entry_point.as_u64(), stack_pointer.as_u64()))
 }
@@ -182,17 +192,20 @@ where
 pub fn start_init() -> Result<(), InitramfsError> {
     // 1. Load /init from VFS
     let vfs = get_vfs();
-    let init_inode = vfs.lookup("/init")
+    let init_inode = vfs
+        .lookup("/init")
         .map_err(|_| InitramfsError::InitNotFound)?;
 
     // 2. Read the entire /init binary into memory
     let mut binary_data = Vec::new();
-    let file_size = init_inode.stat()
+    let file_size = init_inode
+        .stat()
         .map_err(|_| InitramfsError::VfsError)?
         .size;
 
     binary_data.resize(file_size as usize, 0);
-    init_inode.read_at(0, &mut binary_data)
+    init_inode
+        .read_at(0, &mut binary_data)
         .map_err(|_| InitramfsError::VfsError)?;
 
     // 3. Load and validate the ELF binary
@@ -289,7 +302,9 @@ fn parse_hex_field(data: &[u8]) -> Result<u32, InitramfsError> {
             _ => return Err(InitramfsError::ParseError),
         };
         result = result.checked_mul(16).ok_or(InitramfsError::ParseError)?;
-        result = result.checked_add(digit as u32).ok_or(InitramfsError::ParseError)?;
+        result = result
+            .checked_add(digit as u32)
+            .ok_or(InitramfsError::ParseError)?;
     }
     Ok(result)
 }
@@ -298,7 +313,7 @@ fn parse_hex_field(data: &[u8]) -> Result<u32, InitramfsError> {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpioHeader {
-    pub magic: [u8; 6],      // "070701" or "070702"
+    pub magic: [u8; 6], // "070701" or "070702"
     pub ino: u32,
     pub mode: u32,
     pub uid: u32,
@@ -376,10 +391,7 @@ impl CpioHeader {
 /// * `Ok(Vec<u8>)` - Decompressed data
 /// * `Err(InitramfsError)` - If decompression fails
 pub fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, InitramfsError> {
-    use miniz_oxide::inflate::core::{
-        decompress as tinfl_decompress,
-        DecompressorOxide,
-    };
+    use miniz_oxide::inflate::core::{decompress as tinfl_decompress, DecompressorOxide};
     use miniz_oxide::inflate::TINFLStatus;
 
     const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -508,14 +520,14 @@ pub fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, InitramfsError> {
 
 /// File mode bits for CPIO entries
 mod cpio_mode {
-    pub const S_IFMT: u32 = 0o170000;   // File type mask
+    pub const S_IFMT: u32 = 0o170000; // File type mask
     pub const S_IFSOCK: u32 = 0o140000; // Socket
-    pub const S_IFLNK: u32 = 0o120000;  // Symbolic link
-    pub const S_IFREG: u32 = 0o100000;  // Regular file
-    pub const S_IFBLK: u32 = 0o060000;  // Block device
-    pub const S_IFDIR: u32 = 0o040000;  // Directory
-    pub const S_IFCHR: u32 = 0o020000;  // Character device
-    pub const S_IFIFO: u32 = 0o010000;  // FIFO
+    pub const S_IFLNK: u32 = 0o120000; // Symbolic link
+    pub const S_IFREG: u32 = 0o100000; // Regular file
+    pub const S_IFBLK: u32 = 0o060000; // Block device
+    pub const S_IFDIR: u32 = 0o040000; // Directory
+    pub const S_IFCHR: u32 = 0o020000; // Character device
+    pub const S_IFIFO: u32 = 0o010000; // FIFO
 }
 
 /// Parsed CPIO entry from newc format
@@ -574,7 +586,10 @@ fn align4(offset: usize) -> usize {
 /// Parse a single CPIO entry from the data at the given offset.
 ///
 /// Returns the parsed entry and the offset to the next entry.
-fn parse_cpio_entry(data: &[u8], offset: usize) -> Result<(CpioEntry, &[u8], usize), InitramfsError> {
+fn parse_cpio_entry(
+    data: &[u8],
+    offset: usize,
+) -> Result<(CpioEntry, &[u8], usize), InitramfsError> {
     // Validate minimum size for header
     if offset + CPIO_HEADER_SIZE > data.len() {
         return Err(InitramfsError::ParseError);
@@ -607,6 +622,13 @@ fn parse_cpio_entry(data: &[u8], offset: usize) -> Result<(CpioEntry, &[u8], usi
     let _check = parse_hex_field(&header[102..110])?;
 
     // Parse filename (null-terminated, follows header)
+    // namesize counts the trailing NUL, so a valid record always has namesize >= 1.
+    // Reject namesize == 0, otherwise name_end == name_start and the
+    // name_end - 1 below would form a reversed (panicking) slice range.
+    if namesize == 0 {
+        return Err(InitramfsError::ParseError);
+    }
+
     let name_start = offset + CPIO_HEADER_SIZE;
     let name_end = name_start + namesize as usize;
 
@@ -615,7 +637,7 @@ fn parse_cpio_entry(data: &[u8], offset: usize) -> Result<(CpioEntry, &[u8], usi
     }
 
     // Extract name (excluding null terminator)
-    let name_bytes = &data[name_start..name_end.saturating_sub(1)];
+    let name_bytes = &data[name_start..name_end - 1];
     let name = core::str::from_utf8(name_bytes)
         .map_err(|_| InitramfsError::ParseError)?
         .to_string();
@@ -653,7 +675,10 @@ fn parse_cpio_entry(data: &[u8], offset: usize) -> Result<(CpioEntry, &[u8], usi
 /// Ensure all parent directories exist in the VFS for a given path.
 ///
 /// Creates intermediate directories with default permissions (0o755).
-fn ensure_parent_directories(vfs: &'static crate::vfs::Vfs, path: &str) -> Result<(), InitramfsError> {
+fn ensure_parent_directories(
+    vfs: &'static crate::vfs::Vfs,
+    path: &str,
+) -> Result<(), InitramfsError> {
     // Skip if path is root or has no parent
     if path == "/" || path.is_empty() {
         return Ok(());
@@ -781,59 +806,71 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
 
             InodeType::File => {
                 // Create and write file
-                let fd = vfs.open(
-                    &path,
-                    OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                    entry.permissions(),
-                ).map_err(|_| InitramfsError::ExtractionFailed)?;
+                let fd = vfs
+                    .open(
+                        &path,
+                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
+                        entry.permissions(),
+                    )
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
 
                 if !file_data.is_empty() {
                     vfs.write(fd, file_data)
                         .map_err(|_| InitramfsError::ExtractionFailed)?;
                 }
 
-                vfs.close(fd).map_err(|_| InitramfsError::ExtractionFailed)?;
+                vfs.close(fd)
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
             }
 
             InodeType::Symlink => {
                 // Symbolic links store the target path in file_data
                 // For now, we create a regular file with the symlink target as content
                 // A full implementation would need VFS symlink support
-                let fd = vfs.open(
-                    &path,
-                    OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                    entry.permissions(),
-                ).map_err(|_| InitramfsError::ExtractionFailed)?;
+                let fd = vfs
+                    .open(
+                        &path,
+                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
+                        entry.permissions(),
+                    )
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
 
                 if !file_data.is_empty() {
                     vfs.write(fd, file_data)
                         .map_err(|_| InitramfsError::ExtractionFailed)?;
                 }
 
-                vfs.close(fd).map_err(|_| InitramfsError::ExtractionFailed)?;
+                vfs.close(fd)
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
             }
 
             InodeType::CharDevice | InodeType::BlockDevice => {
                 // Device nodes - create a marker file for now
                 // Full implementation would require VFS device node support
-                let fd = vfs.open(
-                    &path,
-                    OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                    entry.permissions(),
-                ).map_err(|_| InitramfsError::ExtractionFailed)?;
+                let fd = vfs
+                    .open(
+                        &path,
+                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
+                        entry.permissions(),
+                    )
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
 
-                vfs.close(fd).map_err(|_| InitramfsError::ExtractionFailed)?;
+                vfs.close(fd)
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
             }
 
             InodeType::Fifo | InodeType::Socket => {
                 // FIFOs and sockets - create marker files for now
-                let fd = vfs.open(
-                    &path,
-                    OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                    entry.permissions(),
-                ).map_err(|_| InitramfsError::ExtractionFailed)?;
+                let fd = vfs
+                    .open(
+                        &path,
+                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
+                        entry.permissions(),
+                    )
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
 
-                vfs.close(fd).map_err(|_| InitramfsError::ExtractionFailed)?;
+                vfs.close(fd)
+                    .map_err(|_| InitramfsError::ExtractionFailed)?;
             }
         }
 

@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug, Clone, Copy)]
 pub enum MetricCategory {
     CPU,
-    Memory, 
+    Memory,
     IO,
     Network,
     Cache,
@@ -110,7 +110,7 @@ pub fn cpu_utilization() -> u8 {
     // For now, estimate based on interrupt rate
     let interrupts = INTERRUPTS.load(Ordering::Relaxed);
     let cycles = CPU_CYCLES.load(Ordering::Relaxed);
-    
+
     if cycles > 0 {
         // Rough estimate: more interrupts = more activity
         let util = (interrupts * 100 / (cycles / 1000000)).min(100) as u8;

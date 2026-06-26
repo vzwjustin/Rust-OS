@@ -3,17 +3,14 @@
 //! A simple in-memory filesystem implementation that serves as the default
 //! filesystem for RustOS. All data is stored in RAM and lost on shutdown.
 
-use alloc::sync::Arc;
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spin::RwLock;
 
-use super::{
-    InodeOps, SuperblockOps, InodeType, Stat, DirEntry, StatFs,
-    VfsResult, VfsError,
-};
+use super::{DirEntry, InodeOps, InodeType, Stat, StatFs, SuperblockOps, VfsError, VfsResult};
 
 /// RAM filesystem inode data
 enum RamFsInodeData {
@@ -186,7 +183,8 @@ impl InodeOps for RamFsInode {
                 self.update_atime();
 
                 let entries = entries.read();
-                entries.get(name)
+                entries
+                    .get(name)
                     .map(|inode| Arc::clone(inode) as Arc<dyn InodeOps>)
                     .ok_or(VfsError::NotFound)
             }
@@ -274,16 +272,13 @@ impl InodeOps for RamFsInode {
                 }
 
                 // Downcast to RamFsInode
-                let target_ramfs = target
-                    .as_ref() as *const dyn InodeOps as *const RamFsInode;
+                let target_ramfs = target.as_ref() as *const dyn InodeOps as *const RamFsInode;
 
                 // This is unsafe but necessary for the link operation
                 let target_ramfs = unsafe { &*target_ramfs };
 
                 // Create a new Arc pointing to the same inode
-                let target_arc = unsafe {
-                    Arc::from_raw(target_ramfs as *const RamFsInode)
-                };
+                let target_arc = unsafe { Arc::from_raw(target_ramfs as *const RamFsInode) };
 
                 // Increment reference count by cloning
                 let target_clone = Arc::clone(&target_arc);

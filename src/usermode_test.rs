@@ -2,8 +2,8 @@
 //!
 //! This module provides test functions to validate user/kernel mode switching.
 
-use crate::usermode::{UserContext, switch_to_user_mode, is_valid_user_address};
 use crate::serial_println;
+use crate::usermode::{is_valid_user_address, switch_to_user_mode, UserContext};
 use x86_64::VirtAddr;
 
 /// Allocate a simple user stack for testing
@@ -35,43 +35,23 @@ struct UserTestProgram {
     code: [u8; 4096],
 }
 
-static mut USER_TEST_PROGRAM: UserTestProgram = UserTestProgram {
-    code: [0; 4096],
-};
+static mut USER_TEST_PROGRAM: UserTestProgram = UserTestProgram { code: [0; 4096] };
 
 /// Initialize the test user program
 fn init_test_program() {
     let code: &[u8] = &[
         // mov rax, 1 (sys_write)
-        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
-
-        // mov rdi, 1 (stdout)
+        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // mov rdi, 1 (stdout)
         0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
-
         // lea rsi, [rip+25] (message address - relative to next instruction)
-        0x48, 0x8d, 0x35, 0x19, 0x00, 0x00, 0x00,
-
-        // mov rdx, 13 (message length)
-        0x48, 0xc7, 0xc2, 0x0d, 0x00, 0x00, 0x00,
-
-        // int 0x80 (syscall)
-        0xcd, 0x80,
-
-        // mov rax, 60 (sys_exit)
-        0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00,
-
-        // xor rdi, rdi (exit code 0)
-        0x48, 0x31, 0xff,
-
-        // int 0x80 (syscall)
-        0xcd, 0x80,
-
-        // Infinite loop (should never reach here)
-        0xeb, 0xfe,
-
-        // Message: "Hello User!\n"
-        b'H', b'e', b'l', b'l', b'o', b' ',
-        b'U', b's', b'e', b'r', b'!', b'\n', 0x00,
+        0x48, 0x8d, 0x35, 0x19, 0x00, 0x00, 0x00, // mov rdx, 13 (message length)
+        0x48, 0xc7, 0xc2, 0x0d, 0x00, 0x00, 0x00, // int 0x80 (syscall)
+        0xcd, 0x80, // mov rax, 60 (sys_exit)
+        0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00, // xor rdi, rdi (exit code 0)
+        0x48, 0x31, 0xff, // int 0x80 (syscall)
+        0xcd, 0x80, // Infinite loop (should never reach here)
+        0xeb, 0xfe, // Message: "Hello User!\n"
+        b'H', b'e', b'l', b'l', b'o', b' ', b'U', b's', b'e', b'r', b'!', b'\n', 0x00,
     ];
 
     unsafe {

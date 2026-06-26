@@ -4,10 +4,18 @@
 //! supporting various types of network interfaces including Ethernet,
 //! wireless, loopback, and virtual devices.
 
-use super::{NetworkAddress, NetworkResult, NetworkError, PacketBuffer, NetworkInterface, InterfaceFlags, InterfaceStats};
-use alloc::{vec::Vec, vec, string::{String, ToString}, boxed::Box};
-use spin::RwLock;
+use super::{
+    InterfaceFlags, InterfaceStats, NetworkAddress, NetworkError, NetworkInterface, NetworkResult,
+    PacketBuffer,
+};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use lazy_static::lazy_static;
+use spin::RwLock;
 
 /// Get current time in milliseconds
 fn current_time_ms() -> u64 {
@@ -96,43 +104,43 @@ impl Default for DeviceCapabilities {
 pub trait NetworkDevice: Send + Sync {
     /// Get device name
     fn name(&self) -> &str;
-    
+
     /// Get device type
     fn device_type(&self) -> DeviceType;
-    
+
     /// Get MAC address
     fn mac_address(&self) -> NetworkAddress;
-    
+
     /// Get device capabilities
     fn capabilities(&self) -> DeviceCapabilities;
-    
+
     /// Get current MTU
     fn mtu(&self) -> u16;
-    
+
     /// Set MTU
     fn set_mtu(&mut self, mtu: u16) -> NetworkResult<()>;
-    
+
     /// Check if device is up
     fn is_up(&self) -> bool;
-    
+
     /// Bring device up
     fn up(&mut self) -> NetworkResult<()>;
-    
+
     /// Bring device down
     fn down(&mut self) -> NetworkResult<()>;
-    
+
     /// Send packet
     fn send(&mut self, packet: PacketBuffer) -> NetworkResult<()>;
-    
+
     /// Receive packet (non-blocking)
     fn recv(&mut self) -> NetworkResult<Option<PacketBuffer>>;
-    
+
     /// Get device statistics
     fn stats(&self) -> InterfaceStats;
-    
+
     /// Reset device statistics
     fn reset_stats(&mut self);
-    
+
     /// Get device-specific information
     fn device_info(&self) -> DeviceInfo;
 }
@@ -242,7 +250,8 @@ impl NetworkDevice for LoopbackDevice {
     }
 
     fn set_mtu(&mut self, mtu: u16) -> NetworkResult<()> {
-        if mtu < 68 { // IPv4 minimum MTU
+        if mtu < 68 {
+            // IPv4 minimum MTU
             return Err(NetworkError::InvalidArgument);
         }
         self.mtu = mtu;
@@ -412,7 +421,8 @@ impl NetworkDevice for VirtualEthernetDevice {
     }
 
     fn set_mtu(&mut self, mtu: u16) -> NetworkResult<()> {
-        if mtu < 68 { // IPv4 minimum MTU
+        if mtu < 68 {
+            // IPv4 minimum MTU
             return Err(NetworkError::InvalidArgument);
         }
         self.mtu = mtu;
@@ -443,11 +453,13 @@ impl NetworkDevice for VirtualEthernetDevice {
         let packet_data = packet.as_slice();
 
         // Validate packet size
-        if packet_data.len() < 14 { // Minimum Ethernet frame size (header only)
+        if packet_data.len() < 14 {
+            // Minimum Ethernet frame size (header only)
             return Err(NetworkError::InvalidPacket);
         }
 
-        if packet_data.len() > self.mtu as usize + 14 { // MTU + Ethernet header
+        if packet_data.len() > self.mtu as usize + 14 {
+            // MTU + Ethernet header
             return Err(NetworkError::BufferOverflow);
         }
 
@@ -559,10 +571,10 @@ impl DeviceManager {
     /// Register a network device
     pub fn register_device(&self, device: Box<dyn NetworkDevice>) -> NetworkResult<()> {
         let device_name = device.name().to_string();
-        
+
         let mut devices = self.devices.write();
         let mut lookup = self.device_lookup.write();
-        
+
         if lookup.contains_key(&device_name) {
             return Err(NetworkError::AddressInUse);
         }
@@ -570,7 +582,7 @@ impl DeviceManager {
         let index = devices.len();
         devices.push(device);
         lookup.insert(device_name.clone(), index);
-        
+
         // Device registered silently
         Ok(())
     }
@@ -579,18 +591,18 @@ impl DeviceManager {
     pub fn unregister_device(&self, name: &str) -> NetworkResult<()> {
         let mut devices = self.devices.write();
         let mut lookup = self.device_lookup.write();
-        
+
         if let Some(&index) = lookup.get(name) {
             devices.remove(index);
             lookup.remove(name);
-            
+
             // Update indices in lookup table
             for (_, idx) in lookup.iter_mut() {
                 if *idx > index {
                     *idx -= 1;
                 }
             }
-            
+
             // Device unregistered silently
             Ok(())
         } else {
@@ -704,7 +716,7 @@ impl DeviceManager {
                 let mut flags = InterfaceFlags::default();
                 flags.up = device.is_up();
                 flags.loopback = device.device_type() == DeviceType::Loopback;
-                
+
                 Some(NetworkInterface {
                     name: device.name().to_string(),
                     mac_address: device.mac_address(),
@@ -726,7 +738,7 @@ impl DeviceManager {
         let mut packets = Vec::new();
         let mut devices = self.devices.write();
         let lookup = self.device_lookup.read();
-        
+
         for (name, &index) in lookup.iter() {
             if let Some(device) = devices.get_mut(index) {
                 if let Ok(Some(packet)) = device.recv() {
@@ -734,7 +746,7 @@ impl DeviceManager {
                 }
             }
         }
-        
+
         packets
     }
 }
@@ -748,10 +760,10 @@ pub fn init() -> NetworkResult<()> {
     // Register loopback device
     let loopback = Box::new(LoopbackDevice::new());
     DEVICE_MANAGER.register_device(loopback)?;
-    
+
     // Bring loopback up
     DEVICE_MANAGER.set_device_state("lo", true)?;
-    
+
     // Network device subsystem initialized
     Ok(())
 }
@@ -766,19 +778,19 @@ pub fn create_veth_pair(name1: &str, name2: &str) -> NetworkResult<()> {
     // Generate MAC addresses
     let mac1 = NetworkAddress::Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
     let mac2 = NetworkAddress::Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
-    
+
     // Create devices
     let mut veth1 = VirtualEthernetDevice::new(name1.to_string(), mac1);
     let mut veth2 = VirtualEthernetDevice::new(name2.to_string(), mac2);
-    
+
     // Set peers
     veth1.set_peer(name2.to_string());
     veth2.set_peer(name1.to_string());
-    
+
     // Register devices
     DEVICE_MANAGER.register_device(Box::new(veth1))?;
     DEVICE_MANAGER.register_device(Box::new(veth2))?;
-    
+
     // Virtual ethernet pair created
     Ok(())
 }
@@ -798,7 +810,7 @@ pub struct DeviceStats {
 pub fn get_all_device_stats() -> Vec<DeviceStats> {
     let device_names = DEVICE_MANAGER.list_devices();
     let mut stats = Vec::new();
-    
+
     for name in device_names {
         if let Some(interface) = DEVICE_MANAGER.create_interface(&name) {
             stats.push(DeviceStats {
@@ -811,6 +823,6 @@ pub fn get_all_device_stats() -> Vec<DeviceStats> {
             });
         }
     }
-    
+
     stats
 }

@@ -7,18 +7,25 @@
 //! - File descriptor management
 //! - Path resolution and caching
 
-pub mod vfs;
-pub mod ramfs;
+pub mod buffer;
 pub mod devfs;
 pub mod ext4;
 pub mod fat32;
-pub mod buffer;
+pub mod ramfs;
+pub mod vfs;
 
-use alloc::{string::{String, ToString}, vec::Vec, collections::BTreeMap, format, boxed::Box, sync::Arc};
-use core::fmt;
-use spin::{RwLock, Mutex};
-use lazy_static::lazy_static;
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use bitflags::bitflags;
+use core::fmt;
+use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 /// File descriptor type
 pub type FileDescriptor = i32;
@@ -114,15 +121,33 @@ impl FilePermissions {
     /// Convert to octal mode
     pub fn to_octal(&self) -> u16 {
         let mut mode = 0u16;
-        if self.owner_read { mode |= 0o400; }
-        if self.owner_write { mode |= 0o200; }
-        if self.owner_execute { mode |= 0o100; }
-        if self.group_read { mode |= 0o040; }
-        if self.group_write { mode |= 0o020; }
-        if self.group_execute { mode |= 0o010; }
-        if self.other_read { mode |= 0o004; }
-        if self.other_write { mode |= 0o002; }
-        if self.other_execute { mode |= 0o001; }
+        if self.owner_read {
+            mode |= 0o400;
+        }
+        if self.owner_write {
+            mode |= 0o200;
+        }
+        if self.owner_execute {
+            mode |= 0o100;
+        }
+        if self.group_read {
+            mode |= 0o040;
+        }
+        if self.group_write {
+            mode |= 0o020;
+        }
+        if self.group_execute {
+            mode |= 0o010;
+        }
+        if self.other_read {
+            mode |= 0o004;
+        }
+        if self.other_write {
+            mode |= 0o002;
+        }
+        if self.other_execute {
+            mode |= 0o001;
+        }
         mode
     }
 
@@ -393,7 +418,13 @@ pub struct Inode {
 
 impl Inode {
     /// Create a new inode handle
-    pub fn new(inode_number: InodeNumber, size: u64, mode: u32, file_type: FileType, mount_index: usize) -> Self {
+    pub fn new(
+        inode_number: InodeNumber,
+        size: u64,
+        mode: u32,
+        file_type: FileType,
+        mount_index: usize,
+    ) -> Self {
         Self {
             inode_number,
             size,
@@ -405,7 +436,14 @@ impl Inode {
     }
 
     /// Create inode with content
-    pub fn with_content(inode_number: InodeNumber, size: u64, mode: u32, file_type: FileType, mount_index: usize, content: Vec<u8>) -> Self {
+    pub fn with_content(
+        inode_number: InodeNumber,
+        size: u64,
+        mode: u32,
+        file_type: FileType,
+        mount_index: usize,
+        content: Vec<u8>,
+    ) -> Self {
         Self {
             inode_number,
             size,
@@ -497,8 +535,10 @@ impl VFS {
     pub fn open(&self, path: &str, flags: SyscallOpenFlags, mode: u32) -> FsResult<Inode> {
         // Convert syscall flags to internal OpenFlags
         let internal_flags = OpenFlags {
-            read: !flags.contains(SyscallOpenFlags::WRITE) || flags.contains(SyscallOpenFlags::RDWR),
-            write: flags.contains(SyscallOpenFlags::WRITE) || flags.contains(SyscallOpenFlags::RDWR),
+            read: !flags.contains(SyscallOpenFlags::WRITE)
+                || flags.contains(SyscallOpenFlags::RDWR),
+            write: flags.contains(SyscallOpenFlags::WRITE)
+                || flags.contains(SyscallOpenFlags::RDWR),
             create: flags.contains(SyscallOpenFlags::CREAT),
             truncate: flags.contains(SyscallOpenFlags::TRUNC),
             append: flags.contains(SyscallOpenFlags::APPEND),
@@ -507,7 +547,10 @@ impl VFS {
 
         // Resolve the path
         let resolved_path = self.manager.resolve_path(path)?;
-        let mount_index = self.manager.find_mount_point(&resolved_path).ok_or(FsError::NotFound)?;
+        let mount_index = self
+            .manager
+            .find_mount_point(&resolved_path)
+            .ok_or(FsError::NotFound)?;
 
         let mount_points = self.manager.mount_points.read();
         let mount_point = &mount_points[mount_index];
@@ -516,7 +559,9 @@ impl VFS {
         let relative_path = if mount_point.path == "/" {
             &resolved_path
         } else {
-            resolved_path.strip_prefix(&mount_point.path).unwrap_or(&resolved_path)
+            resolved_path
+                .strip_prefix(&mount_point.path)
+                .unwrap_or(&resolved_path)
         };
 
         // Handle file creation
@@ -742,9 +787,14 @@ impl VfsManager {
     }
 
     /// Mount a filesystem
-    pub fn mount(&self, path: &str, filesystem: Box<dyn FileSystem>, flags: MountFlags) -> FsResult<()> {
+    pub fn mount(
+        &self,
+        path: &str,
+        filesystem: Box<dyn FileSystem>,
+        flags: MountFlags,
+    ) -> FsResult<()> {
         let mut mount_points = self.mount_points.write();
-        
+
         // Check if mount point already exists
         if mount_points.iter().any(|mp| mp.path == path) {
             return Err(FsError::AlreadyExists);
@@ -764,7 +814,7 @@ impl VfsManager {
     /// Unmount a filesystem
     pub fn unmount(&self, path: &str) -> FsResult<()> {
         let mut mount_points = self.mount_points.write();
-        
+
         if let Some(pos) = mount_points.iter().position(|mp| mp.path == path) {
             mount_points.remove(pos);
             Ok(())
@@ -776,26 +826,32 @@ impl VfsManager {
     /// Find the mount point for a given path
     fn find_mount_point(&self, path: &str) -> Option<usize> {
         let mount_points = self.mount_points.read();
-        mount_points.iter().position(|mp| path.starts_with(&mp.path))
+        mount_points
+            .iter()
+            .position(|mp| path.starts_with(&mp.path))
     }
 
     /// Open a file
     pub fn open(&self, path: &str, flags: OpenFlags) -> FsResult<FileDescriptor> {
         let resolved_path = self.resolve_path(path)?;
-        let mount_index = self.find_mount_point(&resolved_path).ok_or(FsError::NotFound)?;
-        
+        let mount_index = self
+            .find_mount_point(&resolved_path)
+            .ok_or(FsError::NotFound)?;
+
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[mount_index];
-        
+
         // Remove mount point prefix from path
         let relative_path = if mount_point.path == "/" {
             &resolved_path
         } else {
-            resolved_path.strip_prefix(&mount_point.path).unwrap_or(&resolved_path)
+            resolved_path
+                .strip_prefix(&mount_point.path)
+                .unwrap_or(&resolved_path)
         };
 
         let inode = mount_point.filesystem.open(relative_path, flags)?;
-        
+
         // Allocate file descriptor
         let fd = {
             let mut next_fd = self.next_fd.lock();
@@ -830,17 +886,20 @@ impl VfsManager {
     pub fn read(&self, fd: FileDescriptor, buffer: &mut [u8]) -> FsResult<usize> {
         let mut open_files = self.open_files.write();
         let open_file = open_files.get_mut(&fd).ok_or(FsError::BadFileDescriptor)?;
-        
+
         if !open_file.flags.read {
             return Err(FsError::PermissionDenied);
         }
 
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[open_file.mount_index];
-        
-        let bytes_read = mount_point.filesystem.read(open_file.inode, open_file.position, buffer)?;
+
+        let bytes_read =
+            mount_point
+                .filesystem
+                .read(open_file.inode, open_file.position, buffer)?;
         open_file.position += bytes_read as u64;
-        
+
         Ok(bytes_read)
     }
 
@@ -848,14 +907,14 @@ impl VfsManager {
     pub fn write(&self, fd: FileDescriptor, buffer: &[u8]) -> FsResult<usize> {
         let mut open_files = self.open_files.write();
         let open_file = open_files.get_mut(&fd).ok_or(FsError::BadFileDescriptor)?;
-        
+
         if !open_file.flags.write {
             return Err(FsError::PermissionDenied);
         }
 
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[open_file.mount_index];
-        
+
         let position = if open_file.flags.append {
             // For append mode, always write at the end
             let metadata = mount_point.filesystem.metadata(open_file.inode)?;
@@ -864,12 +923,14 @@ impl VfsManager {
             open_file.position
         };
 
-        let bytes_written = mount_point.filesystem.write(open_file.inode, position, buffer)?;
-        
+        let bytes_written = mount_point
+            .filesystem
+            .write(open_file.inode, position, buffer)?;
+
         if !open_file.flags.append {
             open_file.position += bytes_written as u64;
         }
-        
+
         Ok(bytes_written)
     }
 
@@ -877,11 +938,11 @@ impl VfsManager {
     pub fn seek(&self, fd: FileDescriptor, pos: SeekFrom) -> FsResult<u64> {
         let mut open_files = self.open_files.write();
         let open_file = open_files.get_mut(&fd).ok_or(FsError::BadFileDescriptor)?;
-        
+
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[open_file.mount_index];
         let metadata = mount_point.filesystem.metadata(open_file.inode)?;
-        
+
         let new_position = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::Current(offset) => {
@@ -907,29 +968,37 @@ impl VfsManager {
     /// Get file metadata
     pub fn stat(&self, path: &str) -> FsResult<FileMetadata> {
         let resolved_path = self.resolve_path(path)?;
-        let mount_index = self.find_mount_point(&resolved_path).ok_or(FsError::NotFound)?;
-        
+        let mount_index = self
+            .find_mount_point(&resolved_path)
+            .ok_or(FsError::NotFound)?;
+
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[mount_index];
-        
+
         let relative_path = if mount_point.path == "/" {
             &resolved_path
         } else {
-            resolved_path.strip_prefix(&mount_point.path).unwrap_or(&resolved_path)
+            resolved_path
+                .strip_prefix(&mount_point.path)
+                .unwrap_or(&resolved_path)
         };
 
-        let inode = mount_point.filesystem.open(relative_path, OpenFlags::read_only())?;
+        let inode = mount_point
+            .filesystem
+            .open(relative_path, OpenFlags::read_only())?;
         mount_point.filesystem.metadata(inode)
     }
 
     /// Create a directory
     pub fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<()> {
         let resolved_path = self.resolve_path(path)?;
-        let mount_index = self.find_mount_point(&resolved_path).ok_or(FsError::NotFound)?;
-        
+        let mount_index = self
+            .find_mount_point(&resolved_path)
+            .ok_or(FsError::NotFound)?;
+
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[mount_index];
-        
+
         if mount_point.flags.read_only {
             return Err(FsError::ReadOnly);
         }
@@ -937,7 +1006,9 @@ impl VfsManager {
         let relative_path = if mount_point.path == "/" {
             &resolved_path
         } else {
-            resolved_path.strip_prefix(&mount_point.path).unwrap_or(&resolved_path)
+            resolved_path
+                .strip_prefix(&mount_point.path)
+                .unwrap_or(&resolved_path)
         };
 
         mount_point.filesystem.mkdir(relative_path, permissions)?;
@@ -947,11 +1018,13 @@ impl VfsManager {
     /// Remove a directory
     pub fn rmdir(&self, path: &str) -> FsResult<()> {
         let resolved_path = self.resolve_path(path)?;
-        let mount_index = self.find_mount_point(&resolved_path).ok_or(FsError::NotFound)?;
-        
+        let mount_index = self
+            .find_mount_point(&resolved_path)
+            .ok_or(FsError::NotFound)?;
+
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[mount_index];
-        
+
         if mount_point.flags.read_only {
             return Err(FsError::ReadOnly);
         }
@@ -959,7 +1032,9 @@ impl VfsManager {
         let relative_path = if mount_point.path == "/" {
             &resolved_path
         } else {
-            resolved_path.strip_prefix(&mount_point.path).unwrap_or(&resolved_path)
+            resolved_path
+                .strip_prefix(&mount_point.path)
+                .unwrap_or(&resolved_path)
         };
 
         mount_point.filesystem.rmdir(relative_path)
@@ -968,11 +1043,13 @@ impl VfsManager {
     /// Remove a file
     pub fn unlink(&self, path: &str) -> FsResult<()> {
         let resolved_path = self.resolve_path(path)?;
-        let mount_index = self.find_mount_point(&resolved_path).ok_or(FsError::NotFound)?;
-        
+        let mount_index = self
+            .find_mount_point(&resolved_path)
+            .ok_or(FsError::NotFound)?;
+
         let mount_points = self.mount_points.read();
         let mount_point = &mount_points[mount_index];
-        
+
         if mount_point.flags.read_only {
             return Err(FsError::ReadOnly);
         }
@@ -980,7 +1057,9 @@ impl VfsManager {
         let relative_path = if mount_point.path == "/" {
             &resolved_path
         } else {
-            resolved_path.strip_prefix(&mount_point.path).unwrap_or(&resolved_path)
+            resolved_path
+                .strip_prefix(&mount_point.path)
+                .unwrap_or(&resolved_path)
         };
 
         mount_point.filesystem.unlink(relative_path)
@@ -989,7 +1068,7 @@ impl VfsManager {
     /// Change current working directory
     pub fn chdir(&self, path: &str) -> FsResult<()> {
         let resolved_path = self.resolve_path(path)?;
-        
+
         // Verify the directory exists
         let metadata = self.stat(&resolved_path)?;
         if metadata.file_type != FileType::Directory {
@@ -1012,7 +1091,7 @@ impl VfsManager {
         }
 
         let mut components = Vec::new();
-        
+
         // Start with current directory if path is relative
         if !path.starts_with('/') {
             let cwd = self.current_dir.read();
@@ -1043,7 +1122,8 @@ impl VfsManager {
     /// List mount points
     pub fn list_mounts(&self) -> Vec<(String, FileSystemType)> {
         let mount_points = self.mount_points.read();
-        mount_points.iter()
+        mount_points
+            .iter()
             .map(|mp| (mp.path.clone(), mp.filesystem.fs_type()))
             .collect()
     }
@@ -1067,15 +1147,24 @@ pub fn init() -> FsResult<()> {
     // Initialize buffer cache
     buffer::init_buffer_cache();
 
-    // Try to mount real filesystem from storage device 1 (if available)
-    let root_mounted = if let Ok(ext4_fs) = ext4::Ext4FileSystem::new(1) {
-        // Mount EXT4 filesystem as root
-        let ext4_box = Box::new(ext4_fs);
-        VFS_MANAGER.mount("/", ext4_box, MountFlags::default()).is_ok()
-    } else if let Ok(fat32_fs) = fat32::Fat32FileSystem::new(1) {
-        // Mount FAT32 filesystem as root
-        let fat32_box = Box::new(fat32_fs);
-        VFS_MANAGER.mount("/", fat32_box, MountFlags::default()).is_ok()
+    // Try mounting a real filesystem from the default block device, if one exists.
+    let storage_device = crate::drivers::storage::get_default_device();
+    let root_mounted = if let Some(device_id) = storage_device {
+        if let Ok(ext4_fs) = ext4::Ext4FileSystem::new(device_id) {
+            // Mount EXT4 filesystem as root
+            let ext4_box = Box::new(ext4_fs);
+            VFS_MANAGER
+                .mount("/", ext4_box, MountFlags::default())
+                .is_ok()
+        } else if let Ok(fat32_fs) = fat32::Fat32FileSystem::new(device_id) {
+            // Mount FAT32 filesystem as root
+            let fat32_box = Box::new(fat32_fs);
+            VFS_MANAGER
+                .mount("/", fat32_box, MountFlags::default())
+                .is_ok()
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -1104,14 +1193,14 @@ pub fn init() -> FsResult<()> {
 }
 
 /// Mount a filesystem from a storage device
-pub fn mount_filesystem(device_id: u32, mount_point: &str, fs_type: Option<FileSystemType>) -> FsResult<()> {
+pub fn mount_filesystem(
+    device_id: u32,
+    mount_point: &str,
+    fs_type: Option<FileSystemType>,
+) -> FsResult<()> {
     let filesystem: Box<dyn FileSystem> = match fs_type {
-        Some(FileSystemType::Ext2) => {
-            Box::new(ext4::Ext4FileSystem::new(device_id)?)
-        }
-        Some(FileSystemType::Fat32) => {
-            Box::new(fat32::Fat32FileSystem::new(device_id)?)
-        }
+        Some(FileSystemType::Ext2) => Box::new(ext4::Ext4FileSystem::new(device_id)?),
+        Some(FileSystemType::Fat32) => Box::new(fat32::Fat32FileSystem::new(device_id)?),
         _ => {
             // Auto-detect filesystem type
             if let Ok(ext4_fs) = ext4::Ext4FileSystem::new(device_id) {

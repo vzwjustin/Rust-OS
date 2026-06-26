@@ -2,10 +2,10 @@
 //!
 //! Tracks virtual memory regions with their properties, permissions, and backing.
 
-use x86_64::VirtAddr;
-use alloc::string::String;
 use alloc::boxed::Box;
+use alloc::string::String;
 use core::ops::Range;
+use x86_64::VirtAddr;
 
 /// Memory region type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +371,7 @@ impl MemoryRegionNode {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_protection_flags() {
         let rw = ProtectionFlags::READ | ProtectionFlags::WRITE;
         assert!(rw.is_readable());
@@ -382,7 +382,7 @@ mod tests {
         assert!(rwx.is_executable());
     }
 
-    #[test]
+    #[test_case]
     fn test_memory_region() {
         let start = VirtAddr::new(0x1000);
         let end = VirtAddr::new(0x2000);
@@ -393,7 +393,7 @@ mod tests {
         assert!(!region.contains(VirtAddr::new(0x2500)));
     }
 
-    #[test]
+    #[test_case]
     fn test_region_split() {
         let start = VirtAddr::new(0x1000);
         let end = VirtAddr::new(0x3000);
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(first.size() + second.size(), region.size());
     }
 
-    #[test]
+    #[test_case]
     fn test_region_merge() {
         let region1 = MemoryRegion::anonymous(
             VirtAddr::new(0x1000),

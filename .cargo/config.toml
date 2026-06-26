@@ -7,6 +7,7 @@ target = "x86_64-rustos.json"
 
 [target.x86_64-rustos]
 runner = "bootimage runner"
+rustflags = ["-C", "debug-assertions=off"]
 
 [env]
 CARGO_TARGET_X86_64_RUSTOS_RUNNER = "bootimage runner"

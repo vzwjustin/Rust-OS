@@ -3,16 +3,16 @@
 //! This module provides the main package manager interface that coordinates
 //! between adapters, database, and operations.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use crate::package::adapters::{ApkAdapter, DebAdapter, NativeAdapter, PackageAdapter, RpmAdapter};
+use crate::package::database::{PackageCache, PackageDatabase};
+use crate::package::{
+    ExtractedPackage, PackageError, PackageInfo, PackageManagerType, PackageMetadata,
+    PackageOperation, PackageResult, PackageStatus,
+};
 use alloc::boxed::Box;
 use alloc::format;
-use crate::package::{
-    PackageResult, PackageError, PackageOperation, PackageManagerType,
-    PackageInfo, PackageMetadata, PackageStatus, ExtractedPackage,
-};
-use crate::package::database::{PackageDatabase, PackageCache};
-use crate::package::adapters::{PackageAdapter, DebAdapter, RpmAdapter, ApkAdapter, NativeAdapter};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Main package manager
 pub struct PackageManager {
@@ -35,7 +35,11 @@ impl PackageManager {
     }
 
     /// Execute a package operation
-    pub fn execute_operation(&mut self, operation: PackageOperation, package_name: &str) -> PackageResult<String> {
+    pub fn execute_operation(
+        &mut self,
+        operation: PackageOperation,
+        package_name: &str,
+    ) -> PackageResult<String> {
         match operation {
             PackageOperation::Install => self.install(package_name),
             PackageOperation::Remove => self.remove(package_name),
@@ -51,9 +55,10 @@ impl PackageManager {
     fn install(&mut self, package_name: &str) -> PackageResult<String> {
         // Check if already installed
         if self.database.is_installed(package_name) {
-            return Err(PackageError::InvalidOperation(
-                format!("Package {} is already installed", package_name)
-            ));
+            return Err(PackageError::InvalidOperation(format!(
+                "Package {} is already installed",
+                package_name
+            )));
         }
 
         // This is experimental - actual installation requires:
@@ -64,48 +69,50 @@ impl PackageManager {
         // 5. Run post-installation scripts
         // 6. Update database
 
-        Err(PackageError::NotImplemented(
-            format!("Package installation requires network stack and filesystem support. \
-                    See docs/LINUX_APP_SUPPORT.md for implementation requirements.")
-        ))
+        Err(PackageError::NotImplemented(format!(
+            "Package installation requires network stack and filesystem support. \
+                    See docs/LINUX_APP_SUPPORT.md for implementation requirements."
+        )))
     }
 
     /// Remove a package
     fn remove(&mut self, package_name: &str) -> PackageResult<String> {
         let package_info = self.database.remove_package(package_name)?;
-        
+
         // This is experimental - actual removal requires:
         // 1. Check for reverse dependencies
         // 2. Run pre-removal scripts
         // 3. Remove installed files
         // 4. Update database
 
-        Ok(format!("Package {} marked for removal (experimental)", package_name))
+        Ok(format!(
+            "Package {} marked for removal (experimental)",
+            package_name
+        ))
     }
 
     /// Update package database
     fn update(&mut self) -> PackageResult<String> {
         Err(PackageError::NotImplemented(
-            "Package database update requires network and repository API support".to_string()
+            "Package database update requires network and repository API support".to_string(),
         ))
     }
 
     /// Search for packages
     fn search(&self, query: &str) -> PackageResult<String> {
         let results = self.database.search(query);
-        
+
         if results.is_empty() {
             return Ok(format!("No packages found matching '{}'", query));
         }
 
         let mut output = String::new();
         output.push_str(&format!("Found {} package(s):\n", results.len()));
-        
+
         for pkg in results {
-            output.push_str(&format!("  {} {} - {}\n", 
-                pkg.metadata.name, 
-                pkg.metadata.version,
-                pkg.metadata.description
+            output.push_str(&format!(
+                "  {} {} - {}\n",
+                pkg.metadata.name, pkg.metadata.version, pkg.metadata.description
             ));
         }
 
@@ -114,16 +121,24 @@ impl PackageManager {
 
     /// Get package information
     fn info(&self, package_name: &str) -> PackageResult<String> {
-        let package = self.database.get_package(package_name)
+        let package = self
+            .database
+            .get_package(package_name)
             .ok_or_else(|| PackageError::NotFound(format!("Package {} not found", package_name)))?;
 
         let mut output = String::new();
         output.push_str(&format!("Package: {}\n", package.metadata.name));
         output.push_str(&format!("Version: {}\n", package.metadata.version));
-        output.push_str(&format!("Architecture: {}\n", package.metadata.architecture));
+        output.push_str(&format!(
+            "Architecture: {}\n",
+            package.metadata.architecture
+        ));
         output.push_str(&format!("Description: {}\n", package.metadata.description));
         output.push_str(&format!("Status: {:?}\n", package.status));
-        output.push_str(&format!("Installed files: {}\n", package.installed_files.len()));
+        output.push_str(&format!(
+            "Installed files: {}\n",
+            package.installed_files.len()
+        ));
 
         if let Some(maintainer) = &package.metadata.maintainer {
             output.push_str(&format!("Maintainer: {}\n", maintainer));
@@ -142,19 +157,18 @@ impl PackageManager {
     /// List installed packages
     fn list(&self) -> PackageResult<String> {
         let packages = self.database.list_packages();
-        
+
         if packages.is_empty() {
             return Ok("No packages installed".to_string());
         }
 
         let mut output = String::new();
         output.push_str(&format!("Installed packages ({}):\n", packages.len()));
-        
+
         for pkg in packages {
-            output.push_str(&format!("  {} {} [{:?}]\n", 
-                pkg.metadata.name, 
-                pkg.metadata.version,
-                pkg.status
+            output.push_str(&format!(
+                "  {} {} [{:?}]\n",
+                pkg.metadata.name, pkg.metadata.version, pkg.status
             ));
         }
 
@@ -163,9 +177,10 @@ impl PackageManager {
 
     /// Upgrade packages
     fn upgrade(&mut self, package_name: &str) -> PackageResult<String> {
-        Err(PackageError::NotImplemented(
-            format!("Package upgrade not yet implemented for {}", package_name)
-        ))
+        Err(PackageError::NotImplemented(format!(
+            "Package upgrade not yet implemented for {}",
+            package_name
+        )))
     }
 
     /// Get the adapter for current package manager type

@@ -3,12 +3,12 @@
 //! Basic TAR archive parsing for package extraction.
 //! Supports POSIX ustar format used by most packages.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use crate::package::{PackageError, PackageResult};
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use core::str;
-use crate::package::{PackageResult, PackageError};
 
 const TAR_BLOCK_SIZE: usize = 512;
 const TAR_NAME_SIZE: usize = 100;
@@ -114,7 +114,7 @@ impl TarArchive {
             if size > 0 {
                 if offset + size > data.len() {
                     return Err(PackageError::InvalidFormat(
-                        "TAR entry size exceeds archive size".into()
+                        "TAR entry size exceeds archive size".into(),
                     ));
                 }
 
@@ -139,7 +139,9 @@ impl TarArchive {
 
     /// Find an entry by path
     pub fn find_entry(&self, path: &str) -> Option<&TarEntry> {
-        self.entries.iter().find(|e| e.path == path || e.path.ends_with(path))
+        self.entries
+            .iter()
+            .find(|e| e.path == path || e.path.ends_with(path))
     }
 
     /// Get all entries
@@ -181,10 +183,9 @@ impl TarArchive {
             return Ok(0);
         }
 
-        u64::from_str_radix(trimmed, 8)
-            .map_err(|_| PackageError::InvalidFormat(
-                format!("Invalid octal number in TAR header: {}", trimmed)
-            ))
+        u64::from_str_radix(trimmed, 8).map_err(|_| {
+            PackageError::InvalidFormat(format!("Invalid octal number in TAR header: {}", trimmed))
+        })
     }
 }
 
@@ -192,7 +193,7 @@ impl TarArchive {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_tar_entry_type() {
         assert_eq!(TarEntryType::from_byte(b'0'), TarEntryType::File);
         assert_eq!(TarEntryType::from_byte(b'5'), TarEntryType::Directory);

@@ -3,8 +3,12 @@
 //! This module provides additional VFS utilities and helper functions
 //! for path manipulation, file operations, and filesystem management.
 
-use super::{FsResult, FsError, FilePermissions, FileType, DirectoryEntry};
-use alloc::{string::{String, ToString}, vec::Vec, format};
+use super::{DirectoryEntry, FilePermissions, FileType, FsError, FsResult};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 /// Path manipulation utilities
 pub struct PathUtils;
@@ -236,19 +240,18 @@ impl DirectoryUtils {
 
     /// Sort directory entries by type (directories first)
     pub fn sort_by_type(entries: &mut Vec<DirectoryEntry>) {
-        entries.sort_by(|a, b| {
-            match (a.file_type, b.file_type) {
-                (FileType::Directory, FileType::Directory) => a.name.cmp(&b.name),
-                (FileType::Directory, _) => core::cmp::Ordering::Less,
-                (_, FileType::Directory) => core::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+        entries.sort_by(|a, b| match (a.file_type, b.file_type) {
+            (FileType::Directory, FileType::Directory) => a.name.cmp(&b.name),
+            (FileType::Directory, _) => core::cmp::Ordering::Less,
+            (_, FileType::Directory) => core::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
         });
     }
 
     /// Filter directory entries by file type
     pub fn filter_by_type(entries: &[DirectoryEntry], file_type: FileType) -> Vec<DirectoryEntry> {
-        entries.iter()
+        entries
+            .iter()
             .filter(|entry| entry.file_type == file_type)
             .cloned()
             .collect()
@@ -260,7 +263,8 @@ impl DirectoryUtils {
             return entries.to_vec();
         }
 
-        entries.iter()
+        entries
+            .iter()
             .filter(|entry| Self::matches_pattern(&entry.name, pattern))
             .cloned()
             .collect()
@@ -278,13 +282,13 @@ impl DirectoryUtils {
 
         // Simple implementation - just check prefix and suffix
         if pattern.starts_with('*') && pattern.ends_with('*') {
-            let middle = &pattern[1..pattern.len()-1];
+            let middle = &pattern[1..pattern.len() - 1];
             name.contains(middle)
         } else if pattern.starts_with('*') {
             let suffix = &pattern[1..];
             name.ends_with(suffix)
         } else if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len()-1];
+            let prefix = &pattern[..pattern.len() - 1];
             name.starts_with(prefix)
         } else {
             name == pattern
@@ -323,7 +327,7 @@ impl SizeUtils {
     /// Parse human-readable size to bytes
     pub fn parse_size(size_str: &str) -> FsResult<u64> {
         let size_str = size_str.trim().to_uppercase();
-        
+
         if size_str.is_empty() {
             return Err(FsError::InvalidArgument);
         }
@@ -333,23 +337,35 @@ impl SizeUtils {
             if size_str.len() < 2 {
                 (size_str.as_str(), "")
             } else {
-                let without_b = &size_str[..size_str.len()-1];
-                if without_b.ends_with('K') || without_b.ends_with('M') || 
-                   without_b.ends_with('G') || without_b.ends_with('T') {
-                    (&without_b[..without_b.len()-1], &without_b[without_b.len()-1..])
+                let without_b = &size_str[..size_str.len() - 1];
+                if without_b.ends_with('K')
+                    || without_b.ends_with('M')
+                    || without_b.ends_with('G')
+                    || without_b.ends_with('T')
+                {
+                    (
+                        &without_b[..without_b.len() - 1],
+                        &without_b[without_b.len() - 1..],
+                    )
                 } else {
                     (without_b, "")
                 }
             }
-        } else if size_str.ends_with('K') || size_str.ends_with('M') || 
-                  size_str.ends_with('G') || size_str.ends_with('T') {
-            (&size_str[..size_str.len()-1], &size_str[size_str.len()-1..])
+        } else if size_str.ends_with('K')
+            || size_str.ends_with('M')
+            || size_str.ends_with('G')
+            || size_str.ends_with('T')
+        {
+            (
+                &size_str[..size_str.len() - 1],
+                &size_str[size_str.len() - 1..],
+            )
         } else {
             (size_str.as_str(), "")
         };
 
         let number: f64 = number_part.parse().map_err(|_| FsError::InvalidArgument)?;
-        
+
         let multiplier = match unit_part {
             "" | "B" => 1,
             "K" => 1024,
@@ -367,7 +383,7 @@ impl SizeUtils {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_path_normalize() {
         assert_eq!(PathUtils::normalize("/"), "/");
         assert_eq!(PathUtils::normalize("/foo/bar"), "/foo/bar");
@@ -378,14 +394,14 @@ mod tests {
         assert_eq!(PathUtils::normalize("../foo"), "../foo");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_path_join() {
         assert_eq!(PathUtils::join("/foo", "bar"), "/foo/bar");
         assert_eq!(PathUtils::join("/foo/", "bar"), "/foo/bar");
         assert_eq!(PathUtils::join("/foo", "/bar"), "/bar");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_size_format() {
         assert_eq!(SizeUtils::format_size(0), "0 B");
         assert_eq!(SizeUtils::format_size(512), "512 B");
@@ -394,7 +410,7 @@ mod tests {
         assert_eq!(SizeUtils::format_size(1048576), "1.0 MB");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_size_parse() {
         assert_eq!(SizeUtils::parse_size("512").unwrap(), 512);
         assert_eq!(SizeUtils::parse_size("1K").unwrap(), 1024);

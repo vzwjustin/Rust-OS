@@ -255,10 +255,10 @@ impl PciBusScanner {
         }
 
         self.scan_all_buses()?;
-        
+
         // Validate discovered devices
         self.validate_discovered_devices()?;
-        
+
         self.initialized = true;
         Ok(())
     }
@@ -364,7 +364,12 @@ impl PciBusScanner {
     }
 
     /// Scan device capabilities
-    fn scan_capabilities(&self, bus: u8, device: u8, function: u8) -> Result<PciCapabilities, &'static str> {
+    fn scan_capabilities(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Result<PciCapabilities, &'static str> {
         let mut capabilities = PciCapabilities::default();
 
         // Check if device has capabilities
@@ -417,7 +422,13 @@ impl PciBusScanner {
     }
 
     /// Read via MMCONFIG (PCIe memory-mapped configuration space)
-    fn read_config_dword_mmconfig(&self, bus: u8, device: u8, function: u8, offset: u8) -> Option<u32> {
+    fn read_config_dword_mmconfig(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        offset: u8,
+    ) -> Option<u32> {
         // Get MCFG info from ACPI
         let mcfg = crate::acpi::mcfg()?;
 
@@ -429,7 +440,7 @@ impl PciBusScanner {
                           ((bus as u64 - entry.start_bus as u64) << 20) + // Bus offset
                           ((device as u64 & 0x1F) << 15) +                 // Device offset
                           ((function as u64 & 0x07) << 12) +                // Function offset
-                          (offset as u64 & 0xFFC);                          // Register offset (aligned)
+                          (offset as u64 & 0xFFC); // Register offset (aligned)
 
                 unsafe {
                     // Use volatile read to prevent compiler optimization
@@ -479,7 +490,14 @@ impl PciBusScanner {
     }
 
     /// Write via MMCONFIG (PCIe memory-mapped configuration space)
-    fn write_config_dword_mmconfig(&self, bus: u8, device: u8, function: u8, offset: u8, value: u32) -> bool {
+    fn write_config_dword_mmconfig(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        offset: u8,
+        value: u32,
+    ) -> bool {
         // Get MCFG info from ACPI
         let Some(mcfg) = crate::acpi::mcfg() else {
             return false;
@@ -493,7 +511,7 @@ impl PciBusScanner {
                           ((bus as u64 - entry.start_bus as u64) << 20) + // Bus offset
                           ((device as u64 & 0x1F) << 15) +                 // Device offset
                           ((function as u64 & 0x07) << 12) +                // Function offset
-                          (offset as u64 & 0xFFC);                          // Register offset (aligned)
+                          (offset as u64 & 0xFFC); // Register offset (aligned)
 
                 unsafe {
                     // Use volatile write to prevent compiler optimization
@@ -542,17 +560,25 @@ impl PciBusScanner {
 
     /// Get devices by class
     pub fn get_devices_by_class(&self, class: PciClass) -> Vec<&PciDevice> {
-        self.devices.iter().filter(|d| d.class_code == class).collect()
+        self.devices
+            .iter()
+            .filter(|d| d.class_code == class)
+            .collect()
     }
 
     /// Get devices by vendor ID
     pub fn get_devices_by_vendor(&self, vendor_id: u16) -> Vec<&PciDevice> {
-        self.devices.iter().filter(|d| d.vendor_id == vendor_id).collect()
+        self.devices
+            .iter()
+            .filter(|d| d.vendor_id == vendor_id)
+            .collect()
     }
 
     /// Find a specific device by vendor and device ID
     pub fn find_device(&self, vendor_id: u16, device_id: u16) -> Option<&PciDevice> {
-        self.devices.iter().find(|d| d.vendor_id == vendor_id && d.device_id == device_id)
+        self.devices
+            .iter()
+            .find(|d| d.vendor_id == vendor_id && d.device_id == device_id)
     }
 
     /// Get total number of discovered devices
@@ -601,7 +627,10 @@ impl PciBusScanner {
             }
 
             // Validate bus/device/function ranges
-            if device.bus > MAX_BUS || device.device >= MAX_DEVICE || device.function >= MAX_FUNCTION {
+            if device.bus > MAX_BUS
+                || device.device >= MAX_DEVICE
+                || device.function >= MAX_FUNCTION
+            {
                 return Err("Device location out of valid range");
             }
         }
@@ -610,9 +639,9 @@ impl PciBusScanner {
     }
 }
 
+use lazy_static::lazy_static;
 /// Global PCI bus scanner instance
 use spin::Mutex;
-use lazy_static::lazy_static;
 
 lazy_static! {
     static ref PCI_SCANNER: Mutex<PciBusScanner> = Mutex::new(PciBusScanner::new());
@@ -622,13 +651,13 @@ lazy_static! {
 pub fn init_pci() -> Result<(), &'static str> {
     // Production: ACPI FADT integration
     let _fadt = crate::acpi::fadt();
-    
+
     // Production: PCIe MMCONFIG initialization
     if let Some(mcfg) = crate::acpi::mcfg() {
         // Try MMCONFIG, fall back to legacy I/O on failure
         let _ = init_mmconfig_scanner(&mcfg);
     }
-    
+
     PCI_SCANNER.lock().initialize()
 }
 
@@ -659,7 +688,10 @@ fn init_mmconfig_scanner(mcfg: &crate::acpi::McfgInfo) -> Result<(), &'static st
         // Validate segment group
         if entry.segment_group != 0 {
             // Most systems only have segment group 0
-            crate::serial_println!("Warning: Non-zero PCI segment group {}", entry.segment_group);
+            crate::serial_println!(
+                "Warning: Non-zero PCI segment group {}",
+                entry.segment_group
+            );
         }
 
         // Map MMCONFIG space into virtual memory
@@ -689,8 +721,10 @@ fn map_mmconfig_space(entry: &crate::acpi::McfgEntry) -> Result<(), &'static str
 
     // Map each page using identity mapping (virtual = physical for MMIO)
     // Use MMIO flags: present, writable, write-through (for ordering), no cache
-    let flags = MemoryFlags::PRESENT | MemoryFlags::WRITABLE |
-                MemoryFlags::WRITE_COMBINING | MemoryFlags::NO_CACHE;
+    let flags = MemoryFlags::PRESENT
+        | MemoryFlags::WRITABLE
+        | MemoryFlags::WRITE_COMBINING
+        | MemoryFlags::NO_CACHE;
 
     for page_offset in 0..page_count {
         let phys_addr = entry.base_address + page_offset * 4096;
@@ -709,7 +743,7 @@ fn test_mmconfig_access(entry: &crate::acpi::McfgEntry) -> bool {
                (0u64 << 20) + // Bus 0
                (0u64 << 15) + // Device 0
                (0u64 << 12) + // Function 0
-               0x00;           // Offset 0 (vendor ID)
+               0x00; // Offset 0 (vendor ID)
 
     unsafe {
         let vendor_id = core::ptr::read_volatile(addr as *const u16);
@@ -735,7 +769,12 @@ pub fn get_all_devices() -> Vec<PciDevice> {
 
 /// Get devices by class
 pub fn get_devices_by_class(class: PciClass) -> Vec<PciDevice> {
-    PCI_SCANNER.lock().get_devices_by_class(class).into_iter().cloned().collect()
+    PCI_SCANNER
+        .lock()
+        .get_devices_by_class(class)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 /// Print all discovered PCI devices
@@ -761,7 +800,11 @@ pub struct PciAddress {
 
 impl PciAddress {
     pub fn new(bus: u8, device: u8, function: u8) -> Self {
-        Self { bus, device, function }
+        Self {
+            bus,
+            device,
+            function,
+        }
     }
 }
 

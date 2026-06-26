@@ -8,48 +8,48 @@
 //! - Stack guard pages
 //! - Robust error handling
 
-use alloc::vec::Vec;
-use x86_64::{VirtAddr, PhysAddr};
 use crate::memory::{
-    MemoryRegionType, MemoryProtection, VirtualMemoryRegion, MemoryError,
-    allocate_memory, allocate_memory_with_guards, protect_memory,
-    translate_addr, align_up, PAGE_SIZE, USER_SPACE_START, USER_SPACE_END,
+    align_up, allocate_memory, allocate_memory_with_guards, protect_memory, translate_addr,
+    MemoryError, MemoryProtection, MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE,
+    USER_SPACE_END, USER_SPACE_START,
 };
 use crate::process::Pid;
+use alloc::vec::Vec;
 use core::fmt;
+use x86_64::{PhysAddr, VirtAddr};
 
 /// ELF64 Header (64 bytes)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64Header {
-    pub e_ident: [u8; 16],      // Magic number and other info
-    pub e_type: u16,             // Object file type
-    pub e_machine: u16,          // Architecture
-    pub e_version: u32,          // Object file version
-    pub e_entry: u64,            // Entry point virtual address
-    pub e_phoff: u64,            // Program header table file offset
-    pub e_shoff: u64,            // Section header table file offset
-    pub e_flags: u32,            // Processor-specific flags
-    pub e_ehsize: u16,           // ELF header size
-    pub e_phentsize: u16,        // Program header table entry size
-    pub e_phnum: u16,            // Program header table entry count
-    pub e_shentsize: u16,        // Section header table entry size
-    pub e_shnum: u16,            // Section header table entry count
-    pub e_shstrndx: u16,         // Section header string table index
+    pub e_ident: [u8; 16], // Magic number and other info
+    pub e_type: u16,       // Object file type
+    pub e_machine: u16,    // Architecture
+    pub e_version: u32,    // Object file version
+    pub e_entry: u64,      // Entry point virtual address
+    pub e_phoff: u64,      // Program header table file offset
+    pub e_shoff: u64,      // Section header table file offset
+    pub e_flags: u32,      // Processor-specific flags
+    pub e_ehsize: u16,     // ELF header size
+    pub e_phentsize: u16,  // Program header table entry size
+    pub e_phnum: u16,      // Program header table entry count
+    pub e_shentsize: u16,  // Section header table entry size
+    pub e_shnum: u16,      // Section header table entry count
+    pub e_shstrndx: u16,   // Section header string table index
 }
 
 /// ELF64 Program Header (56 bytes)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64ProgramHeader {
-    pub p_type: u32,             // Segment type
-    pub p_flags: u32,            // Segment flags
-    pub p_offset: u64,           // Segment file offset
-    pub p_vaddr: u64,            // Segment virtual address
-    pub p_paddr: u64,            // Segment physical address
-    pub p_filesz: u64,           // Segment size in file
-    pub p_memsz: u64,            // Segment size in memory
-    pub p_align: u64,            // Segment alignment
+    pub p_type: u32,   // Segment type
+    pub p_flags: u32,  // Segment flags
+    pub p_offset: u64, // Segment file offset
+    pub p_vaddr: u64,  // Segment virtual address
+    pub p_paddr: u64,  // Segment physical address
+    pub p_filesz: u64, // Segment size in file
+    pub p_memsz: u64,  // Segment size in memory
+    pub p_align: u64,  // Segment alignment
 }
 
 /// ELF Constants
@@ -67,26 +67,26 @@ pub mod elf_constants {
     pub const EV_CURRENT: u8 = 1;
 
     // Object File Types
-    pub const ET_EXEC: u16 = 2;     // Executable file
-    pub const ET_DYN: u16 = 3;      // Shared object file (PIE)
+    pub const ET_EXEC: u16 = 2; // Executable file
+    pub const ET_DYN: u16 = 3; // Shared object file (PIE)
 
     // Machine Types
-    pub const EM_X86_64: u16 = 62;  // AMD x86-64 architecture
+    pub const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 
     // Program Header Types
-    pub const PT_NULL: u32 = 0;     // Unused entry
-    pub const PT_LOAD: u32 = 1;     // Loadable segment
-    pub const PT_DYNAMIC: u32 = 2;  // Dynamic linking information
-    pub const PT_INTERP: u32 = 3;   // Interpreter pathname
-    pub const PT_NOTE: u32 = 4;     // Auxiliary information
-    pub const PT_PHDR: u32 = 6;     // Program header table
-    pub const PT_TLS: u32 = 7;      // Thread-Local Storage
+    pub const PT_NULL: u32 = 0; // Unused entry
+    pub const PT_LOAD: u32 = 1; // Loadable segment
+    pub const PT_DYNAMIC: u32 = 2; // Dynamic linking information
+    pub const PT_INTERP: u32 = 3; // Interpreter pathname
+    pub const PT_NOTE: u32 = 4; // Auxiliary information
+    pub const PT_PHDR: u32 = 6; // Program header table
+    pub const PT_TLS: u32 = 7; // Thread-Local Storage
     pub const PT_GNU_STACK: u32 = 0x6474e551; // Stack permissions
 
     // Segment Flags
-    pub const PF_X: u32 = 0x1;      // Execute
-    pub const PF_W: u32 = 0x2;      // Write
-    pub const PF_R: u32 = 0x4;      // Read
+    pub const PF_X: u32 = 0x1; // Execute
+    pub const PF_W: u32 = 0x2; // Write
+    pub const PF_R: u32 = 0x4; // Read
 
     // ELF Identification Indices
     pub const EI_CLASS: usize = 4;
@@ -127,7 +127,9 @@ impl fmt::Display for ElfLoaderError {
             ElfLoaderError::UnsupportedClass => write!(f, "Unsupported ELF class (not ELF64)"),
             ElfLoaderError::UnsupportedEndianness => write!(f, "Unsupported endianness"),
             ElfLoaderError::UnsupportedVersion => write!(f, "Unsupported ELF version"),
-            ElfLoaderError::UnsupportedArchitecture => write!(f, "Unsupported architecture (not x86_64)"),
+            ElfLoaderError::UnsupportedArchitecture => {
+                write!(f, "Unsupported architecture (not x86_64)")
+            }
             ElfLoaderError::InvalidFileType => write!(f, "Invalid ELF file type"),
             ElfLoaderError::InvalidHeaderSize => write!(f, "Invalid ELF header size"),
             ElfLoaderError::ProgramHeaderOutOfBounds => write!(f, "Program headers out of bounds"),
@@ -167,7 +169,7 @@ pub struct LoadedBinary {
 pub struct ElfLoader {
     pub enable_aslr: bool,
     pub enable_nx: bool,
-    pub enforce_wx: bool,  // W^X enforcement
+    pub enforce_wx: bool, // W^X enforcement
 }
 
 impl ElfLoader {
@@ -176,7 +178,7 @@ impl ElfLoader {
         Self {
             enable_aslr,
             enable_nx,
-            enforce_wx: true,  // Always enforce W^X for security
+            enforce_wx: true, // Always enforce W^X for security
         }
     }
 
@@ -187,9 +189,7 @@ impl ElfLoader {
         }
 
         // Safe to read header
-        let header = unsafe {
-            core::ptr::read(data.as_ptr() as *const Elf64Header)
-        };
+        let header = unsafe { core::ptr::read(data.as_ptr() as *const Elf64Header) };
 
         Ok(header)
     }
@@ -291,7 +291,9 @@ impl ElfLoader {
             }
 
             // Validate file size
-            let file_end = phdr.p_offset.checked_add(phdr.p_filesz)
+            let file_end = phdr
+                .p_offset
+                .checked_add(phdr.p_filesz)
                 .ok_or(ElfLoaderError::InvalidSegmentOffset)?;
 
             if file_end > file_size as u64 {
@@ -304,8 +306,7 @@ impl ElfLoader {
             }
 
             // Validate virtual address is in user space
-            if phdr.p_vaddr < USER_SPACE_START as u64 ||
-               phdr.p_vaddr >= USER_SPACE_END as u64 {
+            if phdr.p_vaddr < USER_SPACE_START as u64 || phdr.p_vaddr >= USER_SPACE_END as u64 {
                 return Err(ElfLoaderError::InvalidVirtualAddress);
             }
 
@@ -486,7 +487,8 @@ impl ElfLoader {
             heap_size,
             MemoryRegionType::UserHeap,
             MemoryProtection::USER_DATA,
-        ).map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
+        )
+        .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
 
         // Allocate stack with guard pages (8MB)
         let stack_size = 8 * 1024 * 1024;
@@ -494,7 +496,8 @@ impl ElfLoader {
             stack_size,
             MemoryRegionType::UserStack,
             MemoryProtection::USER_DATA,
-        ).map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
+        )
+        .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
 
         let stack_top = VirtAddr::new(stack_bottom.as_u64() + stack_size as u64);
 
@@ -508,9 +511,9 @@ impl ElfLoader {
         }
 
         // Check if binary requires dynamic linking
-        let is_dynamic = program_headers.iter()
-            .any(|phdr| phdr.p_type == elf_constants::PT_DYNAMIC || 
-                        phdr.p_type == elf_constants::PT_INTERP);
+        let is_dynamic = program_headers.iter().any(|phdr| {
+            phdr.p_type == elf_constants::PT_DYNAMIC || phdr.p_type == elf_constants::PT_INTERP
+        });
 
         Ok(LoadedBinary {
             base_address,

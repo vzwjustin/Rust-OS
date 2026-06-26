@@ -3,9 +3,9 @@
 //! This module provides driver support for Qualcomm Atheros wireless network controllers.
 //! Currently a stub implementation for driver framework compatibility.
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 /// Atheros WiFi device IDs
 pub const ATHEROS_VENDOR_ID: u16 = 0x168C;
@@ -238,7 +238,8 @@ pub fn is_atheros_wifi_device(vendor_id: u16, device_id: u16) -> bool {
 
 /// Get device name from device ID
 pub fn get_device_name(device_id: u16) -> Option<&'static str> {
-    ATHEROS_DEVICE_IDS.iter()
+    ATHEROS_DEVICE_IDS
+        .iter()
         .find(|(id, _)| *id == device_id)
         .map(|(_, name)| *name)
 }
@@ -268,7 +269,10 @@ pub fn create_atheros_wifi_driver(
     device_id: u16,
     base_addr: u64,
     irq: u8,
-) -> Option<(Box<dyn super::NetworkDriver>, super::ExtendedNetworkCapabilities)> {
+) -> Option<(
+    Box<dyn super::NetworkDriver>,
+    super::ExtendedNetworkCapabilities,
+)> {
     use super::{DeviceCapabilities, ExtendedNetworkCapabilities};
 
     if !is_atheros_wifi_device(vendor_id, device_id) {
@@ -288,9 +292,13 @@ pub fn create_atheros_wifi_driver(
         pxe_boot: false,
         sriov: false,
         max_bandwidth_mbps: 867, // WiFi 5 max theoretical speed
-        wifi_standards: alloc::vec!["802.11a".to_string(), "802.11b".to_string(),
-                                     "802.11g".to_string(), "802.11n".to_string(),
-                                     "802.11ac".to_string()],
+        wifi_standards: alloc::vec![
+            "802.11a".to_string(),
+            "802.11b".to_string(),
+            "802.11g".to_string(),
+            "802.11n".to_string(),
+            "802.11ac".to_string()
+        ],
         antenna_count: 2,
     };
 
@@ -316,7 +324,9 @@ impl super::NetworkDriver for AtherosWifiDriverWrapper {
     }
 
     fn init(&mut self) -> Result<(), crate::net::NetworkError> {
-        self.inner.init().map_err(|_| crate::net::NetworkError::HardwareError)
+        self.inner
+            .init()
+            .map_err(|_| crate::net::NetworkError::HardwareError)
     }
 
     fn start(&mut self) -> Result<(), crate::net::NetworkError> {

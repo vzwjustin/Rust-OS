@@ -10,8 +10,8 @@
 //! - 0x60: Data port (read/write)
 //! - 0x64: Status register (read) / Command register (write)
 
-use x86_64::instructions::port::Port;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 /// PS/2 controller ports
 const PS2_DATA_PORT: u16 = 0x60;

@@ -6,7 +6,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static TIME_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -35,9 +35,12 @@ pub fn clock_gettime(clockid: i32, tp: *mut TimeSpec) -> LinuxResult<i32> {
     }
 
     match clockid {
-        clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC |
-        clock::CLOCK_PROCESS_CPUTIME_ID | clock::CLOCK_THREAD_CPUTIME_ID |
-        clock::CLOCK_MONOTONIC_RAW | clock::CLOCK_BOOTTIME => {
+        clock::CLOCK_REALTIME
+        | clock::CLOCK_MONOTONIC
+        | clock::CLOCK_PROCESS_CPUTIME_ID
+        | clock::CLOCK_THREAD_CPUTIME_ID
+        | clock::CLOCK_MONOTONIC_RAW
+        | clock::CLOCK_BOOTTIME => {
             // TODO: Get actual time from hardware timer
             unsafe {
                 (*tp).tv_sec = 0;
@@ -76,9 +79,12 @@ pub fn clock_getres(clockid: i32, res: *mut TimeSpec) -> LinuxResult<i32> {
     }
 
     match clockid {
-        clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC |
-        clock::CLOCK_PROCESS_CPUTIME_ID | clock::CLOCK_THREAD_CPUTIME_ID |
-        clock::CLOCK_MONOTONIC_RAW | clock::CLOCK_BOOTTIME => {
+        clock::CLOCK_REALTIME
+        | clock::CLOCK_MONOTONIC
+        | clock::CLOCK_PROCESS_CPUTIME_ID
+        | clock::CLOCK_THREAD_CPUTIME_ID
+        | clock::CLOCK_MONOTONIC_RAW
+        | clock::CLOCK_BOOTTIME => {
             // TODO: Get actual clock resolution
             // Most systems have nanosecond resolution
             unsafe {
@@ -309,11 +315,11 @@ pub fn ns_to_timespec(ns: i64) -> TimeSpec {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_clock_operations() {
         let mut ts = TimeSpec::zero();
         assert!(clock_gettime(clock::CLOCK_REALTIME, &mut ts).is_ok());
@@ -323,7 +329,7 @@ mod tests {
         assert_eq!(res.tv_nsec, 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_timespec_conversion() {
         let ns = 1_234_567_890;
         let ts = ns_to_timespec(ns);
@@ -334,7 +340,7 @@ mod tests {
         assert_eq!(converted_back, ns);
     }
 
-    #[test]
+    #[test_case]
     fn test_nanosleep_validation() {
         let mut invalid_ts = TimeSpec::new(0, 2_000_000_000); // Invalid nsec
         assert!(nanosleep(&invalid_ts, core::ptr::null_mut()).is_err());

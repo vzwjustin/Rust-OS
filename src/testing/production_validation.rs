@@ -4,12 +4,17 @@
 //! on real hardware configurations, validates memory safety and security,
 //! and ensures backward compatibility and proper error handling.
 
-use alloc::{vec::Vec, vec, string::{String, ToString}, collections::BTreeMap};
 use crate::println;
-use crate::testing_framework::{TestResult, TestStats};
 use crate::testing::{
     comprehensive_test_runner::{ComprehensiveTestConfig, ComprehensiveTestRunner},
-    system_validation::{SystemValidationConfig, SystemValidationResults, HardwareConfig}
+    system_validation::{HardwareConfig, SystemValidationConfig, SystemValidationResults},
+};
+use crate::testing_framework::{TestResult, TestStats};
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
 };
 
 /// Production validation configuration
@@ -39,7 +44,8 @@ pub enum StressTestIntensity {
 #[derive(Debug, Clone)]
 pub struct ProductionValidationResults {
     pub overall_pass: bool,
-    pub comprehensive_test_results: crate::testing::comprehensive_test_runner::ComprehensiveTestResults,
+    pub comprehensive_test_results:
+        crate::testing::comprehensive_test_runner::ComprehensiveTestResults,
     pub system_validation_results: SystemValidationResults,
     pub hardware_compatibility_matrix: BTreeMap<String, HardwareCompatibilityResult>,
     pub memory_safety_report: MemorySafetyReport,
@@ -150,37 +156,37 @@ impl ProductionValidationRunner {
     pub fn run_production_validation(&self) -> ProductionValidationResults {
         println!("🏭 Starting Production Validation Suite");
         println!("======================================");
-        
+
         let start_time = crate::time::uptime_us();
-        
+
         // Step 1: Run comprehensive tests
         println!("📋 Step 1: Running Comprehensive Test Suite...");
         let comprehensive_results = self.run_comprehensive_tests();
-        
+
         // Step 2: Run system validation
         println!("🔍 Step 2: Running System Validation...");
         let system_validation_results = self.run_system_validation();
-        
+
         // Step 3: Test hardware compatibility
         println!("🔧 Step 3: Testing Hardware Compatibility...");
         let hardware_compatibility_matrix = self.test_hardware_compatibility();
-        
+
         // Step 4: Validate memory safety
         println!("🛡️  Step 4: Validating Memory Safety...");
         let memory_safety_report = self.validate_memory_safety();
-        
+
         // Step 5: Conduct security audit
         println!("🔒 Step 5: Conducting Security Audit...");
         let security_audit_report = self.conduct_security_audit();
-        
+
         // Step 6: Analyze performance
         println!("⚡ Step 6: Analyzing Performance...");
         let performance_analysis = self.analyze_performance();
-        
+
         // Step 7: Test backward compatibility
         println!("🔄 Step 7: Testing Backward Compatibility...");
         let backward_compatibility_report = self.test_backward_compatibility();
-        
+
         // Step 8: Calculate production readiness score
         println!("📊 Step 8: Calculating Production Readiness Score...");
         let production_readiness_score = self.calculate_production_readiness_score(
@@ -191,7 +197,7 @@ impl ProductionValidationRunner {
             &performance_analysis,
             &backward_compatibility_report,
         );
-        
+
         // Step 9: Generate recommendations
         println!("💡 Step 9: Generating Recommendations...");
         let recommendations = self.generate_recommendations(
@@ -200,14 +206,14 @@ impl ProductionValidationRunner {
             &security_audit_report,
             &performance_analysis,
         );
-        
+
         let end_time = crate::time::uptime_us();
         let total_time_ms = (end_time - start_time) / 1000;
-        
+
         println!("✅ Production validation completed in {}ms", total_time_ms);
-        
+
         let overall_pass = production_readiness_score >= 0.8;
-        
+
         let results = ProductionValidationResults {
             overall_pass,
             comprehensive_test_results: comprehensive_results,
@@ -220,18 +226,20 @@ impl ProductionValidationRunner {
             production_readiness_score,
             recommendations,
         };
-        
+
         self.print_production_validation_summary(&results);
-        
+
         if self.config.generate_report {
             self.generate_validation_report(&results);
         }
-        
+
         results
     }
 
     /// Run comprehensive tests
-    fn run_comprehensive_tests(&self) -> crate::testing::comprehensive_test_runner::ComprehensiveTestResults {
+    fn run_comprehensive_tests(
+        &self,
+    ) -> crate::testing::comprehensive_test_runner::ComprehensiveTestResults {
         let test_config = ComprehensiveTestConfig {
             run_unit_tests: true,
             run_integration_tests: true,
@@ -243,7 +251,7 @@ impl ProductionValidationRunner {
             fail_fast: false,
             verbose_output: false, // Reduce verbosity for production validation
         };
-        
+
         let mut runner = ComprehensiveTestRunner::new(test_config);
         runner.run_all_tests()
     }
@@ -271,21 +279,21 @@ impl ProductionValidationRunner {
             validate_backward_compatibility: self.config.validate_backward_compatibility,
             hardware_configurations: self.get_test_hardware_configurations(),
         };
-        
+
         crate::testing::system_validation::run_system_validation(validation_config)
     }
 
     /// Test hardware compatibility
     fn test_hardware_compatibility(&self) -> BTreeMap<String, HardwareCompatibilityResult> {
         let mut compatibility_matrix = BTreeMap::new();
-        
+
         let hardware_configs = self.get_test_hardware_configurations();
-        
+
         for config in hardware_configs {
             let compatibility_result = self.test_single_hardware_config(&config);
             compatibility_matrix.insert(config.name.clone(), compatibility_result);
         }
-        
+
         compatibility_matrix
     }
 
@@ -294,7 +302,7 @@ impl ProductionValidationRunner {
         let mut supported_features = Vec::new();
         let mut unsupported_features = Vec::new();
         let mut stability_issues = Vec::new();
-        
+
         // Test CPU features
         if config.cpu_cores > 1 {
             if crate::smp::smp_available() {
@@ -303,7 +311,7 @@ impl ProductionValidationRunner {
                 unsupported_features.push("SMP Support".to_string());
             }
         }
-        
+
         // Test APIC support
         if config.has_apic {
             if crate::apic::local_apic_available() {
@@ -313,7 +321,7 @@ impl ProductionValidationRunner {
                 stability_issues.push("Falling back to PIC mode".to_string());
             }
         }
-        
+
         // Test HPET support
         if config.has_hpet {
             if crate::time::hpet_available() {
@@ -322,7 +330,7 @@ impl ProductionValidationRunner {
                 unsupported_features.push("HPET Timer".to_string());
             }
         }
-        
+
         // Test ACPI support
         if config.has_acpi {
             if crate::acpi::acpi_available() {
@@ -332,7 +340,7 @@ impl ProductionValidationRunner {
                 stability_issues.push("Limited power management".to_string());
             }
         }
-        
+
         // Calculate compatibility score
         let total_features = supported_features.len() + unsupported_features.len();
         let compatibility_score = if total_features > 0 {
@@ -340,14 +348,14 @@ impl ProductionValidationRunner {
         } else {
             1.0
         };
-        
+
         // Calculate performance impact
         let performance_impact = if unsupported_features.is_empty() {
             0.0
         } else {
             (unsupported_features.len() as f32 / total_features as f32) * 0.2
         };
-        
+
         HardwareCompatibilityResult {
             hardware_config: config.clone(),
             compatibility_score,
@@ -361,55 +369,55 @@ impl ProductionValidationRunner {
     /// Validate memory safety
     fn validate_memory_safety(&self) -> MemorySafetyReport {
         let mut violations_found = Vec::new();
-        
+
         // Test buffer overflow protection
         let buffer_overflow_protection = self.test_buffer_overflow_protection();
         if !buffer_overflow_protection {
             violations_found.push("Buffer overflow protection not working".to_string());
         }
-        
+
         // Test use-after-free protection
         let use_after_free_protection = self.test_use_after_free_protection();
         if !use_after_free_protection {
             violations_found.push("Use-after-free protection not working".to_string());
         }
-        
+
         // Test double-free protection
         let double_free_protection = self.test_double_free_protection();
         if !double_free_protection {
             violations_found.push("Double-free protection not working".to_string());
         }
-        
+
         // Test stack overflow protection
         let stack_overflow_protection = self.test_stack_overflow_protection();
         if !stack_overflow_protection {
             violations_found.push("Stack overflow protection not working".to_string());
         }
-        
+
         // Test heap corruption detection
         let heap_corruption_detection = self.test_heap_corruption_detection();
         if !heap_corruption_detection {
             violations_found.push("Heap corruption detection not working".to_string());
         }
-        
+
         // Test memory leak detection
         let memory_leak_detection = self.test_memory_leak_detection();
         if !memory_leak_detection {
             violations_found.push("Memory leak detection not working".to_string());
         }
-        
+
         // Test null pointer protection
         let null_pointer_protection = self.test_null_pointer_protection();
         if !null_pointer_protection {
             violations_found.push("Null pointer protection not working".to_string());
         }
-        
+
         // Test memory alignment validation
         let memory_alignment_validation = self.test_memory_alignment_validation();
         if !memory_alignment_validation {
             violations_found.push("Memory alignment validation not working".to_string());
         }
-        
+
         // Calculate overall safety score
         let safety_features = [
             buffer_overflow_protection,
@@ -421,10 +429,10 @@ impl ProductionValidationRunner {
             null_pointer_protection,
             memory_alignment_validation,
         ];
-        
+
         let working_features = safety_features.iter().filter(|&&x| x).count();
         let overall_safety_score = working_features as f32 / safety_features.len() as f32;
-        
+
         MemorySafetyReport {
             buffer_overflow_protection,
             use_after_free_protection,
@@ -442,43 +450,43 @@ impl ProductionValidationRunner {
     /// Conduct security audit
     fn conduct_security_audit(&self) -> SecurityAuditReport {
         let mut critical_vulnerabilities = Vec::new();
-        
+
         // Test privilege escalation prevention
         let privilege_escalation_prevention = self.test_privilege_escalation_prevention();
         if !privilege_escalation_prevention {
             critical_vulnerabilities.push("Privilege escalation possible".to_string());
         }
-        
+
         // Test system call validation
         let system_call_validation = self.test_system_call_validation();
         if !system_call_validation {
             critical_vulnerabilities.push("System call validation insufficient".to_string());
         }
-        
+
         // Test memory protection enforcement
         let memory_protection_enforcement = self.test_memory_protection_enforcement();
         if !memory_protection_enforcement {
             critical_vulnerabilities.push("Memory protection not enforced".to_string());
         }
-        
+
         // Test cryptographic security
         let cryptographic_security = self.test_cryptographic_security();
         if !cryptographic_security {
             critical_vulnerabilities.push("Cryptographic implementation vulnerable".to_string());
         }
-        
+
         // Test access control validation
         let access_control_validation = self.test_access_control_validation();
         if !access_control_validation {
             critical_vulnerabilities.push("Access control bypassed".to_string());
         }
-        
+
         // Test security audit trail
         let security_audit_trail = self.test_security_audit_trail();
         if !security_audit_trail {
             critical_vulnerabilities.push("Security audit trail incomplete".to_string());
         }
-        
+
         // Calculate overall security score
         let security_features = [
             privilege_escalation_prevention,
@@ -488,10 +496,10 @@ impl ProductionValidationRunner {
             access_control_validation,
             security_audit_trail,
         ];
-        
+
         let working_features = security_features.iter().filter(|&&x| x).count();
         let overall_security_score = working_features as f32 / security_features.len() as f32;
-        
+
         SecurityAuditReport {
             privilege_escalation_prevention,
             system_call_validation,
@@ -509,47 +517,53 @@ impl ProductionValidationRunner {
     fn analyze_performance(&self) -> PerformanceAnalysisReport {
         // Get current performance metrics
         let current_metrics = crate::testing::benchmarking::get_system_performance_summary();
-        
+
         // Load baseline metrics (simplified for demo)
         let baseline_metrics = self.load_baseline_metrics();
-        
+
         let mut baseline_comparison = BTreeMap::new();
         let mut performance_regressions = Vec::new();
         let mut performance_improvements = Vec::new();
-        
+
         for (metric_name, current_stats) in &current_metrics {
             if let Some(baseline_value) = baseline_metrics.get(metric_name) {
                 let current_value = current_stats.mean;
                 let change_percent = ((current_value - baseline_value) / baseline_value) * 100.0;
-                
+
                 baseline_comparison.insert(metric_name.clone(), change_percent);
-                
+
                 if change_percent > 10.0 {
-                    performance_regressions.push(
-                        alloc::format!("{}: {:.1}% slower", metric_name, change_percent)
-                    );
+                    performance_regressions.push(alloc::format!(
+                        "{}: {:.1}% slower",
+                        metric_name,
+                        change_percent
+                    ));
                 } else if change_percent < -10.0 {
-                    performance_improvements.push(
-                        alloc::format!("{}: {:.1}% faster", metric_name, -change_percent)
-                    );
+                    performance_improvements.push(alloc::format!(
+                        "{}: {:.1}% faster",
+                        metric_name,
+                        -change_percent
+                    ));
                 }
             }
         }
-        
+
         // Identify bottlenecks
         let bottlenecks_identified = self.identify_performance_bottlenecks();
-        
+
         // Analyze resource utilization
         let resource_utilization = self.analyze_resource_utilization();
-        
+
         // Analyze scalability
         let scalability_analysis = self.analyze_scalability();
-        
+
         // Calculate overall performance score
         let regression_penalty = (performance_regressions.len() as f32) * 0.1;
         let improvement_bonus = (performance_improvements.len() as f32) * 0.05;
-        let overall_performance_score = (1.0 - regression_penalty + improvement_bonus).max(0.0).min(1.0);
-        
+        let overall_performance_score = (1.0 - regression_penalty + improvement_bonus)
+            .max(0.0)
+            .min(1.0);
+
         PerformanceAnalysisReport {
             baseline_comparison,
             performance_regressions,
@@ -564,37 +578,37 @@ impl ProductionValidationRunner {
     /// Test backward compatibility
     fn test_backward_compatibility(&self) -> BackwardCompatibilityReport {
         let mut compatibility_issues = Vec::new();
-        
+
         // Test legacy syscall support
         let legacy_syscall_support = self.test_legacy_syscall_support();
         if !legacy_syscall_support {
             compatibility_issues.push("Legacy system calls not supported".to_string());
         }
-        
+
         // Test ABI compatibility
         let abi_compatibility = self.test_abi_compatibility();
         if !abi_compatibility {
             compatibility_issues.push("ABI compatibility broken".to_string());
         }
-        
+
         // Test file format compatibility
         let file_format_compatibility = self.test_file_format_compatibility();
         if !file_format_compatibility {
             compatibility_issues.push("File format compatibility issues".to_string());
         }
-        
+
         // Test network protocol compatibility
         let network_protocol_compatibility = self.test_network_protocol_compatibility();
         if !network_protocol_compatibility {
             compatibility_issues.push("Network protocol compatibility issues".to_string());
         }
-        
+
         // Test driver compatibility
         let driver_compatibility = self.test_driver_compatibility();
         if !driver_compatibility {
             compatibility_issues.push("Driver compatibility issues".to_string());
         }
-        
+
         // Calculate overall compatibility score
         let compatibility_features = [
             legacy_syscall_support,
@@ -603,10 +617,11 @@ impl ProductionValidationRunner {
             network_protocol_compatibility,
             driver_compatibility,
         ];
-        
+
         let working_features = compatibility_features.iter().filter(|&&x| x).count();
-        let overall_compatibility_score = working_features as f32 / compatibility_features.len() as f32;
-        
+        let overall_compatibility_score =
+            working_features as f32 / compatibility_features.len() as f32;
+
         BackwardCompatibilityReport {
             legacy_syscall_support,
             abi_compatibility,
@@ -630,19 +645,19 @@ impl ProductionValidationRunner {
     ) -> f32 {
         // Weight different aspects of production readiness
         let test_pass_rate = if comprehensive_results.overall_stats.total_tests > 0 {
-            comprehensive_results.overall_stats.passed as f32 / comprehensive_results.overall_stats.total_tests as f32
+            comprehensive_results.overall_stats.passed as f32
+                / comprehensive_results.overall_stats.total_tests as f32
         } else {
             0.0
         };
-        
-        let weighted_score = 
-            test_pass_rate * 0.25 +                                    // 25% - Test pass rate
+
+        let weighted_score = test_pass_rate * 0.25 +                                    // 25% - Test pass rate
             system_validation_results.stability_score * 0.20 +         // 20% - System stability
             memory_safety_report.overall_safety_score * 0.20 +         // 20% - Memory safety
             security_audit_report.overall_security_score * 0.20 +      // 20% - Security
             performance_analysis.overall_performance_score * 0.10 +    // 10% - Performance
             backward_compatibility_report.overall_compatibility_score * 0.05; // 5% - Compatibility
-        
+
         weighted_score.max(0.0).min(1.0)
     }
 
@@ -655,7 +670,7 @@ impl ProductionValidationRunner {
         performance_analysis: &PerformanceAnalysisReport,
     ) -> Vec<String> {
         let mut recommendations = Vec::new();
-        
+
         // Test failure recommendations
         if comprehensive_results.overall_stats.failed > 0 {
             recommendations.push(alloc::format!(
@@ -663,34 +678,37 @@ impl ProductionValidationRunner {
                 comprehensive_results.overall_stats.failed
             ));
         }
-        
+
         // Memory safety recommendations
         if !memory_safety_report.violations_found.is_empty() {
             recommendations.push("Fix memory safety violations before production".to_string());
         }
-        
+
         // Security recommendations
         if !security_audit_report.critical_vulnerabilities.is_empty() {
-            recommendations.push("Address critical security vulnerabilities immediately".to_string());
+            recommendations
+                .push("Address critical security vulnerabilities immediately".to_string());
         }
-        
+
         // Performance recommendations
         if !performance_analysis.performance_regressions.is_empty() {
             recommendations.push("Investigate and fix performance regressions".to_string());
         }
-        
+
         // Hardware compatibility recommendations
         if comprehensive_results.hardware_compatibility_issues.len() > 2 {
-            recommendations.push("Improve hardware compatibility for broader deployment".to_string());
+            recommendations
+                .push("Improve hardware compatibility for broader deployment".to_string());
         }
-        
+
         // General recommendations
         if recommendations.is_empty() {
             recommendations.push("System appears ready for production deployment".to_string());
-            recommendations.push("Continue monitoring system performance and stability".to_string());
+            recommendations
+                .push("Continue monitoring system performance and stability".to_string());
             recommendations.push("Implement automated testing in CI/CD pipeline".to_string());
         }
-        
+
         recommendations
     }
 
@@ -700,51 +718,89 @@ impl ProductionValidationRunner {
         println!("🏭 PRODUCTION VALIDATION SUMMARY");
         println!("================================");
         println!();
-        
+
         // Overall result
         let status = if results.overall_pass {
             "✅ READY FOR PRODUCTION"
         } else {
             "❌ NOT READY FOR PRODUCTION"
         };
-        
+
         println!("🎯 Overall Status: {}", status);
-        println!("📊 Production Readiness Score: {:.1}%", results.production_readiness_score * 100.0);
+        println!(
+            "📊 Production Readiness Score: {:.1}%",
+            results.production_readiness_score * 100.0
+        );
         println!();
-        
+
         // Component scores
         println!("📈 Component Scores:");
-        println!("   System Stability: {:.1}%", results.system_validation_results.stability_score * 100.0);
-        println!("   Memory Safety: {:.1}%", results.memory_safety_report.overall_safety_score * 100.0);
-        println!("   Security: {:.1}%", results.security_audit_report.overall_security_score * 100.0);
-        println!("   Performance: {:.1}%", results.performance_analysis.overall_performance_score * 100.0);
-        println!("   Compatibility: {:.1}%", results.backward_compatibility_report.overall_compatibility_score * 100.0);
+        println!(
+            "   System Stability: {:.1}%",
+            results.system_validation_results.stability_score * 100.0
+        );
+        println!(
+            "   Memory Safety: {:.1}%",
+            results.memory_safety_report.overall_safety_score * 100.0
+        );
+        println!(
+            "   Security: {:.1}%",
+            results.security_audit_report.overall_security_score * 100.0
+        );
+        println!(
+            "   Performance: {:.1}%",
+            results.performance_analysis.overall_performance_score * 100.0
+        );
+        println!(
+            "   Compatibility: {:.1}%",
+            results
+                .backward_compatibility_report
+                .overall_compatibility_score
+                * 100.0
+        );
         println!();
-        
+
         // Issues summary
-        let total_issues = results.comprehensive_test_results.failed_tests.len() +
-                          results.memory_safety_report.violations_found.len() +
-                          results.security_audit_report.critical_vulnerabilities.len() +
-                          results.performance_analysis.performance_regressions.len();
-        
+        let total_issues = results.comprehensive_test_results.failed_tests.len()
+            + results.memory_safety_report.violations_found.len()
+            + results.security_audit_report.critical_vulnerabilities.len()
+            + results.performance_analysis.performance_regressions.len();
+
         if total_issues > 0 {
             println!("⚠️  Issues to Address: {}", total_issues);
-            
+
             if !results.memory_safety_report.violations_found.is_empty() {
-                println!("   Memory Safety Violations: {}", results.memory_safety_report.violations_found.len());
+                println!(
+                    "   Memory Safety Violations: {}",
+                    results.memory_safety_report.violations_found.len()
+                );
             }
-            if !results.security_audit_report.critical_vulnerabilities.is_empty() {
-                println!("   Critical Security Issues: {}", results.security_audit_report.critical_vulnerabilities.len());
+            if !results
+                .security_audit_report
+                .critical_vulnerabilities
+                .is_empty()
+            {
+                println!(
+                    "   Critical Security Issues: {}",
+                    results.security_audit_report.critical_vulnerabilities.len()
+                );
             }
-            if !results.performance_analysis.performance_regressions.is_empty() {
-                println!("   Performance Regressions: {}", results.performance_analysis.performance_regressions.len());
+            if !results
+                .performance_analysis
+                .performance_regressions
+                .is_empty()
+            {
+                println!(
+                    "   Performance Regressions: {}",
+                    results.performance_analysis.performance_regressions.len()
+                );
             }
         } else {
             println!("✅ No Critical Issues Found");
         }
-        
+
         println!();
-        
+
         // Recommendations
         if !results.recommendations.is_empty() {
             println!("💡 Recommendations:");
@@ -752,7 +808,7 @@ impl ProductionValidationRunner {
                 println!("   {}. {}", i + 1, recommendation);
             }
         }
-        
+
         println!();
         println!("================================");
     }
@@ -765,37 +821,63 @@ impl ProductionValidationRunner {
 
     // Helper methods (simplified implementations for demo)
     fn get_test_hardware_configurations(&self) -> Vec<HardwareConfig> {
-        vec![
-            HardwareConfig {
-                name: "Standard Desktop".to_string(),
-                cpu_cores: 4,
-                memory_gb: 8,
-                has_apic: true,
-                has_hpet: true,
-                has_acpi: true,
-                network_devices: vec!["e1000".to_string()],
-                storage_devices: vec!["ahci".to_string()],
-            }
-        ]
+        vec![HardwareConfig {
+            name: "Standard Desktop".to_string(),
+            cpu_cores: 4,
+            memory_gb: 8,
+            has_apic: true,
+            has_hpet: true,
+            has_acpi: true,
+            network_devices: vec!["e1000".to_string()],
+            storage_devices: vec!["ahci".to_string()],
+        }]
     }
 
     // Memory safety test methods (simplified for demo)
-    fn test_buffer_overflow_protection(&self) -> bool { true }
-    fn test_use_after_free_protection(&self) -> bool { true }
-    fn test_double_free_protection(&self) -> bool { true }
-    fn test_stack_overflow_protection(&self) -> bool { true }
-    fn test_heap_corruption_detection(&self) -> bool { true }
-    fn test_memory_leak_detection(&self) -> bool { true }
-    fn test_null_pointer_protection(&self) -> bool { true }
-    fn test_memory_alignment_validation(&self) -> bool { true }
+    fn test_buffer_overflow_protection(&self) -> bool {
+        true
+    }
+    fn test_use_after_free_protection(&self) -> bool {
+        true
+    }
+    fn test_double_free_protection(&self) -> bool {
+        true
+    }
+    fn test_stack_overflow_protection(&self) -> bool {
+        true
+    }
+    fn test_heap_corruption_detection(&self) -> bool {
+        true
+    }
+    fn test_memory_leak_detection(&self) -> bool {
+        true
+    }
+    fn test_null_pointer_protection(&self) -> bool {
+        true
+    }
+    fn test_memory_alignment_validation(&self) -> bool {
+        true
+    }
 
     // Security test methods (simplified for demo)
-    fn test_privilege_escalation_prevention(&self) -> bool { true }
-    fn test_system_call_validation(&self) -> bool { true }
-    fn test_memory_protection_enforcement(&self) -> bool { true }
-    fn test_cryptographic_security(&self) -> bool { true }
-    fn test_access_control_validation(&self) -> bool { true }
-    fn test_security_audit_trail(&self) -> bool { true }
+    fn test_privilege_escalation_prevention(&self) -> bool {
+        true
+    }
+    fn test_system_call_validation(&self) -> bool {
+        true
+    }
+    fn test_memory_protection_enforcement(&self) -> bool {
+        true
+    }
+    fn test_cryptographic_security(&self) -> bool {
+        true
+    }
+    fn test_access_control_validation(&self) -> bool {
+        true
+    }
+    fn test_security_audit_trail(&self) -> bool {
+        true
+    }
 
     // Performance analysis methods (simplified for demo)
     fn load_baseline_metrics(&self) -> BTreeMap<String, f64> {
@@ -812,7 +894,7 @@ impl ProductionValidationRunner {
     fn analyze_resource_utilization(&self) -> ResourceUtilizationReport {
         let (memory_used, memory_total) = crate::performance_monitor::memory_usage();
         let memory_utilization_percent = (memory_used as f32 / memory_total as f32) * 100.0;
-        
+
         // Get real I/O utilization from performance monitor if available
         let io_utilization_percent = {
             // Check if we have any active I/O operations
@@ -821,7 +903,7 @@ impl ProductionValidationRunner {
             // Normalize to percentage (assume 1000 syscalls/sec = 100% busy)
             (syscall_rate as f32 / 1000.0 * 100.0).min(100.0)
         };
-        
+
         // Get real network utilization from network stack if available
         let network_utilization_percent = {
             use crate::net::network_stack;
@@ -832,7 +914,7 @@ impl ProductionValidationRunner {
             let packet_rate = stats.packets_received + stats.packets_sent;
             (packet_rate as f32 / 1000.0 * 100.0).min(100.0)
         };
-        
+
         ResourceUtilizationReport {
             cpu_utilization_percent: crate::performance_monitor::cpu_utilization() as f32,
             memory_utilization_percent,
@@ -854,11 +936,21 @@ impl ProductionValidationRunner {
     }
 
     // Compatibility test methods (simplified for demo)
-    fn test_legacy_syscall_support(&self) -> bool { true }
-    fn test_abi_compatibility(&self) -> bool { true }
-    fn test_file_format_compatibility(&self) -> bool { true }
-    fn test_network_protocol_compatibility(&self) -> bool { true }
-    fn test_driver_compatibility(&self) -> bool { true }
+    fn test_legacy_syscall_support(&self) -> bool {
+        true
+    }
+    fn test_abi_compatibility(&self) -> bool {
+        true
+    }
+    fn test_file_format_compatibility(&self) -> bool {
+        true
+    }
+    fn test_network_protocol_compatibility(&self) -> bool {
+        true
+    }
+    fn test_driver_compatibility(&self) -> bool {
+        true
+    }
 }
 
 /// Run production validation with default configuration
@@ -874,13 +966,15 @@ pub fn run_production_validation() -> ProductionValidationResults {
         generate_report: true,
         report_file: Some("production_validation_report.txt".to_string()),
     };
-    
+
     let runner = ProductionValidationRunner::new(config);
     runner.run_production_validation()
 }
 
 /// Run production validation with custom configuration
-pub fn run_production_validation_with_config(config: ProductionValidationConfig) -> ProductionValidationResults {
+pub fn run_production_validation_with_config(
+    config: ProductionValidationConfig,
+) -> ProductionValidationResults {
     let runner = ProductionValidationRunner::new(config);
     runner.run_production_validation()
 }

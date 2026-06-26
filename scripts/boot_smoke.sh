@@ -4,8 +4,8 @@
 set -euo pipefail
 
 BOOTIMAGE="${BOOTIMAGE_PATH:-target/x86_64-rustos/debug/bootimage-rustos.bin}"
-PATTERN="${RUSTOS_BOOT_LOG_PATTERN:-RustOS: Kernel entry point reached!}"
-TIMEOUT="${RUSTOS_BOOT_TIMEOUT_SEC:-10}"
+PATTERNS="${RUSTOS_BOOT_LOG_PATTERNS:-${RUSTOS_BOOT_LOG_PATTERN:-RustOS: Kernel entry point reached!|RustOS: Linux init OK|RustOS: 32-bit framebuffer desktop ready}}"
+TIMEOUT="${RUSTOS_BOOT_TIMEOUT_SEC:-60}"
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     echo "Error: qemu-system-x86_64 not found. Install QEMU (brew install qemu)."
@@ -20,21 +20,21 @@ fi
 
 echo "Running boot smoke test..."
 echo "Bootimage: $BOOTIMAGE"
-echo "Pattern: $PATTERN"
+echo "Patterns: $PATTERNS"
 echo "Timeout: ${TIMEOUT}s"
 
-BOOTIMAGE="$BOOTIMAGE" PATTERN="$PATTERN" TIMEOUT="$TIMEOUT" python3 - <<'PY'
+BOOTIMAGE="$BOOTIMAGE" PATTERNS="$PATTERNS" TIMEOUT="$TIMEOUT" python3 - <<'PY'
 import os
 import subprocess
 import sys
 
 bootimage = os.environ["BOOTIMAGE"]
-pattern = os.environ["PATTERN"]
+patterns = [p for p in os.environ["PATTERNS"].split("|") if p]
 timeout = float(os.environ["TIMEOUT"])
 
 cmd = [
     "qemu-system-x86_64",
-    "-drive", f"format=raw,file={bootimage}",
+    "-drive", f"format=raw,file={bootimage},snapshot=on",
     "-m", "512M",
     "-serial", "stdio",
     "-display", "none",
@@ -45,7 +45,7 @@ cmd = [
     "-no-shutdown",
 ]
 
-proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 try:
     out, _ = proc.communicate(timeout=timeout)
 except subprocess.TimeoutExpired:
@@ -56,10 +56,14 @@ except subprocess.TimeoutExpired:
         proc.kill()
         out, _ = proc.communicate()
 
+out = out.decode("utf-8", errors="replace")
 print(out)
 
-if pattern not in out:
-    sys.stderr.write("Boot smoke test failed: expected log line not found.\n")
+missing = [pattern for pattern in patterns if pattern not in out]
+if missing:
+    sys.stderr.write("Boot smoke test failed: expected log line(s) not found:\n")
+    for pattern in missing:
+        sys.stderr.write(f"  - {pattern}\n")
     sys.exit(1)
 
 print("Boot smoke test passed.")

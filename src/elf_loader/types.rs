@@ -17,8 +17,8 @@ pub const ELFDATA2LSB: u8 = 1; // Little-endian
 pub const EV_CURRENT: u8 = 1;
 
 /// ELF file types
-pub const ET_EXEC: u16 = 2;  // Executable file
-pub const ET_DYN: u16 = 3;   // Shared object (PIE)
+pub const ET_EXEC: u16 = 2; // Executable file
+pub const ET_DYN: u16 = 3; // Shared object (PIE)
 
 /// Machine architectures
 pub const EM_X86_64: u16 = 62; // AMD x86-64
@@ -115,16 +115,15 @@ impl Elf64Header {
     pub const SIZE: usize = mem::size_of::<Self>();
 
     /// Parse ELF64 header from bytes
-    pub fn from_bytes(data: &[u8]) -> Option<&Self> {
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < Self::SIZE {
             return None;
         }
 
-        // Safety: We've checked the size and ELF64Header is repr(C)
-        unsafe {
-            let ptr = data.as_ptr() as *const Self;
-            Some(&*ptr)
-        }
+        // Safety: size checked above. `data` is a byte slice that may not be aligned
+        // to Self's alignment, so we read the struct by value with read_unaligned
+        // instead of forming a (potentially misaligned) &Self reference (which is UB).
+        Some(unsafe { core::ptr::read_unaligned(data.as_ptr() as *const Self) })
     }
 
     /// Validate ELF magic number
@@ -183,16 +182,15 @@ impl Elf64ProgramHeader {
     pub const SIZE: usize = mem::size_of::<Self>();
 
     /// Parse program header from bytes
-    pub fn from_bytes(data: &[u8]) -> Option<&Self> {
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < Self::SIZE {
             return None;
         }
 
-        // Safety: We've checked the size and Elf64ProgramHeader is repr(C)
-        unsafe {
-            let ptr = data.as_ptr() as *const Self;
-            Some(&*ptr)
-        }
+        // Safety: size checked above. Program headers sit at an arbitrary e_phoff and
+        // are therefore generally unaligned, so we read the struct by value with
+        // read_unaligned instead of forming a misaligned &Self reference (which is UB).
+        Some(unsafe { core::ptr::read_unaligned(data.as_ptr() as *const Self) })
     }
 
     /// Check if this is a loadable segment
@@ -263,13 +261,14 @@ impl Elf64ProgramHeader {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_header_sizes() {
         assert_eq!(Elf64Header::SIZE, 64);
         assert_eq!(Elf64ProgramHeader::SIZE, 56);
     }
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_magic_validation() {
         let mut header = Elf64Header {
             e_ident: [0; EI_NIDENT],

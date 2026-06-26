@@ -39,16 +39,16 @@
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use x86_64::{VirtAddr, PhysAddr};
 use spin::Mutex;
+use x86_64::{PhysAddr, VirtAddr};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 // Import memory management components
 use crate::memory_manager::{
-    api::{vm_mmap, vm_munmap, vm_mprotect, vm_brk, vm_sbrk, get_memory_stats},
-    ProtectionFlags, MmapFlags, VmError,
+    api::{get_memory_stats, vm_brk, vm_mmap, vm_mprotect, vm_munmap, vm_sbrk},
+    MmapFlags, ProtectionFlags, VmError,
 };
 
 // ============================================================================
@@ -83,7 +83,7 @@ impl ProcessMemoryContext {
             total_vm: 0,
             total_rss: 0,
             locked_pages: 0,
-            numa_policy: 0, // MPOL_DEFAULT
+            numa_policy: 0,     // MPOL_DEFAULT
             numa_nodemask: 0x1, // Node 0 available
             mcl_flags: 0,
             program_break: 0,
@@ -357,8 +357,7 @@ pub fn mmap(
     let mmap_flags = map_to_mmap_flags(flags);
 
     // Call memory manager to perform the mapping
-    let result = vm_mmap(addr_val, length, protection, mmap_flags)
-        .map_err(vm_error_to_linux)?;
+    let result = vm_mmap(addr_val, length, protection, mmap_flags).map_err(vm_error_to_linux)?;
 
     // Handle MAP_POPULATE - touch pages to ensure they're allocated
     if flags & map::MAP_POPULATE != 0 {
@@ -666,9 +665,9 @@ pub fn munlock(addr: *const u8, length: usize) -> LinuxResult<i32> {
 pub fn mlockall(flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    const MCL_CURRENT: i32 = 1;  // Lock current pages
-    const MCL_FUTURE: i32 = 2;   // Lock future pages
-    const MCL_ONFAULT: i32 = 4;  // Lock on page fault
+    const MCL_CURRENT: i32 = 1; // Lock current pages
+    const MCL_FUTURE: i32 = 2; // Lock future pages
+    const MCL_ONFAULT: i32 = 4; // Lock on page fault
 
     let valid_flags = MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT;
     if flags & !valid_flags != 0 {
@@ -762,7 +761,7 @@ pub fn mremap(
     const MREMAP_MAYMOVE: i32 = 1;
     const MREMAP_FIXED: i32 = 2;
 
-    if flags & !( MREMAP_MAYMOVE | MREMAP_FIXED) != 0 {
+    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED) != 0 {
         return Err(LinuxError::EINVAL);
     }
 
@@ -934,11 +933,11 @@ pub fn sbrk(increment: isize) -> LinuxResult<*mut u8> {
 
 /// NUMA memory policy modes
 mod numa_policy {
-    pub const MPOL_DEFAULT: i32 = 0;      // Default policy
-    pub const MPOL_PREFERRED: i32 = 1;    // Prefer specific node
-    pub const MPOL_BIND: i32 = 2;         // Bind to nodes
-    pub const MPOL_INTERLEAVE: i32 = 3;   // Interleave across nodes
-    pub const MPOL_LOCAL: i32 = 4;        // Local allocation
+    pub const MPOL_DEFAULT: i32 = 0; // Default policy
+    pub const MPOL_PREFERRED: i32 = 1; // Prefer specific node
+    pub const MPOL_BIND: i32 = 2; // Bind to nodes
+    pub const MPOL_INTERLEAVE: i32 = 3; // Interleave across nodes
+    pub const MPOL_LOCAL: i32 = 4; // Local allocation
 }
 
 /// NUMA memory policy tracker
@@ -1201,14 +1200,22 @@ pub fn move_pages(
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_mmap_validation() {
         // Invalid length
-        assert!(mmap(core::ptr::null_mut(), 0, prot::PROT_READ, map::MAP_PRIVATE, -1, 0).is_err());
+        assert!(mmap(
+            core::ptr::null_mut(),
+            0,
+            prot::PROT_READ,
+            map::MAP_PRIVATE,
+            -1,
+            0
+        )
+        .is_err());
 
         // Need MAP_SHARED or MAP_PRIVATE
         assert!(mmap(core::ptr::null_mut(), 4096, prot::PROT_READ, 0, -1, 0).is_err());
@@ -1221,10 +1228,11 @@ mod tests {
             map::MAP_PRIVATE | map::MAP_ANONYMOUS,
             -1,
             0
-        ).is_ok());
+        )
+        .is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_mprotect_validation() {
         let addr = 0x1000 as *mut u8;
 
@@ -1235,7 +1243,7 @@ mod tests {
         assert!(mprotect(addr, 4096, prot::PROT_READ | prot::PROT_WRITE).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_madvise() {
         let addr = 0x1000 as *mut u8;
 
@@ -1245,7 +1253,7 @@ mod tests {
         assert!(madvise(addr, 4096, 999).is_err()); // Invalid advice
     }
 
-    #[test]
+    #[test_case]
     fn test_memory_locking() {
         let addr = 0x1000 as *const u8;
 

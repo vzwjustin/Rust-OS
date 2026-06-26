@@ -8,8 +8,8 @@
 #![allow(unused)]
 
 use crate::linux_compat::{self, LinuxError, LinuxResult};
-use spin::Mutex;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 /// Integration state
 static INTEGRATION_INITIALIZED: Mutex<bool> = Mutex::new(false);
@@ -40,81 +40,131 @@ pub fn init() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    crate::serial_println!("[Linux Integration] Initializing deep integration...");
+    unsafe {
+        crate::early_serial_write_str("[Linux Integration] Initializing deep integration...\r\n")
+    };
 
     // Wire Linux compat file operations to VFS
+    unsafe { crate::early_serial_write_str("linux_integration: vfs begin\r\n") };
     init_vfs_integration()?;
+    unsafe { crate::early_serial_write_str("linux_integration: vfs ok\r\n") };
 
     // Wire Linux compat process operations to process manager
+    unsafe { crate::early_serial_write_str("linux_integration: process begin\r\n") };
     init_process_integration()?;
+    unsafe { crate::early_serial_write_str("linux_integration: process ok\r\n") };
 
     // Wire Linux compat socket operations to network stack
+    unsafe { crate::early_serial_write_str("linux_integration: network begin\r\n") };
     init_network_integration()?;
+    unsafe { crate::early_serial_write_str("linux_integration: network ok\r\n") };
 
     // Wire Linux compat memory operations to memory manager
+    unsafe { crate::early_serial_write_str("linux_integration: memory begin\r\n") };
     init_memory_integration()?;
+    unsafe { crate::early_serial_write_str("linux_integration: memory ok\r\n") };
 
     // Wire Linux compat time operations to time subsystem
+    unsafe { crate::early_serial_write_str("linux_integration: time begin\r\n") };
     init_time_integration()?;
+    unsafe { crate::early_serial_write_str("linux_integration: time ok\r\n") };
 
     *initialized = true;
-    crate::serial_println!("[Linux Integration] Deep integration complete");
-    
+    unsafe { crate::early_serial_write_str("[Linux Integration] Deep integration complete\r\n") };
+
     Ok(())
 }
 
 /// Initialize VFS integration for Linux file operations
 fn init_vfs_integration() -> Result<(), &'static str> {
-    crate::serial_println!("[Linux Integration] Wiring file operations to VFS...");
-    
+    unsafe {
+        crate::early_serial_write_str("[Linux Integration] Wiring file operations to VFS...\r\n")
+    };
+
     // The linux_compat::file_ops module already uses our VFS
     // Just verify that VFS is available
-    
-    crate::serial_println!("[Linux Integration] File operations -> VFS integration ready");
+
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] File operations -> VFS integration ready\r\n",
+        )
+    };
     Ok(())
 }
 
 /// Initialize process integration for Linux process operations
 fn init_process_integration() -> Result<(), &'static str> {
-    crate::serial_println!("[Linux Integration] Wiring process operations to process manager...");
-    
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Wiring process operations to process manager...\r\n",
+        )
+    };
+
     // The linux_compat::process_ops module uses our process manager
     // Verify that process manager is available
-    
-    crate::serial_println!("[Linux Integration] Process operations -> Process Manager integration ready");
+
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Process operations -> Process Manager integration ready\r\n",
+        )
+    };
     Ok(())
 }
 
 /// Initialize network integration for Linux socket operations
 fn init_network_integration() -> Result<(), &'static str> {
-    crate::serial_println!("[Linux Integration] Wiring socket operations to network stack...");
-    
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Wiring socket operations to network stack...\r\n",
+        )
+    };
+
     // The linux_compat::socket_ops module uses our network stack
     // Verify that network stack is available
-    
-    crate::serial_println!("[Linux Integration] Socket operations -> Network Stack integration ready");
+
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Socket operations -> Network Stack integration ready\r\n",
+        )
+    };
     Ok(())
 }
 
 /// Initialize memory integration for Linux memory operations
 fn init_memory_integration() -> Result<(), &'static str> {
-    crate::serial_println!("[Linux Integration] Wiring memory operations to memory manager...");
-    
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Wiring memory operations to memory manager...\r\n",
+        )
+    };
+
     // The linux_compat::memory_ops module uses our memory manager
     // Verify that memory manager is available
-    
-    crate::serial_println!("[Linux Integration] Memory operations -> Memory Manager integration ready");
+
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Memory operations -> Memory Manager integration ready\r\n",
+        )
+    };
     Ok(())
 }
 
 /// Initialize time integration for Linux time operations
 fn init_time_integration() -> Result<(), &'static str> {
-    crate::serial_println!("[Linux Integration] Wiring time operations to time subsystem...");
-    
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Wiring time operations to time subsystem...\r\n",
+        )
+    };
+
     // The linux_compat::time_ops module uses our time subsystem
     // Verify that time subsystem is available
-    
-    crate::serial_println!("[Linux Integration] Time operations -> Time Subsystem integration ready");
+
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Time operations -> Time Subsystem integration ready\r\n",
+        )
+    };
     Ok(())
 }
 
@@ -122,7 +172,7 @@ fn init_time_integration() -> Result<(), &'static str> {
 pub fn route_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
     let mut stats = INTEGRATION_STATS.lock();
     stats.syscalls_routed += 1;
-    
+
     // Route to appropriate subsystem based on syscall number
     // This provides a centralized routing layer for all Linux API calls
     match syscall_number {
@@ -146,7 +196,7 @@ pub fn route_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             stats.memory_operations += 1;
             route_memory_syscall(syscall_number, args)
         }
-        _ => Err(LinuxError::ENOSYS)
+        _ => Err(LinuxError::ENOSYS),
     }
 }
 

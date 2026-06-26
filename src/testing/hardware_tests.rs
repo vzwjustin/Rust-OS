@@ -10,8 +10,12 @@
 //! - GPU hardware acceleration
 //! - Timer and clock hardware validation
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
-use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
+use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 /// Create hardware test suite
 pub fn create_hardware_test_suite() -> TestSuite {
@@ -89,17 +93,17 @@ fn test_pci_device_detection() -> TestResult {
     match crate::pci::scan_pci_bus() {
         Ok(devices) => {
             devices_found = devices.len();
-            
+
             // Test configuration space access for each device
             for device in devices {
                 if let Ok(_config) = crate::pci::read_device_config(&device) {
                     configuration_successful += 1;
-                    
+
                     // Test device classification
                     if let Ok(_class) = crate::pci::classify_device(&device) {
                         // Device classification successful
                     }
-                    
+
                     // Test driver loading for known devices
                     if let Ok(_) = crate::pci::load_device_driver(&device) {
                         // Driver loading successful
@@ -195,12 +199,12 @@ fn test_hardware_interrupt_handling() -> TestResult {
     match crate::apic::init_apic() {
         Ok(()) => {
             interrupt_tests_passed += 1;
-            
+
             // Test local APIC functionality
             if crate::apic::local_apic_available() {
                 interrupt_tests_passed += 1;
             }
-            
+
             // Test I/O APIC functionality
             if crate::apic::io_apic_available() {
                 interrupt_tests_passed += 1;
@@ -215,13 +219,16 @@ fn test_hardware_interrupt_handling() -> TestResult {
 
     // Test timer interrupt
     let initial_timer_count = crate::interrupts::get_stats().timer_count;
-    
+
     // Wait for timer interrupts
     let start_time = crate::time::uptime_us();
-    while crate::time::uptime_us() - start_time < 100_000 { // 100ms
-        unsafe { core::arch::asm!("hlt"); }
+    while crate::time::uptime_us() - start_time < 100_000 {
+        // 100ms
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
-    
+
     let final_timer_count = crate::interrupts::get_stats().timer_count;
     if final_timer_count > initial_timer_count {
         interrupt_tests_passed += 1;
@@ -248,35 +255,35 @@ fn test_timer_hardware() -> TestResult {
     match crate::time::init() {
         Ok(()) => {
             timer_tests_passed += 1;
-            
+
             let stats = crate::time::get_timer_stats();
-            
+
             // Test timer accuracy
             let start_time = crate::time::uptime_us();
-            
+
             // Busy wait for approximately 10ms
             let target_delay = 10_000; // 10ms in microseconds
             while crate::time::uptime_us() - start_time < target_delay {
                 core::hint::spin_loop();
             }
-            
+
             let actual_delay = crate::time::uptime_us() - start_time;
             let accuracy = if actual_delay > target_delay {
                 target_delay as f64 / actual_delay as f64
             } else {
                 actual_delay as f64 / target_delay as f64
             };
-            
+
             // Accept 90% accuracy or better
             if accuracy >= 0.9 {
                 timer_tests_passed += 1;
             }
-            
+
             // Test TSC calibration
             if stats.tsc_frequency > 0 {
                 timer_tests_passed += 1;
             }
-            
+
             // Test timer scheduling
             let timer_scheduled = test_timer_scheduling();
             if timer_scheduled {
@@ -300,49 +307,53 @@ fn test_timer_hardware() -> TestResult {
 fn test_interrupt_masking() -> bool {
     // Test interrupt enable/disable functionality
     let initial_state = crate::interrupts::interrupts_enabled();
-    
+
     // Disable interrupts
     crate::interrupts::disable_interrupts();
     let disabled_state = crate::interrupts::interrupts_enabled();
-    
+
     // Re-enable interrupts
     crate::interrupts::enable_interrupts();
     let enabled_state = crate::interrupts::interrupts_enabled();
-    
+
     // Restore initial state
     if initial_state {
         crate::interrupts::enable_interrupts();
     } else {
         crate::interrupts::disable_interrupts();
     }
-    
+
     // Test passed if we could control interrupt state
     !disabled_state && enabled_state
 }
 
 fn test_timer_scheduling() -> bool {
     use core::sync::atomic::{AtomicBool, Ordering};
-    
+
     static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
-    
+
     // Schedule a timer callback
-    let timer_id = crate::time::schedule_timer(1_000_000, || { // 1 second
+    let timer_id = crate::time::schedule_timer(1_000_000, || {
+        // 1 second
         TIMER_FIRED.store(true, Ordering::Release);
     });
 
     // Wait for timer to fire (with timeout)
     let start_time = crate::time::uptime_us();
     while !TIMER_FIRED.load(Ordering::Acquire) {
-        if crate::time::uptime_us() - start_time > 2_000_000 { // 2 second timeout
+        if crate::time::uptime_us() - start_time > 2_000_000 {
+            // 2 second timeout
             break;
         }
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 
     let timer_fired = TIMER_FIRED.load(Ordering::Acquire);
 
     // Clean up
     let _ = crate::time::cancel_timer(timer_id);
-    
+
     timer_fired
 }

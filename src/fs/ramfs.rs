@@ -5,12 +5,17 @@
 //! and as the root filesystem during boot.
 
 use super::{
-    FileSystem, FileSystemType, FileSystemStats, FileMetadata, FileType, FilePermissions,
-    DirectoryEntry, OpenFlags, FsResult, FsError, InodeNumber, get_current_time,
+    get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
+    FileSystemType, FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
-use alloc::{vec::Vec, string::{String, ToString}, collections::BTreeMap, format};
-use spin::RwLock;
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::cmp;
+use spin::RwLock;
 
 /// Maximum file size in RAM filesystem (16MB)
 const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024;
@@ -59,7 +64,7 @@ impl RamInode {
         let mut entries = BTreeMap::new();
         entries.insert(".".to_string(), inode);
         // Parent will be set by the caller
-        
+
         Self {
             metadata: FileMetadata {
                 inode,
@@ -119,7 +124,7 @@ impl RamFs {
     pub fn new() -> Self {
         let root_inode = 1;
         let mut inodes = BTreeMap::new();
-        
+
         // Create root directory
         let mut root = RamInode::new_directory(root_inode, FilePermissions::default_directory());
         root.entries.insert("..".to_string(), root_inode); // Root parent is itself
@@ -142,7 +147,10 @@ impl RamFs {
 
     /// Split path into components
     fn split_path(&self, path: &str) -> Vec<String> {
-        path.split('/').filter(|c| !c.is_empty()).map(|s| s.to_string()).collect()
+        path.split('/')
+            .filter(|c| !c.is_empty())
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Resolve path to inode number
@@ -157,7 +165,7 @@ impl RamFs {
 
         for component in components {
             let inode = inodes.get(&current_inode).ok_or(FsError::NotFound)?;
-            
+
             if inode.metadata.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
@@ -180,13 +188,13 @@ impl RamFs {
         }
 
         let filename = components.last().unwrap().clone();
-        
+
         if components.len() == 1 {
             // File in root directory
             Ok((self.root_inode, filename))
         } else {
             // Resolve parent directory
-            let parent_path = format!("/{}", components[..components.len()-1].join("/"));
+            let parent_path = format!("/{}", components[..components.len() - 1].join("/"));
             let parent_inode = self.resolve_path(&parent_path)?;
             Ok((parent_inode, filename))
         }
@@ -196,7 +204,7 @@ impl RamFs {
     fn is_directory_empty(&self, inode: InodeNumber) -> FsResult<bool> {
         let inodes = self.inodes.read();
         let dir_inode = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        
+
         if dir_inode.metadata.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
@@ -214,25 +222,27 @@ impl FileSystem for RamFs {
     fn statfs(&self) -> FsResult<FileSystemStats> {
         let inodes = self.inodes.read();
         let used_inodes = inodes.len() as u64;
-        
+
         // Calculate total size used
-        let total_size: u64 = inodes.values()
+        let total_size: u64 = inodes
+            .values()
             .map(|inode| inode.content.len() as u64)
             .sum();
 
         // Calculate real block-based statistics from actual filesystem state
         let block_size = 4096u32;
         let total_blocks = (MAX_FILE_SIZE * MAX_FILES) / block_size as u64;
-        
+
         // Calculate actual used blocks by summing up all file sizes
-        let used_blocks = inodes.values()
+        let used_blocks = inodes
+            .values()
             .map(|inode| {
                 // Round up file size to nearest block boundary
                 let file_size = inode.content.len() as u64;
                 (file_size + block_size as u64 - 1) / block_size as u64
             })
             .sum();
-            
+
         let free_blocks = total_blocks.saturating_sub(used_blocks);
 
         Ok(FileSystemStats {
@@ -248,18 +258,18 @@ impl FileSystem for RamFs {
 
     fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
         let (parent_inode, filename) = self.resolve_parent(path)?;
-        
+
         if filename.len() > 255 {
             return Err(FsError::NameTooLong);
         }
 
         let mut inodes = self.inodes.write();
-        
+
         // Check inode limit first
         if inodes.len() >= MAX_FILES as usize {
             return Err(FsError::NoSpaceLeft);
         }
-        
+
         // Check if parent exists and is a directory
         let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
         if parent.metadata.file_type != FileType::Directory {
@@ -274,11 +284,11 @@ impl FileSystem for RamFs {
         // Create new file inode
         let new_inode = self.allocate_inode();
         let file_inode = RamInode::new_file(new_inode, permissions);
-        
+
         // Add to parent directory
         parent.entries.insert(filename, new_inode);
         parent.metadata.modified = get_current_time();
-        
+
         // Insert new inode
         inodes.insert(new_inode, file_inode);
 
@@ -292,7 +302,7 @@ impl FileSystem for RamFs {
     fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
         let mut inodes = self.inodes.write();
         let file_inode = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        
+
         if file_inode.metadata.file_type != FileType::Regular {
             return Err(FsError::IsADirectory);
         }
@@ -316,7 +326,7 @@ impl FileSystem for RamFs {
     fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
         let mut inodes = self.inodes.write();
         let file_inode = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        
+
         if file_inode.metadata.file_type != FileType::Regular {
             return Err(FsError::IsADirectory);
         }
@@ -354,7 +364,7 @@ impl FileSystem for RamFs {
     fn set_metadata(&self, inode: InodeNumber, metadata: &FileMetadata) -> FsResult<()> {
         let mut inodes = self.inodes.write();
         let file_inode = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        
+
         // Update modifiable fields
         file_inode.metadata.permissions = metadata.permissions;
         file_inode.metadata.uid = metadata.uid;
@@ -366,18 +376,18 @@ impl FileSystem for RamFs {
 
     fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
         let (parent_inode, dirname) = self.resolve_parent(path)?;
-        
+
         if dirname.len() > 255 {
             return Err(FsError::NameTooLong);
         }
 
         let mut inodes = self.inodes.write();
-        
+
         // Check inode limit first
         if inodes.len() >= MAX_FILES as usize {
             return Err(FsError::NoSpaceLeft);
         }
-        
+
         // Check if parent exists and is a directory
         let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
         if parent.metadata.file_type != FileType::Directory {
@@ -393,12 +403,12 @@ impl FileSystem for RamFs {
         let new_inode = self.allocate_inode();
         let mut dir_inode = RamInode::new_directory(new_inode, permissions);
         dir_inode.entries.insert("..".to_string(), parent_inode);
-        
+
         // Add to parent directory
         parent.entries.insert(dirname, new_inode);
         parent.metadata.modified = get_current_time();
         parent.metadata.link_count += 1; // New subdirectory adds a link
-        
+
         // Insert new inode
         inodes.insert(new_inode, dir_inode);
 
@@ -411,7 +421,7 @@ impl FileSystem for RamFs {
         }
 
         let dir_inode = self.resolve_path(path)?;
-        
+
         // Check if directory is empty
         if !self.is_directory_empty(dir_inode)? {
             return Err(FsError::DirectoryNotEmpty);
@@ -419,13 +429,13 @@ impl FileSystem for RamFs {
 
         let (parent_inode, dirname) = self.resolve_parent(path)?;
         let mut inodes = self.inodes.write();
-        
+
         // Remove from parent directory
         let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
         parent.entries.remove(&dirname);
         parent.metadata.modified = get_current_time();
         parent.metadata.link_count -= 1;
-        
+
         // Remove the directory inode
         inodes.remove(&dir_inode);
 
@@ -435,9 +445,9 @@ impl FileSystem for RamFs {
     fn unlink(&self, path: &str) -> FsResult<()> {
         let file_inode = self.resolve_path(path)?;
         let (parent_inode, filename) = self.resolve_parent(path)?;
-        
+
         let mut inodes = self.inodes.write();
-        
+
         // Check if it's a directory
         let file = inodes.get(&file_inode).ok_or(FsError::NotFound)?;
         if file.metadata.file_type == FileType::Directory {
@@ -448,7 +458,7 @@ impl FileSystem for RamFs {
         let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
         parent.entries.remove(&filename);
         parent.metadata.modified = get_current_time();
-        
+
         // Remove the file inode
         inodes.remove(&file_inode);
 
@@ -458,7 +468,7 @@ impl FileSystem for RamFs {
     fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
         let mut inodes = self.inodes.write();
         let dir_inode = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        
+
         if dir_inode.metadata.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
@@ -487,13 +497,13 @@ impl FileSystem for RamFs {
         let old_inode = self.resolve_path(old_path)?;
         let (old_parent_inode, old_filename) = self.resolve_parent(old_path)?;
         let (new_parent_inode, new_filename) = self.resolve_parent(new_path)?;
-        
+
         if new_filename.len() > 255 {
             return Err(FsError::NameTooLong);
         }
 
         let mut inodes = self.inodes.write();
-        
+
         // Check if new file already exists
         let new_parent = inodes.get(&new_parent_inode).ok_or(FsError::NotFound)?;
         if new_parent.entries.contains_key(&new_filename) {
@@ -515,18 +525,18 @@ impl FileSystem for RamFs {
 
     fn symlink(&self, target: &str, link_path: &str) -> FsResult<()> {
         let (parent_inode, linkname) = self.resolve_parent(link_path)?;
-        
+
         if linkname.len() > 255 {
             return Err(FsError::NameTooLong);
         }
 
         let mut inodes = self.inodes.write();
-        
+
         // Check inode limit first
         if inodes.len() >= MAX_FILES as usize {
             return Err(FsError::NoSpaceLeft);
         }
-        
+
         // Check if parent exists and is a directory
         let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
         if parent.metadata.file_type != FileType::Directory {
@@ -540,12 +550,13 @@ impl FileSystem for RamFs {
 
         // Create new symlink inode
         let new_inode = self.allocate_inode();
-        let symlink_inode = RamInode::new_symlink(new_inode, target, FilePermissions::from_octal(0o777));
-        
+        let symlink_inode =
+            RamInode::new_symlink(new_inode, target, FilePermissions::from_octal(0o777));
+
         // Add to parent directory
         parent.entries.insert(linkname, new_inode);
         parent.metadata.modified = get_current_time();
-        
+
         // Insert new inode
         inodes.insert(new_inode, symlink_inode);
 
@@ -556,7 +567,7 @@ impl FileSystem for RamFs {
         let link_inode = self.resolve_path(path)?;
         let inodes = self.inodes.read();
         let symlink = inodes.get(&link_inode).ok_or(FsError::NotFound)?;
-        
+
         if symlink.metadata.file_type != FileType::SymbolicLink {
             return Err(FsError::InvalidArgument);
         }

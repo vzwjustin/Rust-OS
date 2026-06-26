@@ -1,11 +1,11 @@
 // RustOS Error Handling and Recovery System
 // Comprehensive error handling with graceful recovery mechanisms
 
-use core::fmt;
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::{Mutex, RwLock};
+use core::fmt;
 use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 /// Global kernel error types
 #[derive(Debug, Clone)]
@@ -222,7 +222,7 @@ impl HealthMonitor {
     fn update_health_score(&mut self) {
         let total_errors: u32 = self.error_counts.iter().sum();
         let current_time = crate::time::get_system_time_ms();
-        
+
         // Decay old errors (older than 1 minute)
         for i in 0..7 {
             if current_time - self.last_error_time[i] > 60000 {
@@ -259,7 +259,7 @@ impl ErrorRecoveryManager {
     pub fn handle_error(&mut self, mut context: ErrorContext) -> Result<(), KernelError> {
         // Record error for health monitoring
         self.health_monitor.record_error(&context.error);
-        
+
         // Log error
         self.log_error(&context);
 
@@ -269,25 +269,21 @@ impl ErrorRecoveryManager {
                 // Log and continue
                 Ok(())
             }
-            ErrorSeverity::Error => {
-                self.attempt_recovery(&mut context)
-            }
-            ErrorSeverity::Critical => {
-                self.attempt_critical_recovery(&mut context)
-            }
-            ErrorSeverity::Fatal => {
-                self.handle_fatal_error(&context)
-            }
+            ErrorSeverity::Error => self.attempt_recovery(&mut context),
+            ErrorSeverity::Critical => self.attempt_critical_recovery(&mut context),
+            ErrorSeverity::Fatal => self.handle_fatal_error(&context),
         }
     }
 
     fn attempt_recovery(&mut self, context: &mut ErrorContext) -> Result<(), KernelError> {
         let strategies = self.recovery_strategies.read();
-        
+
         for strategy in strategies.iter() {
-            if (strategy.error_pattern)(&context.error) && context.retry_count < strategy.max_retries {
+            if (strategy.error_pattern)(&context.error)
+                && context.retry_count < strategy.max_retries
+            {
                 context.increment_retry();
-                
+
                 match (strategy.recovery_fn)(context) {
                     Ok(()) => {
                         crate::serial_println!("Recovery successful for error: {}", context.error);
@@ -307,7 +303,7 @@ impl ErrorRecoveryManager {
 
     fn attempt_critical_recovery(&mut self, context: &mut ErrorContext) -> Result<(), KernelError> {
         crate::serial_println!("CRITICAL ERROR: {}", context.error);
-        
+
         // Try standard recovery first
         if self.attempt_recovery(context).is_ok() {
             return Ok(());
@@ -345,13 +341,15 @@ impl ErrorRecoveryManager {
 
         // If we reach here, force halt
         loop {
-            unsafe { core::arch::asm!("hlt"); }
+            unsafe {
+                core::arch::asm!("hlt");
+            }
         }
     }
 
     fn log_error(&mut self, context: &ErrorContext) {
         self.error_history.push(context.clone());
-        
+
         // Keep only last 100 errors to prevent memory exhaustion
         if self.error_history.len() > 100 {
             self.error_history.remove(0);
@@ -593,7 +591,7 @@ impl ErrorRecoveryManager {
 }
 
 lazy_static! {
-    pub static ref ERROR_MANAGER: Mutex<ErrorRecoveryManager> = 
+    pub static ref ERROR_MANAGER: Mutex<ErrorRecoveryManager> =
         Mutex::new(ErrorRecoveryManager::new());
 }
 
@@ -621,8 +619,11 @@ macro_rules! kernel_error {
 #[macro_export]
 macro_rules! handle_error {
     ($error_context:expr) => {
-        match $crate::error::ERROR_MANAGER.lock().handle_error($error_context) {
-            Ok(()) => {},
+        match $crate::error::ERROR_MANAGER
+            .lock()
+            .handle_error($error_context)
+        {
+            Ok(()) => {}
             Err(e) => {
                 crate::serial_println!("Unrecoverable error: {}", e);
                 return Err(e);
@@ -637,8 +638,12 @@ macro_rules! try_with_recovery {
         match $expr {
             Ok(val) => val,
             Err(e) => {
-                let context = $crate::kernel_error!(e, $crate::error::ErrorSeverity::Error, "Operation failed")
-                    .with_recovery($recovery);
+                let context = $crate::kernel_error!(
+                    e,
+                    $crate::error::ErrorSeverity::Error,
+                    "Operation failed"
+                )
+                .with_recovery($recovery);
                 $crate::handle_error!(context);
                 return Err(e);
             }
@@ -649,10 +654,10 @@ macro_rules! try_with_recovery {
 /// Initialize the error handling system
 pub fn init_error_handling() {
     crate::serial_println!("Initializing error handling and recovery system");
-    
+
     // Register default recovery strategies
     let mut manager = ERROR_MANAGER.lock();
-    
+
     // Memory error recovery
     manager.register_recovery_strategy(RecoveryStrategy {
         error_pattern: |e| matches!(e, KernelError::Memory(MemoryError::OutOfMemory)),
@@ -675,7 +680,12 @@ pub fn init_error_handling() {
 
     // Hardware error recovery
     manager.register_recovery_strategy(RecoveryStrategy {
-        error_pattern: |e| matches!(e, KernelError::Hardware(HardwareError::CommunicationTimeout)),
+        error_pattern: |e| {
+            matches!(
+                e,
+                KernelError::Hardware(HardwareError::CommunicationTimeout)
+            )
+        },
         recovery_fn: |_| {
             // Note: Hardware reset sequence not yet implemented.
             // Future implementation will include:

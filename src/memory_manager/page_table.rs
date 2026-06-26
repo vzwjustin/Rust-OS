@@ -2,16 +2,16 @@
 //!
 //! Implements x86_64 4-level paging with PML4, PDPT, PD, and PT structures.
 
-use x86_64::{
-    structures::paging::{
-        FrameAllocator, Mapper, Page, PageTable as X64PageTable,
-        PageTableFlags as X64Flags, PhysFrame, Size4KiB,
-    },
-    PhysAddr, VirtAddr,
-};
 use alloc::boxed::Box;
 use core::ptr::NonNull;
 use spin::Mutex;
+use x86_64::{
+    structures::paging::{
+        FrameAllocator, Mapper, Page, PageTable as X64PageTable, PageTableFlags as X64Flags,
+        PhysFrame, Size4KiB,
+    },
+    PhysAddr, VirtAddr,
+};
 
 use super::{VmError, VmResult};
 
@@ -328,7 +328,7 @@ impl PageTableManager {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_page_table_flags() {
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         assert!(flags.contains(PageTableFlags::PRESENT));
@@ -336,7 +336,7 @@ mod tests {
         assert!(!flags.contains(PageTableFlags::USER_ACCESSIBLE));
     }
 
-    #[test]
+    #[test_case]
     fn test_flags_conversion() {
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         let x64_flags = flags.to_x64_flags();

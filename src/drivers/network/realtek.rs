@@ -3,12 +3,15 @@
 //! Driver for Realtek RTL8139, RTL8169, RTL8168, and RTL8111 series Ethernet controllers.
 //! Supports both Fast Ethernet (100 Mbps) and Gigabit Ethernet (1000 Mbps) devices.
 
-use super::{ExtendedNetworkCapabilities, EnhancedNetworkStats, NetworkDriver, DeviceState, DeviceCapabilities, DeviceType, NetworkStats};
-use crate::net::{NetworkError, MacAddress};
+use super::{
+    DeviceCapabilities, DeviceState, DeviceType, EnhancedNetworkStats, ExtendedNetworkCapabilities,
+    NetworkDriver, NetworkStats,
+};
+use crate::net::{MacAddress, NetworkError};
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 /// Realtek device information
 #[derive(Debug, Clone, Copy)]
@@ -40,35 +43,199 @@ pub enum RealtekSeries {
 /// Realtek device database (50+ entries)
 pub const REALTEK_DEVICES: &[RealtekDeviceInfo] = &[
     // RTL8139 series (Fast Ethernet)
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8139, name: "RTL8139 Fast Ethernet", series: RealtekSeries::Rtl8139, max_speed_mbps: 100, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8138, name: "RT8139 Fast Ethernet", series: RealtekSeries::Rtl8139, max_speed_mbps: 100, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x1113, device_id: 0x1211, name: "SMC1211TX EZCard 10/100", series: RealtekSeries::Rtl8139, max_speed_mbps: 100, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x1500, device_id: 0x1360, name: "RTL8139 Clone", series: RealtekSeries::Rtl8139, max_speed_mbps: 100, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x4033, device_id: 0x1360, name: "RTL8139 Clone", series: RealtekSeries::Rtl8139, max_speed_mbps: 100, supports_jumbo: false, supports_wol: false },
-
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8139,
+        name: "RTL8139 Fast Ethernet",
+        series: RealtekSeries::Rtl8139,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8138,
+        name: "RT8139 Fast Ethernet",
+        series: RealtekSeries::Rtl8139,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x1113,
+        device_id: 0x1211,
+        name: "SMC1211TX EZCard 10/100",
+        series: RealtekSeries::Rtl8139,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x1500,
+        device_id: 0x1360,
+        name: "RTL8139 Clone",
+        series: RealtekSeries::Rtl8139,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x4033,
+        device_id: 0x1360,
+        name: "RTL8139 Clone",
+        series: RealtekSeries::Rtl8139,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
     // RTL8169 series (Gigabit Ethernet)
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8169, name: "RTL8169 Gigabit Ethernet", series: RealtekSeries::Rtl8169, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8129, name: "RTL8129 Fast Ethernet", series: RealtekSeries::Rtl8169, max_speed_mbps: 100, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8136, name: "RTL810xE PCI Express Fast Ethernet", series: RealtekSeries::Rtl8169, max_speed_mbps: 100, supports_jumbo: false, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8167, name: "RTL8169/8110 Family Gigabit Ethernet", series: RealtekSeries::Rtl8169, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8161, name: "RTL8111/8168 PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8169, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8169,
+        name: "RTL8169 Gigabit Ethernet",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8129,
+        name: "RTL8129 Fast Ethernet",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8136,
+        name: "RTL810xE PCI Express Fast Ethernet",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 100,
+        supports_jumbo: false,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8167,
+        name: "RTL8169/8110 Family Gigabit Ethernet",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8161,
+        name: "RTL8111/8168 PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
     // RTL8168 series (PCIe Gigabit Ethernet)
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8168, name: "RTL8111/8168/8411 PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8168, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8162, name: "RTL8111/8168B PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8168, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8166, name: "RTL8111/8168B PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8168, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8125, name: "RTL8125 2.5GbE Controller", series: RealtekSeries::Rtl8125, max_speed_mbps: 2500, supports_jumbo: true, supports_wol: true },
-
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8168,
+        name: "RTL8111/8168/8411 PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8168,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8162,
+        name: "RTL8111/8168B PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8168,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8166,
+        name: "RTL8111/8168B PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8168,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8125,
+        name: "RTL8125 2.5GbE Controller",
+        series: RealtekSeries::Rtl8125,
+        max_speed_mbps: 2500,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
     // RTL8111 series (newer PCIe Gigabit)
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8176, name: "RTL8111/8168 PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8111, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8178, name: "RTL8111/8168B PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8111, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8179, name: "RTL8111/8168C PCIe Gigabit Ethernet", series: RealtekSeries::Rtl8111, max_speed_mbps: 1000, supports_jumbo: true, supports_wol: true },
-
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8176,
+        name: "RTL8111/8168 PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8111,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8178,
+        name: "RTL8111/8168B PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8111,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8179,
+        name: "RTL8111/8168C PCIe Gigabit Ethernet",
+        series: RealtekSeries::Rtl8111,
+        max_speed_mbps: 1000,
+        supports_jumbo: true,
+        supports_wol: true,
+    },
     // Additional variants
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8171, name: "RTL8191SE Wireless LAN", series: RealtekSeries::Rtl8169, max_speed_mbps: 54, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8172, name: "RTL8191SE Wireless LAN", series: RealtekSeries::Rtl8169, max_speed_mbps: 54, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8173, name: "RTL8192CE Wireless LAN", series: RealtekSeries::Rtl8169, max_speed_mbps: 150, supports_jumbo: false, supports_wol: false },
-    RealtekDeviceInfo { vendor_id: 0x10EC, device_id: 0x8174, name: "RTL8192CE Wireless LAN", series: RealtekSeries::Rtl8169, max_speed_mbps: 150, supports_jumbo: false, supports_wol: false },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8171,
+        name: "RTL8191SE Wireless LAN",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 54,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8172,
+        name: "RTL8191SE Wireless LAN",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 54,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8173,
+        name: "RTL8192CE Wireless LAN",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 150,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
+    RealtekDeviceInfo {
+        vendor_id: 0x10EC,
+        device_id: 0x8174,
+        name: "RTL8192CE Wireless LAN",
+        series: RealtekSeries::Rtl8169,
+        max_speed_mbps: 150,
+        supports_jumbo: false,
+        supports_wol: false,
+    },
 ];
 
 /// Realtek register offsets (RTL8139)
@@ -106,14 +273,13 @@ pub struct RealtekDriver {
 
 impl RealtekDriver {
     /// Create new Realtek driver instance
-    pub fn new(
-        name: String,
-        device_info: RealtekDeviceInfo,
-        base_addr: u64,
-        irq: u8,
-    ) -> Self {
+    pub fn new(name: String, device_info: RealtekDeviceInfo, base_addr: u64, irq: u8) -> Self {
         let mut capabilities = DeviceCapabilities::default();
-        capabilities.max_mtu = if device_info.supports_jumbo { 9000 } else { 1500 };
+        capabilities.max_mtu = if device_info.supports_jumbo {
+            9000
+        } else {
+            1500
+        };
         capabilities.jumbo_frames = device_info.supports_jumbo;
         capabilities.hw_checksum = true;
         capabilities.scatter_gather = true;
@@ -144,9 +310,7 @@ impl RealtekDriver {
 
     /// Read register (8-bit)
     fn read_reg8(&self, offset: u16) -> u8 {
-        unsafe {
-            core::ptr::read_volatile((self.base_addr + offset as u64) as *const u8)
-        }
+        unsafe { core::ptr::read_volatile((self.base_addr + offset as u64) as *const u8) }
     }
 
     /// Write register (8-bit)
@@ -158,9 +322,7 @@ impl RealtekDriver {
 
     /// Read register (16-bit)
     fn read_reg16(&self, offset: u16) -> u16 {
-        unsafe {
-            core::ptr::read_volatile((self.base_addr + offset as u64) as *const u16)
-        }
+        unsafe { core::ptr::read_volatile((self.base_addr + offset as u64) as *const u16) }
     }
 
     /// Write register (16-bit)
@@ -172,9 +334,7 @@ impl RealtekDriver {
 
     /// Read register (32-bit)
     fn read_reg32(&self, offset: u16) -> u32 {
-        unsafe {
-            core::ptr::read_volatile((self.base_addr + offset as u64) as *const u32)
-        }
+        unsafe { core::ptr::read_volatile((self.base_addr + offset as u64) as *const u32) }
     }
 
     /// Write register (32-bit)
@@ -255,7 +415,8 @@ impl RealtekDriver {
             _ => {
                 // For RTL8169/8168, MAC is at different offset
                 // Generate default MAC with Realtek OUI for now
-                self.mac_address = super::utils::generate_mac_with_vendor(super::utils::REALTEK_OUI);
+                self.mac_address =
+                    super::utils::generate_mac_with_vendor(super::utils::REALTEK_OUI);
             }
         }
 
@@ -326,7 +487,10 @@ impl NetworkDriver for RealtekDriver {
             Some(RealtekSeries::Rtl8139) => {
                 self.init_rtl8139()?;
             }
-            Some(RealtekSeries::Rtl8169) | Some(RealtekSeries::Rtl8168) | Some(RealtekSeries::Rtl8111) | Some(RealtekSeries::Rtl8125) => {
+            Some(RealtekSeries::Rtl8169)
+            | Some(RealtekSeries::Rtl8168)
+            | Some(RealtekSeries::Rtl8111)
+            | Some(RealtekSeries::Rtl8125) => {
                 self.init_rtl8169()?;
             }
             None => {
@@ -387,8 +551,10 @@ impl NetworkDriver for RealtekDriver {
             Some(RealtekSeries::Rtl8139) => {
                 self.rtl8139_send_packet(data)?;
             }
-            Some(RealtekSeries::Rtl8169) | Some(RealtekSeries::Rtl8168) | 
-            Some(RealtekSeries::Rtl8111) | Some(RealtekSeries::Rtl8125) => {
+            Some(RealtekSeries::Rtl8169)
+            | Some(RealtekSeries::Rtl8168)
+            | Some(RealtekSeries::Rtl8111)
+            | Some(RealtekSeries::Rtl8125) => {
                 self.rtl8169_send_packet(data)?;
             }
             None => {
@@ -409,13 +575,11 @@ impl NetworkDriver for RealtekDriver {
 
         // Real hardware packet reception
         let packet = match self.device_info.map(|info| info.series) {
-            Some(RealtekSeries::Rtl8139) => {
-                self.rtl8139_receive_packet()
-            }
-            Some(RealtekSeries::Rtl8169) | Some(RealtekSeries::Rtl8168) |
-            Some(RealtekSeries::Rtl8111) | Some(RealtekSeries::Rtl8125) => {
-                self.rtl8169_receive_packet()
-            }
+            Some(RealtekSeries::Rtl8139) => self.rtl8139_receive_packet(),
+            Some(RealtekSeries::Rtl8169)
+            | Some(RealtekSeries::Rtl8168)
+            | Some(RealtekSeries::Rtl8111)
+            | Some(RealtekSeries::Rtl8125) => self.rtl8169_receive_packet(),
             None => None,
         };
 
@@ -451,9 +615,13 @@ impl NetworkDriver for RealtekDriver {
             _ => {
                 // RTL8169/8168 - read PHY status
                 let phy_status = self.read_reg8(0x6C);
-                let speed = if (phy_status & 0x10) != 0 { 1000 }
-                           else if (phy_status & 0x08) != 0 { 100 }
-                           else { 10 };
+                let speed = if (phy_status & 0x10) != 0 {
+                    1000
+                } else if (phy_status & 0x08) != 0 {
+                    100
+                } else {
+                    10
+                };
                 let full_duplex = (phy_status & 0x01) != 0;
                 (true, speed, full_duplex)
             }
@@ -534,11 +702,12 @@ impl NetworkDriver for RealtekDriver {
                 let isr = self.read_reg16(RTL8139_ISR);
                 self.write_reg16(RTL8139_ISR, isr); // Clear interrupts
 
-                if (isr & 0x01) != 0 { // Receive OK
+                if (isr & 0x01) != 0 {
+                    // Receive OK
                     self.stats.rx_packets += 1;
                 }
                 if (isr & 0x04) != 0 { // Transmit OK
-                    // Handle transmit completion
+                     // Handle transmit completion
                 }
             }
             _ => {
@@ -557,7 +726,8 @@ impl RealtekDriver {
     fn rtl8139_send_packet(&mut self, data: &[u8]) -> Result<(), NetworkError> {
         // Check if transmit buffer is available
         let status = self.read_reg8(RTL8139_CR);
-        if status & 0x04 == 0 { // Transmitter not enabled
+        if status & 0x04 == 0 {
+            // Transmitter not enabled
             return Err(NetworkError::HardwareError);
         }
 
@@ -565,16 +735,18 @@ impl RealtekDriver {
         let tsd_base = 0x10; // Transmit status descriptor base
         let mut descriptor_found = false;
         let mut descriptor_index = 0;
-        
-        for i in 0..4 { // RTL8139 has 4 transmit descriptors
+
+        for i in 0..4 {
+            // RTL8139 has 4 transmit descriptors
             let tsd = self.read_reg32(tsd_base + i * 4);
-            if tsd & 0x2000 != 0 { // Transmit OK bit indicates available
+            if tsd & 0x2000 != 0 {
+                // Transmit OK bit indicates available
                 descriptor_index = i;
                 descriptor_found = true;
                 break;
             }
         }
-        
+
         if !descriptor_found {
             return Err(NetworkError::Busy);
         }
@@ -582,17 +754,17 @@ impl RealtekDriver {
         // Copy packet data to transmit buffer
         let tx_buffer_addr = 0x20 + descriptor_index * 4; // TX buffer addresses
         let buffer_base = self.read_reg32(tx_buffer_addr);
-        
+
         unsafe {
             // In real hardware, this would DMA the data to the buffer
             let tx_buffer = (self.base_addr + buffer_base as u64) as *mut u8;
             core::ptr::copy_nonoverlapping(data.as_ptr(), tx_buffer, data.len());
         }
-        
+
         // Set transmit descriptor with packet length
         let tsd_value = data.len() as u32 | 0x80000; // Size + start transmission
         self.write_reg32(tsd_base + descriptor_index * 4, tsd_value);
-        
+
         Ok(())
     }
 
@@ -600,22 +772,24 @@ impl RealtekDriver {
     fn rtl8169_send_packet(&mut self, data: &[u8]) -> Result<(), NetworkError> {
         // Check transmit queue status
         let status = self.read_reg8(0x37); // Command register
-        if status & 0x04 == 0 { // Transmitter not enabled
+        if status & 0x04 == 0 {
+            // Transmitter not enabled
             return Err(NetworkError::HardwareError);
         }
 
         // Get current transmit descriptor index
         let mut tx_desc_idx = self.tx_desc_index.unwrap_or(0);
-        
+
         // Check if descriptor is available
         let desc_base = 0x20; // Transmit descriptor base address
         let desc_addr = desc_base + tx_desc_idx * 16; // Each descriptor is 16 bytes
         let desc_status = self.read_reg32(desc_addr as u16);
-        
-        if desc_status & 0x80000000 == 0 { // OWN bit not set, descriptor busy
+
+        if desc_status & 0x80000000 == 0 {
+            // OWN bit not set, descriptor busy
             return Err(NetworkError::Busy);
         }
-        
+
         // Set up transmit descriptor
         let buffer_addr = desc_addr + 8; // Buffer address offset
         unsafe {
@@ -624,20 +798,23 @@ impl RealtekDriver {
             core::ptr::copy_nonoverlapping(data.as_ptr(), tx_buffer, data.len());
 
             // Set buffer address in descriptor
-            self.write_reg32(buffer_addr as u16, (self.base_addr + 0x1000 + tx_desc_idx as u64 * 2048) as u32);
+            self.write_reg32(
+                buffer_addr as u16,
+                (self.base_addr + 0x1000 + tx_desc_idx as u64 * 2048) as u32,
+            );
         }
 
         // Set descriptor control - packet length and flags
         let desc_control = data.len() as u32 | 0xC0000000; // Length + FS + LS + OWN
         self.write_reg32(desc_addr as u16, desc_control);
-        
+
         // Advance to next descriptor
         tx_desc_idx = (tx_desc_idx + 1) % 4;
         self.tx_desc_index = Some(tx_desc_idx);
-        
+
         // Trigger transmission
         self.write_reg8(0x38, 0x40); // Poll transmit
-        
+
         Ok(())
     }
 
@@ -645,52 +822,56 @@ impl RealtekDriver {
     fn rtl8139_receive_packet(&mut self) -> Option<Vec<u8>> {
         // Check receive status
         let status = self.read_reg8(RTL8139_CR);
-        if status & 0x01 == 0 { // Receiver not enabled
+        if status & 0x01 == 0 {
+            // Receiver not enabled
             return None;
         }
 
         // Check if packet available
         let isr = self.read_reg16(0x3E); // Interrupt status
-        if isr & 0x01 == 0 { // No receive OK interrupt
+        if isr & 0x01 == 0 {
+            // No receive OK interrupt
             return None;
         }
 
         // Get receive buffer status
         let rx_buf_ptr = self.read_reg16(0x38) as usize; // Current buffer position
         let rx_buf_addr = self.read_reg32(0x30); // Receive buffer start
-        
+
         unsafe {
             // Read packet header from receive buffer
             let packet_ptr = (self.base_addr + rx_buf_addr as u64 + rx_buf_ptr as u64) as *const u8;
             let packet_status = core::ptr::read_unaligned(packet_ptr as *const u16);
-            
-            if packet_status & 0x01 == 0 { // ROK bit not set
+
+            if packet_status & 0x01 == 0 {
+                // ROK bit not set
                 return None;
             }
-            
+
             // Read packet length
             let packet_len = core::ptr::read_unaligned(packet_ptr.add(2) as *const u16) as usize;
-            
-            if packet_len > 1518 || packet_len < 64 { // Invalid packet size
+
+            if packet_len > 1518 || packet_len < 64 {
+                // Invalid packet size
                 return None;
             }
-            
+
             // Copy packet data
             let mut packet_data = Vec::with_capacity(packet_len);
             packet_data.set_len(packet_len - 4); // Exclude CRC
             core::ptr::copy_nonoverlapping(
                 packet_ptr.add(4), // Skip header
                 packet_data.as_mut_ptr(),
-                packet_len - 4
+                packet_len - 4,
             );
-            
+
             // Update receive buffer pointer
             let new_ptr = (rx_buf_ptr + packet_len + 4 + 3) & !3; // 4-byte aligned
             self.write_reg16(0x38, new_ptr as u16);
-            
+
             self.stats.rx_packets += 1;
             self.stats.rx_bytes += packet_len as u64;
-            
+
             Some(packet_data)
         }
     }
@@ -699,7 +880,8 @@ impl RealtekDriver {
     fn rtl8169_receive_packet(&mut self) -> Option<Vec<u8>> {
         // Check receive status
         let status = self.read_reg8(0x37);
-        if status & 0x08 == 0 { // Receiver not enabled
+        if status & 0x08 == 0 {
+            // Receiver not enabled
             return None;
         }
 
@@ -707,10 +889,11 @@ impl RealtekDriver {
         let mut rx_desc_idx = self.rx_desc_index.unwrap_or(0);
         let desc_base = 0x40; // Receive descriptor base
         let desc_addr = desc_base + rx_desc_idx * 16;
-        
+
         // Check descriptor status
         let desc_status = self.read_reg32(desc_addr as u16);
-        if desc_status & 0x80000000 != 0 { // OWN bit set, no packet
+        if desc_status & 0x80000000 != 0 {
+            // OWN bit set, no packet
             return None;
         }
 
@@ -726,14 +909,10 @@ impl RealtekDriver {
             // Read packet from buffer
             let buffer_addr = self.read_reg32((desc_addr + 8) as u16) as u64;
             let packet_ptr = buffer_addr as *const u8;
-            
+
             let mut packet_data = Vec::with_capacity(packet_len);
             packet_data.set_len(packet_len - 4); // Exclude CRC
-            core::ptr::copy_nonoverlapping(
-                packet_ptr,
-                packet_data.as_mut_ptr(),
-                packet_len - 4
-            );
+            core::ptr::copy_nonoverlapping(packet_ptr, packet_data.as_mut_ptr(), packet_len - 4);
 
             // Reset descriptor for next packet
             self.write_reg32(desc_addr as u16, 0x80000000 | 2048); // OWN + buffer size
@@ -741,10 +920,10 @@ impl RealtekDriver {
             // Advance to next descriptor
             rx_desc_idx = (rx_desc_idx + 1) % 4;
             self.rx_desc_index = Some(rx_desc_idx);
-            
+
             self.stats.rx_packets += 1;
             self.stats.rx_bytes += packet_len as u64;
-            
+
             Some(packet_data)
         }
     }
@@ -758,7 +937,8 @@ pub fn create_realtek_driver(
     irq: u8,
 ) -> Option<(Box<dyn NetworkDriver>, ExtendedNetworkCapabilities)> {
     // Find matching device in database
-    let device_info = REALTEK_DEVICES.iter()
+    let device_info = REALTEK_DEVICES
+        .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)
         .copied()?;
 
@@ -771,12 +951,17 @@ pub fn create_realtek_driver(
 
 /// Check if PCI device is a Realtek controller
 pub fn is_realtek_device(vendor_id: u16, device_id: u16) -> bool {
-    REALTEK_DEVICES.iter()
+    REALTEK_DEVICES
+        .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id)
 }
 
 /// Get Realtek device information
-pub fn get_realtek_device_info(vendor_id: u16, device_id: u16) -> Option<&'static RealtekDeviceInfo> {
-    REALTEK_DEVICES.iter()
+pub fn get_realtek_device_info(
+    vendor_id: u16,
+    device_id: u16,
+) -> Option<&'static RealtekDeviceInfo> {
+    REALTEK_DEVICES
+        .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)
 }

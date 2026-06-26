@@ -472,7 +472,7 @@ impl fmt::Display for DhcpError {
     }
 }
 
-// Test functions (simplified, without #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test] attributes)
+// Test functions (simplified, without #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case] attributes)
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,7 +485,7 @@ mod tests {
     }
 
     fn test_dhcp_packet_creation() {
-        let mac = MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        let mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         let packet = DhcpPacket::create_discover(12345, mac);
 
         assert_eq!(packet.operation, DhcpOperation::BootRequest);
@@ -494,7 +494,7 @@ mod tests {
     }
 
     fn test_dhcp_client_state_machine() {
-        let mac = MacAddress::new([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        let mac = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         let mut client = DhcpClient::new(mac);
 
         assert_eq!(client.state(), DhcpClientState::Init);

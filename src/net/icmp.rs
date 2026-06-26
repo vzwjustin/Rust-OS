@@ -19,8 +19,8 @@
 //! ICMPv6 support is currently in development. Neighbor Discovery Protocol (NDP)
 //! and router discovery features require completion of the IPv6 stack integration.
 
-use super::{NetworkAddress, NetworkResult, NetworkError, PacketBuffer, NetworkStack};
-use alloc::{vec::Vec, collections::BTreeMap};
+use super::{NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer};
+use alloc::{collections::BTreeMap, vec::Vec};
 use spin::RwLock;
 
 /// ICMP message types (IPv4)
@@ -255,7 +255,9 @@ impl IcmpManager {
     /// Send ping request
     pub fn send_ping(&self, identifier: u16, payload: Vec<u8>) -> NetworkResult<u16> {
         let mut sessions = self.ping_sessions.write();
-        let session = sessions.get_mut(&identifier).ok_or(NetworkError::InvalidAddress)?;
+        let session = sessions
+            .get_mut(&identifier)
+            .ok_or(NetworkError::InvalidAddress)?;
 
         let sequence = session.next_sequence;
         session.next_sequence += 1;
@@ -276,7 +278,12 @@ impl IcmpManager {
     }
 
     /// Handle ping reply
-    pub fn handle_ping_reply(&self, identifier: u16, sequence: u16, payload: Vec<u8>) -> NetworkResult<()> {
+    pub fn handle_ping_reply(
+        &self,
+        identifier: u16,
+        sequence: u16,
+        payload: Vec<u8>,
+    ) -> NetworkResult<()> {
         let mut sessions = self.ping_sessions.write();
         if let Some(session) = sessions.get_mut(&identifier) {
             if let Some(sent_time) = session.sent_pings.remove(&sequence) {
@@ -295,7 +302,9 @@ impl IcmpManager {
     /// Get ping results
     pub fn get_ping_results(&self, identifier: u16) -> Option<Vec<PingReply>> {
         let sessions = self.ping_sessions.read();
-        sessions.get(&identifier).map(|session| session.received_replies.clone())
+        sessions
+            .get(&identifier)
+            .map(|session| session.received_replies.clone())
     }
 
     /// Close ping session
@@ -306,14 +315,19 @@ impl IcmpManager {
     }
 
     /// Update neighbor cache entry (IPv6)
-    pub fn update_neighbor(&self, ip: NetworkAddress, mac: Option<NetworkAddress>, state: NeighborState) {
+    pub fn update_neighbor(
+        &self,
+        ip: NetworkAddress,
+        mac: Option<NetworkAddress>,
+        state: NeighborState,
+    ) {
         let mut cache = self.neighbor_cache.write();
         let entry = NeighborCacheEntry {
             ip_address: ip,
             mac_address: mac,
             state,
             last_update: current_time_ms(),
-            reachable_time: 30000, // 30 seconds
+            reachable_time: 30000,  // 30 seconds
             retransmit_timer: 1000, // 1 second
         };
         cache.insert(ip, entry);
@@ -333,9 +347,9 @@ impl IcmpManager {
         {
             let mut sessions = self.ping_sessions.write();
             sessions.retain(|_, session| {
-                session.sent_pings.retain(|_, &mut sent_time| {
-                    now - sent_time < session.timeout_ms as u64
-                });
+                session
+                    .sent_pings
+                    .retain(|_, &mut sent_time| now - sent_time < session.timeout_ms as u64);
                 !session.sent_pings.is_empty() || !session.received_replies.is_empty()
             });
         }
@@ -382,18 +396,26 @@ pub fn process_icmp_packet(
     }
 
     match header.icmp_type {
-        8 => { // Echo Request
+        8 => {
+            // Echo Request
             let ping_data = PingData::from_rest_bytes(&header.rest, payload);
             handle_echo_request(network_stack, ip_header_src, ip_header_dst, ping_data)?;
         }
-        0 => { // Echo Reply
+        0 => {
+            // Echo Reply
             let ping_data = PingData::from_rest_bytes(&header.rest, payload);
-            ICMP_MANAGER.handle_ping_reply(ping_data.identifier, ping_data.sequence, ping_data.payload)?;
+            ICMP_MANAGER.handle_ping_reply(
+                ping_data.identifier,
+                ping_data.sequence,
+                ping_data.payload,
+            )?;
         }
-        3 => { // Destination Unreachable
+        3 => {
+            // Destination Unreachable
             handle_destination_unreachable(header.code, &payload)?;
         }
-        11 => { // Time Exceeded
+        11 => {
+            // Time Exceeded
             handle_time_exceeded(header.code, &payload)?;
         }
         _ => {
@@ -432,24 +454,34 @@ pub fn process_icmpv6_packet(
     }
 
     match header.icmp_type {
-        128 => { // Echo Request
+        128 => {
+            // Echo Request
             let ping_data = PingData::from_rest_bytes(&header.rest, payload);
             handle_icmpv6_echo_request(network_stack, ip_header_src, ip_header_dst, ping_data)?;
         }
-        129 => { // Echo Reply
+        129 => {
+            // Echo Reply
             let ping_data = PingData::from_rest_bytes(&header.rest, payload);
-            ICMP_MANAGER.handle_ping_reply(ping_data.identifier, ping_data.sequence, ping_data.payload)?;
+            ICMP_MANAGER.handle_ping_reply(
+                ping_data.identifier,
+                ping_data.sequence,
+                ping_data.payload,
+            )?;
         }
-        135 => { // Neighbor Solicitation
+        135 => {
+            // Neighbor Solicitation
             handle_neighbor_solicitation(network_stack, ip_header_src, ip_header_dst, &payload)?;
         }
-        136 => { // Neighbor Advertisement
+        136 => {
+            // Neighbor Advertisement
             handle_neighbor_advertisement(network_stack, ip_header_src, &payload)?;
         }
-        1 => { // Destination Unreachable
+        1 => {
+            // Destination Unreachable
             handle_icmpv6_destination_unreachable(header.code, &payload)?;
         }
-        3 => { // Time Exceeded
+        3 => {
+            // Time Exceeded
             handle_icmpv6_time_exceeded(header.code, &payload)?;
         }
         _ => {
@@ -468,7 +500,13 @@ fn handle_echo_request(
     ping_data: PingData,
 ) -> NetworkResult<()> {
     // Send echo reply
-    send_icmp_echo_reply(src_ip, dst_ip, ping_data.identifier, ping_data.sequence, &ping_data.payload)
+    send_icmp_echo_reply(
+        src_ip,
+        dst_ip,
+        ping_data.identifier,
+        ping_data.sequence,
+        &ping_data.payload,
+    )
 }
 
 /// Handle ICMPv6 echo request
@@ -479,19 +517,25 @@ fn handle_icmpv6_echo_request(
     ping_data: PingData,
 ) -> NetworkResult<()> {
     // Send echo reply
-    send_icmpv6_echo_reply(src_ip, dst_ip, ping_data.identifier, ping_data.sequence, &ping_data.payload)
+    send_icmpv6_echo_reply(
+        src_ip,
+        dst_ip,
+        ping_data.identifier,
+        ping_data.sequence,
+        &ping_data.payload,
+    )
 }
 
 /// Handle destination unreachable
 fn handle_destination_unreachable(code: u8, _payload: &[u8]) -> NetworkResult<()> {
     // Log destination unreachable event
     match code {
-        0 => {}, // Network unreachable
-        1 => {}, // Host unreachable
-        2 => {}, // Protocol unreachable
-        3 => {}, // Port unreachable
-        4 => {}, // Fragmentation needed
-        _ => {}, // Other codes
+        0 => {} // Network unreachable
+        1 => {} // Host unreachable
+        2 => {} // Protocol unreachable
+        3 => {} // Port unreachable
+        4 => {} // Fragmentation needed
+        _ => {} // Other codes
     }
     Ok(())
 }
@@ -500,9 +544,9 @@ fn handle_destination_unreachable(code: u8, _payload: &[u8]) -> NetworkResult<()
 fn handle_time_exceeded(code: u8, _payload: &[u8]) -> NetworkResult<()> {
     // Log time exceeded event
     match code {
-        0 => {}, // TTL exceeded in transit
-        1 => {}, // Fragment reassembly time exceeded
-        _ => {}, // Other codes
+        0 => {} // TTL exceeded in transit
+        1 => {} // Fragment reassembly time exceeded
+        _ => {} // Other codes
     }
     Ok(())
 }
@@ -510,11 +554,11 @@ fn handle_time_exceeded(code: u8, _payload: &[u8]) -> NetworkResult<()> {
 /// Handle ICMPv6 destination unreachable
 fn handle_icmpv6_destination_unreachable(code: u8, _payload: &[u8]) -> NetworkResult<()> {
     match code {
-        0 => {}, // No route to destination
-        1 => {}, // Communication with destination administratively prohibited
-        3 => {}, // Address unreachable
-        4 => {}, // Port unreachable
-        _ => {}, // Other codes
+        0 => {} // No route to destination
+        1 => {} // Communication with destination administratively prohibited
+        3 => {} // Address unreachable
+        4 => {} // Port unreachable
+        _ => {} // Other codes
     }
     Ok(())
 }
@@ -522,9 +566,9 @@ fn handle_icmpv6_destination_unreachable(code: u8, _payload: &[u8]) -> NetworkRe
 /// Handle ICMPv6 time exceeded
 fn handle_icmpv6_time_exceeded(code: u8, _payload: &[u8]) -> NetworkResult<()> {
     match code {
-        0 => {}, // Hop limit exceeded in transit
-        1 => {}, // Fragment reassembly time exceeded
-        _ => {}, // Other codes
+        0 => {} // Hop limit exceeded in transit
+        1 => {} // Fragment reassembly time exceeded
+        _ => {} // Other codes
     }
     Ok(())
 }
@@ -592,7 +636,8 @@ fn handle_neighbor_advertisement(
             break;
         }
 
-        if option_type == 2 && option_length == 8 { // Target Link-layer Address
+        if option_type == 2 && option_length == 8 {
+            // Target Link-layer Address
             let mut mac_bytes = [0u8; 6];
             mac_bytes.copy_from_slice(&payload[offset + 2..offset + 8]);
             mac_addr = Some(NetworkAddress::Mac(mac_bytes));
@@ -642,7 +687,12 @@ fn send_icmp_echo_request(
     let src_ip = crate::net::network_stack()
         .list_interfaces()
         .first()
-        .and_then(|iface| iface.ip_addresses.iter().find(|addr| matches!(addr, NetworkAddress::IPv4(_))))
+        .and_then(|iface| {
+            iface
+                .ip_addresses
+                .iter()
+                .find(|addr| matches!(addr, NetworkAddress::IPv4(_)))
+        })
         .copied()
         .ok_or(NetworkError::NetworkUnreachable)?;
 
@@ -696,7 +746,12 @@ fn send_icmpv6_echo_request(
     let src_ip = crate::net::network_stack()
         .list_interfaces()
         .first()
-        .and_then(|iface| iface.ip_addresses.iter().find(|addr| matches!(addr, NetworkAddress::IPv6(_))))
+        .and_then(|iface| {
+            iface
+                .ip_addresses
+                .iter()
+                .find(|addr| matches!(addr, NetworkAddress::IPv6(_)))
+        })
         .copied()
         .ok_or(NetworkError::NetworkUnreachable)?;
 
@@ -706,7 +761,7 @@ fn send_icmpv6_echo_request(
         // Build ICMPv6 packet
         let mut icmpv6_packet = Vec::new();
         icmpv6_packet.push(128u8); // Type: Echo Request
-        icmpv6_packet.push(0u8);   // Code: 0
+        icmpv6_packet.push(0u8); // Code: 0
         icmpv6_packet.extend_from_slice(&[0u8; 2]); // Checksum (calculated later)
         icmpv6_packet.extend_from_slice(&ping_data.to_rest_bytes());
         icmpv6_packet.extend_from_slice(&ping_data.payload);
@@ -738,7 +793,7 @@ fn send_icmpv6_echo_reply(
         // Build ICMPv6 packet
         let mut icmpv6_packet = Vec::new();
         icmpv6_packet.push(129u8); // Type: Echo Reply
-        icmpv6_packet.push(0u8);   // Code: 0
+        icmpv6_packet.push(0u8); // Code: 0
         icmpv6_packet.extend_from_slice(&[0u8; 2]); // Checksum (calculated later)
         icmpv6_packet.extend_from_slice(&ping_data.to_rest_bytes());
         icmpv6_packet.extend_from_slice(&ping_data.payload);
@@ -807,7 +862,12 @@ fn send_neighbor_advertisement(
     let src_ip = crate::net::network_stack()
         .list_interfaces()
         .first()
-        .and_then(|iface| iface.ip_addresses.iter().find(|addr| matches!(addr, NetworkAddress::IPv6(_))))
+        .and_then(|iface| {
+            iface
+                .ip_addresses
+                .iter()
+                .find(|addr| matches!(addr, NetworkAddress::IPv6(_)))
+        })
         .copied()
         .ok_or(NetworkError::NetworkUnreachable)?;
 
@@ -837,7 +897,7 @@ fn send_neighbor_advertisement(
         // Build complete ICMPv6 packet
         let mut icmpv6_packet = Vec::new();
         icmpv6_packet.push(136u8); // Type: Neighbor Advertisement
-        icmpv6_packet.push(0u8);   // Code: 0
+        icmpv6_packet.push(0u8); // Code: 0
         icmpv6_packet.extend_from_slice(&[0u8; 2]); // Checksum (calculated later)
         icmpv6_packet.extend_from_slice(&[0u8; 4]); // Reserved (must be zero)
         icmpv6_packet.extend_from_slice(&payload);

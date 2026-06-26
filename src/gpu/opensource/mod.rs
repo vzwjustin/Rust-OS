@@ -7,35 +7,35 @@
 //! - DRM (Direct Rendering Manager) compatibility layer
 //! - Mesa3D integration preparation
 
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::{String, ToString};
 use alloc::collections::BTreeMap;
 use alloc::format;
-use spin::Mutex;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 use super::{GPUCapabilities, GPUVendor, PCIDevice};
 
-pub mod nouveau;
 pub mod amdgpu;
-pub mod i915;
 pub mod drm_compat;
+pub mod i915;
 pub mod mesa_compat;
+pub mod nouveau;
 
 /// Opensource driver types
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DriverType {
-    Nouveau,    // NVIDIA opensource driver
-    AMDGPU,     // AMD opensource driver
-    I915,       // Intel i915 driver
-    RadeonSI,   // AMD RadeonSI (legacy)
-    VC4,        // Broadcom VideoCore IV
-    V3D,        // Broadcom V3D
-    Panfrost,   // ARM Mali driver
-    Lima,       // ARM Mali 400/450 driver
-    Etnaviv,    // Vivante GPU driver
-    Freedreno,  // Qualcomm Adreno driver
+    Nouveau,   // NVIDIA opensource driver
+    AMDGPU,    // AMD opensource driver
+    I915,      // Intel i915 driver
+    RadeonSI,  // AMD RadeonSI (legacy)
+    VC4,       // Broadcom VideoCore IV
+    V3D,       // Broadcom V3D
+    Panfrost,  // ARM Mali driver
+    Lima,      // ARM Mali 400/450 driver
+    Etnaviv,   // Vivante GPU driver
+    Freedreno, // Qualcomm Adreno driver
 }
 
 /// Driver capability flags
@@ -244,65 +244,203 @@ impl OpensourceDriverRegistry {
             version: "1.0.17".to_string(),
             supported_devices: vec![
                 // Tesla (NV50) series
-                (0x10DE, 0x0191), (0x10DE, 0x0193), (0x10DE, 0x0194), (0x10DE, 0x0197),
-                (0x10DE, 0x019D), (0x10DE, 0x019E), (0x10DE, 0x0400), (0x10DE, 0x0401),
-                (0x10DE, 0x0402), (0x10DE, 0x0403), (0x10DE, 0x0404), (0x10DE, 0x0405),
-                (0x10DE, 0x0406), (0x10DE, 0x0407), (0x10DE, 0x0408), (0x10DE, 0x0409),
-                (0x10DE, 0x040A), (0x10DE, 0x040B), (0x10DE, 0x040C), (0x10DE, 0x040D),
-                (0x10DE, 0x040E), (0x10DE, 0x040F),
-
+                (0x10DE, 0x0191),
+                (0x10DE, 0x0193),
+                (0x10DE, 0x0194),
+                (0x10DE, 0x0197),
+                (0x10DE, 0x019D),
+                (0x10DE, 0x019E),
+                (0x10DE, 0x0400),
+                (0x10DE, 0x0401),
+                (0x10DE, 0x0402),
+                (0x10DE, 0x0403),
+                (0x10DE, 0x0404),
+                (0x10DE, 0x0405),
+                (0x10DE, 0x0406),
+                (0x10DE, 0x0407),
+                (0x10DE, 0x0408),
+                (0x10DE, 0x0409),
+                (0x10DE, 0x040A),
+                (0x10DE, 0x040B),
+                (0x10DE, 0x040C),
+                (0x10DE, 0x040D),
+                (0x10DE, 0x040E),
+                (0x10DE, 0x040F),
                 // Fermi (GF100) series
-                (0x10DE, 0x06C0), (0x10DE, 0x06C4), (0x10DE, 0x06CA), (0x10DE, 0x06CD),
-                (0x10DE, 0x06D1), (0x10DE, 0x06D2), (0x10DE, 0x06D8), (0x10DE, 0x06D9),
-                (0x10DE, 0x06DA), (0x10DE, 0x06DC), (0x10DE, 0x06DD), (0x10DE, 0x06DE),
-                (0x10DE, 0x06DF), (0x10DE, 0x0DC0), (0x10DE, 0x0DC4), (0x10DE, 0x0DC5),
-                (0x10DE, 0x0DC6), (0x10DE, 0x0DCD), (0x10DE, 0x0DCE), (0x10DE, 0x0DD1),
-                (0x10DE, 0x0DD2), (0x10DE, 0x0DD3), (0x10DE, 0x0DD6), (0x10DE, 0x0DD8),
-                (0x10DE, 0x0DDA), (0x10DE, 0x0DE0), (0x10DE, 0x0DE1), (0x10DE, 0x0DE2),
-                (0x10DE, 0x0DE3), (0x10DE, 0x0DE4), (0x10DE, 0x0DE5), (0x10DE, 0x0DE7),
-                (0x10DE, 0x0DE8), (0x10DE, 0x0DE9), (0x10DE, 0x0DEA), (0x10DE, 0x0DEB),
-                (0x10DE, 0x0DEC), (0x10DE, 0x0DED), (0x10DE, 0x0DEE), (0x10DE, 0x0DEF),
-                (0x10DE, 0x0DF0), (0x10DE, 0x0DF1), (0x10DE, 0x0DF2), (0x10DE, 0x0DF3),
-                (0x10DE, 0x0DF4), (0x10DE, 0x0DF5), (0x10DE, 0x0DF6), (0x10DE, 0x0DF7),
-                (0x10DE, 0x0DF8), (0x10DE, 0x0DF9), (0x10DE, 0x0DFA), (0x10DE, 0x0DFC),
-                (0x10DE, 0x0DFD), (0x10DE, 0x0DFE), (0x10DE, 0x0DFF),
-
+                (0x10DE, 0x06C0),
+                (0x10DE, 0x06C4),
+                (0x10DE, 0x06CA),
+                (0x10DE, 0x06CD),
+                (0x10DE, 0x06D1),
+                (0x10DE, 0x06D2),
+                (0x10DE, 0x06D8),
+                (0x10DE, 0x06D9),
+                (0x10DE, 0x06DA),
+                (0x10DE, 0x06DC),
+                (0x10DE, 0x06DD),
+                (0x10DE, 0x06DE),
+                (0x10DE, 0x06DF),
+                (0x10DE, 0x0DC0),
+                (0x10DE, 0x0DC4),
+                (0x10DE, 0x0DC5),
+                (0x10DE, 0x0DC6),
+                (0x10DE, 0x0DCD),
+                (0x10DE, 0x0DCE),
+                (0x10DE, 0x0DD1),
+                (0x10DE, 0x0DD2),
+                (0x10DE, 0x0DD3),
+                (0x10DE, 0x0DD6),
+                (0x10DE, 0x0DD8),
+                (0x10DE, 0x0DDA),
+                (0x10DE, 0x0DE0),
+                (0x10DE, 0x0DE1),
+                (0x10DE, 0x0DE2),
+                (0x10DE, 0x0DE3),
+                (0x10DE, 0x0DE4),
+                (0x10DE, 0x0DE5),
+                (0x10DE, 0x0DE7),
+                (0x10DE, 0x0DE8),
+                (0x10DE, 0x0DE9),
+                (0x10DE, 0x0DEA),
+                (0x10DE, 0x0DEB),
+                (0x10DE, 0x0DEC),
+                (0x10DE, 0x0DED),
+                (0x10DE, 0x0DEE),
+                (0x10DE, 0x0DEF),
+                (0x10DE, 0x0DF0),
+                (0x10DE, 0x0DF1),
+                (0x10DE, 0x0DF2),
+                (0x10DE, 0x0DF3),
+                (0x10DE, 0x0DF4),
+                (0x10DE, 0x0DF5),
+                (0x10DE, 0x0DF6),
+                (0x10DE, 0x0DF7),
+                (0x10DE, 0x0DF8),
+                (0x10DE, 0x0DF9),
+                (0x10DE, 0x0DFA),
+                (0x10DE, 0x0DFC),
+                (0x10DE, 0x0DFD),
+                (0x10DE, 0x0DFE),
+                (0x10DE, 0x0DFF),
                 // Kepler (GK100) series
-                (0x10DE, 0x1180), (0x10DE, 0x1181), (0x10DE, 0x1182), (0x10DE, 0x1183),
-                (0x10DE, 0x1184), (0x10DE, 0x1185), (0x10DE, 0x1186), (0x10DE, 0x1187),
-                (0x10DE, 0x1188), (0x10DE, 0x1189), (0x10DE, 0x118A), (0x10DE, 0x118B),
-                (0x10DE, 0x118C), (0x10DE, 0x118D), (0x10DE, 0x118E), (0x10DE, 0x118F),
-                (0x10DE, 0x1190), (0x10DE, 0x1191), (0x10DE, 0x1192), (0x10DE, 0x1193),
-                (0x10DE, 0x1194), (0x10DE, 0x1195), (0x10DE, 0x1198), (0x10DE, 0x1199),
-                (0x10DE, 0x119A), (0x10DE, 0x119D), (0x10DE, 0x119E), (0x10DE, 0x119F),
-
+                (0x10DE, 0x1180),
+                (0x10DE, 0x1181),
+                (0x10DE, 0x1182),
+                (0x10DE, 0x1183),
+                (0x10DE, 0x1184),
+                (0x10DE, 0x1185),
+                (0x10DE, 0x1186),
+                (0x10DE, 0x1187),
+                (0x10DE, 0x1188),
+                (0x10DE, 0x1189),
+                (0x10DE, 0x118A),
+                (0x10DE, 0x118B),
+                (0x10DE, 0x118C),
+                (0x10DE, 0x118D),
+                (0x10DE, 0x118E),
+                (0x10DE, 0x118F),
+                (0x10DE, 0x1190),
+                (0x10DE, 0x1191),
+                (0x10DE, 0x1192),
+                (0x10DE, 0x1193),
+                (0x10DE, 0x1194),
+                (0x10DE, 0x1195),
+                (0x10DE, 0x1198),
+                (0x10DE, 0x1199),
+                (0x10DE, 0x119A),
+                (0x10DE, 0x119D),
+                (0x10DE, 0x119E),
+                (0x10DE, 0x119F),
                 // Maxwell (GM100) series
-                (0x10DE, 0x1340), (0x10DE, 0x1341), (0x10DE, 0x1344), (0x10DE, 0x1346),
-                (0x10DE, 0x1347), (0x10DE, 0x1348), (0x10DE, 0x1349), (0x10DE, 0x134B),
-                (0x10DE, 0x134D), (0x10DE, 0x134E), (0x10DE, 0x134F), (0x10DE, 0x1380),
-                (0x10DE, 0x1381), (0x10DE, 0x1382), (0x10DE, 0x1390), (0x10DE, 0x1391),
-                (0x10DE, 0x1392), (0x10DE, 0x1393), (0x10DE, 0x1398), (0x10DE, 0x1399),
-                (0x10DE, 0x139A), (0x10DE, 0x139B), (0x10DE, 0x139C), (0x10DE, 0x139D),
-
+                (0x10DE, 0x1340),
+                (0x10DE, 0x1341),
+                (0x10DE, 0x1344),
+                (0x10DE, 0x1346),
+                (0x10DE, 0x1347),
+                (0x10DE, 0x1348),
+                (0x10DE, 0x1349),
+                (0x10DE, 0x134B),
+                (0x10DE, 0x134D),
+                (0x10DE, 0x134E),
+                (0x10DE, 0x134F),
+                (0x10DE, 0x1380),
+                (0x10DE, 0x1381),
+                (0x10DE, 0x1382),
+                (0x10DE, 0x1390),
+                (0x10DE, 0x1391),
+                (0x10DE, 0x1392),
+                (0x10DE, 0x1393),
+                (0x10DE, 0x1398),
+                (0x10DE, 0x1399),
+                (0x10DE, 0x139A),
+                (0x10DE, 0x139B),
+                (0x10DE, 0x139C),
+                (0x10DE, 0x139D),
                 // Pascal (GP100) series
-                (0x10DE, 0x15F0), (0x10DE, 0x15F1), (0x10DE, 0x15F7), (0x10DE, 0x15F8),
-                (0x10DE, 0x15F9), (0x10DE, 0x1B00), (0x10DE, 0x1B02), (0x10DE, 0x1B06),
-                (0x10DE, 0x1B30), (0x10DE, 0x1B38), (0x10DE, 0x1B80), (0x10DE, 0x1B81),
-                (0x10DE, 0x1B82), (0x10DE, 0x1B83), (0x10DE, 0x1B84), (0x10DE, 0x1BA0),
-                (0x10DE, 0x1BA1), (0x10DE, 0x1BB0), (0x10DE, 0x1BB1), (0x10DE, 0x1BB3),
-                (0x10DE, 0x1BB4), (0x10DE, 0x1BB5), (0x10DE, 0x1BB6), (0x10DE, 0x1BB7),
-                (0x10DE, 0x1BB8), (0x10DE, 0x1BB9), (0x10DE, 0x1BBA), (0x10DE, 0x1BBB),
-                (0x10DE, 0x1BC7), (0x10DE, 0x1BE0), (0x10DE, 0x1BE1),
-
+                (0x10DE, 0x15F0),
+                (0x10DE, 0x15F1),
+                (0x10DE, 0x15F7),
+                (0x10DE, 0x15F8),
+                (0x10DE, 0x15F9),
+                (0x10DE, 0x1B00),
+                (0x10DE, 0x1B02),
+                (0x10DE, 0x1B06),
+                (0x10DE, 0x1B30),
+                (0x10DE, 0x1B38),
+                (0x10DE, 0x1B80),
+                (0x10DE, 0x1B81),
+                (0x10DE, 0x1B82),
+                (0x10DE, 0x1B83),
+                (0x10DE, 0x1B84),
+                (0x10DE, 0x1BA0),
+                (0x10DE, 0x1BA1),
+                (0x10DE, 0x1BB0),
+                (0x10DE, 0x1BB1),
+                (0x10DE, 0x1BB3),
+                (0x10DE, 0x1BB4),
+                (0x10DE, 0x1BB5),
+                (0x10DE, 0x1BB6),
+                (0x10DE, 0x1BB7),
+                (0x10DE, 0x1BB8),
+                (0x10DE, 0x1BB9),
+                (0x10DE, 0x1BBA),
+                (0x10DE, 0x1BBB),
+                (0x10DE, 0x1BC7),
+                (0x10DE, 0x1BE0),
+                (0x10DE, 0x1BE1),
                 // Turing and newer (limited support)
-                (0x10DE, 0x1F02), (0x10DE, 0x1F06), (0x10DE, 0x1F07), (0x10DE, 0x1F08),
-                (0x10DE, 0x1F09), (0x10DE, 0x1F0A), (0x10DE, 0x1F10), (0x10DE, 0x1F11),
-                (0x10DE, 0x1F12), (0x10DE, 0x1F14), (0x10DE, 0x1F15), (0x10DE, 0x1F36),
-                (0x10DE, 0x1F47), (0x10DE, 0x1F50), (0x10DE, 0x1F51), (0x10DE, 0x1F54),
-                (0x10DE, 0x1F55), (0x10DE, 0x1F76), (0x10DE, 0x1F81), (0x10DE, 0x1F82),
-                (0x10DE, 0x1F83), (0x10DE, 0x1F91), (0x10DE, 0x1F92), (0x10DE, 0x1F94),
-                (0x10DE, 0x1F95), (0x10DE, 0x1F96), (0x10DE, 0x1F97), (0x10DE, 0x1F98),
-                (0x10DE, 0x1F99), (0x10DE, 0x1F9C), (0x10DE, 0x1F9D), (0x10DE, 0x1F9F),
+                (0x10DE, 0x1F02),
+                (0x10DE, 0x1F06),
+                (0x10DE, 0x1F07),
+                (0x10DE, 0x1F08),
+                (0x10DE, 0x1F09),
+                (0x10DE, 0x1F0A),
+                (0x10DE, 0x1F10),
+                (0x10DE, 0x1F11),
+                (0x10DE, 0x1F12),
+                (0x10DE, 0x1F14),
+                (0x10DE, 0x1F15),
+                (0x10DE, 0x1F36),
+                (0x10DE, 0x1F47),
+                (0x10DE, 0x1F50),
+                (0x10DE, 0x1F51),
+                (0x10DE, 0x1F54),
+                (0x10DE, 0x1F55),
+                (0x10DE, 0x1F76),
+                (0x10DE, 0x1F81),
+                (0x10DE, 0x1F82),
+                (0x10DE, 0x1F83),
+                (0x10DE, 0x1F91),
+                (0x10DE, 0x1F92),
+                (0x10DE, 0x1F94),
+                (0x10DE, 0x1F95),
+                (0x10DE, 0x1F96),
+                (0x10DE, 0x1F97),
+                (0x10DE, 0x1F98),
+                (0x10DE, 0x1F99),
+                (0x10DE, 0x1F9C),
+                (0x10DE, 0x1F9D),
+                (0x10DE, 0x1F9F),
             ],
             capabilities: DriverCapabilities::MODERN,
             mesa_driver: Some("nouveau".to_string()),
@@ -318,57 +456,157 @@ impl OpensourceDriverRegistry {
             version: "23.20".to_string(),
             supported_devices: vec![
                 // GCN 1.0 (Southern Islands)
-                (0x1002, 0x6798), (0x1002, 0x6799), (0x1002, 0x679A), (0x1002, 0x679B),
-                (0x1002, 0x679E), (0x1002, 0x679F), (0x1002, 0x6780), (0x1002, 0x6784),
-                (0x1002, 0x6788), (0x1002, 0x678A), (0x1002, 0x6790), (0x1002, 0x6791),
-                (0x1002, 0x6792), (0x1002, 0x6798), (0x1002, 0x6799), (0x1002, 0x679A),
-
+                (0x1002, 0x6798),
+                (0x1002, 0x6799),
+                (0x1002, 0x679A),
+                (0x1002, 0x679B),
+                (0x1002, 0x679E),
+                (0x1002, 0x679F),
+                (0x1002, 0x6780),
+                (0x1002, 0x6784),
+                (0x1002, 0x6788),
+                (0x1002, 0x678A),
+                (0x1002, 0x6790),
+                (0x1002, 0x6791),
+                (0x1002, 0x6792),
+                (0x1002, 0x6798),
+                (0x1002, 0x6799),
+                (0x1002, 0x679A),
                 // GCN 2.0 (Sea Islands)
-                (0x1002, 0x6600), (0x1002, 0x6601), (0x1002, 0x6602), (0x1002, 0x6603),
-                (0x1002, 0x6604), (0x1002, 0x6605), (0x1002, 0x6606), (0x1002, 0x6607),
-                (0x1002, 0x6608), (0x1002, 0x6610), (0x1002, 0x6611), (0x1002, 0x6613),
-                (0x1002, 0x6617), (0x1002, 0x6620), (0x1002, 0x6621), (0x1002, 0x6623),
-                (0x1002, 0x6631), (0x1002, 0x6640), (0x1002, 0x6641), (0x1002, 0x6646),
-                (0x1002, 0x6647), (0x1002, 0x6649), (0x1002, 0x6650), (0x1002, 0x6651),
-                (0x1002, 0x6658), (0x1002, 0x665C), (0x1002, 0x665D), (0x1002, 0x665F),
-
+                (0x1002, 0x6600),
+                (0x1002, 0x6601),
+                (0x1002, 0x6602),
+                (0x1002, 0x6603),
+                (0x1002, 0x6604),
+                (0x1002, 0x6605),
+                (0x1002, 0x6606),
+                (0x1002, 0x6607),
+                (0x1002, 0x6608),
+                (0x1002, 0x6610),
+                (0x1002, 0x6611),
+                (0x1002, 0x6613),
+                (0x1002, 0x6617),
+                (0x1002, 0x6620),
+                (0x1002, 0x6621),
+                (0x1002, 0x6623),
+                (0x1002, 0x6631),
+                (0x1002, 0x6640),
+                (0x1002, 0x6641),
+                (0x1002, 0x6646),
+                (0x1002, 0x6647),
+                (0x1002, 0x6649),
+                (0x1002, 0x6650),
+                (0x1002, 0x6651),
+                (0x1002, 0x6658),
+                (0x1002, 0x665C),
+                (0x1002, 0x665D),
+                (0x1002, 0x665F),
                 // GCN 3.0 (Volcanic Islands)
-                (0x1002, 0x6900), (0x1002, 0x6901), (0x1002, 0x6902), (0x1002, 0x6903),
-                (0x1002, 0x6907), (0x1002, 0x6920), (0x1002, 0x6921), (0x1002, 0x6929),
-                (0x1002, 0x692B), (0x1002, 0x692F), (0x1002, 0x6930), (0x1002, 0x6938),
-                (0x1002, 0x6939), (0x1002, 0x7300), (0x1002, 0x7310), (0x1002, 0x7312),
-
+                (0x1002, 0x6900),
+                (0x1002, 0x6901),
+                (0x1002, 0x6902),
+                (0x1002, 0x6903),
+                (0x1002, 0x6907),
+                (0x1002, 0x6920),
+                (0x1002, 0x6921),
+                (0x1002, 0x6929),
+                (0x1002, 0x692B),
+                (0x1002, 0x692F),
+                (0x1002, 0x6930),
+                (0x1002, 0x6938),
+                (0x1002, 0x6939),
+                (0x1002, 0x7300),
+                (0x1002, 0x7310),
+                (0x1002, 0x7312),
                 // GCN 4.0 (Arctic Islands)
-                (0x1002, 0x67C0), (0x1002, 0x67C1), (0x1002, 0x67C2), (0x1002, 0x67C4),
-                (0x1002, 0x67C7), (0x1002, 0x67CA), (0x1002, 0x67CC), (0x1002, 0x67CF),
-                (0x1002, 0x67D0), (0x1002, 0x67DF), (0x1002, 0x67E0), (0x1002, 0x67E1),
-                (0x1002, 0x67E3), (0x1002, 0x67E8), (0x1002, 0x67EB), (0x1002, 0x67EF),
-                (0x1002, 0x67F0), (0x1002, 0x67F1), (0x1002, 0x67F2), (0x1002, 0x67F4),
-                (0x1002, 0x67F7), (0x1002, 0x67F8), (0x1002, 0x67F9), (0x1002, 0x67FA),
-                (0x1002, 0x67FB), (0x1002, 0x67FE), (0x1002, 0x67FF),
-
+                (0x1002, 0x67C0),
+                (0x1002, 0x67C1),
+                (0x1002, 0x67C2),
+                (0x1002, 0x67C4),
+                (0x1002, 0x67C7),
+                (0x1002, 0x67CA),
+                (0x1002, 0x67CC),
+                (0x1002, 0x67CF),
+                (0x1002, 0x67D0),
+                (0x1002, 0x67DF),
+                (0x1002, 0x67E0),
+                (0x1002, 0x67E1),
+                (0x1002, 0x67E3),
+                (0x1002, 0x67E8),
+                (0x1002, 0x67EB),
+                (0x1002, 0x67EF),
+                (0x1002, 0x67F0),
+                (0x1002, 0x67F1),
+                (0x1002, 0x67F2),
+                (0x1002, 0x67F4),
+                (0x1002, 0x67F7),
+                (0x1002, 0x67F8),
+                (0x1002, 0x67F9),
+                (0x1002, 0x67FA),
+                (0x1002, 0x67FB),
+                (0x1002, 0x67FE),
+                (0x1002, 0x67FF),
                 // GCN 5.0 (Vega)
-                (0x1002, 0x6860), (0x1002, 0x6861), (0x1002, 0x6862), (0x1002, 0x6863),
-                (0x1002, 0x6864), (0x1002, 0x6867), (0x1002, 0x6868), (0x1002, 0x6869),
-                (0x1002, 0x686A), (0x1002, 0x686B), (0x1002, 0x686C), (0x1002, 0x686D),
-                (0x1002, 0x686E), (0x1002, 0x687F), (0x1002, 0x69A0), (0x1002, 0x69A1),
-                (0x1002, 0x69A2), (0x1002, 0x69A3), (0x1002, 0x69AF),
-
+                (0x1002, 0x6860),
+                (0x1002, 0x6861),
+                (0x1002, 0x6862),
+                (0x1002, 0x6863),
+                (0x1002, 0x6864),
+                (0x1002, 0x6867),
+                (0x1002, 0x6868),
+                (0x1002, 0x6869),
+                (0x1002, 0x686A),
+                (0x1002, 0x686B),
+                (0x1002, 0x686C),
+                (0x1002, 0x686D),
+                (0x1002, 0x686E),
+                (0x1002, 0x687F),
+                (0x1002, 0x69A0),
+                (0x1002, 0x69A1),
+                (0x1002, 0x69A2),
+                (0x1002, 0x69A3),
+                (0x1002, 0x69AF),
                 // RDNA 1.0 (Navi 10)
-                (0x1002, 0x7310), (0x1002, 0x7312), (0x1002, 0x7318), (0x1002, 0x7319),
-                (0x1002, 0x731A), (0x1002, 0x731B), (0x1002, 0x731E), (0x1002, 0x731F),
-                (0x1002, 0x7340), (0x1002, 0x7341), (0x1002, 0x7347),
-
+                (0x1002, 0x7310),
+                (0x1002, 0x7312),
+                (0x1002, 0x7318),
+                (0x1002, 0x7319),
+                (0x1002, 0x731A),
+                (0x1002, 0x731B),
+                (0x1002, 0x731E),
+                (0x1002, 0x731F),
+                (0x1002, 0x7340),
+                (0x1002, 0x7341),
+                (0x1002, 0x7347),
                 // RDNA 2.0 (Navi 2x)
-                (0x1002, 0x73A0), (0x1002, 0x73A1), (0x1002, 0x73A2), (0x1002, 0x73A3),
-                (0x1002, 0x73A5), (0x1002, 0x73AB), (0x1002, 0x73AE), (0x1002, 0x73AF),
-                (0x1002, 0x73BF), (0x1002, 0x73C0), (0x1002, 0x73C1), (0x1002, 0x73C3),
-                (0x1002, 0x73DF), (0x1002, 0x73E0), (0x1002, 0x73E1), (0x1002, 0x73E3),
-                (0x1002, 0x73E4), (0x1002, 0x73EF), (0x1002, 0x73F0), (0x1002, 0x73FF),
-
+                (0x1002, 0x73A0),
+                (0x1002, 0x73A1),
+                (0x1002, 0x73A2),
+                (0x1002, 0x73A3),
+                (0x1002, 0x73A5),
+                (0x1002, 0x73AB),
+                (0x1002, 0x73AE),
+                (0x1002, 0x73AF),
+                (0x1002, 0x73BF),
+                (0x1002, 0x73C0),
+                (0x1002, 0x73C1),
+                (0x1002, 0x73C3),
+                (0x1002, 0x73DF),
+                (0x1002, 0x73E0),
+                (0x1002, 0x73E1),
+                (0x1002, 0x73E3),
+                (0x1002, 0x73E4),
+                (0x1002, 0x73EF),
+                (0x1002, 0x73F0),
+                (0x1002, 0x73FF),
                 // RDNA 3.0 (Navi 3x)
-                (0x1002, 0x744C), (0x1002, 0x7448), (0x1002, 0x7449), (0x1002, 0x747E),
-                (0x1002, 0x7480), (0x1002, 0x7483), (0x1002, 0x7484),
+                (0x1002, 0x744C),
+                (0x1002, 0x7448),
+                (0x1002, 0x7449),
+                (0x1002, 0x747E),
+                (0x1002, 0x7480),
+                (0x1002, 0x7483),
+                (0x1002, 0x7484),
             ],
             capabilities: DriverCapabilities::ADVANCED,
             mesa_driver: Some("radeonsi".to_string()),
@@ -384,40 +622,142 @@ impl OpensourceDriverRegistry {
             version: "1.6.0".to_string(),
             supported_devices: vec![
                 // All Intel GPU device IDs from our main database
-                (0x8086, 0x0042), (0x8086, 0x0046), (0x8086, 0x0102), (0x8086, 0x0106),
-                (0x8086, 0x010A), (0x8086, 0x0112), (0x8086, 0x0116), (0x8086, 0x0122),
-                (0x8086, 0x0126), (0x8086, 0x0152), (0x8086, 0x0156), (0x8086, 0x015A),
-                (0x8086, 0x0162), (0x8086, 0x0166), (0x8086, 0x016A), (0x8086, 0x0402),
-                (0x8086, 0x0406), (0x8086, 0x040A), (0x8086, 0x0412), (0x8086, 0x0416),
-                (0x8086, 0x041A), (0x8086, 0x041E), (0x8086, 0x0422), (0x8086, 0x0426),
-                (0x8086, 0x042A), (0x8086, 0x042B), (0x8086, 0x042E), (0x8086, 0x0A02),
-                (0x8086, 0x0A06), (0x8086, 0x0A0A), (0x8086, 0x0A0B), (0x8086, 0x0A0E),
-                (0x8086, 0x0A12), (0x8086, 0x0A16), (0x8086, 0x0A1A), (0x8086, 0x0A1E),
-                (0x8086, 0x0A22), (0x8086, 0x0A26), (0x8086, 0x0A2A), (0x8086, 0x0A2B),
-                (0x8086, 0x0A2E), (0x8086, 0x0D12), (0x8086, 0x0D16), (0x8086, 0x0D1A),
-                (0x8086, 0x0D1B), (0x8086, 0x0D1E), (0x8086, 0x0D22), (0x8086, 0x0D26),
-                (0x8086, 0x0D2A), (0x8086, 0x0D2B), (0x8086, 0x0D2E), (0x8086, 0x1602),
-                (0x8086, 0x1606), (0x8086, 0x160A), (0x8086, 0x160B), (0x8086, 0x160D),
-                (0x8086, 0x160E), (0x8086, 0x1612), (0x8086, 0x1616), (0x8086, 0x161A),
-                (0x8086, 0x161B), (0x8086, 0x161D), (0x8086, 0x161E), (0x8086, 0x1622),
-                (0x8086, 0x1626), (0x8086, 0x162A), (0x8086, 0x162B), (0x8086, 0x162D),
-                (0x8086, 0x162E), (0x8086, 0x1902), (0x8086, 0x1906), (0x8086, 0x190A),
-                (0x8086, 0x190B), (0x8086, 0x190E), (0x8086, 0x1912), (0x8086, 0x1913),
-                (0x8086, 0x1915), (0x8086, 0x1916), (0x8086, 0x1917), (0x8086, 0x191A),
-                (0x8086, 0x191B), (0x8086, 0x191D), (0x8086, 0x191E), (0x8086, 0x1921),
-                (0x8086, 0x1923), (0x8086, 0x1926), (0x8086, 0x1927), (0x8086, 0x192A),
-                (0x8086, 0x192B), (0x8086, 0x192D), (0x8086, 0x5902), (0x8086, 0x5906),
-                (0x8086, 0x590A), (0x8086, 0x590B), (0x8086, 0x590E), (0x8086, 0x5912),
-                (0x8086, 0x5913), (0x8086, 0x5915), (0x8086, 0x5916), (0x8086, 0x5917),
-                (0x8086, 0x591A), (0x8086, 0x591B), (0x8086, 0x591C), (0x8086, 0x591D),
-                (0x8086, 0x591E), (0x8086, 0x5921), (0x8086, 0x5923), (0x8086, 0x5926),
-                (0x8086, 0x5927), (0x8086, 0x3E90), (0x8086, 0x3E91), (0x8086, 0x3E92),
-                (0x8086, 0x3E93), (0x8086, 0x3E94), (0x8086, 0x3E96), (0x8086, 0x3E98),
-                (0x8086, 0x3E9A), (0x8086, 0x3E9B), (0x8086, 0x3EA0), (0x8086, 0x3EA5),
-                (0x8086, 0x3EA6), (0x8086, 0x3EA7), (0x8086, 0x3EA8), (0x8086, 0x8A50),
-                (0x8086, 0x8A51), (0x8086, 0x8A52), (0x8086, 0x8A53), (0x8086, 0x8A5A),
-                (0x8086, 0x8A5B), (0x8086, 0x8A5C), (0x8086, 0x8A5D), (0x8086, 0x9A40),
-                (0x8086, 0x9A49), (0x8086, 0x9A60), (0x8086, 0x9A68), (0x8086, 0x9A70),
+                (0x8086, 0x0042),
+                (0x8086, 0x0046),
+                (0x8086, 0x0102),
+                (0x8086, 0x0106),
+                (0x8086, 0x010A),
+                (0x8086, 0x0112),
+                (0x8086, 0x0116),
+                (0x8086, 0x0122),
+                (0x8086, 0x0126),
+                (0x8086, 0x0152),
+                (0x8086, 0x0156),
+                (0x8086, 0x015A),
+                (0x8086, 0x0162),
+                (0x8086, 0x0166),
+                (0x8086, 0x016A),
+                (0x8086, 0x0402),
+                (0x8086, 0x0406),
+                (0x8086, 0x040A),
+                (0x8086, 0x0412),
+                (0x8086, 0x0416),
+                (0x8086, 0x041A),
+                (0x8086, 0x041E),
+                (0x8086, 0x0422),
+                (0x8086, 0x0426),
+                (0x8086, 0x042A),
+                (0x8086, 0x042B),
+                (0x8086, 0x042E),
+                (0x8086, 0x0A02),
+                (0x8086, 0x0A06),
+                (0x8086, 0x0A0A),
+                (0x8086, 0x0A0B),
+                (0x8086, 0x0A0E),
+                (0x8086, 0x0A12),
+                (0x8086, 0x0A16),
+                (0x8086, 0x0A1A),
+                (0x8086, 0x0A1E),
+                (0x8086, 0x0A22),
+                (0x8086, 0x0A26),
+                (0x8086, 0x0A2A),
+                (0x8086, 0x0A2B),
+                (0x8086, 0x0A2E),
+                (0x8086, 0x0D12),
+                (0x8086, 0x0D16),
+                (0x8086, 0x0D1A),
+                (0x8086, 0x0D1B),
+                (0x8086, 0x0D1E),
+                (0x8086, 0x0D22),
+                (0x8086, 0x0D26),
+                (0x8086, 0x0D2A),
+                (0x8086, 0x0D2B),
+                (0x8086, 0x0D2E),
+                (0x8086, 0x1602),
+                (0x8086, 0x1606),
+                (0x8086, 0x160A),
+                (0x8086, 0x160B),
+                (0x8086, 0x160D),
+                (0x8086, 0x160E),
+                (0x8086, 0x1612),
+                (0x8086, 0x1616),
+                (0x8086, 0x161A),
+                (0x8086, 0x161B),
+                (0x8086, 0x161D),
+                (0x8086, 0x161E),
+                (0x8086, 0x1622),
+                (0x8086, 0x1626),
+                (0x8086, 0x162A),
+                (0x8086, 0x162B),
+                (0x8086, 0x162D),
+                (0x8086, 0x162E),
+                (0x8086, 0x1902),
+                (0x8086, 0x1906),
+                (0x8086, 0x190A),
+                (0x8086, 0x190B),
+                (0x8086, 0x190E),
+                (0x8086, 0x1912),
+                (0x8086, 0x1913),
+                (0x8086, 0x1915),
+                (0x8086, 0x1916),
+                (0x8086, 0x1917),
+                (0x8086, 0x191A),
+                (0x8086, 0x191B),
+                (0x8086, 0x191D),
+                (0x8086, 0x191E),
+                (0x8086, 0x1921),
+                (0x8086, 0x1923),
+                (0x8086, 0x1926),
+                (0x8086, 0x1927),
+                (0x8086, 0x192A),
+                (0x8086, 0x192B),
+                (0x8086, 0x192D),
+                (0x8086, 0x5902),
+                (0x8086, 0x5906),
+                (0x8086, 0x590A),
+                (0x8086, 0x590B),
+                (0x8086, 0x590E),
+                (0x8086, 0x5912),
+                (0x8086, 0x5913),
+                (0x8086, 0x5915),
+                (0x8086, 0x5916),
+                (0x8086, 0x5917),
+                (0x8086, 0x591A),
+                (0x8086, 0x591B),
+                (0x8086, 0x591C),
+                (0x8086, 0x591D),
+                (0x8086, 0x591E),
+                (0x8086, 0x5921),
+                (0x8086, 0x5923),
+                (0x8086, 0x5926),
+                (0x8086, 0x5927),
+                (0x8086, 0x3E90),
+                (0x8086, 0x3E91),
+                (0x8086, 0x3E92),
+                (0x8086, 0x3E93),
+                (0x8086, 0x3E94),
+                (0x8086, 0x3E96),
+                (0x8086, 0x3E98),
+                (0x8086, 0x3E9A),
+                (0x8086, 0x3E9B),
+                (0x8086, 0x3EA0),
+                (0x8086, 0x3EA5),
+                (0x8086, 0x3EA6),
+                (0x8086, 0x3EA7),
+                (0x8086, 0x3EA8),
+                (0x8086, 0x8A50),
+                (0x8086, 0x8A51),
+                (0x8086, 0x8A52),
+                (0x8086, 0x8A53),
+                (0x8086, 0x8A5A),
+                (0x8086, 0x8A5B),
+                (0x8086, 0x8A5C),
+                (0x8086, 0x8A5D),
+                (0x8086, 0x9A40),
+                (0x8086, 0x9A49),
+                (0x8086, 0x9A60),
+                (0x8086, 0x9A68),
+                (0x8086, 0x9A70),
                 (0x8086, 0x9A78),
             ],
             capabilities: DriverCapabilities::MODERN,
@@ -452,7 +792,11 @@ impl OpensourceDriverRegistry {
             let mut best_priority = 0;
 
             for &driver_type in compatible_drivers {
-                if let Some(driver) = self.available_drivers.iter().find(|d| d.driver_type == driver_type) {
+                if let Some(driver) = self
+                    .available_drivers
+                    .iter()
+                    .find(|d| d.driver_type == driver_type)
+                {
                     if driver.priority > best_priority {
                         best_priority = driver.priority;
                         best_driver = Some(driver);
@@ -467,7 +811,11 @@ impl OpensourceDriverRegistry {
     }
 
     /// Initialize driver for a specific GPU with real hardware communication
-    pub fn initialize_driver(&mut self, gpu: &GPUCapabilities, pci_device: &PCIDevice) -> Result<(), &'static str> {
+    pub fn initialize_driver(
+        &mut self,
+        gpu: &GPUCapabilities,
+        pci_device: &PCIDevice,
+    ) -> Result<(), &'static str> {
         if let Some(driver) = self.find_driver_for_device(pci_device) {
             let gpu_id = pci_device.device as u32; // Simplified GPU ID
 
@@ -520,7 +868,9 @@ impl OpensourceDriverRegistry {
                     super::GPUTier::Entry | super::GPUTier::Budget => PowerMode::PowerSave,
                     super::GPUTier::Mainstream => PowerMode::Balanced,
                     super::GPUTier::Performance => PowerMode::Performance,
-                    super::GPUTier::HighEnd | super::GPUTier::Enthusiast => PowerMode::MaxPerformance,
+                    super::GPUTier::HighEnd | super::GPUTier::Enthusiast => {
+                        PowerMode::MaxPerformance
+                    }
                 },
                 clock_speeds: ClockSpeeds {
                     core_min: gpu.base_clock / 2,
@@ -590,7 +940,11 @@ impl OpensourceDriverRegistry {
     }
 
     /// Set power mode for a loaded driver
-    pub fn set_power_mode(&mut self, gpu_id: u32, power_mode: PowerMode) -> Result<(), &'static str> {
+    pub fn set_power_mode(
+        &mut self,
+        gpu_id: u32,
+        power_mode: PowerMode,
+    ) -> Result<(), &'static str> {
         if let Some(loaded_driver) = self.loaded_drivers.get_mut(&gpu_id) {
             loaded_driver.power_management.current_mode = power_mode;
             loaded_driver.performance_profile.power_mode = power_mode;
@@ -608,7 +962,8 @@ impl OpensourceDriverRegistry {
             let memory_range = clocks.memory_max - clocks.memory_min;
 
             clocks.core_max = clocks.core_min + (core_range as f32 * core_multiplier) as u32;
-            clocks.memory_max = clocks.memory_min + (memory_range as f32 * memory_multiplier) as u32;
+            clocks.memory_max =
+                clocks.memory_min + (memory_range as f32 * memory_multiplier) as u32;
 
             Ok(())
         } else {
@@ -621,26 +976,49 @@ impl OpensourceDriverRegistry {
         let mut report = String::new();
 
         report.push_str("=== Opensource Driver System Report ===\n\n");
-        report.push_str(&format!("Available Drivers: {}\n", self.available_drivers.len()));
+        report.push_str(&format!(
+            "Available Drivers: {}\n",
+            self.available_drivers.len()
+        ));
         report.push_str(&format!("Loaded Drivers: {}\n", self.loaded_drivers.len()));
         report.push_str(&format!("DRM Devices: {}\n", self.drm_devices.len()));
 
         report.push_str("\n=== Available Drivers ===\n");
         for driver in &self.available_drivers {
-            report.push_str(&format!("{} v{} ({} devices supported)\n",
-                driver.name, driver.version, driver.supported_devices.len()));
-            report.push_str(&format!("  OpenGL: {}.{}, Vulkan: {}, Compute: {}\n",
-                driver.capabilities.opengl_version.0, driver.capabilities.opengl_version.1,
-                if driver.capabilities.vulkan_support { "Yes" } else { "No" },
-                if driver.capabilities.compute_shaders { "Yes" } else { "No" }));
+            report.push_str(&format!(
+                "{} v{} ({} devices supported)\n",
+                driver.name,
+                driver.version,
+                driver.supported_devices.len()
+            ));
+            report.push_str(&format!(
+                "  OpenGL: {}.{}, Vulkan: {}, Compute: {}\n",
+                driver.capabilities.opengl_version.0,
+                driver.capabilities.opengl_version.1,
+                if driver.capabilities.vulkan_support {
+                    "Yes"
+                } else {
+                    "No"
+                },
+                if driver.capabilities.compute_shaders {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            ));
         }
 
         if !self.loaded_drivers.is_empty() {
             report.push_str("\n=== Loaded Drivers ===\n");
             for (&gpu_id, driver) in &self.loaded_drivers {
-                report.push_str(&format!("GPU {}: {:?} ({:?})\n",
-                    gpu_id, driver.driver_type, driver.status));
-                report.push_str(&format!("  Power Mode: {:?}\n", driver.power_management.current_mode));
+                report.push_str(&format!(
+                    "GPU {}: {:?} ({:?})\n",
+                    gpu_id, driver.driver_type, driver.status
+                ));
+                report.push_str(&format!(
+                    "  Power Mode: {:?}\n",
+                    driver.power_management.current_mode
+                ));
                 if let Some(ref drm) = driver.drm_device {
                     report.push_str(&format!("  DRM Device: {}\n", drm.device_node));
                 }
@@ -678,11 +1056,15 @@ pub fn create_fallback_capabilities(pci_device: &PCIDevice) -> GPUCapabilities {
 
 // Global driver registry
 lazy_static! {
-    static ref DRIVER_REGISTRY: Mutex<OpensourceDriverRegistry> = Mutex::new(OpensourceDriverRegistry::new());
+    static ref DRIVER_REGISTRY: Mutex<OpensourceDriverRegistry> =
+        Mutex::new(OpensourceDriverRegistry::new());
 }
 
 /// Initialize the opensource driver system
-pub fn initialize_opensource_system(gpus: &[GPUCapabilities], pci_devices: &[PCIDevice]) -> Result<(), &'static str> {
+pub fn initialize_opensource_system(
+    gpus: &[GPUCapabilities],
+    pci_devices: &[PCIDevice],
+) -> Result<(), &'static str> {
     let mut registry = DRIVER_REGISTRY.lock();
 
     // Try to initialize drivers for each detected GPU
@@ -758,7 +1140,11 @@ impl OpensourceDriverRegistry {
     }
 
     /// Initialize Intel i915 hardware communication
-    fn initialize_i915_hardware(&self, gpu_id: u32, pci_device: &PCIDevice) -> Result<(), &'static str> {
+    fn initialize_i915_hardware(
+        &self,
+        gpu_id: u32,
+        pci_device: &PCIDevice,
+    ) -> Result<(), &'static str> {
         // Map Intel GPU registers
         let bar0 = self.read_pci_bar(pci_device, 0)?;
         let register_base = self.map_gpu_registers(bar0, 16 * 1024 * 1024)?; // Map 16MB
@@ -792,7 +1178,11 @@ impl OpensourceDriverRegistry {
     }
 
     /// Initialize AMD GPU hardware communication
-    fn initialize_amdgpu_hardware(&self, gpu_id: u32, pci_device: &PCIDevice) -> Result<(), &'static str> {
+    fn initialize_amdgpu_hardware(
+        &self,
+        gpu_id: u32,
+        pci_device: &PCIDevice,
+    ) -> Result<(), &'static str> {
         // Map AMD GPU registers
         let bar0 = self.read_pci_bar(pci_device, 0)?;
         let register_base = self.map_gpu_registers(bar0, 32 * 1024 * 1024)?; // Map 32MB
@@ -842,7 +1232,11 @@ impl OpensourceDriverRegistry {
     }
 
     /// Initialize NVIDIA Nouveau hardware communication
-    fn initialize_nouveau_hardware(&self, gpu_id: u32, pci_device: &PCIDevice) -> Result<(), &'static str> {
+    fn initialize_nouveau_hardware(
+        &self,
+        gpu_id: u32,
+        pci_device: &PCIDevice,
+    ) -> Result<(), &'static str> {
         // Map NVIDIA GPU registers
         let bar0 = self.read_pci_bar(pci_device, 0)?;
         let register_base = self.map_gpu_registers(bar0, 16 * 1024 * 1024)?; // Map 16MB
@@ -1132,7 +1526,11 @@ impl OpensourceDriverRegistry {
     }
 
     /// Read PCI configuration dword using I/O ports
-    fn read_pci_config_dword(&self, pci_device: &PCIDevice, offset: u8) -> Result<u32, &'static str> {
+    fn read_pci_config_dword(
+        &self,
+        pci_device: &PCIDevice,
+        offset: u8,
+    ) -> Result<u32, &'static str> {
         let address = 0x80000000u32
             | ((pci_device.bus as u32) << 16)
             | ((pci_device.device as u32) << 11)

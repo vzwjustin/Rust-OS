@@ -5,20 +5,20 @@
 //! The testing framework is defined at the crate root level (`crate::testing_framework`)
 //! and this module coordinates all testing subsystems that use it.
 
-pub mod integration_tests;
-pub mod stress_tests;
 pub mod benchmarking;
-pub mod security_tests;
-pub mod hardware_tests;
 pub mod comprehensive_test_runner;
-pub mod system_validation;
+pub mod hardware_tests;
+pub mod integration_tests;
 pub mod production_validation;
+pub mod security_tests;
+pub mod stress_tests;
+pub mod system_validation;
 
-use alloc::{vec::Vec, string::String};
 use crate::testing_framework::{
-    TestFramework, TestSuite, TestStats, TestResult, TestExecutionResult,
-    init_testing_framework, get_test_framework, create_default_test_suites,
+    create_default_test_suites, get_test_framework, init_testing_framework, TestExecutionResult,
+    TestFramework, TestResult, TestStats, TestSuite,
 };
+use alloc::{string::String, vec::Vec};
 
 /// Initialize the complete testing system
 pub fn init_testing_system() -> Result<(), &'static str> {
@@ -81,15 +81,17 @@ pub fn run_test_category(category: &str) -> TestStats {
         "performance" => alloc::vec![benchmarking::create_performance_benchmark_suite()],
         "security" => alloc::vec![security_tests::create_security_test_suite()],
         "hardware" => alloc::vec![hardware_tests::create_hardware_test_suite()],
-        _ => return TestStats {
-            total_tests: 0,
-            passed: 0,
-            failed: 0,
-            skipped: 0,
-            timeouts: 0,
-            errors: 0,
-            execution_time_ms: 0,
-        },
+        _ => {
+            return TestStats {
+                total_tests: 0,
+                passed: 0,
+                failed: 0,
+                skipped: 0,
+                timeouts: 0,
+                errors: 0,
+                execution_time_ms: 0,
+            }
+        }
     };
 
     for suite in suites {

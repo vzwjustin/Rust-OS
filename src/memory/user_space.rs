@@ -46,11 +46,14 @@
 //! 4. Providing optimized copying for different buffer sizes
 //! 5. Setting up page fault handling contexts for safe operations
 
-use x86_64::{VirtAddr, PhysAddr, structures::paging::{Page, PageTable, PageTableFlags, Size4KiB}};
+use crate::gdt::{get_current_privilege_level, is_kernel_mode};
 use crate::memory::{get_memory_manager, MemoryError, PAGE_SIZE};
-use crate::gdt::{is_kernel_mode, get_current_privilege_level};
 use crate::syscall::SyscallError;
 use core::slice;
+use x86_64::{
+    structures::paging::{Page, PageTable, PageTableFlags, Size4KiB},
+    PhysAddr, VirtAddr,
+};
 
 /// User space memory boundaries
 const USER_SPACE_START: u64 = 0x0000_1000_0000;
@@ -80,7 +83,7 @@ struct PageTableInfo {
 impl PageTableInfo {
     fn from_flags(flags: x86_64::structures::paging::PageTableFlags) -> Self {
         use x86_64::structures::paging::PageTableFlags;
-        
+
         Self {
             present: flags.contains(PageTableFlags::PRESENT),
             writable: flags.contains(PageTableFlags::WRITABLE),
@@ -147,12 +150,17 @@ impl PageFaultContext {
     }
 
     /// Handle a page fault that occurred during user space memory operation
-    fn handle_page_fault(&mut self, fault_addr: VirtAddr, error_code: u64) -> Result<(), SyscallError> {
+    fn handle_page_fault(
+        &mut self,
+        fault_addr: VirtAddr,
+        error_code: u64,
+    ) -> Result<(), SyscallError> {
         let fault_addr_u64 = fault_addr.as_u64();
-        
+
         // Check if the fault is within our expected range
-        if fault_addr_u64 < self.recovery_context.start_addr || 
-           fault_addr_u64 >= self.recovery_context.end_addr {
+        if fault_addr_u64 < self.recovery_context.start_addr
+            || fault_addr_u64 >= self.recovery_context.end_addr
+        {
             return Err(SyscallError::InvalidAddress);
         }
 
@@ -167,7 +175,7 @@ impl PageFaultContext {
                 // Write fault but we're doing a read operation - this is suspicious
                 return Err(SyscallError::PermissionDenied);
             }
-            
+
             // This is a legitimate protection violation
             return Err(SyscallError::PermissionDenied);
         }
@@ -214,8 +222,7 @@ impl UserSpaceMemory {
         }
 
         // Check for arithmetic overflow
-        let end_ptr = ptr.checked_add(len)
-            .ok_or(SyscallError::InvalidAddress)?;
+        let end_ptr = ptr.checked_add(len).ok_or(SyscallError::InvalidAddress)?;
 
         // Ensure pointer is within user space bounds
         if ptr < USER_SPACE_START || end_ptr > USER_SPACE_END {
@@ -232,13 +239,16 @@ impl UserSpaceMemory {
     }
 
     /// Validate a memory range by walking page tables
-    fn validate_memory_range(start_addr: VirtAddr, len: usize, write_access: bool) -> Result<(), SyscallError> {
+    fn validate_memory_range(
+        start_addr: VirtAddr,
+        len: usize,
+        write_access: bool,
+    ) -> Result<(), SyscallError> {
         if len == 0 {
             return Ok(());
         }
 
-        let memory_manager = get_memory_manager()
-            .ok_or(SyscallError::InternalError)?;
+        let memory_manager = get_memory_manager().ok_or(SyscallError::InternalError)?;
 
         let start_page = Page::<Size4KiB>::containing_address(start_addr);
         let end_addr = start_addr + len - 1u64;
@@ -247,7 +257,8 @@ impl UserSpaceMemory {
         // Walk through all pages in the range
         for page in Page::range_inclusive(start_page, end_page) {
             // Check if page is mapped
-            let phys_addr = memory_manager.translate_addr(page.start_address())
+            let phys_addr = memory_manager
+                .translate_addr(page.start_address())
                 .ok_or(SyscallError::InvalidAddress)?;
 
             // Validate page permissions
@@ -258,36 +269,43 @@ impl UserSpaceMemory {
     }
 
     /// Validate page permissions for user access
-    fn validate_page_permissions(page: Page<Size4KiB>, write_access: bool) -> Result<(), SyscallError> {
+    fn validate_page_permissions(
+        page: Page<Size4KiB>,
+        write_access: bool,
+    ) -> Result<(), SyscallError> {
         let page_addr = page.start_address();
-        
+
         // Walk the page table hierarchy to check permissions
         Self::walk_page_table_for_permissions(page_addr, write_access)
     }
 
     /// Walk page table hierarchy to validate permissions
-    fn walk_page_table_for_permissions(virt_addr: VirtAddr, write_access: bool) -> Result<(), SyscallError> {
+    fn walk_page_table_for_permissions(
+        virt_addr: VirtAddr,
+        write_access: bool,
+    ) -> Result<(), SyscallError> {
         use x86_64::registers::control::Cr3;
-        use x86_64::structures::paging::{PageTableIndex, PageTableFlags};
-        
+        use x86_64::structures::paging::{PageTableFlags, PageTableIndex};
+
         // Get the current page table from CR3
         let (level_4_table_frame, _) = Cr3::read();
-        
+
         // Convert physical address to virtual address for kernel access
         // This assumes the kernel has a direct mapping of physical memory
-        let level_4_table_ptr = Self::phys_to_virt_kernel(level_4_table_frame.start_address()) as *const PageTable;
-        
+        let level_4_table_ptr =
+            Self::phys_to_virt_kernel(level_4_table_frame.start_address()) as *const PageTable;
+
         // Extract page table indices from virtual address
         let page_table_indices = [
             virt_addr.p4_index(),
-            virt_addr.p3_index(), 
+            virt_addr.p3_index(),
             virt_addr.p2_index(),
             virt_addr.p1_index(),
         ];
 
         unsafe {
             let level_4_table = &*level_4_table_ptr;
-            
+
             // Check PML4 entry (Level 4)
             let pml4_entry = &level_4_table[page_table_indices[0]];
             if !pml4_entry.flags().contains(PageTableFlags::PRESENT) {
@@ -379,7 +397,10 @@ impl UserSpaceMemory {
     }
 
     /// Validate additional security attributes of a page
-    fn validate_page_security_attributes(flags: PageTableFlags, write_access: bool) -> Result<(), SyscallError> {
+    fn validate_page_security_attributes(
+        flags: PageTableFlags,
+        write_access: bool,
+    ) -> Result<(), SyscallError> {
         // Check for execute-disable (NX) bit if this is a write operation
         // This helps prevent certain types of exploits
         if write_access && flags.contains(PageTableFlags::NO_EXECUTE) {
@@ -407,7 +428,7 @@ impl UserSpaceMemory {
     /// Safely copy data from user space to kernel buffer
     pub fn copy_from_user(user_ptr: u64, buffer: &mut [u8]) -> Result<(), SyscallError> {
         let len = buffer.len() as u64;
-        
+
         // Validate the user pointer and range
         Self::validate_user_ptr(user_ptr, len, false)?;
 
@@ -422,7 +443,7 @@ impl UserSpaceMemory {
     /// Safely copy data from kernel buffer to user space
     pub fn copy_to_user(user_ptr: u64, buffer: &[u8]) -> Result<(), SyscallError> {
         let len = buffer.len() as u64;
-        
+
         // Validate the user pointer and range
         Self::validate_user_ptr(user_ptr, len, true)?;
 
@@ -437,26 +458,25 @@ impl UserSpaceMemory {
     /// Internal function to perform safe copy from user space
     fn safe_copy_from_user(user_ptr: u64, buffer: &mut [u8]) -> Result<(), SyscallError> {
         let len = buffer.len() as u64;
-        
+
         // Set up page fault handling context
-        let mut fault_context = PageFaultContext::new(
-            MemoryOperation::CopyFromUser, 
-            user_ptr, 
-            len, 
-            false
-        );
-        
+        let mut fault_context =
+            PageFaultContext::new(MemoryOperation::CopyFromUser, user_ptr, len, false);
+
         let src = user_ptr as *const u8;
         let len = buffer.len();
-        
+
         // For small copies, use byte-by-byte copying with fault handling
         if len <= 64 {
             for (i, dst_byte) in buffer.iter_mut().enumerate() {
-                match Self::safe_read_user_byte_with_context(src.wrapping_add(i), &mut fault_context) {
+                match Self::safe_read_user_byte_with_context(
+                    src.wrapping_add(i),
+                    &mut fault_context,
+                ) {
                     Ok(byte) => {
                         *dst_byte = byte;
                         fault_context.update_progress(i + 1);
-                    },
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -478,14 +498,14 @@ impl UserSpaceMemory {
         while copied + BLOCK_SIZE <= len {
             let src_block = unsafe { src.add(copied) };
             let dst_block = &mut buffer[copied..copied + BLOCK_SIZE];
-            
+
             // Validate the block before copying
             Self::validate_user_ptr(src_block as u64, BLOCK_SIZE as u64, false)?;
-            
+
             unsafe {
                 core::ptr::copy_nonoverlapping(src_block, dst_block.as_mut_ptr(), BLOCK_SIZE);
             }
-            
+
             copied += BLOCK_SIZE;
         }
 
@@ -502,7 +522,11 @@ impl UserSpaceMemory {
     }
 
     /// Optimized copy from user space for larger buffers with fault context
-    fn optimized_copy_from_user_with_context(src: *const u8, buffer: &mut [u8], context: &mut PageFaultContext) -> Result<(), SyscallError> {
+    fn optimized_copy_from_user_with_context(
+        src: *const u8,
+        buffer: &mut [u8],
+        context: &mut PageFaultContext,
+    ) -> Result<(), SyscallError> {
         const BLOCK_SIZE: usize = 64;
         let len = buffer.len();
         let mut copied = 0;
@@ -511,25 +535,28 @@ impl UserSpaceMemory {
         while copied + BLOCK_SIZE <= len {
             let src_block = unsafe { src.add(copied) };
             let dst_block = &mut buffer[copied..copied + BLOCK_SIZE];
-            
+
             // Validate the block before copying
             Self::validate_user_ptr(src_block as u64, BLOCK_SIZE as u64, false)?;
-            
+
             // Perform block copy with potential fault handling
             match Self::safe_block_copy_from_user(src_block, dst_block, context) {
                 Ok(()) => {
                     copied += BLOCK_SIZE;
                     context.update_progress(copied);
-                },
+                }
                 Err(e) => {
                     // Fall back to byte-by-byte copying for the failed block
                     for i in 0..BLOCK_SIZE {
-                        match Self::safe_read_user_byte_with_context(unsafe { src_block.add(i) }, context) {
+                        match Self::safe_read_user_byte_with_context(
+                            unsafe { src_block.add(i) },
+                            context,
+                        ) {
                             Ok(byte) => {
                                 dst_block[i] = byte;
                                 copied += 1;
                                 context.update_progress(copied);
-                            },
+                            }
                             Err(byte_err) => return Err(byte_err),
                         }
                     }
@@ -544,7 +571,7 @@ impl UserSpaceMemory {
                     buffer[copied] = byte;
                     copied += 1;
                     context.update_progress(copied);
-                },
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -553,7 +580,11 @@ impl UserSpaceMemory {
     }
 
     /// Safe block copy from user space with fault handling
-    fn safe_block_copy_from_user(src: *const u8, dst: &mut [u8], _context: &mut PageFaultContext) -> Result<(), SyscallError> {
+    fn safe_block_copy_from_user(
+        src: *const u8,
+        dst: &mut [u8],
+        _context: &mut PageFaultContext,
+    ) -> Result<(), SyscallError> {
         // In a real implementation, this would set up specific fault handling for the block
         unsafe {
             core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), dst.len());
@@ -564,25 +595,25 @@ impl UserSpaceMemory {
     /// Internal function to perform safe copy to user space
     fn safe_copy_to_user(user_ptr: u64, buffer: &[u8]) -> Result<(), SyscallError> {
         let len = buffer.len() as u64;
-        
+
         // Set up page fault handling context
-        let mut fault_context = PageFaultContext::new(
-            MemoryOperation::CopyToUser, 
-            user_ptr, 
-            len, 
-            true
-        );
-        
+        let mut fault_context =
+            PageFaultContext::new(MemoryOperation::CopyToUser, user_ptr, len, true);
+
         let dst = user_ptr as *mut u8;
         let len = buffer.len();
-        
+
         // For small copies, use byte-by-byte copying with fault handling
         if len <= 64 {
             for (i, &src_byte) in buffer.iter().enumerate() {
-                match Self::safe_write_user_byte_with_context(dst.wrapping_add(i), src_byte, &mut fault_context) {
+                match Self::safe_write_user_byte_with_context(
+                    dst.wrapping_add(i),
+                    src_byte,
+                    &mut fault_context,
+                ) {
                     Ok(()) => {
                         fault_context.update_progress(i + 1);
-                    },
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -604,21 +635,21 @@ impl UserSpaceMemory {
         while copied + BLOCK_SIZE <= len {
             let dst_block = unsafe { dst.add(copied) };
             let src_block = &buffer[copied..copied + BLOCK_SIZE];
-            
+
             // Validate the block before copying
             Self::validate_user_ptr(dst_block as u64, BLOCK_SIZE as u64, true)?;
-            
+
             unsafe {
                 core::ptr::copy_nonoverlapping(src_block.as_ptr(), dst_block, BLOCK_SIZE);
             }
-            
+
             copied += BLOCK_SIZE;
         }
 
         // Copy remaining bytes
         while copied < len {
             match Self::safe_write_user_byte(unsafe { dst.add(copied) }, buffer[copied]) {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(e) => return Err(e),
             }
             copied += 1;
@@ -628,7 +659,11 @@ impl UserSpaceMemory {
     }
 
     /// Optimized copy to user space for larger buffers with fault context
-    fn optimized_copy_to_user_with_context(dst: *mut u8, buffer: &[u8], context: &mut PageFaultContext) -> Result<(), SyscallError> {
+    fn optimized_copy_to_user_with_context(
+        dst: *mut u8,
+        buffer: &[u8],
+        context: &mut PageFaultContext,
+    ) -> Result<(), SyscallError> {
         const BLOCK_SIZE: usize = 64;
         let len = buffer.len();
         let mut copied = 0;
@@ -637,24 +672,28 @@ impl UserSpaceMemory {
         while copied + BLOCK_SIZE <= len {
             let dst_block = unsafe { dst.add(copied) };
             let src_block = &buffer[copied..copied + BLOCK_SIZE];
-            
+
             // Validate the block before copying
             Self::validate_user_ptr(dst_block as u64, BLOCK_SIZE as u64, true)?;
-            
+
             // Perform block copy with potential fault handling
             match Self::safe_block_copy_to_user(src_block, dst_block, context) {
                 Ok(()) => {
                     copied += BLOCK_SIZE;
                     context.update_progress(copied);
-                },
+                }
                 Err(_e) => {
                     // Fall back to byte-by-byte copying for the failed block
                     for i in 0..BLOCK_SIZE {
-                        match Self::safe_write_user_byte_with_context(unsafe { dst_block.add(i) }, src_block[i], context) {
+                        match Self::safe_write_user_byte_with_context(
+                            unsafe { dst_block.add(i) },
+                            src_block[i],
+                            context,
+                        ) {
                             Ok(()) => {
                                 copied += 1;
                                 context.update_progress(copied);
-                            },
+                            }
                             Err(byte_err) => return Err(byte_err),
                         }
                     }
@@ -664,11 +703,15 @@ impl UserSpaceMemory {
 
         // Copy remaining bytes
         while copied < len {
-            match Self::safe_write_user_byte_with_context(unsafe { dst.add(copied) }, buffer[copied], context) {
+            match Self::safe_write_user_byte_with_context(
+                unsafe { dst.add(copied) },
+                buffer[copied],
+                context,
+            ) {
                 Ok(()) => {
                     copied += 1;
                     context.update_progress(copied);
-                },
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -677,7 +720,11 @@ impl UserSpaceMemory {
     }
 
     /// Safe block copy to user space with fault handling
-    fn safe_block_copy_to_user(src: &[u8], dst: *mut u8, _context: &mut PageFaultContext) -> Result<(), SyscallError> {
+    fn safe_block_copy_to_user(
+        src: &[u8],
+        dst: *mut u8,
+        _context: &mut PageFaultContext,
+    ) -> Result<(), SyscallError> {
         // In a real implementation, this would set up specific fault handling for the block
         unsafe {
             core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
@@ -689,7 +736,7 @@ impl UserSpaceMemory {
     fn safe_read_user_byte(ptr: *const u8) -> Result<u8, SyscallError> {
         // Validate the single byte address first
         Self::validate_user_ptr(ptr as u64, 1, false)?;
-        
+
         // In a real implementation with proper exception handling,
         // we would set up a page fault handler here
         unsafe {
@@ -703,7 +750,7 @@ impl UserSpaceMemory {
     fn safe_write_user_byte(ptr: *mut u8, value: u8) -> Result<(), SyscallError> {
         // Validate the single byte address first
         Self::validate_user_ptr(ptr as u64, 1, true)?;
-        
+
         // In a real implementation with proper exception handling,
         // we would set up a page fault handler here
         unsafe {
@@ -711,15 +758,18 @@ impl UserSpaceMemory {
             // that might affect the memory access pattern
             core::ptr::write_volatile(ptr, value);
         }
-        
+
         Ok(())
     }
 
     /// Safely read a single byte from user space with fault context
-    fn safe_read_user_byte_with_context(ptr: *const u8, _context: &mut PageFaultContext) -> Result<u8, SyscallError> {
+    fn safe_read_user_byte_with_context(
+        ptr: *const u8,
+        _context: &mut PageFaultContext,
+    ) -> Result<u8, SyscallError> {
         // Validate the single byte address first
         Self::validate_user_ptr(ptr as u64, 1, false)?;
-        
+
         // Perform the read with page fault handling
         // In a real implementation, this would use the context to handle page faults
         unsafe {
@@ -730,10 +780,14 @@ impl UserSpaceMemory {
     }
 
     /// Safely write a single byte to user space with fault context
-    fn safe_write_user_byte_with_context(ptr: *mut u8, value: u8, _context: &mut PageFaultContext) -> Result<(), SyscallError> {
+    fn safe_write_user_byte_with_context(
+        ptr: *mut u8,
+        value: u8,
+        _context: &mut PageFaultContext,
+    ) -> Result<(), SyscallError> {
         // Validate the single byte address first
         Self::validate_user_ptr(ptr as u64, 1, true)?;
-        
+
         // Perform the write with page fault handling
         // In a real implementation, this would use the context to handle page faults
         unsafe {
@@ -741,51 +795,53 @@ impl UserSpaceMemory {
             // that might affect the memory access pattern
             core::ptr::write_volatile(ptr, value);
         }
-        
+
         Ok(())
     }
 
     /// Copy a string from user space (null-terminated)
-    pub fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<alloc::string::String, SyscallError> {
+    pub fn copy_string_from_user(
+        user_ptr: u64,
+        max_len: usize,
+    ) -> Result<alloc::string::String, SyscallError> {
         use alloc::string::String;
         use alloc::vec::Vec;
-        
+
         if user_ptr == 0 {
             return Err(SyscallError::InvalidAddress);
         }
 
         let mut result = Vec::new();
         let mut current_ptr = user_ptr;
-        
+
         for _ in 0..max_len {
             let byte = Self::safe_read_user_byte(current_ptr as *const u8)?;
-            
+
             if byte == 0 {
                 break; // Null terminator found
             }
-            
+
             result.push(byte);
             current_ptr += 1;
         }
 
-        String::from_utf8(result)
-            .map_err(|_| SyscallError::InvalidArgument)
+        String::from_utf8(result).map_err(|_| SyscallError::InvalidArgument)
     }
 
     /// Copy a string to user space (with null terminator)
     pub fn copy_string_to_user(user_ptr: u64, s: &str) -> Result<(), SyscallError> {
         let bytes = s.as_bytes();
         let total_len = bytes.len() + 1; // Include null terminator
-        
+
         // Validate the entire range including null terminator
         Self::validate_user_ptr(user_ptr, total_len as u64, true)?;
-        
+
         // Copy the string bytes
         Self::copy_to_user(user_ptr, bytes)?;
-        
+
         // Add null terminator
         Self::safe_write_user_byte((user_ptr + bytes.len() as u64) as *mut u8, 0)?;
-        
+
         Ok(())
     }
 
@@ -807,7 +863,7 @@ impl UserSpaceMemory {
     /// Get memory protection flags for a user space page
     pub fn get_page_protection(addr: u64) -> Result<PageProtectionFlags, SyscallError> {
         let virt_addr = VirtAddr::new(addr);
-        
+
         // Validate that this is a user space address
         if addr < USER_SPACE_START || addr >= USER_SPACE_END {
             return Err(SyscallError::InvalidAddress);
@@ -828,20 +884,21 @@ impl UserSpaceMemory {
     fn get_page_table_info(virt_addr: VirtAddr) -> Result<PageTableInfo, SyscallError> {
         use x86_64::registers::control::Cr3;
         use x86_64::structures::paging::PageTableFlags;
-        
+
         let (level_4_table_frame, _) = Cr3::read();
-        let level_4_table_ptr = Self::phys_to_virt_kernel(level_4_table_frame.start_address()) as *const PageTable;
-        
+        let level_4_table_ptr =
+            Self::phys_to_virt_kernel(level_4_table_frame.start_address()) as *const PageTable;
+
         let page_table_indices = [
             virt_addr.p4_index(),
-            virt_addr.p3_index(), 
+            virt_addr.p3_index(),
             virt_addr.p2_index(),
             virt_addr.p1_index(),
         ];
 
         unsafe {
             let level_4_table = &*level_4_table_ptr;
-            
+
             // Walk through page table hierarchy
             let pml4_entry = &level_4_table[page_table_indices[0]];
             if !pml4_entry.flags().contains(PageTableFlags::PRESENT) {
@@ -884,7 +941,12 @@ impl UserSpaceMemory {
     }
 
     /// Validate memory range with enhanced security checks
-    pub fn validate_user_range_enhanced(ptr: u64, len: u64, write_access: bool, process_id: Option<u32>) -> Result<(), SyscallError> {
+    pub fn validate_user_range_enhanced(
+        ptr: u64,
+        len: u64,
+        write_access: bool,
+        process_id: Option<u32>,
+    ) -> Result<(), SyscallError> {
         // Basic validation first
         Self::validate_user_ptr(ptr, len, write_access)?;
 
@@ -910,7 +972,11 @@ impl UserSpaceMemory {
     }
 
     /// Detect suspicious memory access patterns
-    fn detect_suspicious_access_patterns(ptr: u64, len: u64, write_access: bool) -> Result<(), SyscallError> {
+    fn detect_suspicious_access_patterns(
+        ptr: u64,
+        len: u64,
+        write_access: bool,
+    ) -> Result<(), SyscallError> {
         // Check for extremely large allocations that might be DoS attempts
         if len > MAX_COPY_SIZE as u64 {
             return Err(SyscallError::InvalidArgument);
@@ -959,7 +1025,7 @@ impl UserSpaceMemory {
     /// Flush TLB entries for user space addresses
     pub fn flush_user_tlb_range(start_addr: u64, len: u64) -> Result<(), SyscallError> {
         use x86_64::instructions::tlb;
-        
+
         if start_addr < USER_SPACE_START || start_addr + len > USER_SPACE_END {
             return Err(SyscallError::InvalidAddress);
         }
@@ -1004,12 +1070,12 @@ impl EnhancedUserSpaceMemory {
     /// Copy data from user space with enhanced validation and statistics
     pub fn copy_from_user_enhanced(
         &self,
-        user_ptr: u64, 
+        user_ptr: u64,
         buffer: &mut [u8],
-        process_id: Option<u32>
+        process_id: Option<u32>,
     ) -> Result<(), SyscallError> {
         use core::sync::atomic::Ordering;
-        
+
         // Additional validation for enhanced version
         if !UserSpaceMemory::can_access_user_memory() {
             return Err(SyscallError::PermissionDenied);
@@ -1017,10 +1083,10 @@ impl EnhancedUserSpaceMemory {
 
         // Enhanced validation with security checks
         UserSpaceMemory::validate_user_range_enhanced(
-            user_ptr, 
-            buffer.len() as u64, 
-            false, 
-            process_id
+            user_ptr,
+            buffer.len() as u64,
+            false,
+            process_id,
         )?;
 
         // Increment statistics
@@ -1028,29 +1094,29 @@ impl EnhancedUserSpaceMemory {
 
         // Perform the copy operation
         let result = UserSpaceMemory::copy_from_user(user_ptr, buffer);
-        
+
         // Update statistics based on result
         match &result {
             Ok(()) => {
                 // Success - could update success counters here
-            },
+            }
             Err(_) => {
                 // Error - could update error counters here
             }
         }
-        
+
         result
     }
 
     /// Copy data to user space with enhanced validation and statistics
     pub fn copy_to_user_enhanced(
         &self,
-        user_ptr: u64, 
+        user_ptr: u64,
         buffer: &[u8],
-        process_id: Option<u32>
+        process_id: Option<u32>,
     ) -> Result<(), SyscallError> {
         use core::sync::atomic::Ordering;
-        
+
         // Additional validation for enhanced version
         if !UserSpaceMemory::can_access_user_memory() {
             return Err(SyscallError::PermissionDenied);
@@ -1058,10 +1124,10 @@ impl EnhancedUserSpaceMemory {
 
         // Enhanced validation with security checks
         UserSpaceMemory::validate_user_range_enhanced(
-            user_ptr, 
-            buffer.len() as u64, 
-            true, 
-            process_id
+            user_ptr,
+            buffer.len() as u64,
+            true,
+            process_id,
         )?;
 
         // Increment statistics
@@ -1069,17 +1135,17 @@ impl EnhancedUserSpaceMemory {
 
         // Perform the copy operation
         let result = UserSpaceMemory::copy_to_user(user_ptr, buffer);
-        
+
         // Update statistics based on result
         match &result {
             Ok(()) => {
                 // Success - could update success counters here
-            },
+            }
             Err(_) => {
                 // Error - could update error counters here
             }
         }
-        
+
         result
     }
 
@@ -1089,7 +1155,7 @@ impl EnhancedUserSpaceMemory {
         user_ptr: u64,
         len: u64,
         write_access: bool,
-        process_id: Option<u32>
+        process_id: Option<u32>,
     ) -> Result<(), SyscallError> {
         UserSpaceMemory::validate_user_range_enhanced(user_ptr, len, write_access, process_id)
     }
@@ -1105,54 +1171,58 @@ impl EnhancedUserSpaceMemory {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_user_ptr_validation() {
         // Test null pointer with zero length (should succeed)
         assert!(UserSpaceMemory::validate_user_ptr(0, 0, false).is_ok());
-        
+
         // Test null pointer with non-zero length (should fail)
         assert!(UserSpaceMemory::validate_user_ptr(0, 1, false).is_err());
-        
+
         // Test overflow (should fail)
         assert!(UserSpaceMemory::validate_user_ptr(u64::MAX, 1, false).is_err());
-        
+
         // Test kernel space address (should fail)
         assert!(UserSpaceMemory::validate_user_ptr(0x8000_0000_0000, 1, false).is_err());
-        
+
         // Test too large size (should fail)
-        assert!(UserSpaceMemory::validate_user_ptr(USER_SPACE_START, (MAX_COPY_SIZE + 1) as u64, false).is_err());
+        assert!(UserSpaceMemory::validate_user_ptr(
+            USER_SPACE_START,
+            (MAX_COPY_SIZE + 1) as u64,
+            false
+        )
+        .is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_enhanced_validation() {
         // Test enhanced validation with process ID
-        let result = UserSpaceMemory::validate_user_range_enhanced(
-            USER_SPACE_START, 
-            4096, 
-            false, 
-            Some(123)
-        );
+        let result =
+            UserSpaceMemory::validate_user_range_enhanced(USER_SPACE_START, 4096, false, Some(123));
         // This might fail due to page table walking, but should not panic
         let _ = result;
     }
 
-    #[test]
+    #[test_case]
     fn test_suspicious_access_detection() {
         // Test detection of very low addresses
         assert!(UserSpaceMemory::detect_suspicious_access_patterns(0x100, 1, false).is_err());
-        
+
         // Test detection of kernel addresses
-        assert!(UserSpaceMemory::detect_suspicious_access_patterns(0x8000_0000_0000, 1, false).is_err());
-        
+        assert!(
+            UserSpaceMemory::detect_suspicious_access_patterns(0x8000_0000_0000, 1, false).is_err()
+        );
+
         // Test detection of oversized operations
         assert!(UserSpaceMemory::detect_suspicious_access_patterns(
-            USER_SPACE_START, 
-            (MAX_COPY_SIZE + 1) as u64, 
+            USER_SPACE_START,
+            (MAX_COPY_SIZE + 1) as u64,
             false
-        ).is_err());
+        )
+        .is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_page_protection_flags() {
         let flags = PageProtectionFlags {
             readable: true,
@@ -1160,80 +1230,80 @@ mod tests {
             executable: false,
             user_accessible: true,
         };
-        
+
         assert!(flags.readable);
         assert!(!flags.writable);
         assert!(!flags.executable);
         assert!(flags.user_accessible);
     }
 
-    #[test]
+    #[test_case]
     fn test_page_table_info() {
         use x86_64::structures::paging::PageTableFlags;
-        
-        let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
+
+        let flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
         let info = PageTableInfo::from_flags(flags);
-        
+
         assert!(info.present);
         assert!(info.user_accessible);
         assert!(info.writable);
         assert!(!info.no_execute);
     }
 
-    #[test]
+    #[test_case]
     fn test_memory_operation_types() {
         assert_eq!(MemoryOperation::CopyFromUser, MemoryOperation::CopyFromUser);
         assert_ne!(MemoryOperation::CopyFromUser, MemoryOperation::CopyToUser);
     }
 
-    #[test]
+    #[test_case]
     fn test_page_fault_context() {
-        let context = PageFaultContext::new(
-            MemoryOperation::CopyFromUser,
-            USER_SPACE_START,
-            4096,
-            false
+        let context =
+            PageFaultContext::new(MemoryOperation::CopyFromUser, USER_SPACE_START, 4096, false);
+
+        assert_eq!(
+            context.recovery_context.operation,
+            MemoryOperation::CopyFromUser
         );
-        
-        assert_eq!(context.recovery_context.operation, MemoryOperation::CopyFromUser);
         assert_eq!(context.recovery_context.start_addr, USER_SPACE_START);
         assert_eq!(context.recovery_context.end_addr, USER_SPACE_START + 4096);
         assert!(!context.recovery_context.is_write);
     }
 
-    #[test]
+    #[test_case]
     fn test_user_space_boundaries() {
         // Test addresses within user space
         assert!(USER_SPACE_START < USER_SPACE_END);
-        
+
         // Test that kernel space starts above user space
         assert!(USER_SPACE_END <= 0x8000_0000_0000);
     }
 
-    #[test]
+    #[test_case]
     fn test_copy_size_limits() {
         // Test that MAX_COPY_SIZE is reasonable
         assert!(MAX_COPY_SIZE > 0);
         assert!(MAX_COPY_SIZE <= 1024 * 1024 * 1024); // Should be <= 1GB
     }
 
-    #[test]
+    #[test_case]
     fn test_enhanced_user_space_memory() {
         let enhanced = EnhancedUserSpaceMemory::new();
         assert_eq!(enhanced.get_stats(), 0);
-        
+
         // Test that we can create the enhanced memory manager
         assert!(enhanced.get_stats() == 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_memory_alignment_validation() {
         // Test page-aligned access
         assert!(UserSpaceMemory::validate_memory_alignment(0x1000, 4096).is_ok());
-        
+
         // Test unaligned access (should still be ok, just not optimal)
         assert!(UserSpaceMemory::validate_memory_alignment(0x1001, 4096).is_ok());
-        
+
         // Test small aligned access
         assert!(UserSpaceMemory::validate_memory_alignment(0x1000, 8).is_ok());
     }

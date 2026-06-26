@@ -4,13 +4,20 @@
 //! with proper metadata handling, journaling, and disk I/O operations.
 
 use super::{
-    FileSystem, FileSystemType, FileSystemStats, FileMetadata, FileType, FilePermissions,
-    DirectoryEntry, OpenFlags, FsResult, FsError, InodeNumber,
+    DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats, FileSystemType,
+    FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
 use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
-use alloc::{vec, vec::Vec, string::{String, ToString}, collections::BTreeMap, format, boxed::Box};
-use spin::RwLock;
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::mem;
+use spin::RwLock;
 
 /// EXT4 superblock magic number
 const EXT4_SUPER_MAGIC: u16 = 0xEF53;
@@ -82,105 +89,105 @@ bitflags::bitflags! {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4Superblock {
-    pub s_inodes_count: u32,        // Total inode count
-    pub s_blocks_count_lo: u32,     // Total block count (low 32 bits)
-    pub s_r_blocks_count_lo: u32,   // Reserved block count (low 32 bits)
+    pub s_inodes_count: u32,         // Total inode count
+    pub s_blocks_count_lo: u32,      // Total block count (low 32 bits)
+    pub s_r_blocks_count_lo: u32,    // Reserved block count (low 32 bits)
     pub s_free_blocks_count_lo: u32, // Free block count (low 32 bits)
-    pub s_free_inodes_count: u32,   // Free inode count
-    pub s_first_data_block: u32,    // First data block
-    pub s_log_block_size: u32,      // Block size (log2(block_size) - 10)
-    pub s_log_cluster_size: u32,    // Cluster size (log2(cluster_size) - 10)
-    pub s_blocks_per_group: u32,    // Blocks per group
-    pub s_clusters_per_group: u32,  // Clusters per group
-    pub s_inodes_per_group: u32,    // Inodes per group
-    pub s_mtime: u32,               // Mount time
-    pub s_wtime: u32,               // Write time
-    pub s_mnt_count: u16,           // Mount count
-    pub s_max_mnt_count: u16,       // Maximum mount count
-    pub s_magic: u16,               // Magic signature
-    pub s_state: u16,               // File system state
-    pub s_errors: u16,              // Error handling
-    pub s_minor_rev_level: u16,     // Minor revision level
-    pub s_lastcheck: u32,           // Last check time
-    pub s_checkinterval: u32,       // Check interval
-    pub s_creator_os: u32,          // Creator OS
-    pub s_rev_level: u32,           // Revision level
-    pub s_def_resuid: u16,          // Default reserved user ID
-    pub s_def_resgid: u16,          // Default reserved group ID
-    
+    pub s_free_inodes_count: u32,    // Free inode count
+    pub s_first_data_block: u32,     // First data block
+    pub s_log_block_size: u32,       // Block size (log2(block_size) - 10)
+    pub s_log_cluster_size: u32,     // Cluster size (log2(cluster_size) - 10)
+    pub s_blocks_per_group: u32,     // Blocks per group
+    pub s_clusters_per_group: u32,   // Clusters per group
+    pub s_inodes_per_group: u32,     // Inodes per group
+    pub s_mtime: u32,                // Mount time
+    pub s_wtime: u32,                // Write time
+    pub s_mnt_count: u16,            // Mount count
+    pub s_max_mnt_count: u16,        // Maximum mount count
+    pub s_magic: u16,                // Magic signature
+    pub s_state: u16,                // File system state
+    pub s_errors: u16,               // Error handling
+    pub s_minor_rev_level: u16,      // Minor revision level
+    pub s_lastcheck: u32,            // Last check time
+    pub s_checkinterval: u32,        // Check interval
+    pub s_creator_os: u32,           // Creator OS
+    pub s_rev_level: u32,            // Revision level
+    pub s_def_resuid: u16,           // Default reserved user ID
+    pub s_def_resgid: u16,           // Default reserved group ID
+
     // EXT4_DYNAMIC_REV specific fields
-    pub s_first_ino: u32,           // First non-reserved inode
-    pub s_inode_size: u16,          // Size of inode structure
-    pub s_block_group_nr: u16,      // Block group number of this superblock
-    pub s_feature_compat: u32,      // Compatible feature set
-    pub s_feature_incompat: u32,    // Incompatible feature set
-    pub s_feature_ro_compat: u32,   // Read-only compatible feature set
-    pub s_uuid: [u8; 16],           // 128-bit UUID for volume
-    pub s_volume_name: [u8; 16],    // Volume name
-    pub s_last_mounted: [u8; 64],   // Directory where last mounted
+    pub s_first_ino: u32,              // First non-reserved inode
+    pub s_inode_size: u16,             // Size of inode structure
+    pub s_block_group_nr: u16,         // Block group number of this superblock
+    pub s_feature_compat: u32,         // Compatible feature set
+    pub s_feature_incompat: u32,       // Incompatible feature set
+    pub s_feature_ro_compat: u32,      // Read-only compatible feature set
+    pub s_uuid: [u8; 16],              // 128-bit UUID for volume
+    pub s_volume_name: [u8; 16],       // Volume name
+    pub s_last_mounted: [u8; 64],      // Directory where last mounted
     pub s_algorithm_usage_bitmap: u32, // For compression
-    
+
     // Performance hints
-    pub s_prealloc_blocks: u8,      // Number of blocks to preallocate for files
-    pub s_prealloc_dir_blocks: u8,  // Number of blocks to preallocate for directories
+    pub s_prealloc_blocks: u8, // Number of blocks to preallocate for files
+    pub s_prealloc_dir_blocks: u8, // Number of blocks to preallocate for directories
     pub s_reserved_gdt_blocks: u16, // Number of reserved GDT entries for future filesystem expansion
-    
+
     // Journaling support
-    pub s_journal_uuid: [u8; 16],   // UUID of journal superblock
-    pub s_journal_inum: u32,        // Inode number of journal file
-    pub s_journal_dev: u32,         // Device number of journal file
-    pub s_last_orphan: u32,         // Start of list of inodes to delete
-    pub s_hash_seed: [u32; 4],      // HTREE hash seed
-    pub s_def_hash_version: u8,     // Default hash version to use
-    pub s_jnl_backup_type: u8,      // Journal backup type
-    pub s_desc_size: u16,           // Size of group descriptor
-    pub s_default_mount_opts: u32,  // Default mount options
-    pub s_first_meta_bg: u32,       // First metablock block group
-    pub s_mkfs_time: u32,           // When the filesystem was created
-    pub s_jnl_blocks: [u32; 17],    // Backup of the journal inode
-    
+    pub s_journal_uuid: [u8; 16],  // UUID of journal superblock
+    pub s_journal_inum: u32,       // Inode number of journal file
+    pub s_journal_dev: u32,        // Device number of journal file
+    pub s_last_orphan: u32,        // Start of list of inodes to delete
+    pub s_hash_seed: [u32; 4],     // HTREE hash seed
+    pub s_def_hash_version: u8,    // Default hash version to use
+    pub s_jnl_backup_type: u8,     // Journal backup type
+    pub s_desc_size: u16,          // Size of group descriptor
+    pub s_default_mount_opts: u32, // Default mount options
+    pub s_first_meta_bg: u32,      // First metablock block group
+    pub s_mkfs_time: u32,          // When the filesystem was created
+    pub s_jnl_blocks: [u32; 17],   // Backup of the journal inode
+
     // 64-bit support
-    pub s_blocks_count_hi: u32,     // High 32 bits of block count
-    pub s_r_blocks_count_hi: u32,   // High 32 bits of reserved block count
-    pub s_free_blocks_count_hi: u32, // High 32 bits of free block count
-    pub s_min_extra_isize: u16,     // All inodes have at least this many bytes
-    pub s_want_extra_isize: u16,    // New inodes should reserve this many bytes
-    pub s_flags: u32,               // Miscellaneous flags
-    pub s_raid_stride: u16,         // RAID stride
-    pub s_mmp_update_interval: u16, // Number of seconds to wait in MMP checking
-    pub s_mmp_block: u64,           // Block for multi-mount protection data
-    pub s_raid_stripe_width: u32,   // Blocks on all data disks (N * stride)
-    pub s_log_groups_per_flex: u8,  // FLEX_BG group size
-    pub s_checksum_type: u8,        // Metadata checksum algorithm type
-    pub s_reserved_pad: u16,        // Padding
-    pub s_kbytes_written: u64,      // Number of lifetime kilobytes written
-    pub s_snapshot_inum: u32,       // Inode number of active snapshot
-    pub s_snapshot_id: u32,         // Sequential ID of active snapshot
+    pub s_blocks_count_hi: u32,         // High 32 bits of block count
+    pub s_r_blocks_count_hi: u32,       // High 32 bits of reserved block count
+    pub s_free_blocks_count_hi: u32,    // High 32 bits of free block count
+    pub s_min_extra_isize: u16,         // All inodes have at least this many bytes
+    pub s_want_extra_isize: u16,        // New inodes should reserve this many bytes
+    pub s_flags: u32,                   // Miscellaneous flags
+    pub s_raid_stride: u16,             // RAID stride
+    pub s_mmp_update_interval: u16,     // Number of seconds to wait in MMP checking
+    pub s_mmp_block: u64,               // Block for multi-mount protection data
+    pub s_raid_stripe_width: u32,       // Blocks on all data disks (N * stride)
+    pub s_log_groups_per_flex: u8,      // FLEX_BG group size
+    pub s_checksum_type: u8,            // Metadata checksum algorithm type
+    pub s_reserved_pad: u16,            // Padding
+    pub s_kbytes_written: u64,          // Number of lifetime kilobytes written
+    pub s_snapshot_inum: u32,           // Inode number of active snapshot
+    pub s_snapshot_id: u32,             // Sequential ID of active snapshot
     pub s_snapshot_r_blocks_count: u64, // Number of blocks reserved for active snapshot's future use
-    pub s_snapshot_list: u32,       // Inode number of the head of the on-disk snapshot list
-    pub s_error_count: u32,         // Number of file system errors
-    pub s_first_error_time: u32,    // First time an error happened
-    pub s_first_error_ino: u32,     // Inode involved in first error
-    pub s_first_error_block: u64,   // Block involved in first error
-    pub s_first_error_func: [u8; 32], // Function where the error happened
-    pub s_first_error_line: u32,    // Line number where error happened
-    pub s_last_error_time: u32,     // Most recent time of an error
-    pub s_last_error_ino: u32,      // Inode involved in most recent error
-    pub s_last_error_line: u32,     // Line number where most recent error happened
-    pub s_last_error_block: u64,    // Block involved in most recent error
-    pub s_last_error_func: [u8; 32], // Function where the most recent error happened
-    pub s_mount_opts: [u8; 64],     // ASCIIZ string of mount options
-    pub s_usr_quota_inum: u32,      // Inode for tracking user quota
-    pub s_grp_quota_inum: u32,      // Inode for tracking group quota
-    pub s_overhead_clusters: u32,   // Overhead clusters/blocks in fs
-    pub s_backup_bgs: [u32; 2],     // Groups with sparse_super2 SBs
-    pub s_encrypt_algos: [u8; 4],   // Encryption algorithms in use
-    pub s_encrypt_pw_salt: [u8; 16], // Salt used for string2key algorithm
-    pub s_lpf_ino: u32,             // Location of the lost+found inode
-    pub s_prj_quota_inum: u32,      // Inode for tracking project quota
-    pub s_checksum_seed: u32,       // crc32c(uuid) if csum_seed set
-    pub s_reserved: [u32; 98],      // Padding to the end of the block
-    pub s_checksum: u32,            // crc32c(superblock)
+    pub s_snapshot_list: u32,           // Inode number of the head of the on-disk snapshot list
+    pub s_error_count: u32,             // Number of file system errors
+    pub s_first_error_time: u32,        // First time an error happened
+    pub s_first_error_ino: u32,         // Inode involved in first error
+    pub s_first_error_block: u64,       // Block involved in first error
+    pub s_first_error_func: [u8; 32],   // Function where the error happened
+    pub s_first_error_line: u32,        // Line number where error happened
+    pub s_last_error_time: u32,         // Most recent time of an error
+    pub s_last_error_ino: u32,          // Inode involved in most recent error
+    pub s_last_error_line: u32,         // Line number where most recent error happened
+    pub s_last_error_block: u64,        // Block involved in most recent error
+    pub s_last_error_func: [u8; 32],    // Function where the most recent error happened
+    pub s_mount_opts: [u8; 64],         // ASCIIZ string of mount options
+    pub s_usr_quota_inum: u32,          // Inode for tracking user quota
+    pub s_grp_quota_inum: u32,          // Inode for tracking group quota
+    pub s_overhead_clusters: u32,       // Overhead clusters/blocks in fs
+    pub s_backup_bgs: [u32; 2],         // Groups with sparse_super2 SBs
+    pub s_encrypt_algos: [u8; 4],       // Encryption algorithms in use
+    pub s_encrypt_pw_salt: [u8; 16],    // Salt used for string2key algorithm
+    pub s_lpf_ino: u32,                 // Location of the lost+found inode
+    pub s_prj_quota_inum: u32,          // Inode for tracking project quota
+    pub s_checksum_seed: u32,           // crc32c(uuid) if csum_seed set
+    pub s_reserved: [u32; 98],          // Padding to the end of the block
+    pub s_checksum: u32,                // crc32c(superblock)
 }
 
 /// EXT4 group descriptor
@@ -199,19 +206,19 @@ pub struct Ext4GroupDesc {
     pub bg_inode_bitmap_csum_lo: u16, // crc32c(s_uuid+grp_num+ibitmap) LE (low 16 bits)
     pub bg_itable_unused_lo: u16,     // Unused inodes count (low 16 bits)
     pub bg_checksum: u16,             // crc16(sb_uuid+group+desc)
-    
+
     // 64-bit fields (only if INCOMPAT_64BIT is set)
-    pub bg_block_bitmap_hi: u32,      // Blocks bitmap block (high 32 bits)
-    pub bg_inode_bitmap_hi: u32,      // Inodes bitmap block (high 32 bits)
-    pub bg_inode_table_hi: u32,       // Inodes table block (high 32 bits)
+    pub bg_block_bitmap_hi: u32, // Blocks bitmap block (high 32 bits)
+    pub bg_inode_bitmap_hi: u32, // Inodes bitmap block (high 32 bits)
+    pub bg_inode_table_hi: u32,  // Inodes table block (high 32 bits)
     pub bg_free_blocks_count_hi: u16, // Free blocks count (high 16 bits)
     pub bg_free_inodes_count_hi: u16, // Free inodes count (high 16 bits)
-    pub bg_used_dirs_count_hi: u16,   // Directories count (high 16 bits)
-    pub bg_itable_unused_hi: u16,     // Unused inodes count (high 16 bits)
-    pub bg_exclude_bitmap_hi: u32,    // Exclude bitmap block (high 32 bits)
+    pub bg_used_dirs_count_hi: u16, // Directories count (high 16 bits)
+    pub bg_itable_unused_hi: u16, // Unused inodes count (high 16 bits)
+    pub bg_exclude_bitmap_hi: u32, // Exclude bitmap block (high 32 bits)
     pub bg_block_bitmap_csum_hi: u16, // crc32c(s_uuid+grp_num+bbitmap) BE (high 16 bits)
     pub bg_inode_bitmap_csum_hi: u16, // crc32c(s_uuid+grp_num+ibitmap) BE (high 16 bits)
-    pub bg_reserved: u32,             // Padding
+    pub bg_reserved: u32,        // Padding
 }
 
 /// EXT4 inode structure
@@ -243,11 +250,11 @@ pub struct Ext4Inode {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DirEntry2 {
-    pub inode: u32,     // Inode number
-    pub rec_len: u16,   // Directory entry length
-    pub name_len: u8,   // Name length
-    pub file_type: u8,  // File type
-    // name follows here (variable length)
+    pub inode: u32,   // Inode number
+    pub rec_len: u16, // Directory entry length
+    pub name_len: u8, // Name length
+    pub file_type: u8, // File type
+                      // name follows here (variable length)
 }
 
 /// EXT4 filesystem implementation
@@ -287,29 +294,44 @@ impl Ext4FileSystem {
     /// Read superblock from disk
     fn read_superblock(&mut self) -> FsResult<()> {
         let mut buffer = vec![0u8; 1024];
-        
+
         // Superblock is at offset 1024 bytes (sector 2 for 512-byte sectors)
-        read_storage_sectors(self.device_id, 2, &mut buffer)
-            .map_err(|_| FsError::IoError)?;
+        read_storage_sectors(self.device_id, 2, &mut buffer).map_err(|_| FsError::IoError)?;
 
         // Parse superblock
-        self.superblock = unsafe {
-            core::ptr::read_unaligned(buffer.as_ptr() as *const Ext4Superblock)
-        };
+        self.superblock =
+            unsafe { core::ptr::read_unaligned(buffer.as_ptr() as *const Ext4Superblock) };
 
         // Validate magic number
         if self.superblock.s_magic != EXT4_SUPER_MAGIC {
             return Err(FsError::InvalidArgument);
         }
 
-        // Calculate block size
-        self.block_size = 1024 << self.superblock.s_log_block_size;
+        // Calculate block size. s_log_block_size is semi-trusted on-disk data; a large
+        // value would overflow the shift, so use checked_shl and bound the result.
+        self.block_size = 1024u32
+            .checked_shl(self.superblock.s_log_block_size)
+            .ok_or(FsError::InvalidArgument)?;
         if self.block_size < EXT4_MIN_BLOCK_SIZE || self.block_size > EXT4_MAX_BLOCK_SIZE {
             return Err(FsError::InvalidArgument);
         }
 
         self.blocks_per_group = self.superblock.s_blocks_per_group;
         self.inodes_per_group = self.superblock.s_inodes_per_group;
+
+        // These are later used as divisors; reject zero to avoid div-by-zero panics.
+        if self.blocks_per_group == 0 || self.inodes_per_group == 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
+        // Validate inode size (dynamic-rev only): must be non-zero and fit within a
+        // block, since it is used as a divisor and to index within a block.
+        if self.superblock.s_rev_level >= 1 {
+            let inode_size = self.superblock.s_inode_size as u32;
+            if inode_size == 0 || inode_size > self.block_size {
+                return Err(FsError::InvalidArgument);
+            }
+        }
 
         Ok(())
     }
@@ -319,15 +341,22 @@ impl Ext4FileSystem {
         let total_blocks = self.get_total_blocks();
         let blocks_per_group = self.blocks_per_group as u64;
         let group_count = (total_blocks + blocks_per_group - 1) / blocks_per_group;
-        
+
         // Group descriptor table starts at block 1 (or block 2 if block size is 1024)
         let gdt_block = if self.block_size == 1024 { 2 } else { 1 };
-        
-        let desc_size = if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
-            self.superblock.s_desc_size as usize
-        } else {
-            32 // Old 32-byte descriptor size
-        };
+
+        let desc_size =
+            if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
+                self.superblock.s_desc_size as usize
+            } else {
+                32 // Old 32-byte descriptor size
+            };
+
+        // s_desc_size is semi-trusted; reject zero or larger-than-block values so the
+        // divisions below cannot panic.
+        if desc_size == 0 || desc_size > self.block_size as usize {
+            return Err(FsError::InvalidArgument);
+        }
 
         let descs_per_block = self.block_size as usize / desc_size;
         let gdt_blocks = (group_count as usize + descs_per_block - 1) / descs_per_block;
@@ -335,12 +364,12 @@ impl Ext4FileSystem {
         for block_idx in 0..gdt_blocks {
             let block_num = gdt_block + block_idx as u64;
             let block_data = self.read_block(block_num)?;
-            
+
             for desc_idx in 0..descs_per_block {
                 if self.group_desc_table.len() >= group_count as usize {
                     break;
                 }
-                
+
                 let offset = desc_idx * desc_size;
                 if offset + desc_size <= block_data.len() {
                     let desc = unsafe {
@@ -359,7 +388,8 @@ impl Ext4FileSystem {
     /// Get total number of blocks in filesystem
     fn get_total_blocks(&self) -> u64 {
         if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
-            ((self.superblock.s_blocks_count_hi as u64) << 32) | (self.superblock.s_blocks_count_lo as u64)
+            ((self.superblock.s_blocks_count_hi as u64) << 32)
+                | (self.superblock.s_blocks_count_lo as u64)
         } else {
             self.superblock.s_blocks_count_lo as u64
         }
@@ -452,11 +482,13 @@ impl Ext4FileSystem {
         }
 
         let group_desc = &self.group_desc_table[group as usize];
-        let inode_table_block = if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
-            ((group_desc.bg_inode_table_hi as u64) << 32) | (group_desc.bg_inode_table_lo as u64)
-        } else {
-            group_desc.bg_inode_table_lo as u64
-        };
+        let inode_table_block =
+            if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
+                ((group_desc.bg_inode_table_hi as u64) << 32)
+                    | (group_desc.bg_inode_table_lo as u64)
+            } else {
+                group_desc.bg_inode_table_lo as u64
+            };
 
         let inode_size = if self.superblock.s_rev_level >= 1 {
             self.superblock.s_inode_size as usize
@@ -469,15 +501,13 @@ impl Ext4FileSystem {
         let inode_offset = (index as usize % inodes_per_block) * inode_size;
 
         let block_data = self.read_block(inode_table_block + block_offset as u64)?;
-        
+
         if inode_offset + mem::size_of::<Ext4Inode>() > block_data.len() {
             return Err(FsError::IoError);
         }
 
         let inode = unsafe {
-            core::ptr::read_unaligned(
-                block_data.as_ptr().add(inode_offset) as *const Ext4Inode
-            )
+            core::ptr::read_unaligned(block_data.as_ptr().add(inode_offset) as *const Ext4Inode)
         };
 
         // Cache the inode
@@ -558,9 +588,13 @@ impl Ext4FileSystem {
                     break;
                 }
 
-                if dir_entry.name_len > 0 && offset + mem::size_of::<Ext4DirEntry2>() + dir_entry.name_len as usize <= block_data.len() {
-                    let name_bytes = &block_data[offset + mem::size_of::<Ext4DirEntry2>()..offset + mem::size_of::<Ext4DirEntry2>() + dir_entry.name_len as usize];
-                    
+                if dir_entry.name_len > 0
+                    && offset + mem::size_of::<Ext4DirEntry2>() + dir_entry.name_len as usize
+                        <= block_data.len()
+                {
+                    let name_bytes = &block_data[offset + mem::size_of::<Ext4DirEntry2>()
+                        ..offset + mem::size_of::<Ext4DirEntry2>() + dir_entry.name_len as usize];
+
                     if let Ok(name) = core::str::from_utf8(name_bytes) {
                         let file_type = match dir_entry.file_type {
                             1 => FileType::Regular,
@@ -600,7 +634,7 @@ impl Ext4FileSystem {
         for component in components {
             let inode = self.read_inode(current_inode)?;
             let metadata = self.inode_to_metadata(current_inode, &inode);
-            
+
             if metadata.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
@@ -632,11 +666,13 @@ impl FileSystem for Ext4FileSystem {
 
     fn statfs(&self) -> FsResult<FileSystemStats> {
         let total_blocks = self.get_total_blocks();
-        let free_blocks = if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
-            ((self.superblock.s_free_blocks_count_hi as u64) << 32) | (self.superblock.s_free_blocks_count_lo as u64)
-        } else {
-            self.superblock.s_free_blocks_count_lo as u64
-        };
+        let free_blocks =
+            if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
+                ((self.superblock.s_free_blocks_count_hi as u64) << 32)
+                    | (self.superblock.s_free_blocks_count_lo as u64)
+            } else {
+                self.superblock.s_free_blocks_count_lo as u64
+            };
 
         Ok(FileSystemStats {
             total_blocks,
@@ -690,15 +726,17 @@ impl FileSystem for Ext4FileSystem {
             }
 
             let block_data = self.read_block(block_ptr as u64)?;
-            let copy_offset = if block_idx == start_block { start_offset as usize } else { 0 };
-            let copy_len = core::cmp::min(
-                block_data.len() - copy_offset,
-                bytes_to_read - bytes_read
-            );
+            let copy_offset = if block_idx == start_block {
+                start_offset as usize
+            } else {
+                0
+            };
+            let copy_len =
+                core::cmp::min(block_data.len() - copy_offset, bytes_to_read - bytes_read);
 
             buffer[bytes_read..bytes_read + copy_len]
                 .copy_from_slice(&block_data[copy_offset..copy_offset + copy_len]);
-            
+
             bytes_read += copy_len;
         }
 
@@ -768,10 +806,10 @@ impl FileSystem for Ext4FileSystem {
             let target_bytes = unsafe {
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(inode.i_block) as *const u8,
-                    metadata.size as usize
+                    metadata.size as usize,
                 )
             };
-            
+
             core::str::from_utf8(target_bytes)
                 .map(|s| s.to_string())
                 .map_err(|_| FsError::IoError)
@@ -779,7 +817,7 @@ impl FileSystem for Ext4FileSystem {
             // Large symlinks are stored in blocks
             let mut buffer = vec![0u8; metadata.size as usize];
             self.read(inode_num, 0, &mut buffer)?;
-            
+
             core::str::from_utf8(&buffer)
                 .map(|s| s.to_string())
                 .map_err(|_| FsError::IoError)

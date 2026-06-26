@@ -8,8 +8,8 @@ pub mod tar;
 pub use gzip::GzipDecoder;
 pub use tar::TarArchive;
 
+use crate::package::{PackageError, PackageResult};
 use alloc::vec::Vec;
-use crate::package::{PackageResult, PackageError};
 
 /// Compression format types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +39,14 @@ impl CompressionFormat {
         }
 
         // XZ: fd 37 7a 58 5a 00
-        if data.len() >= 6 && data[0] == 0xfd && data[1] == 0x37
-            && data[2] == 0x7a && data[3] == 0x58 && data[4] == 0x5a && data[5] == 0x00 {
+        if data.len() >= 6
+            && data[0] == 0xfd
+            && data[1] == 0x37
+            && data[2] == 0x7a
+            && data[3] == 0x58
+            && data[4] == 0x5a
+            && data[5] == 0x00
+        {
             return CompressionFormat::Xz;
         }
 
@@ -65,13 +71,13 @@ pub fn decompress(data: &[u8]) -> PackageResult<Vec<u8>> {
     match format {
         CompressionFormat::Gzip => GzipDecoder::decode(data),
         CompressionFormat::Xz => Err(PackageError::NotImplemented(
-            "XZ decompression not yet implemented. Consider using libxz port.".into()
+            "XZ decompression not yet implemented. Consider using libxz port.".into(),
         )),
         CompressionFormat::Zstd => Err(PackageError::NotImplemented(
-            "Zstd decompression not yet implemented. Consider using zstd-rs.".into()
+            "Zstd decompression not yet implemented. Consider using zstd-rs.".into(),
         )),
         CompressionFormat::Bzip2 => Err(PackageError::NotImplemented(
-            "Bzip2 decompression not yet implemented. Consider using bzip2-rs.".into()
+            "Bzip2 decompression not yet implemented. Consider using bzip2-rs.".into(),
         )),
         CompressionFormat::None => Ok(data.to_vec()),
     }

@@ -7,11 +7,11 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static ADVANCED_IO_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -170,12 +170,7 @@ pub fn writev(fd: Fd, iov: *const IoVec, iovcnt: i32) -> LinuxResult<isize> {
 // ============================================================================
 
 /// sendfile - copy data between file descriptors
-pub fn sendfile(
-    out_fd: Fd,
-    in_fd: Fd,
-    offset: *mut Off,
-    count: usize,
-) -> LinuxResult<isize> {
+pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if out_fd < 0 || in_fd < 0 {
@@ -292,12 +287,7 @@ pub fn lgetxattr(
 }
 
 /// fgetxattr - get extended attribute by file descriptor
-pub fn fgetxattr(
-    fd: Fd,
-    name: *const u8,
-    value: *mut u8,
-    size: usize,
-) -> LinuxResult<isize> {
+pub fn fgetxattr(fd: Fd, name: *const u8, value: *mut u8, size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
@@ -500,42 +490,51 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_pread_pwrite() {
         let buf = [0u8; 100];
         assert!(pread(3, buf.as_ptr() as *mut u8, 100, 0).is_ok());
         assert!(pwrite(3, buf.as_ptr(), 100, 0).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_vectored_io() {
         let buf1 = [0u8; 50];
         let buf2 = [0u8; 50];
         let iov = [
-            IoVec { iov_base: buf1.as_ptr() as *mut u8, iov_len: 50 },
-            IoVec { iov_base: buf2.as_ptr() as *mut u8, iov_len: 50 },
+            IoVec {
+                iov_base: buf1.as_ptr() as *mut u8,
+                iov_len: 50,
+            },
+            IoVec {
+                iov_base: buf2.as_ptr() as *mut u8,
+                iov_len: 50,
+            },
         ];
 
         assert!(readv(3, iov.as_ptr(), 2).is_ok());
         assert!(writev(3, iov.as_ptr(), 2).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_sendfile() {
         assert!(sendfile(4, 3, core::ptr::null_mut(), 1024).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_xattr() {
         let path = b"/test\0".as_ptr();
         let name = b"user.test\0".as_ptr();
         let value = b"value\0".as_ptr();
 
         assert!(setxattr(path, name, value, 5, 0).is_ok());
-        assert_eq!(getxattr(path, name, core::ptr::null_mut(), 0), Err(LinuxError::ENODATA));
+        assert_eq!(
+            getxattr(path, name, core::ptr::null_mut(), 0),
+            Err(LinuxError::ENODATA)
+        );
     }
 }

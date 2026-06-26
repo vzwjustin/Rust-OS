@@ -4,8 +4,8 @@
 //! This is a minimal implementation - for production use, consider
 //! integrating a full implementation like flate2 or miniz_oxide.
 
-use alloc::{vec::Vec, format};
-use crate::package::{PackageResult, PackageError};
+use crate::package::{PackageError, PackageResult};
+use alloc::{format, vec::Vec};
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 const GZIP_HEADER_SIZE: usize = 10;
@@ -28,21 +28,22 @@ impl GzipDecoder {
         // Validate gzip header
         if data.len() < GZIP_HEADER_SIZE {
             return Err(PackageError::InvalidFormat(
-                "File too small to be gzip".into()
+                "File too small to be gzip".into(),
             ));
         }
 
         if data[0] != GZIP_MAGIC[0] || data[1] != GZIP_MAGIC[1] {
             return Err(PackageError::InvalidFormat(
-                "Invalid gzip magic number".into()
+                "Invalid gzip magic number".into(),
             ));
         }
 
         // Check compression method (should be 8 for DEFLATE)
         if data[2] != 8 {
-            return Err(PackageError::InvalidFormat(
-                format!("Unsupported compression method: {}", data[2])
-            ));
+            return Err(PackageError::InvalidFormat(format!(
+                "Unsupported compression method: {}",
+                data[2]
+            )));
         }
 
         let flags = data[3];
@@ -80,14 +81,14 @@ impl GzipDecoder {
 
         if offset >= data.len() {
             return Err(PackageError::InvalidFormat(
-                "Gzip header extends beyond data".into()
+                "Gzip header extends beyond data".into(),
             ));
         }
 
         // The compressed data is everything except the last 8 bytes (CRC32 + size)
         if data.len() < offset + 8 {
             return Err(PackageError::InvalidFormat(
-                "Gzip file too short for footer".into()
+                "Gzip file too short for footer".into(),
             ));
         }
 
@@ -102,10 +103,7 @@ impl GzipDecoder {
     /// This implementation uses miniz_oxide's core streaming decompressor
     /// for no_std compatibility. It handles raw DEFLATE data as used by gzip.
     fn decompress_deflate(compressed: &[u8]) -> PackageResult<Vec<u8>> {
-        use miniz_oxide::inflate::core::{
-            decompress as tinfl_decompress,
-            DecompressorOxide,
-        };
+        use miniz_oxide::inflate::core::{decompress as tinfl_decompress, DecompressorOxide};
         use miniz_oxide::inflate::TINFLStatus;
 
         // Flags for raw DEFLATE (gzip uses raw deflate without zlib wrapper)
@@ -148,29 +146,29 @@ impl GzipDecoder {
                 TINFLStatus::NeedsMoreInput => {
                     if in_pos >= compressed.len() {
                         return Err(PackageError::ExtractionError(
-                            "Incomplete DEFLATE stream: unexpected end of input".into()
+                            "Incomplete DEFLATE stream: unexpected end of input".into(),
                         ));
                     }
                     continue;
                 }
                 TINFLStatus::BadParam => {
                     return Err(PackageError::ExtractionError(
-                        "DEFLATE decompression failed: bad parameter".into()
+                        "DEFLATE decompression failed: bad parameter".into(),
                     ));
                 }
                 TINFLStatus::Adler32Mismatch => {
                     return Err(PackageError::ExtractionError(
-                        "DEFLATE decompression failed: checksum mismatch".into()
+                        "DEFLATE decompression failed: checksum mismatch".into(),
                     ));
                 }
                 TINFLStatus::Failed => {
                     return Err(PackageError::ExtractionError(
-                        "DEFLATE decompression failed: corrupted data".into()
+                        "DEFLATE decompression failed: corrupted data".into(),
                     ));
                 }
                 TINFLStatus::FailedCannotMakeProgress => {
                     return Err(PackageError::ExtractionError(
-                        "DEFLATE decompression failed: cannot make progress".into()
+                        "DEFLATE decompression failed: cannot make progress".into(),
                     ));
                 }
             }
@@ -187,7 +185,7 @@ impl GzipDecoder {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_gzip_validation() {
         let valid_gzip = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00];
         assert!(GzipDecoder::validate(&valid_gzip));

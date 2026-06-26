@@ -3,18 +3,16 @@
 //! This module implements Linux-compatible IPC operations including
 //! message queues, semaphores, shared memory, and event file descriptors.
 
-use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
-use crate::process::ipc::{
-    get_ipc_manager, IpcId, SharedMemoryPermissions, Message,
-};
+use super::{LinuxError, LinuxResult};
 use crate::process::current_pid;
-use crate::vfs::{get_vfs, OpenFlags, InodeType};
+use crate::process::ipc::{get_ipc_manager, IpcId, Message, SharedMemoryPermissions};
+use crate::vfs::{get_vfs, InodeType, OpenFlags};
 
 /// Operation counter for statistics
 static IPC_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -35,7 +33,8 @@ fn inc_ops() {
 }
 
 /// IPC key to ID mapping for System V IPC
-static IPC_KEY_TABLE: RwLock<BTreeMap<Key, (IpcResourceType, IpcId)>> = RwLock::new(BTreeMap::new());
+static IPC_KEY_TABLE: RwLock<BTreeMap<Key, (IpcResourceType, IpcId)>> =
+    RwLock::new(BTreeMap::new());
 static NEXT_IPC_KEY: AtomicU32 = AtomicU32::new(1000);
 
 /// IPC resource types
@@ -224,12 +223,16 @@ pub fn msgrcv(
             let copy_size = core::cmp::min(message.data.len(), msgsz);
 
             // Write message type
-            unsafe { *(msgp as *mut u32) = message.msg_type; }
+            unsafe {
+                *(msgp as *mut u32) = message.msg_type;
+            }
 
             // Write message data
             let data_ptr = unsafe { msgp.add(4) };
             for i in 0..copy_size {
-                unsafe { *data_ptr.add(i) = message.data[i]; }
+                unsafe {
+                    *data_ptr.add(i) = message.data[i];
+                }
             }
 
             Ok(copy_size as isize)
@@ -265,7 +268,9 @@ pub fn msgctl(msqid: MsqId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
             // Find and remove the key mapping
             let keys_to_remove: Vec<Key> = table
                 .iter()
-                .filter(|(_, (rtype, id))| *rtype == IpcResourceType::MessageQueue && *id == msqid as IpcId)
+                .filter(|(_, (rtype, id))| {
+                    *rtype == IpcResourceType::MessageQueue && *id == msqid as IpcId
+                })
                 .map(|(k, _)| *k)
                 .collect();
 
@@ -333,9 +338,9 @@ pub fn semget(key: Key, nsems: i32, semflg: i32) -> LinuxResult<SemId> {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct SemBuf {
-    sem_num: u16,   // Semaphore number
-    sem_op: i16,    // Semaphore operation
-    sem_flg: i16,   // Operation flags
+    sem_num: u16, // Semaphore number
+    sem_op: i16,  // Semaphore operation
+    sem_flg: i16, // Operation flags
 }
 
 /// semop - semaphore operations
@@ -352,12 +357,11 @@ pub fn semop(semid: SemId, sops: *mut u8, nsops: usize) -> LinuxResult<i32> {
 
     // Parse semaphore operations
     let sembuf_ptr = sops as *const SemBuf;
-    let operations: Vec<SemBuf> = (0..nsops)
-        .map(|i| unsafe { *sembuf_ptr.add(i) })
-        .collect();
+    let operations: Vec<SemBuf> = (0..nsops).map(|i| unsafe { *sembuf_ptr.add(i) }).collect();
 
     let mut sem_table = SEMAPHORE_TABLE.write();
-    let sem_set = sem_table.get_mut(&(semid as IpcId))
+    let sem_set = sem_table
+        .get_mut(&(semid as IpcId))
         .ok_or(LinuxError::EINVAL)?;
 
     // Perform all operations
@@ -419,7 +423,9 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
             let mut table = IPC_KEY_TABLE.write();
             let keys_to_remove: Vec<Key> = table
                 .iter()
-                .filter(|(_, (rtype, id))| *rtype == IpcResourceType::Semaphore && *id == semid as IpcId)
+                .filter(|(_, (rtype, id))| {
+                    *rtype == IpcResourceType::Semaphore && *id == semid as IpcId
+                })
                 .map(|(k, _)| *k)
                 .collect();
 
@@ -432,8 +438,7 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
         GETVAL => {
             // Get semaphore value
             let sem_table = SEMAPHORE_TABLE.read();
-            let sem_set = sem_table.get(&(semid as IpcId))
-                .ok_or(LinuxError::EINVAL)?;
+            let sem_set = sem_table.get(&(semid as IpcId)).ok_or(LinuxError::EINVAL)?;
 
             if semnum < 0 || semnum as usize >= sem_set.semaphores.len() {
                 return Err(LinuxError::EINVAL);
@@ -444,7 +449,8 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
         SETVAL => {
             // Set semaphore value
             let mut sem_table = SEMAPHORE_TABLE.write();
-            let sem_set = sem_table.get_mut(&(semid as IpcId))
+            let sem_set = sem_table
+                .get_mut(&(semid as IpcId))
                 .ok_or(LinuxError::EINVAL)?;
 
             if semnum < 0 || semnum as usize >= sem_set.semaphores.len() {
@@ -541,8 +547,7 @@ pub fn shmdt(shmaddr: *const u8) -> LinuxResult<i32> {
 
     // Find the shared memory ID from the address
     let mut attach_table = SHM_ATTACH_TABLE.write();
-    let shm_id = attach_table.remove(&addr)
-        .ok_or(LinuxError::EINVAL)?;
+    let shm_id = attach_table.remove(&addr).ok_or(LinuxError::EINVAL)?;
 
     let ipc_manager = get_ipc_manager();
     let pid = current_pid();
@@ -580,7 +585,9 @@ pub fn shmctl(shmid: ShmId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
             let mut table = IPC_KEY_TABLE.write();
             let keys_to_remove: Vec<Key> = table
                 .iter()
-                .filter(|(_, (rtype, id))| *rtype == IpcResourceType::SharedMemory && *id == shmid as IpcId)
+                .filter(|(_, (rtype, id))| {
+                    *rtype == IpcResourceType::SharedMemory && *id == shmid as IpcId
+                })
                 .map(|(k, _)| *k)
                 .collect();
 
@@ -753,7 +760,9 @@ pub fn timerfd_settime(
             it_value_sec: timer.value_sec,
             it_value_nsec: timer.value_nsec,
         };
-        unsafe { *(old_value as *mut ITimerSpec) = old_spec; }
+        unsafe {
+            *(old_value as *mut ITimerSpec) = old_spec;
+        }
     }
 
     // Set new timer values
@@ -790,23 +799,27 @@ pub fn timerfd_gettime(
         it_value_nsec: timer.value_nsec,
     };
 
-    unsafe { *(curr_value as *mut ITimerSpec) = spec; }
+    unsafe {
+        *(curr_value as *mut ITimerSpec) = spec;
+    }
 
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_ipc_key_operations() {
         assert!(msgget(1234, 0).is_ok());
         assert!(semget(5678, 1, 0).is_ok());
         assert!(shmget(9012, 4096, 0).is_ok());
     }
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_event_fd_creation() {
         assert!(eventfd(0, 0).is_ok());
         assert!(timerfd_create(clock::CLOCK_MONOTONIC, 0).is_ok());

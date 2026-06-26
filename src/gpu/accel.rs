@@ -8,13 +8,13 @@
 //! - Framebuffer optimization and management
 //! - Advanced rendering pipeline management
 
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::{String, ToString};
 use alloc::collections::BTreeMap;
 use alloc::format;
-use spin::Mutex;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 use super::GPUCapabilities;
 
@@ -188,10 +188,10 @@ pub enum CullingMode {
 /// Buffer usage patterns
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BufferUsage {
-    Static,    // Written once, read many times
-    Dynamic,   // Updated frequently
-    Stream,    // Updated every frame
-    Staging,   // For CPU-GPU transfers
+    Static,  // Written once, read many times
+    Dynamic, // Updated frequently
+    Stream,  // Updated every frame
+    Staging, // For CPU-GPU transfers
 }
 
 /// Index data types
@@ -218,13 +218,13 @@ pub enum TextureFormat {
     Depth24,
     Depth32F,
     Depth24Stencil8,
-    BC1,     // DXT1 compression
-    BC2,     // DXT3 compression
-    BC3,     // DXT5 compression
-    BC4,     // RGTC1 compression
-    BC5,     // RGTC2 compression
-    BC6H,    // HDR compression
-    BC7,     // High quality compression
+    BC1,  // DXT1 compression
+    BC2,  // DXT3 compression
+    BC3,  // DXT5 compression
+    BC4,  // RGTC1 compression
+    BC5,  // RGTC2 compression
+    BC6H, // HDR compression
+    BC7,  // High quality compression
 }
 
 /// Texture types
@@ -429,56 +429,66 @@ impl GraphicsAccelerationEngine {
         self.status = AccelStatus::Ready;
         Ok(())
     }
-    
+
     /// Initialize real GPU hardware communication
-    fn initialize_real_gpu_hardware(&mut self, gpu_id: u32, gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_real_gpu_hardware(
+        &mut self,
+        gpu_id: u32,
+        gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Map GPU memory regions
         let gpu_memory_base = self.map_gpu_memory_regions(gpu_id, gpu)?;
-        
+
         // Initialize GPU command submission
         self.initialize_command_submission(gpu_id, gpu_memory_base)?;
-        
+
         // Load GPU firmware if required
         self.load_gpu_firmware(gpu_id, gpu)?;
-        
+
         // Initialize GPU rings/queues
         self.initialize_gpu_queues(gpu_id, gpu)?;
-        
+
         // Set up interrupt handling
         self.setup_gpu_interrupts(gpu_id)?;
-        
+
         Ok(())
     }
-    
+
     /// Map GPU memory regions for hardware access
-    fn map_gpu_memory_regions(&self, gpu_id: u32, gpu: &GPUCapabilities) -> Result<u64, &'static str> {
+    fn map_gpu_memory_regions(
+        &self,
+        gpu_id: u32,
+        gpu: &GPUCapabilities,
+    ) -> Result<u64, &'static str> {
         // Read GPU BAR (Base Address Register) from PCI configuration
         let pci_address = self.get_gpu_pci_address(gpu_id)?;
         let bar0 = self.read_pci_config(pci_address, 0x10)?;
-        
+
         if (bar0 & 0x1) != 0 {
             return Err("GPU uses I/O space instead of memory space");
         }
-        
+
         let gpu_memory_base = (bar0 & 0xFFFFFFF0) as u64;
-        
+
         // Map GPU memory to kernel virtual address space
         let virtual_base = self.map_physical_to_virtual(gpu_memory_base, 16 * 1024 * 1024)?; // Map 16MB
-        
+
         // Verify memory mapping by reading GPU ID register
-        let gpu_id_reg = unsafe { 
-            core::ptr::read_volatile((virtual_base + 0x0) as *const u32) 
-        };
-        
+        let gpu_id_reg = unsafe { core::ptr::read_volatile((virtual_base + 0x0) as *const u32) };
+
         if gpu_id_reg == 0xFFFFFFFF || gpu_id_reg == 0x0 {
             return Err("Failed to map GPU memory or GPU not responding");
         }
-        
+
         Ok(virtual_base)
     }
-    
+
     /// Initialize GPU command submission mechanism
-    fn initialize_command_submission(&self, gpu_id: u32, gpu_memory_base: u64) -> Result<(), &'static str> {
+    fn initialize_command_submission(
+        &self,
+        gpu_id: u32,
+        gpu_memory_base: u64,
+    ) -> Result<(), &'static str> {
         match self.get_gpu_vendor(gpu_id)? {
             GPUVendor::Intel => self.init_intel_command_submission(gpu_memory_base),
             GPUVendor::AMD => self.init_amd_command_submission(gpu_memory_base),
@@ -486,41 +496,41 @@ impl GraphicsAccelerationEngine {
             _ => Err("Unsupported GPU vendor for command submission"),
         }
     }
-    
+
     /// Initialize Intel GPU command submission
     fn init_intel_command_submission(&self, gpu_base: u64) -> Result<(), &'static str> {
         unsafe {
             let reg_base = gpu_base as *mut u32;
-            
+
             // Initialize Graphics Technology (GT) interface
             let gt_mode = core::ptr::read_volatile(reg_base.add(0x7000 / 4));
             core::ptr::write_volatile(reg_base.add(0x7000 / 4), gt_mode | 0x1); // Enable GT
-            
+
             // Set up ring buffer for command submission
             let ring_base = gpu_base + 0x2000; // Ring buffer at offset 0x2000
             let ring_size = 4096; // 4KB ring buffer
-            
+
             // Configure ring buffer registers
             core::ptr::write_volatile(reg_base.add(0x2030 / 4), ring_base as u32); // RING_BUFFER_HEAD
             core::ptr::write_volatile(reg_base.add(0x2034 / 4), ring_base as u32); // RING_BUFFER_TAIL
             core::ptr::write_volatile(reg_base.add(0x2038 / 4), ring_base as u32); // RING_BUFFER_START
             core::ptr::write_volatile(reg_base.add(0x203C / 4), (ring_base + ring_size) as u32); // RING_BUFFER_CTL
-            
+
             // Enable ring buffer
             core::ptr::write_volatile(reg_base.add(0x2040 / 4), 0x1); // RING_BUFFER_ENABLE
         }
-        
+
         Ok(())
     }
-    
+
     /// Initialize AMD GPU command submission
     fn init_amd_command_submission(&self, gpu_base: u64) -> Result<(), &'static str> {
         unsafe {
             let reg_base = gpu_base as *mut u32;
-            
+
             // Initialize Command Processor (CP)
             core::ptr::write_volatile(reg_base.add(0x8040 / 4), 0x0); // Reset CP
-            
+
             // Wait for reset completion
             let mut timeout = 1000;
             while timeout > 0 {
@@ -529,36 +539,38 @@ impl GraphicsAccelerationEngine {
                     break;
                 }
                 timeout -= 1;
-                for _ in 0..100 { core::hint::spin_loop(); }
+                for _ in 0..100 {
+                    core::hint::spin_loop();
+                }
             }
-            
+
             if timeout == 0 {
                 return Err("AMD CP reset timeout");
             }
-            
+
             // Set up ring buffer
             let ring_base = gpu_base + 0x4000;
             let ring_size = 8192; // 8KB ring buffer
-            
+
             core::ptr::write_volatile(reg_base.add(0x8048 / 4), ring_base as u32); // CP_RB_BASE
             core::ptr::write_volatile(reg_base.add(0x804C / 4), ring_size as u32); // CP_RB_CNTL
             core::ptr::write_volatile(reg_base.add(0x8050 / 4), 0x0); // CP_RB_RPTR
             core::ptr::write_volatile(reg_base.add(0x8054 / 4), 0x0); // CP_RB_WPTR
-            
+
             // Enable CP
             core::ptr::write_volatile(reg_base.add(0x8040 / 4), 0x1);
         }
-        
+
         Ok(())
     }
-    
+
     /// Initialize NVIDIA GPU command submission (limited without proprietary drivers)
     fn init_nvidia_command_submission(&self, _gpu_base: u64) -> Result<(), &'static str> {
         // NVIDIA GPUs require signed firmware and proprietary command submission
         // This would need to interface with Nouveau driver
         Err("NVIDIA command submission requires Nouveau driver integration")
     }
-    
+
     /// Load GPU firmware if required
     fn load_gpu_firmware(&self, gpu_id: u32, gpu: &GPUCapabilities) -> Result<(), &'static str> {
         match self.get_gpu_vendor(gpu_id)? {
@@ -575,20 +587,20 @@ impl GraphicsAccelerationEngine {
             }
             _ => {}
         }
-        
+
         Ok(())
     }
-    
+
     /// Load AMD GPU firmware
     fn load_amd_firmware(&self, _gpu_id: u32, gpu: &GPUCapabilities) -> Result<(), &'static str> {
         // In a real implementation, this would load firmware from filesystem
         // For now, we'll simulate firmware loading
-        
+
         let firmware_files = match gpu.pci_device_id {
             // RDNA2 (Navi 21)
             0x73A0..=0x73AF => vec![
                 "amdgpu/navi21_pfp.bin",
-                "amdgpu/navi21_me.bin", 
+                "amdgpu/navi21_me.bin",
                 "amdgpu/navi21_ce.bin",
                 "amdgpu/navi21_mec.bin",
                 "amdgpu/navi21_rlc.bin",
@@ -597,70 +609,87 @@ impl GraphicsAccelerationEngine {
             // Add more GPU families as needed
             _ => vec!["amdgpu/generic_firmware.bin"],
         };
-        
+
         for firmware_file in firmware_files {
             // In production, load firmware from /lib/firmware/
             // For now, we'll just validate the firmware path exists
             if !self.validate_firmware_path(firmware_file) {
-                crate::println!("Warning: Firmware {} not found, using fallback", firmware_file);
+                crate::println!(
+                    "Warning: Firmware {} not found, using fallback",
+                    firmware_file
+                );
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Initialize GPU command queues/rings
-    fn initialize_gpu_queues(&self, gpu_id: u32, _gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_gpu_queues(
+        &self,
+        gpu_id: u32,
+        _gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Set up multiple command queues for different workload types
         let queue_types = [
-            "graphics",    // 3D rendering commands
-            "compute",     // Compute shader commands  
-            "copy",        // Memory copy operations
-            "video",       // Video encode/decode
+            "graphics", // 3D rendering commands
+            "compute",  // Compute shader commands
+            "copy",     // Memory copy operations
+            "video",    // Video encode/decode
         ];
-        
+
         for (i, queue_type) in queue_types.iter().enumerate() {
             self.create_command_queue(gpu_id, i as u32, queue_type)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Create a command queue for specific workload type
-    fn create_command_queue(&self, gpu_id: u32, queue_id: u32, queue_type: &str) -> Result<(), &'static str> {
+    fn create_command_queue(
+        &self,
+        gpu_id: u32,
+        queue_id: u32,
+        queue_type: &str,
+    ) -> Result<(), &'static str> {
         // Allocate queue memory and initialize queue structures
         let queue_size = match queue_type {
-            "graphics" => 16384,  // 16KB for graphics commands
-            "compute" => 8192,    // 8KB for compute commands
-            "copy" => 4096,       // 4KB for copy commands
-            "video" => 8192,      // 8KB for video commands
+            "graphics" => 16384, // 16KB for graphics commands
+            "compute" => 8192,   // 8KB for compute commands
+            "copy" => 4096,      // 4KB for copy commands
+            "video" => 8192,     // 8KB for video commands
             _ => 4096,
         };
-        
+
         // In production, this would allocate actual GPU memory
         let _queue_memory = self.allocate_gpu_memory(gpu_id, queue_size)?;
-        
-        crate::println!("Created {} queue {} for GPU {}", queue_type, queue_id, gpu_id);
+
+        crate::println!(
+            "Created {} queue {} for GPU {}",
+            queue_type,
+            queue_id,
+            gpu_id
+        );
         Ok(())
     }
-    
+
     /// Set up GPU interrupt handling
     fn setup_gpu_interrupts(&self, gpu_id: u32) -> Result<(), &'static str> {
         // Get GPU interrupt line from PCI configuration
         let pci_address = self.get_gpu_pci_address(gpu_id)?;
         let interrupt_line = (self.read_pci_config(pci_address, 0x3C)? & 0xFF) as u8;
-        
+
         if interrupt_line == 0 || interrupt_line == 0xFF {
             return Err("Invalid GPU interrupt line");
         }
-        
+
         // Register interrupt handler
         // In production, this would register with the interrupt manager
         crate::println!("GPU {} using interrupt line {}", gpu_id, interrupt_line);
-        
+
         Ok(())
     }
-    
+
     /// Verify hardware initialization completed successfully
     fn verify_hardware_initialization(&self) -> Result<(), &'static str> {
         for &gpu_id in &self.supported_gpus {
@@ -668,36 +697,40 @@ impl GraphicsAccelerationEngine {
             if !self.test_gpu_communication(gpu_id)? {
                 return Err("GPU communication test failed");
             }
-            
+
             // Verify command submission works
             if !self.test_command_submission(gpu_id)? {
                 return Err("GPU command submission test failed");
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Test basic GPU communication
     fn test_gpu_communication(&self, gpu_id: u32) -> Result<bool, &'static str> {
         let pci_address = self.get_gpu_pci_address(gpu_id)?;
-        
+
         // Read vendor/device ID to verify communication
         let vendor_device = self.read_pci_config(pci_address, 0x00)?;
         let vendor_id = (vendor_device & 0xFFFF) as u16;
         let device_id = ((vendor_device >> 16) & 0xFFFF) as u16;
-        
+
         // Verify this matches expected GPU
         let is_valid_gpu = matches!(vendor_id, 0x8086 | 0x1002 | 0x10DE); // Intel, AMD, NVIDIA
-        
+
         if is_valid_gpu {
-            crate::println!("GPU {} communication test passed (vendor: 0x{:04X}, device: 0x{:04X})", 
-                gpu_id, vendor_id, device_id);
+            crate::println!(
+                "GPU {} communication test passed (vendor: 0x{:04X}, device: 0x{:04X})",
+                gpu_id,
+                vendor_id,
+                device_id
+            );
         }
-        
+
         Ok(is_valid_gpu)
     }
-    
+
     /// Test GPU command submission
     fn test_command_submission(&self, gpu_id: u32) -> Result<bool, &'static str> {
         // Submit a simple NOP command to test command submission
@@ -708,80 +741,86 @@ impl GraphicsAccelerationEngine {
             _ => Ok(false),
         }
     }
-    
+
     /// Test Intel GPU command submission
     fn test_intel_command_submission(&self, _gpu_id: u32) -> Result<bool, &'static str> {
         // Submit a NOP command to Intel GPU
         // In production, this would submit actual commands through the ring buffer
         Ok(true)
     }
-    
+
     /// Test AMD GPU command submission  
     fn test_amd_command_submission(&self, _gpu_id: u32) -> Result<bool, &'static str> {
         // Submit a NOP packet to AMD GPU command processor
         // In production, this would submit actual commands through the ring buffer
         Ok(true)
     }
-    
+
     // Helper methods for hardware access
-    
+
     fn get_gpu_pci_address(&self, gpu_id: u32) -> Result<u32, &'static str> {
         // In production, this would look up the actual PCI address for the GPU
         // For now, assume GPU 0 is at bus 0, device 2, function 0
         let bus = 0u8;
         let device = (2 + gpu_id) as u8; // Offset device number by GPU ID
         let function = 0u8;
-        
+
         Ok(((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8))
     }
-    
+
     fn read_pci_config(&self, pci_address: u32, offset: u8) -> Result<u32, &'static str> {
         let config_address = 0x80000000u32 | pci_address | (offset as u32 & 0xFC);
-        
+
         unsafe {
             // Write to CONFIG_ADDRESS port
             core::arch::asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") config_address, options(nostack, preserves_flags));
-            
+
             // Read from CONFIG_DATA port
             let mut data: u32;
             core::arch::asm!("in eax, dx", out("eax") data, in("dx") 0xCFCu16, options(nostack, preserves_flags));
             Ok(data)
         }
     }
-    
+
     fn get_gpu_vendor(&self, gpu_id: u32) -> Result<GPUVendor, &'static str> {
         let pci_address = self.get_gpu_pci_address(gpu_id)?;
         let vendor_device = self.read_pci_config(pci_address, 0x00)?;
         let vendor_id = (vendor_device & 0xFFFF) as u16;
-        
+
         match vendor_id {
             0x8086 => Ok(GPUVendor::Intel),
-            0x1002 => Ok(GPUVendor::AMD), 
+            0x1002 => Ok(GPUVendor::AMD),
             0x10DE => Ok(GPUVendor::NVIDIA),
             _ => Err("Unknown GPU vendor"),
         }
     }
-    
-    fn map_physical_to_virtual(&self, physical_addr: u64, size: usize) -> Result<u64, &'static str> {
+
+    fn map_physical_to_virtual(
+        &self,
+        physical_addr: u64,
+        size: usize,
+    ) -> Result<u64, &'static str> {
         // In production, this would use the memory manager to map physical to virtual
         // For now, return a direct mapping (assuming identity mapping in kernel space)
-        if physical_addr < 0x100000000 { // Below 4GB
+        if physical_addr < 0x100000000 {
+            // Below 4GB
             Ok(physical_addr | 0xFFFF800000000000) // Kernel direct mapping
         } else {
             Err("Physical address above 4GB not supported in direct mapping")
         }
     }
-    
+
     fn allocate_gpu_memory(&self, _gpu_id: u32, size: usize) -> Result<u64, &'static str> {
         // In production, this would allocate GPU-accessible memory
         // For now, return a placeholder address
-        if size > 1024 * 1024 { // Max 1MB allocation
+        if size > 1024 * 1024 {
+            // Max 1MB allocation
             return Err("GPU memory allocation too large");
         }
-        
+
         Ok(0xFE000000) // Placeholder GPU memory address
     }
-    
+
     fn validate_firmware_path(&self, _firmware_path: &str) -> bool {
         // In production, this would check if firmware file exists in /lib/firmware/
         // For now, always return true to avoid blocking initialization
@@ -795,7 +834,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Initialize acceleration for a specific GPU
-    fn initialize_gpu_acceleration(&mut self, gpu_id: u32, gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_gpu_acceleration(
+        &mut self,
+        gpu_id: u32,
+        gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Initialize 2D acceleration
         self.initialize_2d_acceleration(gpu_id, gpu)?;
 
@@ -823,7 +866,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Initialize 2D acceleration
-    fn initialize_2d_acceleration(&mut self, _gpu_id: u32, _gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_2d_acceleration(
+        &mut self,
+        _gpu_id: u32,
+        _gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Set up 2D rendering pipeline
         // Configure blitter hardware
         // Initialize 2D primitive rendering
@@ -831,7 +878,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Initialize 3D acceleration
-    fn initialize_3d_acceleration(&mut self, _gpu_id: u32, _gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_3d_acceleration(
+        &mut self,
+        _gpu_id: u32,
+        _gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Set up 3D rendering pipeline
         // Initialize vertex processing
         // Configure rasterization
@@ -840,7 +891,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Initialize compute acceleration
-    fn initialize_compute_acceleration(&mut self, _gpu_id: u32, _gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_compute_acceleration(
+        &mut self,
+        _gpu_id: u32,
+        _gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Set up compute pipeline
         // Initialize compute shader compilation
         // Configure compute memory management
@@ -848,7 +903,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Initialize ray tracing acceleration
-    fn initialize_ray_tracing(&mut self, _gpu_id: u32, _gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_ray_tracing(
+        &mut self,
+        _gpu_id: u32,
+        _gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Set up ray tracing pipeline
         // Initialize acceleration structure building
         // Configure ray generation and shading
@@ -856,7 +915,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Initialize video acceleration
-    fn initialize_video_acceleration(&mut self, _gpu_id: u32, _gpu: &GPUCapabilities) -> Result<(), &'static str> {
+    fn initialize_video_acceleration(
+        &mut self,
+        _gpu_id: u32,
+        _gpu: &GPUCapabilities,
+    ) -> Result<(), &'static str> {
         // Set up video encoding/decoding pipeline
         // Initialize codec support
         // Configure video memory management
@@ -864,7 +927,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Create a new rendering context
-    pub fn create_rendering_context(&mut self, gpu_id: u32, pipeline_type: PipelineType) -> Result<u32, &'static str> {
+    pub fn create_rendering_context(
+        &mut self,
+        gpu_id: u32,
+        pipeline_type: PipelineType,
+    ) -> Result<u32, &'static str> {
         if !self.supported_gpus.contains(&gpu_id) {
             return Err("GPU not supported or not initialized");
         }
@@ -901,7 +968,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Compile and create a shader program
-    pub fn create_shader_program(&mut self, shader_type: ShaderType, source_code: &str) -> Result<u32, &'static str> {
+    pub fn create_shader_program(
+        &mut self,
+        shader_type: ShaderType,
+        source_code: &str,
+    ) -> Result<u32, &'static str> {
         let shader_id = self.next_shader_id;
         self.next_shader_id += 1;
 
@@ -922,9 +993,17 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Create vertex buffer
-    pub fn create_vertex_buffer(&mut self, context_id: u32, vertices: &[f32], format: VertexFormat, usage: BufferUsage) -> Result<u32, &'static str> {
+    pub fn create_vertex_buffer(
+        &mut self,
+        context_id: u32,
+        vertices: &[f32],
+        format: VertexFormat,
+        usage: BufferUsage,
+    ) -> Result<u32, &'static str> {
         let gpu_id = {
-            let context = self.rendering_contexts.get(&context_id)
+            let context = self
+                .rendering_contexts
+                .get(&context_id)
                 .ok_or("Invalid rendering context")?;
             context.gpu_id
         };
@@ -937,7 +1016,9 @@ impl GraphicsAccelerationEngine {
         // Allocate GPU memory (would use memory manager in real implementation)
         let memory_allocation = self.allocate_buffer_memory(gpu_id, buffer_size)?;
 
-        let context = self.rendering_contexts.get_mut(&context_id)
+        let context = self
+            .rendering_contexts
+            .get_mut(&context_id)
             .ok_or("Invalid rendering context")?;
 
         let vertex_buffer = VertexBuffer {
@@ -954,7 +1035,15 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Create texture
-    pub fn create_texture(&mut self, context_id: u32, width: u32, height: u32, format: TextureFormat, texture_type: TextureType, usage: TextureUsage) -> Result<u32, &'static str> {
+    pub fn create_texture(
+        &mut self,
+        context_id: u32,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        texture_type: TextureType,
+        usage: TextureUsage,
+    ) -> Result<u32, &'static str> {
         let texture_id = self.next_texture_id;
         self.next_texture_id += 1;
 
@@ -962,7 +1051,9 @@ impl GraphicsAccelerationEngine {
         let texture_size = (width * height * bytes_per_pixel) as usize;
 
         let gpu_id = {
-            let context = self.rendering_contexts.get(&context_id)
+            let context = self
+                .rendering_contexts
+                .get(&context_id)
                 .ok_or("Invalid rendering context")?;
             context.gpu_id
         };
@@ -970,7 +1061,9 @@ impl GraphicsAccelerationEngine {
         // Allocate GPU memory for texture
         let memory_allocation = self.allocate_buffer_memory(gpu_id, texture_size)?;
 
-        let context = self.rendering_contexts.get_mut(&context_id)
+        let context = self
+            .rendering_contexts
+            .get_mut(&context_id)
             .ok_or("Invalid rendering context")?;
 
         let texture = Texture {
@@ -990,14 +1083,22 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Draw primitives
-    pub fn draw_primitives(&mut self, context_id: u32, primitive_type: PrimitiveType, vertex_start: u32, vertex_count: u32) -> Result<(), &'static str> {
-        let _context = self.rendering_contexts.get(&context_id)
+    pub fn draw_primitives(
+        &mut self,
+        context_id: u32,
+        primitive_type: PrimitiveType,
+        vertex_start: u32,
+        vertex_count: u32,
+    ) -> Result<(), &'static str> {
+        let _context = self
+            .rendering_contexts
+            .get(&context_id)
             .ok_or("Invalid rendering context")?;
 
         // Production drawing operation
         self.performance_counters.draw_calls += 1;
         self.performance_counters.vertices_processed += vertex_count as u64;
-        
+
         // Execute actual GPU draw call
         self.execute_vertex_stage(vertex_start, vertex_count)?;
         let pixel_count = self.execute_rasterization(primitive_type, vertex_count)?;
@@ -1007,8 +1108,16 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Draw indexed primitives
-    pub fn draw_indexed_primitives(&mut self, context_id: u32, primitive_type: PrimitiveType, index_start: u32, index_count: u32) -> Result<(), &'static str> {
-        let _context = self.rendering_contexts.get(&context_id)
+    pub fn draw_indexed_primitives(
+        &mut self,
+        context_id: u32,
+        primitive_type: PrimitiveType,
+        index_start: u32,
+        index_count: u32,
+    ) -> Result<(), &'static str> {
+        let _context = self
+            .rendering_contexts
+            .get(&context_id)
             .ok_or("Invalid rendering context")?;
 
         self.performance_counters.draw_calls += 1;
@@ -1021,8 +1130,14 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Dispatch compute shader
-    pub fn dispatch_compute(&mut self, context_id: u32, dispatch: ComputeDispatch) -> Result<(), &'static str> {
-        let _context = self.rendering_contexts.get(&context_id)
+    pub fn dispatch_compute(
+        &mut self,
+        context_id: u32,
+        dispatch: ComputeDispatch,
+    ) -> Result<(), &'static str> {
+        let _context = self
+            .rendering_contexts
+            .get(&context_id)
             .ok_or("Invalid rendering context")?;
 
         let total_groups = dispatch.groups_x * dispatch.groups_y * dispatch.groups_z;
@@ -1039,7 +1154,11 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Create acceleration structure for ray tracing
-    pub fn create_acceleration_structure(&mut self, structure_type: AccelerationStructureType, geometry_count: u32) -> Result<u32, &'static str> {
+    pub fn create_acceleration_structure(
+        &mut self,
+        structure_type: AccelerationStructureType,
+        geometry_count: u32,
+    ) -> Result<u32, &'static str> {
         let structure_id = self.next_acceleration_id;
         self.next_acceleration_id += 1;
 
@@ -1057,7 +1176,11 @@ impl GraphicsAccelerationEngine {
             memory_allocation,
             structure_type,
             geometry_count,
-            instance_count: if structure_type == AccelerationStructureType::TopLevel { geometry_count } else { 0 },
+            instance_count: if structure_type == AccelerationStructureType::TopLevel {
+                geometry_count
+            } else {
+                0
+            },
             build_flags: RayTracingBuildFlags {
                 allow_update: false,
                 allow_compaction: true,
@@ -1072,8 +1195,16 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Trace rays using hardware ray tracing
-    pub fn trace_rays(&mut self, context_id: u32, width: u32, height: u32, depth: u32) -> Result<(), &'static str> {
-        let _context = self.rendering_contexts.get(&context_id)
+    pub fn trace_rays(
+        &mut self,
+        context_id: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Result<(), &'static str> {
+        let _context = self
+            .rendering_contexts
+            .get(&context_id)
             .ok_or("Invalid rendering context")?;
 
         let ray_count = width as u64 * height as u64 * depth as u64;
@@ -1090,7 +1221,13 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Create video encoding/decoding session
-    pub fn create_video_session(&mut self, codec: VideoCodec, width: u32, height: u32, encode_mode: bool) -> Result<u32, &'static str> {
+    pub fn create_video_session(
+        &mut self,
+        codec: VideoCodec,
+        width: u32,
+        height: u32,
+        encode_mode: bool,
+    ) -> Result<u32, &'static str> {
         let session_id = self.next_video_session_id;
         self.next_video_session_id += 1;
 
@@ -1112,7 +1249,9 @@ impl GraphicsAccelerationEngine {
 
     /// Present rendered frame to display
     pub fn present_frame(&mut self, context_id: u32) -> Result<(), &'static str> {
-        let _context = self.rendering_contexts.get(&context_id)
+        let _context = self
+            .rendering_contexts
+            .get(&context_id)
             .ok_or("Invalid rendering context")?;
 
         // Record actual frame presentation time from hardware
@@ -1134,69 +1273,82 @@ impl GraphicsAccelerationEngine {
 
     // Private helper methods
 
-    fn compile_shader(&self, shader_type: ShaderType, source_code: &str) -> Result<Vec<u8>, &'static str> {
+    fn compile_shader(
+        &self,
+        shader_type: ShaderType,
+        source_code: &str,
+    ) -> Result<Vec<u8>, &'static str> {
         // Real shader compilation implementation
         if source_code.is_empty() {
             return Err("Empty shader source");
         }
-        
+
         // Parse shader source and generate bytecode
         let mut bytecode = Vec::new();
-        
+
         // Add shader header with type and version info
         bytecode.extend_from_slice(&[0x53, 0x48, 0x44, 0x52]); // "SHDR" magic number
         bytecode.push(1); // Version
         bytecode.push(shader_type as u8); // Shader type
-        
+
         // Parse source code for real compilation
         let compiled_bytecode = match self.parse_and_compile_shader(shader_type, source_code) {
             Ok(code) => code,
             Err(e) => return Err(e),
         };
-        
+
         // Add compiled bytecode length
         let code_len = compiled_bytecode.len() as u32;
         bytecode.extend_from_slice(&code_len.to_le_bytes());
-        
+
         // Add compiled bytecode
         bytecode.extend_from_slice(&compiled_bytecode);
-        
+
         // Add shader metadata
         self.add_shader_metadata(&mut bytecode, shader_type, source_code)?;
-        
+
         Ok(bytecode)
     }
-    
+
     /// Parse and compile shader source code to GPU bytecode
-    fn parse_and_compile_shader(&self, shader_type: ShaderType, source_code: &str) -> Result<Vec<u8>, &'static str> {
+    fn parse_and_compile_shader(
+        &self,
+        shader_type: ShaderType,
+        source_code: &str,
+    ) -> Result<Vec<u8>, &'static str> {
         let mut bytecode = Vec::new();
-        
+
         // Basic shader compiler - converts simple shader syntax to GPU instructions
         let lines: Vec<&str> = source_code.lines().collect();
-        
+
         for (line_num, line) in lines.iter().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            
+
             // Parse shader instructions
             if let Err(e) = self.compile_shader_instruction(line, shader_type, &mut bytecode) {
                 crate::println!("Shader compilation error at line {}: {}", line_num + 1, e);
                 return Err("Shader compilation failed");
             }
         }
-        
+
         // Add shader termination instruction
         bytecode.push(0xFF); // END instruction
-        
+
         Ok(bytecode)
     }
-    
+
     /// Compile a single shader instruction
-    fn compile_shader_instruction(&self, instruction: &str, shader_type: ShaderType, bytecode: &mut Vec<u8>) -> Result<(), &'static str> {
+    fn compile_shader_instruction(
+        &self,
+        instruction: &str,
+        shader_type: ShaderType,
+        bytecode: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
         // Basic instruction compiler for GPU operations
-        
+
         if instruction.starts_with("vertex") {
             // Vertex shader instruction
             if shader_type != ShaderType::Vertex {
@@ -1218,32 +1370,44 @@ impl GraphicsAccelerationEngine {
         } else if instruction.starts_with("uniform") {
             // Uniform declaration
             bytecode.extend_from_slice(&[0x10, 0x00, 0x00, 0x00]); // UNIFORM_DECL
-        } else if instruction.starts_with("varying") || instruction.starts_with("in ") || instruction.starts_with("out ") {
+        } else if instruction.starts_with("varying")
+            || instruction.starts_with("in ")
+            || instruction.starts_with("out ")
+        {
             // Input/output declaration
             bytecode.extend_from_slice(&[0x11, 0x00, 0x00, 0x00]); // IO_DECL
         } else if instruction.contains("=") {
             // Assignment operation
             bytecode.extend_from_slice(&[0x20, 0x00, 0x00, 0x00]); // ASSIGN_OP
-        } else if instruction.contains("+") || instruction.contains("-") || instruction.contains("*") || instruction.contains("/") {
+        } else if instruction.contains("+")
+            || instruction.contains("-")
+            || instruction.contains("*")
+            || instruction.contains("/")
+        {
             // Arithmetic operation
             bytecode.extend_from_slice(&[0x21, 0x00, 0x00, 0x00]); // MATH_OP
         } else {
             // Generic operation
             bytecode.extend_from_slice(&[0xF0, 0x00, 0x00, 0x00]); // GENERIC_OP
         }
-        
+
         Ok(())
     }
-    
+
     /// Add metadata to compiled shader
-    fn add_shader_metadata(&self, bytecode: &mut Vec<u8>, shader_type: ShaderType, source_code: &str) -> Result<(), &'static str> {
+    fn add_shader_metadata(
+        &self,
+        bytecode: &mut Vec<u8>,
+        shader_type: ShaderType,
+        source_code: &str,
+    ) -> Result<(), &'static str> {
         // Add metadata section
         bytecode.extend_from_slice(&[0x4D, 0x45, 0x54, 0x41]); // "META" section
-        
+
         // Add source code hash for verification
         let source_hash = self.hash_source_code(source_code);
         bytecode.extend_from_slice(&source_hash.to_le_bytes());
-        
+
         // Add shader type specific metadata
         match shader_type {
             ShaderType::Vertex => {
@@ -1263,10 +1427,10 @@ impl GraphicsAccelerationEngine {
                 bytecode.extend_from_slice(&[0x00, 0x00, 0x00]); // Reserved
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Generate a hash of the source code for verification
     fn hash_source_code(&self, source_code: &str) -> u32 {
         // Simple hash function for source code verification
@@ -1282,12 +1446,12 @@ impl GraphicsAccelerationEngine {
         if size == 0 {
             return Err("Cannot allocate zero-sized buffer");
         }
-        
+
         // Validate GPU ID
         if gpu_id >= self.supported_gpus.len() as u32 {
             return Err("Invalid GPU ID");
         }
-        
+
         // In production, would allocate GPU memory via driver
         // Return unique buffer ID based on size and GPU
         let buffer_id = (gpu_id << 24) | ((size & 0xFFFFFF) as u32);
@@ -1319,14 +1483,22 @@ impl GraphicsAccelerationEngine {
         }
     }
 
-    fn execute_vertex_stage(&mut self, _vertex_start: u32, vertex_count: u32) -> Result<(), &'static str> {
+    fn execute_vertex_stage(
+        &mut self,
+        _vertex_start: u32,
+        vertex_count: u32,
+    ) -> Result<(), &'static str> {
         // Simulate vertex processing
         let execution_time = vertex_count as u64 * 50; // 50ns per vertex
         self.performance_counters.shader_execution_time_ns += execution_time;
         Ok(())
     }
 
-    fn execute_rasterization(&mut self, _primitive_type: PrimitiveType, vertex_count: u32) -> Result<u32, &'static str> {
+    fn execute_rasterization(
+        &mut self,
+        _primitive_type: PrimitiveType,
+        vertex_count: u32,
+    ) -> Result<u32, &'static str> {
         // Simulate rasterization and return pixel count
         let pixel_count = vertex_count * 100; // Simplified estimation
         Ok(pixel_count)
@@ -1340,7 +1512,12 @@ impl GraphicsAccelerationEngine {
         Ok(())
     }
 
-    fn execute_indexed_rendering(&mut self, primitive_type: PrimitiveType, _index_start: u32, index_count: u32) -> Result<(), &'static str> {
+    fn execute_indexed_rendering(
+        &mut self,
+        primitive_type: PrimitiveType,
+        _index_start: u32,
+        index_count: u32,
+    ) -> Result<(), &'static str> {
         // Process indexed rendering similar to regular rendering
         self.execute_vertex_stage(0, index_count)?;
         let pixel_count = self.execute_rasterization(primitive_type, index_count)?;
@@ -1350,79 +1527,102 @@ impl GraphicsAccelerationEngine {
 
     fn execute_compute_shader(&mut self, dispatch: ComputeDispatch) -> Result<(), &'static str> {
         // Real compute shader execution on GPU
-        let total_threads = dispatch.groups_x * dispatch.groups_y * dispatch.groups_z *
-                           dispatch.local_size_x * dispatch.local_size_y * dispatch.local_size_z;
+        let total_threads = dispatch.groups_x
+            * dispatch.groups_y
+            * dispatch.groups_z
+            * dispatch.local_size_x
+            * dispatch.local_size_y
+            * dispatch.local_size_z;
 
         // Submit compute dispatch to GPU command queue
         self.submit_compute_dispatch(dispatch)?;
-        
+
         // Wait for GPU completion and update performance counters
         let execution_time = self.wait_for_compute_completion(total_threads)?;
         self.performance_counters.shader_execution_time_ns += execution_time;
         self.performance_counters.compute_dispatches += 1;
-        
+
         Ok(())
     }
-    
+
     /// Submit compute dispatch to GPU hardware
     fn submit_compute_dispatch(&mut self, dispatch: ComputeDispatch) -> Result<(), &'static str> {
         // Real GPU command submission
-        
+
         // 1. Validate dispatch parameters
         if dispatch.groups_x == 0 || dispatch.groups_y == 0 || dispatch.groups_z == 0 {
             return Err("Invalid dispatch group size");
         }
-        
+
         if dispatch.local_size_x == 0 || dispatch.local_size_y == 0 || dispatch.local_size_z == 0 {
             return Err("Invalid local work group size");
         }
-        
+
         // 2. Set up GPU compute pipeline state
         self.setup_compute_pipeline_state(dispatch)?;
-        
+
         // 3. Issue GPU dispatch command
         self.issue_gpu_dispatch_command(dispatch)?;
-        
+
         Ok(())
     }
-    
+
     /// Set up compute pipeline state on GPU
-    fn setup_compute_pipeline_state(&mut self, dispatch: ComputeDispatch) -> Result<(), &'static str> {
+    fn setup_compute_pipeline_state(
+        &mut self,
+        dispatch: ComputeDispatch,
+    ) -> Result<(), &'static str> {
         // Configure GPU compute pipeline
-        
+
         // Set work group dimensions
-        self.set_gpu_work_group_size(dispatch.local_size_x, dispatch.local_size_y, dispatch.local_size_z)?;
-        
+        self.set_gpu_work_group_size(
+            dispatch.local_size_x,
+            dispatch.local_size_y,
+            dispatch.local_size_z,
+        )?;
+
         // Configure compute resources (buffers, textures, uniforms)
         self.bind_compute_resources()?;
-        
+
         // Set up GPU memory barriers for compute operations
         self.setup_compute_memory_barriers()?;
-        
+
         Ok(())
     }
-    
+
     /// Issue actual GPU dispatch command
-    fn issue_gpu_dispatch_command(&mut self, dispatch: ComputeDispatch) -> Result<(), &'static str> {
+    fn issue_gpu_dispatch_command(
+        &mut self,
+        dispatch: ComputeDispatch,
+    ) -> Result<(), &'static str> {
         // Issue real GPU dispatch command to hardware
-        
+
         // Write dispatch parameters to GPU command buffer
         let command_data = [
-            0x01, 0x00, 0x00, 0x00, // DISPATCH_COMPUTE command
-            dispatch.groups_x.to_le_bytes()[0], dispatch.groups_x.to_le_bytes()[1], 
-            dispatch.groups_x.to_le_bytes()[2], dispatch.groups_x.to_le_bytes()[3],
-            dispatch.groups_y.to_le_bytes()[0], dispatch.groups_y.to_le_bytes()[1],
-            dispatch.groups_y.to_le_bytes()[2], dispatch.groups_y.to_le_bytes()[3],
-            dispatch.groups_z.to_le_bytes()[0], dispatch.groups_z.to_le_bytes()[1],
-            dispatch.groups_z.to_le_bytes()[2], dispatch.groups_z.to_le_bytes()[3],
+            0x01,
+            0x00,
+            0x00,
+            0x00, // DISPATCH_COMPUTE command
+            dispatch.groups_x.to_le_bytes()[0],
+            dispatch.groups_x.to_le_bytes()[1],
+            dispatch.groups_x.to_le_bytes()[2],
+            dispatch.groups_x.to_le_bytes()[3],
+            dispatch.groups_y.to_le_bytes()[0],
+            dispatch.groups_y.to_le_bytes()[1],
+            dispatch.groups_y.to_le_bytes()[2],
+            dispatch.groups_y.to_le_bytes()[3],
+            dispatch.groups_z.to_le_bytes()[0],
+            dispatch.groups_z.to_le_bytes()[1],
+            dispatch.groups_z.to_le_bytes()[2],
+            dispatch.groups_z.to_le_bytes()[3],
         ];
-        
+
         // Submit command to GPU via hardware interface
         self.submit_gpu_command(&command_data)?;
-        
+
         Ok(())
     }
-    
+
     /// Submit command to GPU hardware
     fn submit_gpu_command(&mut self, _command_data: &[u8]) -> Result<(), &'static str> {
         // Real GPU command submission and hardware interaction
@@ -1430,7 +1630,7 @@ impl GraphicsAccelerationEngine {
         self.write_gpu_command_buffer(_command_data)?;
         self.trigger_gpu_execution()
     }
-    
+
     /// Write command data to GPU command buffer
     fn write_gpu_command_buffer(&mut self, command_data: &[u8]) -> Result<(), &'static str> {
         // In a real implementation, this would write to mapped GPU memory
@@ -1438,11 +1638,11 @@ impl GraphicsAccelerationEngine {
         if command_data.is_empty() {
             return Err("Empty command data");
         }
-        
+
         // Command buffer management
         Ok(())
     }
-    
+
     /// Trigger GPU execution of queued commands
     fn trigger_gpu_execution(&mut self) -> Result<(), &'static str> {
         // Real GPU execution trigger via hardware registers
@@ -1453,43 +1653,43 @@ impl GraphicsAccelerationEngine {
     /// Wait for compute shader completion
     fn wait_for_compute_completion(&mut self, thread_count: u32) -> Result<u64, &'static str> {
         // Real GPU synchronization and completion detection
-        
+
         // Estimate execution time based on GPU capabilities and thread count
         let base_time_per_thread = 10; // nanoseconds per thread
         let gpu_parallel_factor = 1024; // GPU can execute many threads in parallel
-        
+
         let parallel_groups = (thread_count + gpu_parallel_factor - 1) / gpu_parallel_factor;
         let execution_time = parallel_groups as u64 * base_time_per_thread;
-        
+
         // In real implementation, would poll GPU status registers
         // or use GPU completion interrupts
-        
+
         Ok(execution_time)
     }
-    
+
     /// Set up GPU work group size
     fn set_gpu_work_group_size(&mut self, x: u32, y: u32, z: u32) -> Result<(), &'static str> {
         // Configure GPU work group dimensions
         if x > 1024 || y > 1024 || z > 64 {
             return Err("Work group size exceeds GPU limits");
         }
-        
+
         // Set GPU registers for work group size using real hardware interface
         // In real implementation, would write to GPU CSR (Control Status Registers)
         self.write_gpu_csr(0x1000, x)?; // Work group X dimension register
-        self.write_gpu_csr(0x1004, y)?; // Work group Y dimension register  
+        self.write_gpu_csr(0x1004, y)?; // Work group Y dimension register
         self.write_gpu_csr(0x1008, z)?; // Work group Z dimension register
-        
+
         Ok(())
     }
-    
+
     /// Bind compute shader resources
     fn bind_compute_resources(&mut self) -> Result<(), &'static str> {
         // Bind buffers, textures, and other resources to compute pipeline
         // Real implementation would set up GPU resource binding tables
         Ok(())
     }
-    
+
     /// Set up memory barriers for compute operations
     fn setup_compute_memory_barriers(&mut self) -> Result<(), &'static str> {
         // Set up GPU memory barriers to ensure data consistency
@@ -1497,141 +1697,170 @@ impl GraphicsAccelerationEngine {
         Ok(())
     }
 
-    fn execute_ray_tracing(&mut self, width: u32, height: u32, depth: u32) -> Result<(), &'static str> {
+    fn execute_ray_tracing(
+        &mut self,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Result<(), &'static str> {
         // Real ray tracing execution on GPU hardware
         let ray_count = width as u64 * height as u64 * depth as u64;
-        
+
         // Set up ray tracing pipeline on GPU
         self.setup_ray_tracing_pipeline(width, height, depth)?;
-        
+
         // Submit ray tracing dispatch to GPU
         self.submit_ray_tracing_dispatch(width, height, depth)?;
-        
+
         // Wait for ray tracing completion
         let execution_time = self.wait_for_ray_tracing_completion(ray_count)?;
         self.performance_counters.shader_execution_time_ns += execution_time;
-        
+
         Ok(())
     }
-    
+
     /// Set up ray tracing pipeline on GPU
-    fn setup_ray_tracing_pipeline(&mut self, width: u32, height: u32, depth: u32) -> Result<(), &'static str> {
+    fn setup_ray_tracing_pipeline(
+        &mut self,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Result<(), &'static str> {
         // Configure GPU ray tracing hardware
-        
+
         // 1. Set up ray generation shader
         self.bind_ray_generation_shader()?;
-        
+
         // 2. Configure acceleration structures
         self.setup_acceleration_structures()?;
-        
+
         // 3. Set up ray tracing output buffer
         self.setup_ray_tracing_output(width, height, depth)?;
-        
+
         // 4. Configure ray tracing pipeline state
         self.configure_ray_tracing_state()?;
-        
+
         Ok(())
     }
-    
+
     /// Submit ray tracing dispatch to GPU
-    fn submit_ray_tracing_dispatch(&mut self, width: u32, height: u32, depth: u32) -> Result<(), &'static str> {
+    fn submit_ray_tracing_dispatch(
+        &mut self,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Result<(), &'static str> {
         // Real GPU ray tracing dispatch
-        
+
         // Build ray tracing command
         let rt_command = [
-            0x02, 0x00, 0x00, 0x00, // RAY_TRACE_DISPATCH command
-            width.to_le_bytes()[0], width.to_le_bytes()[1], 
-            width.to_le_bytes()[2], width.to_le_bytes()[3],
-            height.to_le_bytes()[0], height.to_le_bytes()[1],
-            height.to_le_bytes()[2], height.to_le_bytes()[3],
-            depth.to_le_bytes()[0], depth.to_le_bytes()[1],
-            depth.to_le_bytes()[2], depth.to_le_bytes()[3],
+            0x02,
+            0x00,
+            0x00,
+            0x00, // RAY_TRACE_DISPATCH command
+            width.to_le_bytes()[0],
+            width.to_le_bytes()[1],
+            width.to_le_bytes()[2],
+            width.to_le_bytes()[3],
+            height.to_le_bytes()[0],
+            height.to_le_bytes()[1],
+            height.to_le_bytes()[2],
+            height.to_le_bytes()[3],
+            depth.to_le_bytes()[0],
+            depth.to_le_bytes()[1],
+            depth.to_le_bytes()[2],
+            depth.to_le_bytes()[3],
         ];
-        
+
         // Submit to GPU ray tracing unit
         self.submit_gpu_command(&rt_command)?;
-        
+
         Ok(())
     }
-    
+
     /// Wait for ray tracing completion and measure performance
     fn wait_for_ray_tracing_completion(&mut self, ray_count: u64) -> Result<u64, &'static str> {
         // Real ray tracing performance measurement
-        
+
         // Ray tracing is more expensive than regular compute
         let base_time_per_ray = 100; // nanoseconds per ray
         let rt_parallel_factor = 256; // RT cores can process rays in parallel
-        
+
         let parallel_groups = (ray_count + rt_parallel_factor - 1) / rt_parallel_factor;
         let execution_time = parallel_groups * base_time_per_ray;
-        
+
         // In real implementation, would monitor RT unit completion status
-        
+
         Ok(execution_time)
     }
-    
+
     /// Bind ray generation shader
     fn bind_ray_generation_shader(&mut self) -> Result<(), &'static str> {
         // Bind ray generation shader to GPU RT pipeline
         // Real implementation would set up RT shader table
         Ok(())
     }
-    
+
     /// Set up acceleration structures for ray tracing
     fn setup_acceleration_structures(&mut self) -> Result<(), &'static str> {
         // Configure GPU acceleration structures (BLAS/TLAS)
         // Real implementation would build and bind acceleration structures
         Ok(())
     }
-    
+
     /// Set up ray tracing output buffer
-    fn setup_ray_tracing_output(&mut self, width: u32, height: u32, depth: u32) -> Result<(), &'static str> {
+    fn setup_ray_tracing_output(
+        &mut self,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Result<(), &'static str> {
         // Configure output buffer for ray tracing results
         let _output_size = width * height * depth * 4; // RGBA output
-        
+
         // Real implementation would allocate and bind output buffer
         Ok(())
     }
-    
+
     /// Configure ray tracing pipeline state
     fn configure_ray_tracing_state(&mut self) -> Result<(), &'static str> {
         // Set up ray tracing pipeline configuration
         // Real implementation would configure RT pipeline parameters
         Ok(())
     }
-    
+
     /// Measure actual GPU execution time for compute operations
     fn measure_gpu_execution_time(&self, work_groups: u32) -> u64 {
         // Read GPU performance counters to get actual execution time
         // This would typically read from GPU performance monitoring units (PMU)
         let base_cycles_per_group = 1000; // Base cycles per work group
         let gpu_frequency_mhz = 1500; // Typical GPU frequency in MHz
-        
+
         let total_cycles = work_groups as u64 * base_cycles_per_group;
         // Convert cycles to nanoseconds
         (total_cycles * 1000) / gpu_frequency_mhz
     }
-    
+
     /// Measure ray tracing performance from hardware counters
     fn measure_raytracing_performance(&self, ray_count: u64) -> u64 {
         // Read actual ray tracing performance counters
         let rays_per_second = 100_000_000; // 100M rays/sec typical performance
         let nanoseconds_per_second = 1_000_000_000;
-        
+
         // Calculate execution time based on ray count and GPU capability
         (ray_count * nanoseconds_per_second) / rays_per_second
     }
-    
+
     /// Measure frame presentation time from display hardware
     fn measure_frame_presentation_time(&self) -> u64 {
         // Read actual display timing from hardware
         // This would typically read VBLANK timing registers
         let display_refresh_hz = 60; // Display refresh rate
         let nanoseconds_per_second = 1_000_000_000;
-        
+
         nanoseconds_per_second / display_refresh_hz
     }
-    
+
     /// Write to GPU control/status register
     fn write_gpu_csr(&mut self, register_offset: u32, value: u32) -> Result<(), &'static str> {
         // In a real implementation, this would write to memory-mapped GPU registers
@@ -1639,7 +1868,7 @@ impl GraphicsAccelerationEngine {
         if register_offset > 0x10000 {
             return Err("Invalid GPU register offset");
         }
-        
+
         // Would typically be: unsafe { ptr::write_volatile(gpu_base + offset, value) }
         Ok(())
     }
@@ -1658,7 +1887,8 @@ pub enum PrimitiveType {
 
 // Global acceleration engine instance
 lazy_static! {
-    static ref ACCELERATION_ENGINE: Mutex<GraphicsAccelerationEngine> = Mutex::new(GraphicsAccelerationEngine::new());
+    static ref ACCELERATION_ENGINE: Mutex<GraphicsAccelerationEngine> =
+        Mutex::new(GraphicsAccelerationEngine::new());
 }
 
 /// Initialize the graphics acceleration system
@@ -1668,7 +1898,10 @@ pub fn initialize_acceleration_system(gpus: &[GPUCapabilities]) -> Result<(), &'
 }
 
 /// Create a new rendering context
-pub fn create_rendering_context(gpu_id: u32, pipeline_type: PipelineType) -> Result<u32, &'static str> {
+pub fn create_rendering_context(
+    gpu_id: u32,
+    pipeline_type: PipelineType,
+) -> Result<u32, &'static str> {
     let mut engine = ACCELERATION_ENGINE.lock();
     engine.create_rendering_context(gpu_id, pipeline_type)
 }
@@ -1698,26 +1931,53 @@ pub fn generate_acceleration_report() -> String {
 
     report.push_str("=== Graphics Acceleration System Report ===\n\n");
     report.push_str(&format!("Status: {:?}\n", engine.status));
-    report.push_str(&format!("Supported GPUs: {}\n", engine.supported_gpus.len()));
-    report.push_str(&format!("Active Contexts: {}\n", engine.rendering_contexts.len()));
-    report.push_str(&format!("Compiled Shaders: {}\n", engine.shader_programs.len()));
+    report.push_str(&format!(
+        "Supported GPUs: {}\n",
+        engine.supported_gpus.len()
+    ));
+    report.push_str(&format!(
+        "Active Contexts: {}\n",
+        engine.rendering_contexts.len()
+    ));
+    report.push_str(&format!(
+        "Compiled Shaders: {}\n",
+        engine.shader_programs.len()
+    ));
 
     if engine.status == AccelStatus::Ready {
         let stats = &engine.performance_counters;
         report.push_str("\n=== Performance Statistics ===\n");
         report.push_str(&format!("Draw Calls: {}\n", stats.draw_calls));
-        report.push_str(&format!("Compute Dispatches: {}\n", stats.compute_dispatches));
-        report.push_str(&format!("Ray Tracing Dispatches: {}\n", stats.ray_tracing_dispatches));
-        report.push_str(&format!("Vertices Processed: {}\n", stats.vertices_processed));
+        report.push_str(&format!(
+            "Compute Dispatches: {}\n",
+            stats.compute_dispatches
+        ));
+        report.push_str(&format!(
+            "Ray Tracing Dispatches: {}\n",
+            stats.ray_tracing_dispatches
+        ));
+        report.push_str(&format!(
+            "Vertices Processed: {}\n",
+            stats.vertices_processed
+        ));
         report.push_str(&format!("Pixels Shaded: {}\n", stats.pixels_shaded));
-        report.push_str(&format!("Shader Execution Time: {:.2}ms\n", stats.shader_execution_time_ns as f64 / 1_000_000.0));
+        report.push_str(&format!(
+            "Shader Execution Time: {:.2}ms\n",
+            stats.shader_execution_time_ns as f64 / 1_000_000.0
+        ));
 
         if !engine.acceleration_structures.is_empty() {
-            report.push_str(&format!("\nRay Tracing Structures: {}\n", engine.acceleration_structures.len()));
+            report.push_str(&format!(
+                "\nRay Tracing Structures: {}\n",
+                engine.acceleration_structures.len()
+            ));
         }
 
         if !engine.video_sessions.is_empty() {
-            report.push_str(&format!("Video Sessions: {}\n", engine.video_sessions.len()));
+            report.push_str(&format!(
+                "Video Sessions: {}\n",
+                engine.video_sessions.len()
+            ));
         }
     }
 

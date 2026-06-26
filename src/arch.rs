@@ -2,8 +2,8 @@
 //!
 //! Real CPU detection and architecture-specific features
 
-use core::arch::x86_64::{__cpuid, __cpuid_count, _xgetbv};
 use alloc::string::{String, ToString};
+use core::arch::x86_64::{__cpuid, __cpuid_count, _xgetbv};
 
 /// CPU information structure
 #[derive(Debug, Clone)]
@@ -79,51 +79,51 @@ fn detect_cpu_info() {
     unsafe {
         let cpuid = __cpuid(0);
         let max_cpuid = cpuid.eax;
-        
+
         // Get vendor string
         let mut vendor = [0u8; 12];
         vendor[0..4].copy_from_slice(&cpuid.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid.edx.to_le_bytes());
         vendor[8..12].copy_from_slice(&cpuid.ecx.to_le_bytes());
         let vendor_str = String::from_utf8_lossy(&vendor).to_string();
-        
+
         // Get processor info
         let cpuid1 = __cpuid(1);
         let family = ((cpuid1.eax >> 8) & 0xF) as u8;
         let model = ((cpuid1.eax >> 4) & 0xF) as u8;
         let stepping = (cpuid1.eax & 0xF) as u8;
-        
+
         // Get extended CPUID max
         let extended = __cpuid(0x80000000);
         let max_extended = extended.eax;
-        
+
         // Get brand string if available
         let brand = if max_extended >= 0x80000004 {
             let mut brand_bytes = [0u8; 48];
             let cpuid_2 = __cpuid(0x80000002);
             let cpuid_3 = __cpuid(0x80000003);
             let cpuid_4 = __cpuid(0x80000004);
-            
+
             brand_bytes[0..4].copy_from_slice(&cpuid_2.eax.to_le_bytes());
             brand_bytes[4..8].copy_from_slice(&cpuid_2.ebx.to_le_bytes());
             brand_bytes[8..12].copy_from_slice(&cpuid_2.ecx.to_le_bytes());
             brand_bytes[12..16].copy_from_slice(&cpuid_2.edx.to_le_bytes());
-            
+
             brand_bytes[16..20].copy_from_slice(&cpuid_3.eax.to_le_bytes());
             brand_bytes[20..24].copy_from_slice(&cpuid_3.ebx.to_le_bytes());
             brand_bytes[24..28].copy_from_slice(&cpuid_3.ecx.to_le_bytes());
             brand_bytes[28..32].copy_from_slice(&cpuid_3.edx.to_le_bytes());
-            
+
             brand_bytes[32..36].copy_from_slice(&cpuid_4.eax.to_le_bytes());
             brand_bytes[36..40].copy_from_slice(&cpuid_4.ebx.to_le_bytes());
             brand_bytes[40..44].copy_from_slice(&cpuid_4.ecx.to_le_bytes());
             brand_bytes[44..48].copy_from_slice(&cpuid_4.edx.to_le_bytes());
-            
+
             String::from_utf8_lossy(&brand_bytes).trim().to_string()
         } else {
             "Unknown CPU".to_string()
         };
-        
+
         CPU_INFO = Some(CpuInfo {
             vendor: vendor_str,
             brand,
@@ -145,12 +145,12 @@ fn detect_cpu_features() {
         } else {
             core::mem::zeroed()
         };
-        
+
         let features = CpuFeatures {
             // CPUID.01H:EDX
             sse: cpuid1.edx & (1 << 25) != 0,
             sse2: cpuid1.edx & (1 << 26) != 0,
-            
+
             // CPUID.01H:ECX
             sse3: cpuid1.ecx & (1 << 0) != 0,
             ssse3: cpuid1.ecx & (1 << 9) != 0,
@@ -164,7 +164,7 @@ fn detect_cpu_features() {
             avx: cpuid1.ecx & (1 << 28) != 0,
             rdrand: cpuid1.ecx & (1 << 30) != 0,
             hypervisor: cpuid1.ecx & (1 << 31) != 0,
-            
+
             // CPUID.07H:EBX
             fsgsbase: cpuid7.ebx & (1 << 0) != 0,
             bmi1: cpuid7.ebx & (1 << 3) != 0,
@@ -174,7 +174,7 @@ fn detect_cpu_features() {
             rdseed: cpuid7.ebx & (1 << 18) != 0,
             smap: cpuid7.ebx & (1 << 20) != 0,
         };
-        
+
         CPU_FEATURES = Some(features);
     }
 }
@@ -184,9 +184,7 @@ pub fn has_avx() -> bool {
     let features = cpu_features();
     features.avx && features.osxsave && {
         // Check if OS has enabled AVX
-        unsafe {
-            (_xgetbv(0) & 0x6) == 0x6
-        }
+        unsafe { (_xgetbv(0) & 0x6) == 0x6 }
     }
 }
 

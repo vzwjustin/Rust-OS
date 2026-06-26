@@ -5,17 +5,16 @@
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::process::Pid;
 use super::pcb::{ProcessControlBlock, ProcessState};
 use super::table::ProcessTable;
+use crate::process::Pid;
 
 /// Fork the current process - creates a copy of the parent process
 pub fn fork(parent_pid: Pid, process_table: &Mutex<ProcessTable>) -> Result<Pid, &'static str> {
     let mut table = process_table.lock();
 
     // Get parent process
-    let parent = table.get(parent_pid)
-        .ok_or("Parent process not found")?;
+    let parent = table.get(parent_pid).ok_or("Parent process not found")?;
 
     // Allocate new PID for child
     let child_pid = table.allocate_pid()?;
@@ -46,8 +45,7 @@ pub fn exec(
     let mut table = process_table.lock();
 
     // Get process
-    let pcb = table.get_mut(pid)
-        .ok_or("Process not found")?;
+    let pcb = table.get_mut(pid).ok_or("Process not found")?;
 
     // Verify process is not zombie
     if pcb.is_zombie() {
@@ -91,8 +89,7 @@ pub fn wait(
         let mut table = process_table.lock();
 
         // Get parent process
-        let parent = table.get(parent_pid)
-            .ok_or("Parent process not found")?;
+        let parent = table.get(parent_pid).ok_or("Parent process not found")?;
 
         // Check if parent has any children
         if parent.child_count == 0 {
@@ -104,8 +101,7 @@ pub fn wait(
 
         if let Some(&child_pid) = zombie_children.first() {
             // Found a zombie child - collect its exit status
-            let child = table.get(child_pid)
-                .ok_or("Child process not found")?;
+            let child = table.get(child_pid).ok_or("Child process not found")?;
 
             let exit_status = child.exit_status.unwrap_or(-1);
 
@@ -141,8 +137,7 @@ pub fn waitpid(
         let table = process_table.lock();
 
         // Verify child exists and parent is correct
-        let child = table.get(child_pid)
-            .ok_or("Child process not found")?;
+        let child = table.get(child_pid).ok_or("Child process not found")?;
 
         if child.parent_pid != Some(parent_pid) {
             return Err("Not a child of this process");
@@ -180,8 +175,7 @@ pub fn exit(
     let mut table = process_table.lock();
 
     // Get process
-    let pcb = table.get_mut(pid)
-        .ok_or("Process not found")?;
+    let pcb = table.get_mut(pid).ok_or("Process not found")?;
 
     // Transition to zombie state
     pcb.zombify(status);

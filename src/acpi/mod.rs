@@ -356,9 +356,8 @@ pub fn enumerate_system_description_tables() -> Result<AcpiTables, &'static str>
 
         if header.length as usize >= mem::size_of::<SdtHeader>() {
             // Validate table checksum before accepting it
-            let table_slice = unsafe {
-                slice::from_raw_parts(virt as *const u8, header.length as usize)
-            };
+            let table_slice =
+                unsafe { slice::from_raw_parts(virt as *const u8, header.length as usize) };
 
             if !checksum_bytes(table_slice) {
                 continue;
@@ -430,8 +429,17 @@ unsafe fn read_sdt_entries(virt_addr: usize, entry_size: usize) -> Result<Vec<u6
     let total_length = header.length as usize;
     let header_size = mem::size_of::<SdtHeader>();
 
+    // ponytail: firmware-provided ACPI tables are only semi-trusted. `length` drives the
+    // raw slice construction below, so cap it to a sane ceiling. Real SDTs are far smaller
+    // than this; the bound just prevents a bogus length from triggering a runaway read.
+    const MAX_SDT_LENGTH: usize = 64 * 1024;
+
     if total_length < header_size {
         return Err("ACPI SDT length shorter than header");
+    }
+
+    if total_length > MAX_SDT_LENGTH {
+        return Err("ACPI SDT length exceeds maximum");
     }
 
     let entries_length = total_length - header_size;
@@ -545,45 +553,48 @@ pub fn parse_madt() -> Result<MadtInfo, &'static str> {
     Ok(info)
 }
 
-unsafe fn parse_madt_from_address(virt_addr: usize, table_length: usize) -> Result<MadtInfo, &'static str> {
+unsafe fn parse_madt_from_address(
+    virt_addr: usize,
+    table_length: usize,
+) -> Result<MadtInfo, &'static str> {
     if table_length < mem::size_of::<SdtHeader>() + mem::size_of::<MadtHeader>() {
         return Err("MADT shorter than expected header size");
     }
-    
+
     // Validate checksum
     let table_slice = slice::from_raw_parts(virt_addr as *const u8, table_length);
     if !checksum_bytes(table_slice) {
         return Err("MADT checksum validation failed");
     }
-    
+
     let mut info = MadtInfo::default();
-    
+
     // Skip SDT header to get to MADT-specific data
     let madt_data_start = virt_addr + mem::size_of::<SdtHeader>();
-    
+
     // Read MADT header (local APIC address and flags)
     let madt_header = &*(madt_data_start as *const MadtHeader);
     info.local_apic_address = madt_header.local_apic_address;
     info.flags = madt_header.flags;
-    
+
     // Parse MADT entries
     let entries_start = madt_data_start + mem::size_of::<MadtHeader>();
     let entries_length = table_length - mem::size_of::<SdtHeader>() - mem::size_of::<MadtHeader>();
-    
+
     let mut offset = 0;
     while offset < entries_length {
         if offset + 2 > entries_length {
             break; // Not enough space for entry header
         }
-        
+
         let entry_ptr = (entries_start + offset) as *const u8;
         let entry_type = *entry_ptr;
         let entry_length = *(entry_ptr.add(1)) as usize;
-        
+
         if entry_length < 2 || offset + entry_length > entries_length {
             break; // Invalid entry length
         }
-        
+
         match entry_type {
             MADT_ENTRY_PROCESSOR => {
                 if entry_length >= MADT_PROCESSOR_LEN {
@@ -620,10 +631,10 @@ unsafe fn parse_madt_from_address(virt_addr: usize, table_length: usize) -> Resu
                 // Unknown entry type, skip it
             }
         }
-        
+
         offset += entry_length;
     }
-    
+
     Ok(info)
 }
 
@@ -656,7 +667,10 @@ pub fn parse_fadt() -> Result<FadtInfo, &'static str> {
     Ok(info)
 }
 
-unsafe fn parse_fadt_from_address(virt_addr: usize, table_length: usize) -> Result<FadtInfo, &'static str> {
+unsafe fn parse_fadt_from_address(
+    virt_addr: usize,
+    table_length: usize,
+) -> Result<FadtInfo, &'static str> {
     if table_length < mem::size_of::<SdtHeader>() + 44 {
         return Err("FADT shorter than minimum required size");
     }
@@ -776,7 +790,10 @@ pub fn parse_mcfg() -> Result<McfgInfo, &'static str> {
     Ok(info)
 }
 
-unsafe fn parse_mcfg_from_address(virt_addr: usize, table_length: usize) -> Result<McfgInfo, &'static str> {
+unsafe fn parse_mcfg_from_address(
+    virt_addr: usize,
+    table_length: usize,
+) -> Result<McfgInfo, &'static str> {
     if table_length < mem::size_of::<SdtHeader>() + 8 {
         return Err("MCFG table too short");
     }
@@ -789,7 +806,7 @@ unsafe fn parse_mcfg_from_address(virt_addr: usize, table_length: usize) -> Resu
     let header_size = mem::size_of::<SdtHeader>();
     let reserved_size = 8; // 8 bytes reserved after header
     let entry_start = header_size + reserved_size;
-    
+
     if table_length < entry_start {
         return Err("MCFG has no entries");
     }
@@ -808,7 +825,7 @@ unsafe fn parse_mcfg_from_address(virt_addr: usize, table_length: usize) -> Resu
 
         // Parse MCFG entry - each entry is 16 bytes:
         // - 8 bytes: Base address
-        // - 2 bytes: PCI segment group number  
+        // - 2 bytes: PCI segment group number
         // - 1 byte: Start bus number
         // - 1 byte: End bus number
         // - 4 bytes: Reserved
@@ -856,22 +873,22 @@ pub fn parse_hpet() -> Result<HpetInfo, &'static str> {
         .ok_or("Failed to map HPET virtual address")?;
 
     let hpet_table = unsafe { &*(virt as *const HpetTable) };
-    
+
     // Validate table signature
     if &hpet_table.header.signature != b"HPET" {
         return Err("Invalid HPET table signature");
     }
-    
+
     // Validate table length
     if hpet_table.header.length < mem::size_of::<HpetTable>() as u32 {
         return Err("HPET table too short");
     }
-    
+
     // Validate base address
     if hpet_table.base_address == 0 {
         return Err("Invalid HPET base address");
     }
-    
+
     let info = HpetInfo {
         base_address: hpet_table.base_address,
         sequence_number: hpet_table.hpet_number as u16,
@@ -894,30 +911,30 @@ pub fn parse_hpet() -> Result<HpetInfo, &'static str> {
 pub fn init_acpi_tables() -> Result<(), &'static str> {
     // First enumerate all system description tables
     let _tables = enumerate_system_description_tables()?;
-    
+
     // Parse MADT for interrupt controller information
     if let Err(e) = parse_madt() {
         crate::serial_println!("Warning: Failed to parse MADT: {}", e);
     }
-    
+
     // Parse FADT for power management information
     if let Err(e) = parse_fadt() {
         crate::serial_println!("Warning: Failed to parse FADT: {}", e);
     }
-    
+
     // Parse MCFG for PCIe configuration
     if let Err(e) = parse_mcfg() {
         crate::serial_println!("Warning: Failed to parse MCFG: {}", e);
     }
-    
+
     // Parse HPET for high precision timer
     if let Err(e) = parse_hpet() {
         crate::serial_println!("Warning: Failed to parse HPET: {}", e);
     }
-    
+
     // Mark tables as fully initialized
     mark_tables_initialized();
-    
+
     Ok(())
 }
 
@@ -975,7 +992,9 @@ pub fn get_table_address(signature: &[u8; 4]) -> Result<usize, &'static str> {
     // If virtual address not available, try to map it using physical memory offset
     let state = ACPI_STATE.read();
     let info = state.as_ref().ok_or("ACPI not initialized")?;
-    let physical_offset = info.physical_memory_offset.ok_or("Physical memory offset not available")?;
+    let physical_offset = info
+        .physical_memory_offset
+        .ok_or("Physical memory offset not available")?;
 
     let virt_addr = phys_to_virt(descriptor.phys_addr, physical_offset)
         .ok_or("Failed to map ACPI table virtual address")?;

@@ -7,9 +7,9 @@
 //!
 //! Reference: https://en.wikipedia.org/wiki/Ar_(Unix)
 
+use crate::package::{PackageError, PackageResult};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use crate::package::{PackageResult, PackageError};
 
 const AR_MAGIC: &[u8] = b"!<arch>\n";
 const AR_HEADER_SIZE: usize = 60;
@@ -46,14 +46,14 @@ impl ArArchive {
     pub fn parse(data: &[u8]) -> PackageResult<Self> {
         if data.len() < AR_MAGIC.len() {
             return Err(PackageError::InvalidFormat(
-                "File too small to be an AR archive".to_string()
+                "File too small to be an AR archive".to_string(),
             ));
         }
 
         // Check magic number
         if &data[0..AR_MAGIC.len()] != AR_MAGIC {
             return Err(PackageError::InvalidFormat(
-                "Invalid AR archive magic number".to_string()
+                "Invalid AR archive magic number".to_string(),
             ));
         }
 
@@ -63,7 +63,7 @@ impl ArArchive {
         while offset + AR_HEADER_SIZE <= data.len() {
             // Parse header
             let header = &data[offset..offset + AR_HEADER_SIZE];
-            
+
             // Check file magic at end of header
             if &header[58..60] != AR_FMAG {
                 // Might be padding, skip
@@ -93,7 +93,7 @@ impl ArArchive {
             // Read file data
             if offset + size > data.len() {
                 return Err(PackageError::InvalidFormat(
-                    "AR archive member size exceeds file size".to_string()
+                    "AR archive member size exceeds file size".to_string(),
                 ));
             }
 
@@ -149,8 +149,9 @@ impl ArArchive {
         if trimmed.is_empty() {
             return Ok(0);
         }
-        trimmed.parse::<u64>()
-            .map_err(|_| PackageError::InvalidFormat("Invalid decimal number in AR header".to_string()))
+        trimmed.parse::<u64>().map_err(|_| {
+            PackageError::InvalidFormat("Invalid decimal number in AR header".to_string())
+        })
     }
 
     /// Parse an octal number from ASCII
@@ -161,8 +162,9 @@ impl ArArchive {
         if trimmed.is_empty() {
             return Ok(0);
         }
-        u64::from_str_radix(trimmed, 8)
-            .map_err(|_| PackageError::InvalidFormat("Invalid octal number in AR header".to_string()))
+        u64::from_str_radix(trimmed, 8).map_err(|_| {
+            PackageError::InvalidFormat("Invalid octal number in AR header".to_string())
+        })
     }
 }
 
@@ -170,7 +172,7 @@ impl ArArchive {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ar_magic_validation() {
         let valid_header = b"!<arch>\n";
         let invalid_header = b"!<invalid";

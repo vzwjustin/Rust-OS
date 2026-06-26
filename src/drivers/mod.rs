@@ -3,14 +3,15 @@
 //! This module provides a unified interface for all hardware drivers in RustOS,
 //! including graphics, input, network, and storage drivers with hot-plug support.
 
-pub mod vbe;
-pub mod pci;
 pub mod hotplug;
-pub mod storage;
+pub mod input_manager;
 pub mod network;
+pub mod pci;
 pub mod ps2_controller;
 pub mod ps2_mouse;
-pub mod input_manager;
+pub mod storage;
+pub mod vbe;
+pub mod vbe_io;
 
 // Removed unused imports
 use alloc::format;
@@ -25,44 +26,68 @@ pub use vbe::{
 
 // Re-export PCI functionality
 pub use pci::{
-    init as init_pci, pci_bus, scan_devices as scan_pci_devices,
-    list_devices as list_pci_devices, get_pci_stats, PciDevice, PciAddress,
+    get_pci_stats, init as init_pci, list_devices as list_pci_devices, pci_bus,
+    scan_devices as scan_pci_devices, PciAddress, PciDevice,
 };
 
 // Re-export hot-plug functionality
 pub use hotplug::{
-    init as init_hotplug, hotplug_manager, add_device as add_hotplug_device,
-    remove_device as remove_hotplug_device, process_events as process_hotplug_events,
-    get_hotplug_stats, HotplugDevice, HotplugEvent, DeviceState,
+    add_device as add_hotplug_device, get_hotplug_stats, hotplug_manager, init as init_hotplug,
+    process_events as process_hotplug_events, remove_device as remove_hotplug_device, DeviceState,
+    HotplugDevice, HotplugEvent,
 };
 
 // Re-export input functionality
-pub use ps2_controller::{init as init_ps2_controller, Ps2Port, Ps2DeviceType};
-pub use ps2_mouse::{init as init_ps2_mouse, MousePacket, MouseButtons, MouseProtocol};
 pub use input_manager::{
-    init as init_input_manager, InputEvent, MouseButton, CursorBounds,
-    get_event as get_input_event, get_cursor_position, set_cursor_position,
-    set_cursor_bounds, handle_mouse_packet, handle_keyboard_event,
+    get_cursor_position, get_event as get_input_event, handle_keyboard_event, handle_mouse_packet,
+    init as init_input_manager, set_cursor_bounds, set_cursor_position, CursorBounds, InputEvent,
+    MouseButton,
 };
+pub use ps2_controller::{init as init_ps2_controller, Ps2DeviceType, Ps2Port};
+pub use ps2_mouse::{init as init_ps2_mouse, MouseButtons, MousePacket, MouseProtocol};
 
 // Re-export storage functionality
 pub use storage::{
-    // Core types
-    StorageError, StorageDeviceType, StorageDeviceState, StorageCapabilities, StorageStats,
-    StorageDriver, StorageDevice, StorageDeviceInfo, StorageDriverManager, StorageManagerStats,
-    // Device-specific read/write with device_id
-    read_storage_sectors, write_storage_sectors,
+    flush_storage,
+    get_default_device,
+    get_device_by_type,
+    get_device_smart_data,
+    get_storage_device_list,
+    get_subsystem_status,
+    init_storage_manager,
+    init_storage_subsystem,
+    is_gpt_device,
+    list_block_devices,
+    read_mbr_partitions,
     // Unified interface (uses default device)
-    read_sectors, write_sectors, flush_storage,
-    set_default_device, get_default_device,
+    read_sectors,
+    // Device-specific read/write with device_id
+    read_storage_sectors,
+    reset_device,
+    set_default_device,
+    standby_device,
+    wake_device,
+    with_storage_manager,
+    write_sectors,
+    write_storage_sectors,
     // Block device abstraction
-    BlockDevice, list_block_devices, get_device_by_type,
+    BlockDevice,
     // Partition support
-    PartitionInfo, PartitionType, read_mbr_partitions, is_gpt_device,
+    PartitionInfo,
+    PartitionType,
+    StorageCapabilities,
+    StorageDevice,
+    StorageDeviceInfo,
+    StorageDeviceState,
+    StorageDeviceType,
+    StorageDriver,
+    StorageDriverManager,
+    // Core types
+    StorageError,
+    StorageManagerStats,
+    StorageStats,
     // Subsystem control
-    StorageSubsystemStatus, get_subsystem_status, get_storage_device_list,
-    init_storage_manager, with_storage_manager, init_storage_subsystem,
-    reset_device, standby_device, wake_device, get_device_smart_data,
+    StorageSubsystemStatus,
 };
 
 /// Driver types supported by RustOS
@@ -385,7 +410,7 @@ pub fn init_drivers() -> Result<(), &'static str> {
     // Display driver statistics
     let _pci_stats = get_pci_stats();
     let _hotplug_stats = get_hotplug_stats();
-    
+
     // Production: drivers initialized silently
 
     Ok(())
@@ -439,9 +464,10 @@ pub fn print_driver_info() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{serial_print, serial_println, ToString, format};
+    use crate::{serial_print, serial_println, ToString};
+    use alloc::format;
 
-    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_driver_info_creation() {
         serial_print!("test_driver_info_creation... ");
         let driver = DriverInfo::new(
@@ -461,7 +487,7 @@ mod tests {
         serial_println!("[ok]");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_device_info_creation() {
         serial_print!("test_device_info_creation... ");
         let device = DeviceInfo::new(
@@ -486,7 +512,7 @@ mod tests {
         serial_println!("[ok]");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_driver_manager_creation() {
         serial_print!("test_driver_manager_creation... ");
         let manager = DriverManager::new();
@@ -497,7 +523,7 @@ mod tests {
         serial_println!("[ok]");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_driver_types_display() {
         serial_print!("test_driver_types_display... ");
         assert_eq!(format!("{}", DriverType::Graphics), "Graphics");
@@ -506,7 +532,7 @@ mod tests {
         serial_println!("[ok]");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_driver_status_display() {
         serial_print!("test_driver_status_display... ");
         assert_eq!(format!("{}", DriverStatus::Ready), "Ready");

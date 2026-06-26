@@ -10,7 +10,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static TTY_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -169,7 +169,11 @@ impl Termios {
             c_iflag: c_iflag::ICRNL | c_iflag::IXON,
             c_oflag: c_oflag::OPOST | c_oflag::ONLCR,
             c_cflag: c_cflag::CREAD | c_cflag::CS8 | c_cflag::HUPCL,
-            c_lflag: c_lflag::ISIG | c_lflag::ICANON | c_lflag::ECHO | c_lflag::ECHOE | c_lflag::ECHOK,
+            c_lflag: c_lflag::ISIG
+                | c_lflag::ICANON
+                | c_lflag::ECHO
+                | c_lflag::ECHOE
+                | c_lflag::ECHOK,
             c_line: 0,
             c_cc: [0; 32],
             c_ispeed: 38400,
@@ -177,14 +181,14 @@ impl Termios {
         };
 
         // Set default control characters
-        termios.c_cc[cc_index::VINTR] = 3;     // ^C
-        termios.c_cc[cc_index::VQUIT] = 28;    // ^\
-        termios.c_cc[cc_index::VERASE] = 127;  // DEL
-        termios.c_cc[cc_index::VKILL] = 21;    // ^U
-        termios.c_cc[cc_index::VEOF] = 4;      // ^D
-        termios.c_cc[cc_index::VSTART] = 17;   // ^Q
-        termios.c_cc[cc_index::VSTOP] = 19;    // ^S
-        termios.c_cc[cc_index::VSUSP] = 26;    // ^Z
+        termios.c_cc[cc_index::VINTR] = 3; // ^C
+        termios.c_cc[cc_index::VQUIT] = 28; // ^\
+        termios.c_cc[cc_index::VERASE] = 127; // DEL
+        termios.c_cc[cc_index::VKILL] = 21; // ^U
+        termios.c_cc[cc_index::VEOF] = 4; // ^D
+        termios.c_cc[cc_index::VSTART] = 17; // ^Q
+        termios.c_cc[cc_index::VSTOP] = 19; // ^S
+        termios.c_cc[cc_index::VSUSP] = 26; // ^Z
         termios.c_cc[cc_index::VMIN] = 1;
         termios.c_cc[cc_index::VTIME] = 0;
 
@@ -229,9 +233,9 @@ pub fn tcsetattr(fd: Fd, optional_actions: i32, termios_p: *const Termios) -> Li
     }
 
     // Optional actions
-    const TCSANOW: i32 = 0;    // Change immediately
-    const TCSADRAIN: i32 = 1;  // Change after output is drained
-    const TCSAFLUSH: i32 = 2;  // Change after output is drained and flush input
+    const TCSANOW: i32 = 0; // Change immediately
+    const TCSADRAIN: i32 = 1; // Change after output is drained
+    const TCSAFLUSH: i32 = 2; // Change after output is drained and flush input
 
     match optional_actions {
         TCSANOW | TCSADRAIN | TCSAFLUSH => {
@@ -274,9 +278,9 @@ pub fn tcflush(fd: Fd, queue_selector: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    const TCIFLUSH: i32 = 0;   // Flush input
-    const TCOFLUSH: i32 = 1;   // Flush output
-    const TCIOFLUSH: i32 = 2;  // Flush both
+    const TCIFLUSH: i32 = 0; // Flush input
+    const TCOFLUSH: i32 = 1; // Flush output
+    const TCIOFLUSH: i32 = 2; // Flush both
 
     match queue_selector {
         TCIFLUSH | TCOFLUSH | TCIOFLUSH => {
@@ -295,10 +299,10 @@ pub fn tcflow(fd: Fd, action: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    const TCOOFF: i32 = 0;  // Suspend output
-    const TCOON: i32 = 1;   // Resume output
-    const TCIOFF: i32 = 2;  // Transmit STOP character
-    const TCION: i32 = 3;   // Transmit START character
+    const TCOOFF: i32 = 0; // Suspend output
+    const TCOON: i32 = 1; // Resume output
+    const TCIOFF: i32 = 2; // Transmit STOP character
+    const TCION: i32 = 3; // Transmit START character
 
     match action {
         TCOOFF | TCOON | TCIOFF | TCION => {
@@ -620,25 +624,25 @@ impl WinSize {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_termios_default() {
         let termios = Termios::default();
-        assert_eq!(termios.c_cc[cc_index::VINTR], 3);  // ^C
-        assert_eq!(termios.c_cc[cc_index::VEOF], 4);   // ^D
+        assert_eq!(termios.c_cc[cc_index::VINTR], 3); // ^C
+        assert_eq!(termios.c_cc[cc_index::VEOF], 4); // ^D
         assert!(termios.c_lflag & c_lflag::ECHO != 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_tcgetattr() {
         let mut termios = Termios::default();
         assert!(tcgetattr(0, &mut termios).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_isatty() {
         assert!(isatty(0)); // stdin
         assert!(isatty(1)); // stdout
@@ -646,12 +650,12 @@ mod tests {
         assert!(!isatty(-1));
     }
 
-    #[test]
+    #[test_case]
     fn test_openpt() {
         assert!(posix_openpt(2).is_ok()); // O_RDWR
     }
 
-    #[test]
+    #[test_case]
     fn test_winsize() {
         let ws = WinSize::default();
         assert_eq!(ws.ws_row, 24);

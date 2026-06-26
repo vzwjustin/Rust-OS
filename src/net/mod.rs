@@ -8,23 +8,28 @@
 //! - Socket interface
 //! - Network device abstraction
 
-pub mod ethernet;
-pub mod ip;
-pub mod tcp;
-pub mod udp;
-pub mod icmp;
 pub mod arp;
-pub mod socket;
+pub mod buffer;
 pub mod device;
 pub mod dhcp;
-pub mod dns;
-pub mod buffer;
 pub mod dma;
+pub mod dns;
+pub mod ethernet;
+pub mod icmp;
+pub mod ip;
+pub mod socket;
+pub mod tcp;
+pub mod udp;
 
-use alloc::{vec::Vec, vec, collections::BTreeMap, string::{String, ToString}};
-use spin::{RwLock, Mutex};
-use lazy_static::lazy_static;
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::fmt;
+use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 /// Type alias for IPv4 address as a 4-byte array
 pub type Ipv4Address = [u8; 4];
@@ -70,7 +75,9 @@ impl NetworkAddress {
     pub fn is_multicast(&self) -> bool {
         match self {
             NetworkAddress::IPv4([a, _, _, _]) => (*a & 0xf0) == 0xe0,
-            NetworkAddress::IPv6([a, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]) => (*a & 0xff) == 0xff,
+            NetworkAddress::IPv6([a, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]) => {
+                (*a & 0xff) == 0xff
+            }
             NetworkAddress::Mac([a, _, _, _, _, _]) => (*a & 0x01) != 0,
         }
     }
@@ -88,8 +95,11 @@ impl fmt::Display for NetworkAddress {
                     bytes[12], bytes[13], bytes[14], bytes[15])
             }
             NetworkAddress::Mac(bytes) => {
-                write!(f, "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", 
-                       bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
+                write!(
+                    f,
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+                )
             }
         }
     }
@@ -377,7 +387,7 @@ impl NetworkStack {
     /// Add a network interface
     pub fn add_interface(&self, interface: NetworkInterface) -> NetworkResult<()> {
         let mut interfaces = self.interfaces.write();
-        
+
         if interfaces.contains_key(&interface.name) {
             return Err(NetworkError::AddressInUse);
         }
@@ -389,7 +399,7 @@ impl NetworkStack {
     /// Remove a network interface
     pub fn remove_interface(&self, name: &str) -> NetworkResult<()> {
         let mut interfaces = self.interfaces.write();
-        
+
         if interfaces.remove(name).is_some() {
             Ok(())
         } else {
@@ -412,7 +422,7 @@ impl NetworkStack {
     /// Set interface up/down
     pub fn set_interface_state(&self, name: &str, up: bool) -> NetworkResult<()> {
         let mut interfaces = self.interfaces.write();
-        
+
         if let Some(interface) = interfaces.get_mut(name) {
             interface.flags.up = up;
             Ok(())
@@ -422,9 +432,13 @@ impl NetworkStack {
     }
 
     /// Add IP address to interface
-    pub fn add_ip_address(&self, interface_name: &str, address: NetworkAddress) -> NetworkResult<()> {
+    pub fn add_ip_address(
+        &self,
+        interface_name: &str,
+        address: NetworkAddress,
+    ) -> NetworkResult<()> {
         let mut interfaces = self.interfaces.write();
-        
+
         if let Some(interface) = interfaces.get_mut(interface_name) {
             if !interface.ip_addresses.contains(&address) {
                 interface.ip_addresses.push(address);
@@ -439,32 +453,34 @@ impl NetworkStack {
     pub fn add_route(&self, route: RouteEntry) -> NetworkResult<()> {
         let mut routing_table = self.routing_table.write();
         routing_table.push(route.clone());
-        
-        
+
         Ok(())
     }
 
     /// Find route for destination address with longest prefix matching
     pub fn find_route(&self, destination: &NetworkAddress) -> Option<RouteEntry> {
         let routing_table = self.routing_table.read();
-        
+
         let mut best_route: Option<RouteEntry> = None;
         let mut best_prefix_len = 0u32;
-        
+
         // Implement longest prefix matching
         for route in routing_table.iter() {
             if self.address_matches_route(destination, &route.destination, &route.netmask) {
                 let prefix_len = self.calculate_prefix_length(&route.netmask);
-                
+
                 // Select route with longest prefix (most specific)
-                if best_route.is_none() || prefix_len > best_prefix_len || 
-                   (prefix_len == best_prefix_len && route.metric < best_route.as_ref().unwrap().metric) {
+                if best_route.is_none()
+                    || prefix_len > best_prefix_len
+                    || (prefix_len == best_prefix_len
+                        && route.metric < best_route.as_ref().unwrap().metric)
+                {
                     best_route = Some(route.clone());
                     best_prefix_len = prefix_len;
                 }
             }
         }
-        
+
         best_route
     }
 
@@ -472,10 +488,10 @@ impl NetworkStack {
     fn calculate_prefix_length(&self, netmask: &NetworkAddress) -> u32 {
         match netmask {
             NetworkAddress::IPv4(mask) => {
-                let mask_u32 = ((mask[0] as u32) << 24) |
-                              ((mask[1] as u32) << 16) |
-                              ((mask[2] as u32) << 8) |
-                              (mask[3] as u32);
+                let mask_u32 = ((mask[0] as u32) << 24)
+                    | ((mask[1] as u32) << 16)
+                    | ((mask[2] as u32) << 8)
+                    | (mask[3] as u32);
                 mask_u32.leading_ones()
             }
             _ => 0,
@@ -483,7 +499,12 @@ impl NetworkStack {
     }
 
     /// Enhanced route matching with subnet validation
-    fn address_matches_route(&self, addr: &NetworkAddress, dest: &NetworkAddress, mask: &NetworkAddress) -> bool {
+    fn address_matches_route(
+        &self,
+        addr: &NetworkAddress,
+        dest: &NetworkAddress,
+        mask: &NetworkAddress,
+    ) -> bool {
         match (addr, dest, mask) {
             (NetworkAddress::IPv4(a), NetworkAddress::IPv4(d), NetworkAddress::IPv4(m)) => {
                 // Apply netmask to both addresses and compare
@@ -502,38 +523,40 @@ impl NetworkStack {
     pub fn add_route_validated(&self, route: RouteEntry) -> NetworkResult<()> {
         // Validate route parameters
         self.validate_route(&route)?;
-        
+
         let mut routing_table = self.routing_table.write();
-        
+
         // Check for conflicting routes
-        let conflicts: Vec<_> = routing_table.iter()
+        let conflicts: Vec<_> = routing_table
+            .iter()
             .enumerate()
             .filter(|(_, existing_route)| {
-                existing_route.destination == route.destination &&
-                existing_route.netmask == route.netmask &&
-                existing_route.interface == route.interface
+                existing_route.destination == route.destination
+                    && existing_route.netmask == route.netmask
+                    && existing_route.interface == route.interface
             })
             .map(|(index, _)| index)
             .collect();
-        
+
         // Remove conflicting routes (replace with new one)
         for &index in conflicts.iter().rev() {
             routing_table.remove(index);
         }
-        
+
         // Insert new route in sorted order (by prefix length, then metric)
-        let insert_pos = routing_table.iter()
+        let insert_pos = routing_table
+            .iter()
             .position(|existing_route| {
                 let existing_prefix = self.calculate_prefix_length(&existing_route.netmask);
                 let new_prefix = self.calculate_prefix_length(&route.netmask);
-                
-                existing_prefix < new_prefix || 
-                (existing_prefix == new_prefix && existing_route.metric > route.metric)
+
+                existing_prefix < new_prefix
+                    || (existing_prefix == new_prefix && existing_route.metric > route.metric)
             })
             .unwrap_or(routing_table.len());
-        
+
         routing_table.insert(insert_pos, route);
-        
+
         Ok(())
     }
 
@@ -544,7 +567,7 @@ impl NetworkStack {
         if !interfaces.contains_key(&route.interface) {
             return Err(NetworkError::InvalidAddress);
         }
-        
+
         // Validate destination and netmask compatibility
         match (&route.destination, &route.netmask) {
             (NetworkAddress::IPv4(dest), NetworkAddress::IPv4(mask)) => {
@@ -557,25 +580,25 @@ impl NetworkStack {
             }
             _ => return Err(NetworkError::NotSupported),
         }
-        
+
         // Validate gateway if present
         if let Some(gateway) = &route.gateway {
             // Gateway should be reachable through the specified interface
             let interface = interfaces.get(&route.interface).unwrap();
             let mut gateway_reachable = false;
-            
+
             for interface_ip in &interface.ip_addresses {
                 if self.is_same_subnet(interface_ip, gateway) {
                     gateway_reachable = true;
                     break;
                 }
             }
-            
+
             if !gateway_reachable {
                 return Err(NetworkError::NoRoute);
             }
         }
-        
+
         Ok(())
     }
 
@@ -584,7 +607,7 @@ impl NetworkStack {
         // Update local ARP table
         let mut arp_table = self.arp_table.write();
         arp_table.insert(ip, mac);
-        
+
         // Also update enhanced ARP module
         arp::update_arp_entry(ip, mac, "default".to_string()).ok();
     }
@@ -620,44 +643,47 @@ impl NetworkStack {
     pub fn send_arp_request(&self, target_ip: &NetworkAddress) -> NetworkResult<()> {
         // Find appropriate interface for this IP
         let interface_name = self.find_interface_for_ip(target_ip)?;
-        
+
         // Get interface details
         let interfaces = self.interfaces.read();
-        let interface = interfaces.get(&interface_name)
+        let interface = interfaces
+            .get(&interface_name)
             .ok_or(NetworkError::InvalidAddress)?;
 
         let src_mac = interface.mac_address;
-        let src_ip = *interface.ip_addresses.first()
+        let src_ip = *interface
+            .ip_addresses
+            .first()
             .ok_or(NetworkError::InvalidAddress)?;
 
         drop(interfaces);
 
         // Create ARP request packet
         let arp_packet = self.create_arp_request_packet(src_mac, src_ip, *target_ip)?;
-        
+
         // Send through interface
         self.send_packet(&interface_name, arp_packet)?;
-        
+
         Ok(())
     }
 
     /// Find interface that can reach the given IP address
     fn find_interface_for_ip(&self, target_ip: &NetworkAddress) -> NetworkResult<String> {
         let interfaces = self.interfaces.read();
-        
+
         // First, check if target is on same subnet as any interface
         for (name, interface) in interfaces.iter() {
             if !interface.flags.up {
                 continue;
             }
-            
+
             for interface_ip in &interface.ip_addresses {
                 if self.is_same_subnet(interface_ip, target_ip) {
                     return Ok(name.clone());
                 }
             }
         }
-        
+
         // If not on same subnet, use default route
         let routing_table = self.routing_table.read();
         for route in routing_table.iter() {
@@ -665,14 +691,14 @@ impl NetworkStack {
                 return Ok(route.interface.clone());
             }
         }
-        
+
         // Fallback to first up interface
         for (name, interface) in interfaces.iter() {
             if interface.flags.up {
                 return Ok(name.clone());
             }
         }
-        
+
         Err(NetworkError::NoRoute)
     }
 
@@ -695,44 +721,48 @@ impl NetworkStack {
         target_ip: NetworkAddress,
     ) -> NetworkResult<PacketBuffer> {
         let mut packet_data = Vec::new();
-        
+
         // Ethernet header
         packet_data.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); // Broadcast MAC
         if let NetworkAddress::Mac(mac_bytes) = src_mac {
             packet_data.extend_from_slice(&mac_bytes);
         }
         packet_data.extend_from_slice(&[0x08, 0x06]); // ARP EtherType
-        
+
         // ARP header
         packet_data.extend_from_slice(&[0x00, 0x01]); // Hardware type (Ethernet)
         packet_data.extend_from_slice(&[0x08, 0x00]); // Protocol type (IPv4)
         packet_data.push(6); // Hardware address length
         packet_data.push(4); // Protocol address length
         packet_data.extend_from_slice(&[0x00, 0x01]); // Operation (request)
-        
+
         // Sender hardware address
         if let NetworkAddress::Mac(mac_bytes) = src_mac {
             packet_data.extend_from_slice(&mac_bytes);
         }
-        
+
         // Sender protocol address
         if let NetworkAddress::IPv4(ip_bytes) = src_ip {
             packet_data.extend_from_slice(&ip_bytes);
         }
-        
+
         // Target hardware address (unknown, all zeros)
         packet_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        
+
         // Target protocol address
         if let NetworkAddress::IPv4(ip_bytes) = target_ip {
             packet_data.extend_from_slice(&ip_bytes);
         }
-        
+
         Ok(PacketBuffer::from_data(packet_data))
     }
 
     /// Create a new socket
-    pub fn create_socket(&self, socket_type: socket::SocketType, protocol: Protocol) -> NetworkResult<u32> {
+    pub fn create_socket(
+        &self,
+        socket_type: socket::SocketType,
+        protocol: Protocol,
+    ) -> NetworkResult<u32> {
         let socket_id = {
             let mut next_id = self.next_socket_id.lock();
             let id = *next_id;
@@ -741,17 +771,17 @@ impl NetworkStack {
         };
 
         let socket = socket::Socket::new(socket_id, socket_type, protocol);
-        
+
         let mut sockets = self.sockets.write();
         sockets.insert(socket_id, socket);
-        
+
         Ok(socket_id)
     }
 
     /// Close a socket
     pub fn close_socket(&self, socket_id: u32) -> NetworkResult<()> {
         let mut sockets = self.sockets.write();
-        
+
         if sockets.remove(&socket_id).is_some() {
             Ok(())
         } else {
@@ -783,8 +813,10 @@ impl NetworkStack {
     /// Send packet through interface
     pub fn send_packet(&self, interface_name: &str, packet: PacketBuffer) -> NetworkResult<()> {
         let interfaces = self.interfaces.read();
-        let interface = interfaces.get(interface_name).ok_or(NetworkError::InvalidAddress)?;
-        
+        let interface = interfaces
+            .get(interface_name)
+            .ok_or(NetworkError::InvalidAddress)?;
+
         if !interface.flags.up {
             return Err(NetworkError::NetworkUnreachable);
         }
@@ -932,7 +964,7 @@ pub fn network_stack() -> &'static NetworkStack {
 // Wrapper functions for legacy API compatibility
 // =============================================================================
 
-/// Get interface statistics (stub implementation)
+/// Get aggregate interface statistics.
 /// Returns (rx_packets, tx_packets, rx_bytes, tx_bytes)
 pub fn get_interface_stats() -> Result<(u64, u64, u64, u64), &'static str> {
     // Get stats from the default interface or aggregate all interfaces
@@ -944,7 +976,8 @@ pub fn get_interface_stats() -> Result<(u64, u64, u64, u64), &'static str> {
     }
 
     // Aggregate stats from all interfaces
-    let (mut total_rx_packets, mut total_tx_packets, mut total_rx_bytes, mut total_tx_bytes) = (0, 0, 0, 0);
+    let (mut total_rx_packets, mut total_tx_packets, mut total_rx_bytes, mut total_tx_bytes) =
+        (0, 0, 0, 0);
 
     for interface in interfaces.values() {
         total_rx_packets += interface.stats.rx_packets;
@@ -953,5 +986,10 @@ pub fn get_interface_stats() -> Result<(u64, u64, u64, u64), &'static str> {
         total_tx_bytes += interface.stats.tx_bytes;
     }
 
-    Ok((total_rx_packets, total_tx_packets, total_rx_bytes, total_tx_bytes))
+    Ok((
+        total_rx_packets,
+        total_tx_packets,
+        total_rx_bytes,
+        total_tx_bytes,
+    ))
 }

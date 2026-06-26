@@ -89,7 +89,11 @@ pub fn show_memory_info(total_mb: usize, usable_mb: usize, regions: usize) {
     println!("  ◇ Memory Regions:  {}", regions);
     println!("  ◇ Heap Reserved:   100 MB");
 
-    let usage_percent = if total_mb > 0 { (usable_mb * 100) / total_mb } else { 0 };
+    let usage_percent = if total_mb > 0 {
+        (usable_mb * 100) / total_mb
+    } else {
+        0
+    };
     println!("  ◇ Memory Usage:    {}%", usage_percent);
 
     set_color_temp(Color::White, Color::Black);
@@ -166,7 +170,7 @@ fn draw_box(title: &str, width: usize) {
     // Top border
     set_color_temp(Color::LightBlue, Color::Black);
     print!("  ╔");
-    for _ in 0..(width-4) {
+    for _ in 0..(width - 4) {
         print!("═");
     }
     println!("╗");
@@ -190,7 +194,7 @@ fn draw_box(title: &str, width: usize) {
 
     // Separator
     print!("  ╠");
-    for _ in 0..(width-4) {
+    for _ in 0..(width - 4) {
         print!("═");
     }
     println!("╣");
@@ -202,7 +206,7 @@ fn draw_box(title: &str, width: usize) {
 fn draw_line(width: usize) {
     set_color_temp(Color::LightBlue, Color::Black);
     print!("  ╚");
-    for _ in 0..(width-4) {
+    for _ in 0..(width - 4) {
         print!("═");
     }
     println!("╝");
@@ -281,7 +285,12 @@ impl BootPhase {
 }
 
 /// Display detailed boot progress with substeps
-pub fn show_detailed_progress(phase: BootPhase, substep: usize, total_substeps: usize, detail: &str) {
+pub fn show_detailed_progress(
+    phase: BootPhase,
+    substep: usize,
+    total_substeps: usize,
+    detail: &str,
+) {
     let phase_progress = (phase.number() - 1) * 100 / 6;
     let substep_progress = if total_substeps > 0 {
         (substep * 100 / 6) / total_substeps
@@ -346,7 +355,14 @@ pub fn show_hardware_summary(
     println!("  Memory:   {} MB total", memory_mb);
     println!("  Storage:  {} device(s)", storage_count);
     println!("  Network:  {} interface(s)", network_count);
-    println!("  Graphics: {}", if gpu_detected { "GPU detected" } else { "VGA only" });
+    println!(
+        "  Graphics: {}",
+        if gpu_detected {
+            "GPU detected"
+        } else {
+            "VGA only"
+        }
+    );
 
     set_color_temp(Color::White, Color::Black);
     draw_line(60);
@@ -382,7 +398,10 @@ pub fn show_boot_error(error_code: u32, message: &str, recoverable: bool) {
     println!("  ║             BOOT ERROR ENCOUNTERED                     ║");
     println!("  ╠════════════════════════════════════════════════════════╣");
     set_color_temp(Color::White, Color::Black);
-    println!("  ║ Error Code: 0x{:08X}                                  ║", error_code);
+    println!(
+        "  ║ Error Code: 0x{:08X}                                  ║",
+        error_code
+    );
     set_color_temp(Color::Yellow, Color::Black);
 
     // Word-wrap the message
@@ -465,7 +484,10 @@ pub fn show_boot_complete(boot_time_ms: u64) {
 
     let seconds = boot_time_ms / 1000;
     let millis = boot_time_ms % 1000;
-    println!("  ║ Boot time: {}.{:03} seconds                             ║", seconds, millis);
+    println!(
+        "  ║ Boot time: {}.{:03} seconds                             ║",
+        seconds, millis
+    );
     println!("  ║                                                        ║");
     println!("  ║ All systems initialized successfully.                  ║");
     println!("  ║ Launching desktop environment...                       ║");
@@ -535,7 +557,10 @@ pub fn show_graphics_mode_info(width: usize, height: usize, bpp: usize, accelera
     set_color_temp(Color::LightCyan, Color::Black);
     println!("  Resolution:   {}x{}", width, height);
     println!("  Color Depth:  {} bits per pixel", bpp);
-    println!("  Acceleration: {}", if accelerated { "Hardware" } else { "Software" });
+    println!(
+        "  Acceleration: {}",
+        if accelerated { "Hardware" } else { "Software" }
+    );
 
     set_color_temp(Color::White, Color::Black);
     draw_line(60);
@@ -619,7 +644,9 @@ pub fn show_countdown(seconds: usize, message: &str) {
 
         // Delay for approximately 1 second
         for _ in 0..100_000_000 {
-            unsafe { core::arch::asm!("nop"); }
+            unsafe {
+                core::arch::asm!("nop");
+            }
         }
     }
     println!();

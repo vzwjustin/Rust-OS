@@ -71,14 +71,25 @@ pub fn dispatch_syscall(
         8 => syscall_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
 
         // Memory operations
-        9 => syscall_mmap(arg1 as *mut u8, arg2 as usize, arg3 as i32, arg4 as i32, arg5 as i32, arg6 as i64),
+        9 => syscall_mmap(
+            arg1 as *mut u8,
+            arg2 as usize,
+            arg3 as i32,
+            arg4 as i32,
+            arg5 as i32,
+            arg6 as i64,
+        ),
         10 => syscall_mprotect(arg1 as *mut u8, arg2 as usize, arg3 as i32),
         11 => syscall_munmap(arg1 as *mut u8, arg2 as usize),
         12 => syscall_brk(arg1 as *mut u8),
 
         // Process operations
         57 => syscall_fork(),
-        59 => syscall_execve(arg1 as *const u8, arg2 as *const *const u8, arg3 as *const *const u8),
+        59 => syscall_execve(
+            arg1 as *const u8,
+            arg2 as *const *const u8,
+            arg3 as *const *const u8,
+        ),
         60 => syscall_exit(arg1 as i32),
         61 => syscall_wait4(arg1 as i32, arg2 as *mut i32, arg3 as i32, arg4 as *mut u8),
 
@@ -90,7 +101,13 @@ pub fn dispatch_syscall(
         67 => syscall_shmdt(arg1 as *const u8),
         68 => syscall_msgget(arg1 as i32, arg2 as i32),
         69 => syscall_msgsnd(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i32),
-        70 => syscall_msgrcv(arg1 as i32, arg2 as *mut u8, arg3 as usize, arg4 as i64, arg5 as i32),
+        70 => syscall_msgrcv(
+            arg1 as i32,
+            arg2 as *mut u8,
+            arg3 as usize,
+            arg4 as i64,
+            arg5 as i32,
+        ),
 
         _ => {
             // Unknown syscall - return ENOSYS (-38)
@@ -130,21 +147,30 @@ fn syscall_close(fd: i32) -> i64 {
 }
 
 fn syscall_stat(pathname: *const u8, statbuf: *mut u8) -> i64 {
-    match crate::linux_compat::file_ops::stat(pathname, statbuf as *mut crate::linux_compat::file_ops::Stat) {
+    match crate::linux_compat::file_ops::stat(
+        pathname,
+        statbuf as *mut crate::linux_compat::file_ops::Stat,
+    ) {
         Ok(_) => 0,
         Err(e) => -(e as i64),
     }
 }
 
 fn syscall_fstat(fd: i32, statbuf: *mut u8) -> i64 {
-    match crate::linux_compat::file_ops::fstat(fd, statbuf as *mut crate::linux_compat::file_ops::Stat) {
+    match crate::linux_compat::file_ops::fstat(
+        fd,
+        statbuf as *mut crate::linux_compat::file_ops::Stat,
+    ) {
         Ok(_) => 0,
         Err(e) => -(e as i64),
     }
 }
 
 fn syscall_lstat(pathname: *const u8, statbuf: *mut u8) -> i64 {
-    match crate::linux_compat::file_ops::lstat(pathname, statbuf as *mut crate::linux_compat::file_ops::Stat) {
+    match crate::linux_compat::file_ops::lstat(
+        pathname,
+        statbuf as *mut crate::linux_compat::file_ops::Stat,
+    ) {
         Ok(_) => 0,
         Err(e) => -(e as i64),
     }
@@ -205,7 +231,12 @@ fn syscall_exit(status: i32) -> i64 {
 }
 
 fn syscall_wait4(pid: i32, wstatus: *mut i32, options: i32, rusage: *mut u8) -> i64 {
-    match crate::linux_compat::process_ops::wait4(pid, wstatus, options, rusage as *mut crate::linux_compat::process_ops::Rusage) {
+    match crate::linux_compat::process_ops::wait4(
+        pid,
+        wstatus,
+        options,
+        rusage as *mut crate::linux_compat::process_ops::Rusage,
+    ) {
         Ok(pid) => pid as i64,
         Err(e) => -(e as i64),
     }
@@ -282,58 +313,121 @@ fn syscall_shmdt(shmaddr: *const u8) -> i64 {
 /// - R9:  arg6
 ///
 /// Return value goes in RAX
-pub extern "x86-interrupt" fn syscall_0x80_handler(mut stack_frame: InterruptStackFrame) {
-    // Extract syscall arguments from registers using inline assembly
-    let syscall_num: u64;
-    let arg1: u64;
-    let arg2: u64;
-    let arg3: u64;
-    let arg4: u64;
-    let arg5: u64;
-    let arg6: u64;
+/// Saved user register frame built by `syscall_0x80_handler` before dispatch.
+///
+/// Field order matches the on-stack layout (lowest address first), i.e. the
+/// reverse of the push order in the handler.
+#[repr(C)]
+struct Int80Frame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
+}
 
-    unsafe {
-        core::arch::asm!(
-            // Save all registers we need to read
-            "mov {syscall_num}, rax",
-            "mov {arg1}, rdi",
-            "mov {arg2}, rsi",
-            "mov {arg3}, rdx",
-            "mov {arg4}, r10",
-            "mov {arg5}, r8",
-            "mov {arg6}, r9",
-            syscall_num = out(reg) syscall_num,
-            arg1 = out(reg) arg1,
-            arg2 = out(reg) arg2,
-            arg3 = out(reg) arg3,
-            arg4 = out(reg) arg4,
-            arg5 = out(reg) arg5,
-            arg6 = out(reg) arg6,
-            options(nostack, preserves_flags)
-        );
+/// C-ABI dispatch target for the naked INT 0x80 entry.
+///
+/// Reads the syscall number and arguments from the saved register frame
+/// (Linux x86_64 convention: num=rax, arg1=rdi, arg2=rsi, arg3=rdx, arg4=r10,
+/// arg5=r8, arg6=r9) and returns the i64 result, which the asm trampoline writes
+/// back into the saved RAX slot.
+extern "C" fn syscall_0x80_dispatch(frame: *const Int80Frame) -> i64 {
+    let f = unsafe { &*frame };
+
+    if crate::usermode::in_user_mode() {
+        crate::serial_println!("Syscall {} from user mode", f.rax);
     }
 
-    // Validate we're coming from user mode
-    let from_user_mode = crate::usermode::in_user_mode();
+    dispatch_syscall(f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9)
+}
 
-    if from_user_mode {
-        // Ensure we're now in kernel mode after the interrupt
-        // The interrupt handler has already switched to kernel segments
-        crate::serial_println!("Syscall {} from user mode", syscall_num);
-    }
+/// INT 0x80 entry point (naked).
+///
+/// ponytail: this is a naked function so the user GP registers are captured
+/// *before* any compiler-emitted prologue can clobber them. The previous
+/// `extern "x86-interrupt"` body read rax/rdi/... via `asm!` only after the
+/// prologue had already reused those registers (and wrote the result into RAX
+/// only for the epilogue to overwrite it before `iretq`), so every syscall saw
+/// garbage args and returned the wrong value.
+///
+/// The signature stays `extern "x86-interrupt" fn(InterruptStackFrame)` so the
+/// IDT registration in `interrupts.rs` (`idt[0x80].set_handler_fn(...)`) keeps
+/// type-checking; the `InterruptStackFrame` parameter is unused — we read the
+/// CPU-pushed frame directly and return via `iretq`.
+///
+/// Entry state (ring3 -> ring0 via interrupt gate, no error code): the CPU has
+/// pushed SS, RSP, RFLAGS, CS, RIP; the user GP registers are still live with
+/// num=rax, arg1=rdi, arg2=rsi, arg3=rdx, arg4=r10, arg5=r8, arg6=r9.
+#[unsafe(naked)]
+pub extern "x86-interrupt" fn syscall_0x80_handler(_stack_frame: InterruptStackFrame) {
+    use core::arch::naked_asm;
 
-    // Dispatch the syscall
-    let result = dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6);
+    naked_asm!(
+        // Save the full user GP register set as an `Int80Frame` (push high->low;
+        // read from the frame pointer the layout is reversed: r15 at offset 0,
+        // rax at offset 14*8 = 112).
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rbp",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
 
-    // Write result back to RAX for return to caller
-    unsafe {
-        core::arch::asm!(
-            "mov rax, {result}",
-            result = in(reg) result,
-            options(nostack, preserves_flags)
-        );
-    }
+        // Pass &frame (rsp) as the single SysV argument.
+        "mov rdi, rsp",
 
-    // Note: We don't send EOI for software interrupts (INT 0x80)
-    // The interrupt return (iretq) will handle the return to user mode automatically
+        // Align stack to 16 bytes for the call, preserving the frame base in rbp
+        // (callee-saved, so it survives the call).
+        "mov rbp, rsp",
+        "and rsp, -16",
+
+        "call {dispatch}",
+
+        // Restore exact stack, then overwrite the saved RAX slot with the result.
+        "mov rsp, rbp",
+        "mov [rsp + 112], rax",
+
+        // Restore all user GP registers (reverse push order); RAX now holds the
+        // syscall return value.
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+
+        // Return to user mode. No EOI for software interrupts.
+        "iretq",
+
+        dispatch = sym syscall_0x80_dispatch
+    );
 }

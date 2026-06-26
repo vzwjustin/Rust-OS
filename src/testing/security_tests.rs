@@ -7,9 +7,13 @@
 //! - Buffer overflow protection
 //! - Access control validation
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
-use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
 use crate::syscall::{SyscallContext, SyscallNumber};
+use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 /// Create security test suite
 pub fn create_security_test_suite() -> TestSuite {
@@ -213,7 +217,9 @@ fn test_memory_protection() -> TestResult {
             // Try to write to read-only memory (should fail)
             // In a real test, this would trigger a page fault
             // For now, we'll simulate the protection check
-            if !crate::memory::check_memory_access(addr.as_u64() as usize, 4, true, 3).unwrap_or(false) {
+            if !crate::memory::check_memory_access(addr.as_u64() as usize, 4, true, 3)
+                .unwrap_or(false)
+            {
                 protections_working += 1;
             }
             let _ = crate::memory::deallocate_memory(addr);
@@ -241,7 +247,9 @@ fn test_memory_protection() -> TestResult {
     ) {
         Ok(addr) => {
             // Try to execute non-executable memory (should fail)
-            if !crate::memory::check_memory_access(addr.as_u64() as usize, 4, false, 3).unwrap_or(false) {
+            if !crate::memory::check_memory_access(addr.as_u64() as usize, 4, false, 3)
+                .unwrap_or(false)
+            {
                 protections_working += 1;
             }
             let _ = crate::memory::deallocate_memory(addr);
@@ -275,7 +283,9 @@ fn test_memory_protection() -> TestResult {
         Ok(addr) => {
             // Try to access the guard page (should fail)
             let guard_addr = addr + 4096u64; // Second page is guard
-            if !crate::memory::check_memory_access(guard_addr.as_u64() as usize, 4, false, 3).unwrap_or(false) {
+            if !crate::memory::check_memory_access(guard_addr.as_u64() as usize, 4, false, 3)
+                .unwrap_or(false)
+            {
                 protections_working += 1;
             }
             let _ = crate::memory::deallocate_memory(addr);
@@ -546,17 +556,17 @@ fn test_random_number_quality() -> bool {
     // Test random number generator quality
     // This would include statistical tests for randomness
     let mut entropy_sources = 0;
-    
+
     // Check if hardware RNG is available
     if crate::security::hardware_rng_available() {
         entropy_sources += 1;
     }
-    
+
     // Check if entropy pool is properly seeded
     if crate::security::entropy_pool_seeded() {
         entropy_sources += 1;
     }
-    
+
     // Generate some random numbers and do basic quality checks
     let mut random_bytes = [0u8; 32];
     if crate::security::get_random_bytes(&mut random_bytes).is_ok() {
@@ -565,38 +575,38 @@ fn test_random_number_quality() -> bool {
             entropy_sources += 1;
         }
     }
-    
+
     entropy_sources >= 2
 }
 
 fn test_key_management_security() -> bool {
     // Test cryptographic key management
     let mut key_tests_passed = 0;
-    
+
     // Test key generation
     if let Ok(_key) = crate::security::generate_key(256) {
         key_tests_passed += 1;
     }
-    
+
     // Test key storage security
     if crate::security::secure_key_storage_available() {
         key_tests_passed += 1;
     }
-    
+
     // Test key zeroization
     let mut test_key = [0xAA; 32];
     crate::security::secure_zero(&mut test_key);
     if test_key.iter().all(|&b| b == 0) {
         key_tests_passed += 1;
     }
-    
+
     key_tests_passed >= 2
 }
 
 fn test_crypto_primitive_validation() -> bool {
     // Test cryptographic primitive implementations
     let mut primitive_tests_passed = 0;
-    
+
     // Test hash function
     let test_data = b"test data";
     if let Ok(hash1) = crate::security::hash_sha256(test_data) {
@@ -607,7 +617,7 @@ fn test_crypto_primitive_validation() -> bool {
             }
         }
     }
-    
+
     // Test encryption/decryption
     let plaintext = b"secret message";
     if let Ok(key) = crate::security::generate_key(256) {
@@ -619,16 +629,17 @@ fn test_crypto_primitive_validation() -> bool {
             }
         }
     }
-    
+
     // Test digital signature
     if let Ok((private_key, public_key)) = crate::security::generate_keypair() {
         let message = b"signed message";
         if let Ok(signature) = crate::security::sign_message(message, &private_key) {
-            if crate::security::verify_signature(message, &signature, &public_key).unwrap_or(false) {
+            if crate::security::verify_signature(message, &signature, &public_key).unwrap_or(false)
+            {
                 primitive_tests_passed += 1;
             }
         }
     }
-    
+
     primitive_tests_passed >= 2
 }

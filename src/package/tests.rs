@@ -2,13 +2,14 @@
 //!
 //! This module provides test utilities and test cases for the package management system.
 
+use crate::package::{
+    DebAdapter, PackageAdapter, PackageDatabase, PackageManager, PackageManagerType,
+    PackageMetadata, PackageStatus,
+};
+use crate::println;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use crate::package::{
-    PackageManager, PackageManagerType, PackageMetadata, PackageStatus,
-    PackageDatabase, DebAdapter, PackageAdapter,
-};
 
 /// Test package database operations
 pub fn test_package_database() {
@@ -69,12 +70,12 @@ pub fn test_ar_archive_parsing() {
     // Add a simple member header (60 bytes)
     let mut header = [b' '; 60];
     header[0..8].copy_from_slice(b"test.txt");
-    header[16..28].copy_from_slice(b"1234567890  ");  // timestamp
-    header[28..34].copy_from_slice(b"0     ");         // owner
-    header[34..40].copy_from_slice(b"0     ");         // group
-    header[40..48].copy_from_slice(b"100644  ");       // mode
-    header[48..58].copy_from_slice(b"11        ");     // size (11 bytes)
-    header[58..60].copy_from_slice(b"`\n");            // magic
+    header[16..28].copy_from_slice(b"1234567890  "); // timestamp
+    header[28..34].copy_from_slice(b"0     "); // owner
+    header[34..40].copy_from_slice(b"0     "); // group
+    header[40..48].copy_from_slice(b"100644  "); // mode
+    header[48..58].copy_from_slice(b"11        "); // size (11 bytes)
+    header[58..60].copy_from_slice(b"`\n"); // magic
 
     ar_data.extend_from_slice(&header);
     ar_data.extend_from_slice(b"hello world");
@@ -104,9 +105,9 @@ pub fn test_tar_archive_parsing() {
     // TAR header (512 bytes)
     let mut header = [0u8; 512];
     header[0..9].copy_from_slice(b"test.txt\0");
-    header[100..107].copy_from_slice(b"0000644");  // mode
-    header[124..135].copy_from_slice(b"00000000013");  // size = 11
-    header[257..262].copy_from_slice(b"ustar");   // magic
+    header[100..107].copy_from_slice(b"0000644"); // mode
+    header[124..135].copy_from_slice(b"00000000013"); // size = 11
+    header[257..262].copy_from_slice(b"ustar"); // magic
     header[156] = b'0'; // file type
 
     // Calculate checksum
@@ -141,11 +142,17 @@ pub fn test_compression_detection() {
 
     // Gzip magic
     let gzip_data = [0x1f, 0x8b, 0x08, 0x00];
-    assert_eq!(CompressionFormat::detect(&gzip_data), CompressionFormat::Gzip);
+    assert_eq!(
+        CompressionFormat::detect(&gzip_data),
+        CompressionFormat::Gzip
+    );
 
     // Uncompressed
     let plain_data = [0x00, 0x01, 0x02, 0x03];
-    assert_eq!(CompressionFormat::detect(&plain_data), CompressionFormat::None);
+    assert_eq!(
+        CompressionFormat::detect(&plain_data),
+        CompressionFormat::None
+    );
 }
 
 /// Test package manager operations
@@ -155,7 +162,9 @@ pub fn test_package_manager_operations() {
     // Test list operation (should return empty initially)
     match pm.execute_operation(crate::package::PackageOperation::List, "") {
         Ok(result) => {
-            assert!(result.contains("No packages installed") || result.contains("Installed packages"));
+            assert!(
+                result.contains("No packages installed") || result.contains("Installed packages")
+            );
         }
         Err(_) => panic!("List operation failed"),
     }
@@ -206,7 +215,10 @@ pub fn run_all_tests() -> (usize, usize) {
 
     // Test 6: Package manager operations
     total += 1;
-    if test_with_catch(test_package_manager_operations, "Package Manager Operations") {
+    if test_with_catch(
+        test_package_manager_operations,
+        "Package Manager Operations",
+    ) {
         passed += 1;
     }
 

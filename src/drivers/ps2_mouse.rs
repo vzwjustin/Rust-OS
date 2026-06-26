@@ -7,8 +7,8 @@
 //!
 //! The mouse uses IRQ 12 for interrupts and communicates through the PS/2 controller.
 
+use crate::drivers::ps2_controller::{self, Ps2DeviceType, Ps2Error, Ps2Port};
 use spin::Mutex;
-use crate::drivers::ps2_controller::{self, Ps2Port, Ps2DeviceType, Ps2Error};
 
 /// Mouse packet size for different protocols
 const PACKET_SIZE_STANDARD: usize = 3;
@@ -83,8 +83,8 @@ impl MousePacket {
 /// Mouse protocol type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseProtocol {
-    Standard,        // 3-byte packets
-    IntelliMouse,    // 4-byte packets with scroll wheel
+    Standard,             // 3-byte packets
+    IntelliMouse,         // 4-byte packets with scroll wheel
     IntelliMouseExplorer, // 4-byte packets with 5 buttons
 }
 
@@ -189,13 +189,21 @@ impl MouseState {
 
         // Check for overflow
         let x_movement = if (byte0 & PACKET0_X_OVERFLOW) != 0 {
-            if x_movement >= 0 { 255 } else { -255 }
+            if x_movement >= 0 {
+                255
+            } else {
+                -255
+            }
         } else {
             x_movement
         };
 
         let y_movement = if (byte0 & PACKET0_Y_OVERFLOW) != 0 {
-            if y_movement >= 0 { 255 } else { -255 }
+            if y_movement >= 0 {
+                255
+            } else {
+                -255
+            }
         } else {
             y_movement
         };
@@ -257,7 +265,8 @@ pub fn init() -> Result<(), &'static str> {
         // Check if it looks like a mouse
         if port2_device != Ps2DeviceType::StandardMouse
             && port2_device != Ps2DeviceType::MouseWithScrollWheel
-            && port2_device != Ps2DeviceType::Mouse5Button {
+            && port2_device != Ps2DeviceType::Mouse5Button
+        {
             return Err("No mouse detected on PS/2 port 2");
         }
     } else {
@@ -278,8 +287,7 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     // Set defaults
-    send_mouse_command(MOUSE_CMD_SET_DEFAULTS)
-        .map_err(|_| "Failed to set mouse defaults")?;
+    send_mouse_command(MOUSE_CMD_SET_DEFAULTS).map_err(|_| "Failed to set mouse defaults")?;
 
     // Set sample rate to 100 reports/second
     set_sample_rate(100)?;
@@ -288,8 +296,7 @@ pub fn init() -> Result<(), &'static str> {
     set_resolution(3)?;
 
     // Enable mouse data reporting
-    send_mouse_command(MOUSE_CMD_ENABLE)
-        .map_err(|_| "Failed to enable mouse")?;
+    send_mouse_command(MOUSE_CMD_ENABLE).map_err(|_| "Failed to enable mouse")?;
 
     // Store state
     *MOUSE_STATE.lock() = Some(state);
@@ -306,8 +313,7 @@ fn send_mouse_command(command: u8) -> Result<u8, Ps2Error> {
 fn set_sample_rate(rate: u8) -> Result<(), &'static str> {
     send_mouse_command(MOUSE_CMD_SET_SAMPLE_RATE)
         .map_err(|_| "Failed to send set sample rate command")?;
-    send_mouse_command(rate)
-        .map_err(|_| "Failed to set sample rate value")?;
+    send_mouse_command(rate).map_err(|_| "Failed to set sample rate value")?;
     Ok(())
 }
 
@@ -315,8 +321,7 @@ fn set_sample_rate(rate: u8) -> Result<(), &'static str> {
 fn set_resolution(resolution: u8) -> Result<(), &'static str> {
     send_mouse_command(MOUSE_CMD_SET_RESOLUTION)
         .map_err(|_| "Failed to send set resolution command")?;
-    send_mouse_command(resolution & 0x03)
-        .map_err(|_| "Failed to set resolution value")?;
+    send_mouse_command(resolution & 0x03).map_err(|_| "Failed to set resolution value")?;
     Ok(())
 }
 
@@ -381,7 +386,9 @@ pub fn get_button_state() -> Option<MouseButtons> {
 /// Get mouse statistics
 pub fn get_statistics() -> Option<(usize, usize)> {
     let state = MOUSE_STATE.lock();
-    state.as_ref().map(|s| (s.packets_received, s.packets_dropped))
+    state
+        .as_ref()
+        .map(|s| (s.packets_received, s.packets_dropped))
 }
 
 /// Get current mouse protocol

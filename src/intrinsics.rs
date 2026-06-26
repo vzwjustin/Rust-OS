@@ -14,7 +14,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut c_void, src: *const c_void, n: usize)
     while i < n {
         let dst_ptr = dest_bytes.wrapping_add(i);
         let src_ptr = src_bytes.wrapping_add(i);
-        core::ptr::write(dst_ptr, core::ptr::read(src_ptr));
+        core::ptr::write_unaligned(dst_ptr, core::ptr::read_unaligned(src_ptr));
         i = i.wrapping_add(1);
     }
 
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn memset(s: *mut c_void, c: i32, n: usize) -> *mut c_void
     let mut i: usize = 0;
     while i < n {
         let ptr = bytes.wrapping_add(i);
-        core::ptr::write(ptr, byte_val);
+        core::ptr::write_unaligned(ptr, byte_val);
         i = i.wrapping_add(1);
     }
 
@@ -45,8 +45,8 @@ pub unsafe extern "C" fn memcmp(s1: *const c_void, s2: *const c_void, n: usize) 
 
     let mut i: usize = 0;
     while i < n {
-        let b1 = core::ptr::read(bytes1.wrapping_add(i));
-        let b2 = core::ptr::read(bytes2.wrapping_add(i));
+        let b1 = core::ptr::read_unaligned(bytes1.wrapping_add(i));
+        let b2 = core::ptr::read_unaligned(bytes2.wrapping_add(i));
 
         if b1 < b2 {
             return -1;
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn memmove(dest: *mut c_void, src: *const c_void, n: usize
         while i < n {
             let dst_ptr = dest_bytes.wrapping_add(i);
             let src_ptr = src_bytes.wrapping_add(i);
-            core::ptr::write(dst_ptr, core::ptr::read(src_ptr));
+            core::ptr::write_unaligned(dst_ptr, core::ptr::read_unaligned(src_ptr));
             i = i.wrapping_add(1);
         }
     } else {
@@ -81,7 +81,7 @@ pub unsafe extern "C" fn memmove(dest: *mut c_void, src: *const c_void, n: usize
             i = i.wrapping_sub(1);
             let dst_ptr = dest_bytes.wrapping_add(i);
             let src_ptr = src_bytes.wrapping_add(i);
-            core::ptr::write(dst_ptr, core::ptr::read(src_ptr));
+            core::ptr::write_unaligned(dst_ptr, core::ptr::read_unaligned(src_ptr));
         }
     }
 

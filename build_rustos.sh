@@ -190,6 +190,7 @@ build_kernel() {
     print_header "Building RustOS Kernel"
 
     local build_args=""
+    local cargo_unstable="-Zjson-target-spec"
     local target_flag="--target $TARGET"
 
     if [ "$RELEASE" = true ]; then
@@ -212,13 +213,13 @@ build_kernel() {
     # Build the kernel
     if [ "$CHECK_ONLY" = true ]; then
         print_status "Checking compilation only..."
-        cargo check $target_flag $build_args
+        cargo check $cargo_unstable -Zbuild-std=core,compiler_builtins,alloc $target_flag $build_args
         print_success "Compilation check passed"
         return 0
     fi
 
     print_status "Compiling kernel..."
-    cargo build -Zbuild-std=core,compiler_builtins,alloc $target_flag $build_args
+    cargo build $cargo_unstable -Zbuild-std=core,compiler_builtins,alloc $target_flag $build_args
 
     local binary_name="rustos"
     # Extract target name without .json extension for path
@@ -258,7 +259,7 @@ create_bootimage() {
     fi
 
     print_status "Building bootimage for target: $TARGET"
-    cargo bootimage --target "$TARGET" $build_args
+    cargo bootimage -Zjson-target-spec --target "$TARGET" $build_args
 
     local target_path="${TARGET%.json}"
     local profile_dir="debug"
@@ -288,7 +289,7 @@ run_tests() {
     print_header "Running Kernel Tests"
 
     print_status "Running unit tests..."
-    cargo test --target "$TARGET"
+    cargo test -Zjson-target-spec --target "$TARGET" --bin "$KERNEL_NAME"
 
     print_success "All tests passed"
 }

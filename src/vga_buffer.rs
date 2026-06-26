@@ -3,9 +3,9 @@
 //! Provides real VGA text mode output at 0xB8000
 
 use core::fmt;
+use lazy_static::lazy_static;
 use spin::Mutex;
 use volatile::Volatile;
-use lazy_static::lazy_static;
 
 /// VGA text mode buffer dimensions
 pub const BUFFER_HEIGHT: usize = 25;
@@ -91,20 +91,20 @@ impl Writer {
                 if self.column_position >= BUFFER_WIDTH {
                     self.new_line();
                 }
-                
+
                 let row = self.row_position;
                 let col = self.column_position;
-                
+
                 self.buffer.chars[row][col].write(ScreenChar {
                     ascii_character: byte,
                     color_code: self.color_code,
                 });
-                
+
                 self.column_position += 1;
             }
         }
     }
-    
+
     /// Write a string
     pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
@@ -116,7 +116,7 @@ impl Writer {
             }
         }
     }
-    
+
     /// Create a new line
     fn new_line(&mut self) {
         if self.row_position >= BUFFER_HEIGHT - 1 {
@@ -127,7 +127,7 @@ impl Writer {
                     self.buffer.chars[row - 1][col].write(character);
                 }
             }
-            
+
             // Clear last line
             self.clear_row(BUFFER_HEIGHT - 1);
         } else {
@@ -135,7 +135,7 @@ impl Writer {
         }
         self.column_position = 0;
     }
-    
+
     /// Clear a row
     fn clear_row(&mut self, row: usize) {
         let blank = ScreenChar {
@@ -146,7 +146,7 @@ impl Writer {
             self.buffer.chars[row][col].write(blank);
         }
     }
-    
+
     /// Clear the entire screen
     pub fn clear_screen(&mut self) {
         for row in 0..BUFFER_HEIGHT {
@@ -156,12 +156,12 @@ impl Writer {
         self.column_position = 0;
         self.update_cursor();
     }
-    
+
     /// Set color for future writes
     pub fn set_color(&mut self, foreground: Color, background: Color) {
         self.color_code = ColorCode::new(foreground, background);
     }
-    
+
     /// Set cursor position
     pub fn set_cursor_position(&mut self, row: usize, col: usize) {
         self.row_position = row.min(BUFFER_HEIGHT - 1);
@@ -213,7 +213,7 @@ pub fn init() {
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     use x86_64::instructions::interrupts;
-    
+
     // Disable interrupts to prevent deadlock
     interrupts::without_interrupts(|| {
         VGA_WRITER.lock().write_fmt(args).unwrap();

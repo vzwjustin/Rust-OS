@@ -3,10 +3,13 @@
 //! Advanced Host Controller Interface (AHCI) driver for SATA storage devices.
 //! Supports extensive device IDs from Intel, AMD, VIA, and other manufacturers.
 
-use super::{StorageDriver, StorageDeviceType, StorageDeviceState, StorageCapabilities, StorageError, StorageStats};
+use super::{
+    StorageCapabilities, StorageDeviceState, StorageDeviceType, StorageDriver, StorageError,
+    StorageStats,
+};
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use alloc::{format, vec};
 use core::mem;
 use core::ptr;
@@ -39,99 +42,619 @@ bitflags::bitflags! {
 /// Comprehensive AHCI device ID database (80+ entries)
 pub const AHCI_DEVICE_IDS: &[AhciDeviceId] = &[
     // Intel chipsets
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x2652, name: "Intel ICH6 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_64BIT },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x2653, name: "Intel ICH6M AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_64BIT },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x27c1, name: "Intel ICH7 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x27c5, name: "Intel ICH7M AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x27c3, name: "Intel ICH7R AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x2821, name: "Intel ICH8 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x2829, name: "Intel ICH8M AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x2922, name: "Intel ICH9 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x2923, name: "Intel ICH9M AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x3a02, name: "Intel ICH10 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x3a22, name: "Intel ICH10R AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x3b22, name: "Intel 5 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x3b23, name: "Intel 5 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x3b29, name: "Intel 5 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x3b2f, name: "Intel 5 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x1c02, name: "Intel 6 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x1c03, name: "Intel 6 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x1e02, name: "Intel 7 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x1e03, name: "Intel 7 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x8c02, name: "Intel 8 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x8c03, name: "Intel 8 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x8c82, name: "Intel 9 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x8c83, name: "Intel 9 Series AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0xa102, name: "Intel 100 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0xa103, name: "Intel 100 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0xa182, name: "Intel 200 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0xa202, name: "Intel 200 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0xa282, name: "Intel 300 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0xa352, name: "Intel 300 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x06d2, name: "Intel 400 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x8086, device_id: 0x43d2, name: "Intel 500 Series AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x2652,
+        name: "Intel ICH6 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_64BIT,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x2653,
+        name: "Intel ICH6M AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_64BIT,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x27c1,
+        name: "Intel ICH7 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x27c5,
+        name: "Intel ICH7M AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x27c3,
+        name: "Intel ICH7R AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x2821,
+        name: "Intel ICH8 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x2829,
+        name: "Intel ICH8M AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x2922,
+        name: "Intel ICH9 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x2923,
+        name: "Intel ICH9M AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x3a02,
+        name: "Intel ICH10 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x3a22,
+        name: "Intel ICH10R AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x3b22,
+        name: "Intel 5 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x3b23,
+        name: "Intel 5 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x3b29,
+        name: "Intel 5 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x3b2f,
+        name: "Intel 5 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x1c02,
+        name: "Intel 6 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x1c03,
+        name: "Intel 6 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x1e02,
+        name: "Intel 7 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x1e03,
+        name: "Intel 7 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x8c02,
+        name: "Intel 8 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x8c03,
+        name: "Intel 8 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x8c82,
+        name: "Intel 9 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x8c83,
+        name: "Intel 9 Series AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0xa102,
+        name: "Intel 100 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0xa103,
+        name: "Intel 100 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0xa182,
+        name: "Intel 200 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0xa202,
+        name: "Intel 200 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0xa282,
+        name: "Intel 300 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0xa352,
+        name: "Intel 300 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x06d2,
+        name: "Intel 400 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x8086,
+        device_id: 0x43d2,
+        name: "Intel 500 Series AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
     // AMD chipsets
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4380, name: "AMD SB600 AHCI", supports_64bit: true, max_ports: 4, quirks: AhciQuirks::NO_MSI },
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4390, name: "AMD SB700 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4391, name: "AMD SB700 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4392, name: "AMD SB700 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4393, name: "AMD SB700 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4394, name: "AMD SB700 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1022, device_id: 0x7801, name: "AMD FCH AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1022, device_id: 0x7804, name: "AMD FCH AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1022, device_id: 0x7900, name: "AMD Zen AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1022, device_id: 0x7901, name: "AMD Zen AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4380,
+        name: "AMD SB600 AHCI",
+        supports_64bit: true,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_MSI,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4390,
+        name: "AMD SB700 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4391,
+        name: "AMD SB700 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4392,
+        name: "AMD SB700 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4393,
+        name: "AMD SB700 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4394,
+        name: "AMD SB700 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1022,
+        device_id: 0x7801,
+        name: "AMD FCH AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1022,
+        device_id: 0x7804,
+        name: "AMD FCH AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1022,
+        device_id: 0x7900,
+        name: "AMD Zen AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1022,
+        device_id: 0x7901,
+        name: "AMD Zen AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
     // VIA chipsets
-    AhciDeviceId { vendor_id: 0x1106, device_id: 0x3349, name: "VIA VT8251 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_NCQ },
-    AhciDeviceId { vendor_id: 0x1106, device_id: 0x6287, name: "VIA VT8251 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_NCQ },
-    AhciDeviceId { vendor_id: 0x1106, device_id: 0x0591, name: "VIA VT8237A AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_NCQ },
-    AhciDeviceId { vendor_id: 0x1106, device_id: 0x3164, name: "VIA VT6410 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_NCQ },
-
+    AhciDeviceId {
+        vendor_id: 0x1106,
+        device_id: 0x3349,
+        name: "VIA VT8251 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_NCQ,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1106,
+        device_id: 0x6287,
+        name: "VIA VT8251 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_NCQ,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1106,
+        device_id: 0x0591,
+        name: "VIA VT8237A AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_NCQ,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1106,
+        device_id: 0x3164,
+        name: "VIA VT6410 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_NCQ,
+    },
     // NVIDIA chipsets
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x044c, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x044d, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x044e, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x044f, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x045c, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x045d, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x045e, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x045f, name: "NVIDIA MCP65 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x0550, name: "NVIDIA MCP67 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x0551, name: "NVIDIA MCP67 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x0552, name: "NVIDIA MCP67 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x0553, name: "NVIDIA MCP67 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x0554, name: "NVIDIA MCP67 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x10de, device_id: 0x0555, name: "NVIDIA MCP67 AHCI", supports_64bit: true, max_ports: 6, quirks: AhciQuirks::NONE },
-
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x044c,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x044d,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x044e,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x044f,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x045c,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x045d,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x045e,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x045f,
+        name: "NVIDIA MCP65 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x0550,
+        name: "NVIDIA MCP67 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x0551,
+        name: "NVIDIA MCP67 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x0552,
+        name: "NVIDIA MCP67 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x0553,
+        name: "NVIDIA MCP67 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x0554,
+        name: "NVIDIA MCP67 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x10de,
+        device_id: 0x0555,
+        name: "NVIDIA MCP67 AHCI",
+        supports_64bit: true,
+        max_ports: 6,
+        quirks: AhciQuirks::NONE,
+    },
     // SiS chipsets
-    AhciDeviceId { vendor_id: 0x1039, device_id: 0x1184, name: "SiS 966 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_64BIT },
-    AhciDeviceId { vendor_id: 0x1039, device_id: 0x1185, name: "SiS 968 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::NO_64BIT },
-
+    AhciDeviceId {
+        vendor_id: 0x1039,
+        device_id: 0x1184,
+        name: "SiS 966 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_64BIT,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1039,
+        device_id: 0x1185,
+        name: "SiS 968 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_64BIT,
+    },
     // ATI/AMD legacy
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x4379, name: "ATI SB400 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::from_bits_truncate(AhciQuirks::NO_64BIT.bits() | AhciQuirks::NO_MSI.bits()) },
-    AhciDeviceId { vendor_id: 0x1002, device_id: 0x437a, name: "ATI SB400 AHCI", supports_64bit: false, max_ports: 4, quirks: AhciQuirks::from_bits_truncate(AhciQuirks::NO_64BIT.bits() | AhciQuirks::NO_MSI.bits()) },
-
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x4379,
+        name: "ATI SB400 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::from_bits_truncate(
+            AhciQuirks::NO_64BIT.bits() | AhciQuirks::NO_MSI.bits(),
+        ),
+    },
+    AhciDeviceId {
+        vendor_id: 0x1002,
+        device_id: 0x437a,
+        name: "ATI SB400 AHCI",
+        supports_64bit: false,
+        max_ports: 4,
+        quirks: AhciQuirks::from_bits_truncate(
+            AhciQuirks::NO_64BIT.bits() | AhciQuirks::NO_MSI.bits(),
+        ),
+    },
     // JMicron
-    AhciDeviceId { vendor_id: 0x197b, device_id: 0x2360, name: "JMicron JMB360 AHCI", supports_64bit: true, max_ports: 1, quirks: AhciQuirks::NO_PMP },
-    AhciDeviceId { vendor_id: 0x197b, device_id: 0x2361, name: "JMicron JMB361 AHCI", supports_64bit: true, max_ports: 1, quirks: AhciQuirks::NO_PMP },
-    AhciDeviceId { vendor_id: 0x197b, device_id: 0x2362, name: "JMicron JMB362 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NO_PMP },
-    AhciDeviceId { vendor_id: 0x197b, device_id: 0x2363, name: "JMicron JMB363 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NO_PMP },
-
+    AhciDeviceId {
+        vendor_id: 0x197b,
+        device_id: 0x2360,
+        name: "JMicron JMB360 AHCI",
+        supports_64bit: true,
+        max_ports: 1,
+        quirks: AhciQuirks::NO_PMP,
+    },
+    AhciDeviceId {
+        vendor_id: 0x197b,
+        device_id: 0x2361,
+        name: "JMicron JMB361 AHCI",
+        supports_64bit: true,
+        max_ports: 1,
+        quirks: AhciQuirks::NO_PMP,
+    },
+    AhciDeviceId {
+        vendor_id: 0x197b,
+        device_id: 0x2362,
+        name: "JMicron JMB362 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NO_PMP,
+    },
+    AhciDeviceId {
+        vendor_id: 0x197b,
+        device_id: 0x2363,
+        name: "JMicron JMB363 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NO_PMP,
+    },
     // Marvell
-    AhciDeviceId { vendor_id: 0x11ab, device_id: 0x6121, name: "Marvell 88SE6121 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NO_MSI },
-    AhciDeviceId { vendor_id: 0x11ab, device_id: 0x6145, name: "Marvell 88SE6145 AHCI", supports_64bit: true, max_ports: 4, quirks: AhciQuirks::NO_MSI },
-    AhciDeviceId { vendor_id: 0x1b4b, device_id: 0x9123, name: "Marvell 88SE9123 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1b4b, device_id: 0x9128, name: "Marvell 88SE9128 AHCI", supports_64bit: true, max_ports: 8, quirks: AhciQuirks::NONE },
-
+    AhciDeviceId {
+        vendor_id: 0x11ab,
+        device_id: 0x6121,
+        name: "Marvell 88SE6121 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NO_MSI,
+    },
+    AhciDeviceId {
+        vendor_id: 0x11ab,
+        device_id: 0x6145,
+        name: "Marvell 88SE6145 AHCI",
+        supports_64bit: true,
+        max_ports: 4,
+        quirks: AhciQuirks::NO_MSI,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1b4b,
+        device_id: 0x9123,
+        name: "Marvell 88SE9123 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1b4b,
+        device_id: 0x9128,
+        name: "Marvell 88SE9128 AHCI",
+        supports_64bit: true,
+        max_ports: 8,
+        quirks: AhciQuirks::NONE,
+    },
     // Promise Technology
-    AhciDeviceId { vendor_id: 0x105a, device_id: 0x3f20, name: "Promise PDC40719 AHCI", supports_64bit: true, max_ports: 4, quirks: AhciQuirks::NONE },
-
+    AhciDeviceId {
+        vendor_id: 0x105a,
+        device_id: 0x3f20,
+        name: "Promise PDC40719 AHCI",
+        supports_64bit: true,
+        max_ports: 4,
+        quirks: AhciQuirks::NONE,
+    },
     // ASMedia
-    AhciDeviceId { vendor_id: 0x1b21, device_id: 0x0612, name: "ASMedia ASM1061 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1b21, device_id: 0x0621, name: "ASMedia ASM1062 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NONE },
-    AhciDeviceId { vendor_id: 0x1b21, device_id: 0x0622, name: "ASMedia ASM1062 AHCI", supports_64bit: true, max_ports: 2, quirks: AhciQuirks::NONE },
+    AhciDeviceId {
+        vendor_id: 0x1b21,
+        device_id: 0x0612,
+        name: "ASMedia ASM1061 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1b21,
+        device_id: 0x0621,
+        name: "ASMedia ASM1062 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NONE,
+    },
+    AhciDeviceId {
+        vendor_id: 0x1b21,
+        device_id: 0x0622,
+        name: "ASMedia ASM1062 AHCI",
+        supports_64bit: true,
+        max_ports: 2,
+        quirks: AhciQuirks::NONE,
+    },
 ];
 
 /// AHCI register offsets
@@ -236,14 +759,15 @@ pub struct AhciDriver {
     command_slots: u8,
     supports_64bit: bool,
     supports_ncq: bool,
-    command_lists: [u64; 32],    // Physical addresses of command lists per port
-    command_tables: [u64; 32],   // Physical addresses of command tables per port
+    command_lists: [u64; 32], // Physical addresses of command lists per port
+    command_tables: [u64; 32], // Physical addresses of command tables per port
 }
 
 impl AhciDriver {
     /// Create new AHCI driver instance
     pub fn new(name: String, vendor_id: u16, device_id: u16, base_addr: u64) -> Self {
-        let device_info = AHCI_DEVICE_IDS.iter()
+        let device_info = AHCI_DEVICE_IDS
+            .iter()
             .find(|&info| info.vendor_id == vendor_id && info.device_id == device_id)
             .copied();
 
@@ -272,16 +796,14 @@ impl AhciDriver {
             command_slots,
             supports_64bit,
             supports_ncq,
-            command_lists: [0; 32],   // Initialize to zero, will be allocated during init
-            command_tables: [0; 32],  // Initialize to zero, will be allocated during init
+            command_lists: [0; 32], // Initialize to zero, will be allocated during init
+            command_tables: [0; 32], // Initialize to zero, will be allocated during init
         }
     }
 
     /// Read AHCI register
     fn read_reg(&self, offset: AhciReg) -> u32 {
-        unsafe {
-            ptr::read_volatile((self.base_addr + offset as u64) as *const u32)
-        }
+        unsafe { ptr::read_volatile((self.base_addr + offset as u64) as *const u32) }
     }
 
     /// Write AHCI register
@@ -294,16 +816,17 @@ impl AhciDriver {
     /// Read port register
     fn read_port_reg(&self, port: u8, offset: AhciPortReg) -> u32 {
         let port_base = 0x100 + (port as u64 * 0x80);
-        unsafe {
-            ptr::read_volatile((self.base_addr + port_base + offset as u64) as *const u32)
-        }
+        unsafe { ptr::read_volatile((self.base_addr + port_base + offset as u64) as *const u32) }
     }
 
     /// Write port register
     fn write_port_reg(&self, port: u8, offset: AhciPortReg, value: u32) {
         let port_base = 0x100 + (port as u64 * 0x80);
         unsafe {
-            ptr::write_volatile((self.base_addr + port_base + offset as u64) as *mut u32, value);
+            ptr::write_volatile(
+                (self.base_addr + port_base + offset as u64) as *mut u32,
+                value,
+            );
         }
     }
 
@@ -325,7 +848,8 @@ impl AhciDriver {
 
         // Request BIOS/OS handoff if supported
         let cap2 = self.read_reg(AhciReg::Cap2);
-        if (cap2 & (1 << 0)) != 0 { // BIOS/OS handoff supported
+        if (cap2 & (1 << 0)) != 0 {
+            // BIOS/OS handoff supported
             self.write_reg(AhciReg::Bohc, (1 << 1)); // Request OS ownership
 
             // Wait for handoff completion (simplified)
@@ -396,7 +920,8 @@ impl AhciDriver {
         // Check if device is present
         let ssts = self.read_port_reg(port, AhciPortReg::Ssts);
         let det = ssts & 0xf;
-        if det != 3 { // Device not present and communication established
+        if det != 3 {
+            // Device not present and communication established
             return Ok(()); // No device on this port
         }
 
@@ -416,7 +941,14 @@ impl AhciDriver {
     }
 
     /// Execute SATA command (production implementation)
-    fn execute_command(&mut self, port: u8, command: u8, lba: u64, count: u16, mut buffer: Option<&mut [u8]>) -> Result<(), StorageError> {
+    fn execute_command(
+        &mut self,
+        port: u8,
+        command: u8,
+        lba: u64,
+        count: u16,
+        mut buffer: Option<&mut [u8]>,
+    ) -> Result<(), StorageError> {
         // Check port status
         let ssts = self.read_port_reg(port, AhciPortReg::Ssts);
         let det = ssts & 0xf;
@@ -448,64 +980,73 @@ impl AhciDriver {
 
         // Translate virtual to physical address for hardware DMA
         let buffer_phys = {
-            use x86_64::VirtAddr;
             use crate::memory::get_memory_manager;
+            use x86_64::VirtAddr;
 
             let virt_addr = VirtAddr::new(_data_dma_buffer.virtual_addr() as u64);
-            let memory_manager = get_memory_manager()
-                .ok_or(StorageError::HardwareError)?;
+            let memory_manager = get_memory_manager().ok_or(StorageError::HardwareError)?;
 
-            memory_manager.translate_addr(virt_addr)
+            memory_manager
+                .translate_addr(virt_addr)
                 .ok_or(StorageError::HardwareError)?
                 .as_u64()
         };
 
         // Set up command list and FIS receive area
         self.write_port_reg(port, AhciPortReg::Clb, (cmd_list_phys & 0xFFFFFFFF) as u32);
-        self.write_port_reg(port, AhciPortReg::Clbu, ((cmd_list_phys >> 32) & 0xFFFFFFFF) as u32);
-        
+        self.write_port_reg(
+            port,
+            AhciPortReg::Clbu,
+            ((cmd_list_phys >> 32) & 0xFFFFFFFF) as u32,
+        );
+
         let fis_phys = cmd_list_phys + 0x200; // FIS area after command list
         self.write_port_reg(port, AhciPortReg::Fb, (fis_phys & 0xFFFFFFFF) as u32);
-        self.write_port_reg(port, AhciPortReg::Fbu, ((fis_phys >> 32) & 0xFFFFFFFF) as u32);
+        self.write_port_reg(
+            port,
+            AhciPortReg::Fbu,
+            ((fis_phys >> 32) & 0xFFFFFFFF) as u32,
+        );
 
         // 1. Set up command table with FIS
         unsafe {
             let cmd_table = cmd_table_phys as *mut u8;
-            
+
             // Clear command table
             for i in 0..0x80 {
                 *cmd_table.add(i) = 0;
             }
-            
+
             // H2D Register FIS (Host to Device)
             *cmd_table = 0x27; // FIS Type: Register H2D
             *cmd_table.add(1) = 0x80; // Command bit set
             *cmd_table.add(2) = command; // SATA command
             *cmd_table.add(3) = 0; // Features
-            
+
             // Set LBA
             *cmd_table.add(4) = (lba & 0xFF) as u8;
             *cmd_table.add(5) = ((lba >> 8) & 0xFF) as u8;
             *cmd_table.add(6) = ((lba >> 16) & 0xFF) as u8;
             *cmd_table.add(7) = 0xE0 | (((lba >> 24) & 0x0F) as u8); // Drive/Head + LBA[27:24]
-            
+
             *cmd_table.add(8) = ((lba >> 32) & 0xFF) as u8;
             *cmd_table.add(9) = ((lba >> 40) & 0xFF) as u8;
             *cmd_table.add(10) = ((lba >> 48) & 0xFF) as u8;
             *cmd_table.add(11) = 0; // Features (high)
-            
+
             // Set sector count
             *cmd_table.add(12) = (count & 0xFF) as u8;
             *cmd_table.add(13) = ((count >> 8) & 0xFF) as u8;
             *cmd_table.add(14) = 0; // Reserved
             *cmd_table.add(15) = 0; // Control
         }
-        
+
         // 2. Set up PRD table for data transfer
-        if command == 0x25 || command == 0x35 { // READ DMA EXT / WRITE DMA EXT
+        if command == 0x25 || command == 0x35 {
+            // READ DMA EXT / WRITE DMA EXT
             unsafe {
                 let prd_table = (cmd_table_phys + 0x80) as *mut u32;
-                
+
                 // PRD Entry 0: Data Buffer Address (Low)
                 *prd_table = (buffer_phys & 0xFFFFFFFF) as u32;
                 // PRD Entry 1: Data Buffer Address (High)
@@ -514,7 +1055,7 @@ impl AhciDriver {
                 *prd_table.add(2) = 0;
                 // PRD Entry 3: Data Byte Count and Interrupt on Completion
                 *prd_table.add(3) = ((count as u32 * 512) - 1) | (1u32 << 31); // Size - 1 and interrupt bit
-                
+
                 // Copy write data to DMA buffer using proper buffer access
                 if command == 0x35 && buffer.is_some() {
                     let src_buffer = buffer.as_ref().unwrap();
@@ -524,80 +1065,87 @@ impl AhciDriver {
                 }
             }
         }
-        
+
         // 3. Set up command header
         unsafe {
             let cmd_header = cmd_list_phys as *mut u32;
-            
+
             // Clear command header
             for i in 0..8 {
                 *cmd_header.add(i) = 0;
             }
-            
+
             // Command Header DW0
             let mut dw0 = 5u32; // Command FIS length (5 DWORDs)
-            if command == 0x35 { // Write command
+            if command == 0x35 {
+                // Write command
                 dw0 |= 1 << 6; // Write bit
             }
-            if command == 0x25 || command == 0x35 { // Data transfer commands
+            if command == 0x25 || command == 0x35 {
+                // Data transfer commands
                 dw0 |= 1 << 16; // PRD Table Length = 1
             }
             *cmd_header = dw0;
-            
+
             // Command Header DW1: PRD Byte Count (filled by hardware)
             *cmd_header.add(1) = 0;
-            
+
             // Command Header DW2-3: Command Table Base Address
             *cmd_header.add(2) = (cmd_table_phys & 0xFFFFFFFF) as u32;
             *cmd_header.add(3) = ((cmd_table_phys >> 32) & 0xFFFFFFFF) as u32;
         }
-        
+
         // 4. Clear port interrupt status
         let is = self.read_port_reg(port, AhciPortReg::Is);
         self.write_port_reg(port, AhciPortReg::Is, is);
-        
+
         // 5. Issue command via CI register
         self.write_port_reg(port, AhciPortReg::Ci, 1 << 0); // Issue command in slot 0
-        
+
         // 6. Wait for completion
         let mut timeout = 5000000; // 5 second timeout
         while timeout > 0 {
             let ci = self.read_port_reg(port, AhciPortReg::Ci);
-            if (ci & 1) == 0 { // Command completed
+            if (ci & 1) == 0 {
+                // Command completed
                 break;
             }
-            
+
             // Check for errors
             let is = self.read_port_reg(port, AhciPortReg::Is);
-            if (is & 0x40000000) != 0 { // Task File Error
+            if (is & 0x40000000) != 0 {
+                // Task File Error
                 self.write_port_reg(port, AhciPortReg::Is, is);
                 return Err(StorageError::HardwareError);
             }
-            
+
             timeout -= 1;
             // Small delay to prevent busy waiting
             for _ in 0..1000 {
-                unsafe { core::arch::asm!("pause"); }
+                unsafe {
+                    core::arch::asm!("pause");
+                }
             }
         }
-        
+
         if timeout == 0 {
             return Err(StorageError::Timeout);
         }
-        
+
         // 7. Check for errors
         let serr = self.read_port_reg(port, AhciPortReg::Serr);
         if serr != 0 {
             self.write_port_reg(port, AhciPortReg::Serr, serr); // Clear errors
             return Err(StorageError::HardwareError);
         }
-        
+
         let is = self.read_port_reg(port, AhciPortReg::Is);
-        if (is & 0x40000000) != 0 { // Task File Error
+        if (is & 0x40000000) != 0 {
+            // Task File Error
             self.write_port_reg(port, AhciPortReg::Is, is); // Clear interrupt status
             return Err(StorageError::HardwareError);
         }
-        
+
         // 8. Copy read data from DMA buffer using proper buffer access
         if command == 0x25 && buffer.is_some() {
             unsafe {
@@ -607,7 +1155,7 @@ impl AhciDriver {
                 core::ptr::copy_nonoverlapping(src_ptr, dst_buffer.as_mut_ptr(), copy_size);
             }
         }
-        
+
         // Clear interrupt status
         self.write_port_reg(port, AhciPortReg::Is, is);
 
@@ -623,7 +1171,7 @@ impl AhciDriver {
             }
             _ => {}
         }
-        
+
         Ok(())
     }
 
@@ -637,7 +1185,8 @@ impl AhciDriver {
                 let ssts = self.read_port_reg(port, AhciPortReg::Ssts);
                 let det = ssts & 0xf;
 
-                if det == 3 { // Device present and communication established
+                if det == 3 {
+                    // Device present and communication established
                     let sig = self.read_port_reg(port, AhciPortReg::Sig);
                     let device_type = match sig {
                         0x00000101 => "ATA Device",
@@ -657,8 +1206,10 @@ impl AhciDriver {
     /// Get device information string
     pub fn get_device_info_string(&self) -> String {
         if let Some(info) = self.device_info {
-            format!("{} (Vendor: 0x{:04x}, Device: 0x{:04x})",
-                   info.name, info.vendor_id, info.device_id)
+            format!(
+                "{} (Vendor: 0x{:04x}, Device: 0x{:04x})",
+                info.name, info.vendor_id, info.device_id
+            )
         } else {
             format!("Unknown AHCI Controller (Base: 0x{:x})", self.base_addr)
         }
@@ -689,7 +1240,11 @@ impl StorageDriver for AhciDriver {
         Ok(())
     }
 
-    fn read_sectors(&mut self, start_sector: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+    fn read_sectors(
+        &mut self,
+        start_sector: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StorageError> {
         if self.state != StorageDeviceState::Ready {
             return Err(StorageError::DeviceBusy);
         }
@@ -729,7 +1284,13 @@ impl StorageDriver for AhciDriver {
 
         // Execute write command on port 0 (first available port)
         let mut write_buffer = buffer.to_vec();
-        self.execute_command(0, 0x35, start_sector, sector_count as u16, Some(&mut write_buffer))?;
+        self.execute_command(
+            0,
+            0x35,
+            start_sector,
+            sector_count as u16,
+            Some(&mut write_buffer),
+        )?;
 
         Ok(buffer.len())
     }
@@ -802,11 +1363,13 @@ pub fn create_ahci_driver(
     device_name: Option<String>,
 ) -> Option<Box<dyn StorageDriver>> {
     // Check if this is a known AHCI device
-    let is_ahci = AHCI_DEVICE_IDS.iter()
+    let is_ahci = AHCI_DEVICE_IDS
+        .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id);
 
     if is_ahci {
-        let name = device_name.unwrap_or_else(|| format!("AHCI-{:04x}:{:04x}", vendor_id, device_id));
+        let name =
+            device_name.unwrap_or_else(|| format!("AHCI-{:04x}:{:04x}", vendor_id, device_id));
         let driver = AhciDriver::new(name, vendor_id, device_id, base_addr);
         Some(Box::new(driver))
     } else {
@@ -816,12 +1379,14 @@ pub fn create_ahci_driver(
 
 /// Check if PCI device is an AHCI controller
 pub fn is_ahci_device(vendor_id: u16, device_id: u16) -> bool {
-    AHCI_DEVICE_IDS.iter()
+    AHCI_DEVICE_IDS
+        .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id)
 }
 
 /// Get AHCI device information
 pub fn get_ahci_device_info(vendor_id: u16, device_id: u16) -> Option<&'static AhciDeviceId> {
-    AHCI_DEVICE_IDS.iter()
+    AHCI_DEVICE_IDS
+        .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)
 }

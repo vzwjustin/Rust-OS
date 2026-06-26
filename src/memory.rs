@@ -12,23 +12,22 @@
 //! - Comprehensive memory statistics and monitoring
 //! - Advanced error handling and memory safety guarantees
 
-use x86_64::{
-    VirtAddr, PhysAddr,
-    structures::paging::{
-        PageTable, PageTableFlags, PhysFrame, Size4KiB, FrameAllocator,
-        OffsetPageTable, Page, Mapper, mapper::MapToError, Translate,
-    },
-    registers::control::Cr3,
-};
-use bootloader::bootinfo::MemoryRegion;
-use spin::{Mutex, RwLock};
-use lazy_static::lazy_static;
-use alloc::{collections::BTreeMap, vec::Vec, vec};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use core::fmt;
 use crate::performance::{
-    CacheAligned, PerCpuAllocator,
-    get_performance_monitor, HighResTimer, likely
+    get_performance_monitor, likely, CacheAligned, HighResTimer, PerCpuAllocator,
+};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
+use bootloader::bootinfo::MemoryRegion;
+use core::fmt;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
+use x86_64::{
+    registers::control::Cr3,
+    structures::paging::{
+        mapper::MapToError, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable,
+        PageTableFlags, PhysFrame, Size4KiB, Translate,
+    },
+    PhysAddr, VirtAddr,
 };
 
 // User space memory operations module
@@ -48,10 +47,10 @@ pub const KERNEL_SPACE_START: usize = 0xFFFF_8000_0000_0000;
 /// Physical memory zone boundaries
 pub const DMA_ZONE_END: u64 = 16 * 1024 * 1024; // 16MB
 pub const NORMAL_ZONE_END: u64 = 896 * 1024 * 1024; // 896MB
-// Everything above NORMAL_ZONE_END is considered HIGHMEM
+                                                    // Everything above NORMAL_ZONE_END is considered HIGHMEM
 
 /// Buddy allocator order constants
-const MIN_ORDER: usize = 0;  // 4KB pages
+const MIN_ORDER: usize = 0; // 4KB pages
 const MAX_ORDER: usize = 10; // 4MB max allocation (2^10 * 4KB)
 const NUM_ORDERS: usize = MAX_ORDER + 1;
 
@@ -347,8 +346,22 @@ impl PhysicalFrameAllocator {
         zone_start[MemoryZone::HighMem as usize] = PhysAddr::new(NORMAL_ZONE_END);
         zone_end[MemoryZone::HighMem as usize] = PhysAddr::new(u64::MAX);
 
+        // Highest end address of a usable block per zone, used to size the
+        // allocation bitmap by address span. The bitmap is indexed by
+        // (addr - zone_start)/PAGE_SIZE, so a holey e820 map needs a bit per
+        // in-range frame, not just per usable frame. We track the actual
+        // usable span (not zone_end, which is u64::MAX for HighMem).
+        let mut zone_max_addr = [
+            zone_start[0].as_u64(),
+            zone_start[1].as_u64(),
+            zone_start[2].as_u64(),
+        ];
+
         // Process memory regions and build buddy lists
-        for region in memory_regions.iter().filter(|r| r.region_type == bootloader::bootinfo::MemoryRegionType::Usable) {
+        for region in memory_regions
+            .iter()
+            .filter(|r| r.region_type == bootloader::bootinfo::MemoryRegionType::Usable)
+        {
             let start = align_up(region.range.start_addr() as usize, PAGE_SIZE) as u64;
             let end = align_down(region.range.end_addr() as usize, PAGE_SIZE) as u64;
 
@@ -381,12 +394,22 @@ impl PhysicalFrameAllocator {
 
                 total_frames[zone_idx] += 1 << order;
                 current += block_size as u64;
+
+                // Track the highest end address seen in this zone so the
+                // bitmap covers every in-range frame.
+                let block_end = current;
+                if block_end > zone_max_addr[zone_idx] {
+                    zone_max_addr[zone_idx] = block_end;
+                }
             }
         }
 
-        // Initialize allocation bitmaps (one bit per page)
+        // Initialize allocation bitmaps (one bit per page, sized by the zone's
+        // usable address span so high frames on a holey map stay in range).
         for zone_idx in 0..3 {
-            let bitmap_size = (total_frames[zone_idx] + 63) / 64; // Round up to u64 boundary
+            let span_bytes = zone_max_addr[zone_idx] - zone_start[zone_idx].as_u64();
+            let span_frames = (span_bytes / PAGE_SIZE as u64) as usize;
+            let bitmap_size = (span_frames + 63) / 64; // Round up to u64 boundary
             allocation_bitmap[zone_idx] = vec![0u64; bitmap_size];
         }
 
@@ -403,7 +426,7 @@ impl PhysicalFrameAllocator {
             allocated_frames: [
                 CacheAligned::new(AtomicU64::new(0)),
                 CacheAligned::new(AtomicU64::new(0)),
-                CacheAligned::new(AtomicU64::new(0))
+                CacheAligned::new(AtomicU64::new(0)),
             ],
             total_frames,
             zone_start,
@@ -411,7 +434,7 @@ impl PhysicalFrameAllocator {
             fragmentation_stats: [
                 CacheAligned::new(FragmentationStats::default()),
                 CacheAligned::new(FragmentationStats::default()),
-                CacheAligned::new(FragmentationStats::default())
+                CacheAligned::new(FragmentationStats::default()),
             ],
             per_cpu_allocator: PerCpuAllocator::new(),
         }
@@ -427,7 +450,8 @@ impl PhysicalFrameAllocator {
                 }
 
                 // Fallback to slow path
-                self.per_cpu_allocator.allocate_slow(cpu_id, 0)
+                self.per_cpu_allocator
+                    .allocate_slow(cpu_id, 0)
                     .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr as u64)))
             } else {
                 None
@@ -487,7 +511,12 @@ impl PhysicalFrameAllocator {
     }
 
     /// Split a larger block into smaller blocks
-    fn split_block(&mut self, zone_idx: usize, mut block: BuddyNode, target_order: usize) -> BuddyNode {
+    fn split_block(
+        &mut self,
+        zone_idx: usize,
+        mut block: BuddyNode,
+        target_order: usize,
+    ) -> BuddyNode {
         while block.order > target_order {
             block.order -= 1;
             let buddy_size = PAGE_SIZE << block.order;
@@ -501,7 +530,10 @@ impl PhysicalFrameAllocator {
 
             // Insert in sorted order
             let list = &mut self.buddy_lists[zone_idx][block.order];
-            let insert_pos = list.iter().position(|b| b.address > buddy_addr).unwrap_or(list.len());
+            let insert_pos = list
+                .iter()
+                .position(|b| b.address > buddy_addr)
+                .unwrap_or(list.len());
             list.insert(insert_pos, buddy);
         }
 
@@ -545,10 +577,39 @@ impl PhysicalFrameAllocator {
         ((addr.as_u64() - self.zone_start[zone_idx].as_u64()) / PAGE_SIZE as u64) as usize
     }
 
+    /// Check that every page of a block is currently marked allocated and in range
+    fn is_block_allocated(&self, zone_idx: usize, addr: PhysAddr, order: usize) -> bool {
+        let page_index = self.addr_to_page_index(zone_idx, addr);
+        let num_pages = 1 << order;
+
+        for i in 0..num_pages {
+            let bit_index = page_index + i;
+            let word_index = bit_index / 64;
+            let bit_offset = bit_index % 64;
+
+            if word_index >= self.allocation_bitmap[zone_idx].len() {
+                return false; // Out of range counts as "not allocated here"
+            }
+
+            if (self.allocation_bitmap[zone_idx][word_index] & (1u64 << bit_offset)) == 0 {
+                return false; // Page already free -> would be a double-free
+            }
+        }
+
+        true
+    }
+
     /// Deallocate frames using buddy allocator (with coalescing)
     pub fn deallocate_frames(&mut self, frame: PhysFrame, zone: MemoryZone, order: usize) {
         let zone_idx = zone as usize;
         let addr = frame.start_address();
+
+        // Guard against double-free: only free blocks that are currently
+        // allocated. Otherwise mark_free + fetch_sub would corrupt the free
+        // list and underflow the allocated_frames counter.
+        if !self.is_block_allocated(zone_idx, addr, order) {
+            return;
+        }
 
         self.mark_free(zone_idx, addr, order);
         self.allocated_frames[zone_idx].fetch_sub(1 << order, Ordering::Relaxed);
@@ -558,7 +619,10 @@ impl PhysicalFrameAllocator {
 
         // Add to appropriate free list
         let list = &mut self.buddy_lists[zone_idx][coalesced_block.order];
-        let insert_pos = list.iter().position(|b| b.address > coalesced_block.address).unwrap_or(list.len());
+        let insert_pos = list
+            .iter()
+            .position(|b| b.address > coalesced_block.address)
+            .unwrap_or(list.len());
         list.insert(insert_pos, coalesced_block);
 
         self.update_fragmentation_stats(zone_idx);
@@ -572,7 +636,10 @@ impl PhysicalFrameAllocator {
     /// Coalesce block with its buddy recursively
     fn coalesce_block(&mut self, zone_idx: usize, addr: PhysAddr, order: usize) -> BuddyNode {
         if order >= MAX_ORDER {
-            return BuddyNode { address: addr, order };
+            return BuddyNode {
+                address: addr,
+                order,
+            };
         }
 
         let block_size = PAGE_SIZE << order;
@@ -588,7 +655,9 @@ impl PhysicalFrameAllocator {
         if self.is_buddy_free(zone_idx, buddy_addr, order) {
             // Remove buddy from free list
             if let Some(pos) = self.buddy_lists[zone_idx][order]
-                .iter().position(|b| b.address == buddy_addr) {
+                .iter()
+                .position(|b| b.address == buddy_addr)
+            {
                 self.buddy_lists[zone_idx][order].remove(pos);
 
                 // Determine the new block address (always the lower address)
@@ -599,7 +668,10 @@ impl PhysicalFrameAllocator {
             }
         }
 
-        BuddyNode { address: addr, order }
+        BuddyNode {
+            address: addr,
+            order,
+        }
     }
 
     /// Check if buddy block is free
@@ -647,7 +719,8 @@ impl PhysicalFrameAllocator {
         // Calculate fragmentation ratio
         if stats.total_free_bytes > 0 {
             let largest_possible_block = PAGE_SIZE << stats.largest_free_order;
-            stats.fragmentation_ratio = 1.0 - (largest_possible_block as f32 / stats.total_free_bytes as f32);
+            stats.fragmentation_ratio =
+                1.0 - (largest_possible_block as f32 / stats.total_free_bytes as f32);
         } else {
             stats.fragmentation_ratio = 0.0;
         }
@@ -676,18 +749,19 @@ impl PhysicalFrameAllocator {
             },
         ]
     }
-    
+
     /// Get detailed memory usage report
     pub fn get_memory_report(&self) -> MemoryReport {
         let zone_stats = self.get_zone_stats();
         let buddy_stats = self.get_buddy_stats();
-        
+
         let total_memory = zone_stats.iter().map(|z| z.total_bytes()).sum();
         let allocated_memory = zone_stats.iter().map(|z| z.allocated_bytes()).sum();
         let free_memory = zone_stats.iter().map(|z| z.free_bytes()).sum();
-        
+
         let overall_fragmentation = if free_memory > 0 {
-            let largest_free_block = zone_stats.iter()
+            let largest_free_block = zone_stats
+                .iter()
                 .map(|z| z.largest_free_block_size())
                 .max()
                 .unwrap_or(0);
@@ -695,7 +769,7 @@ impl PhysicalFrameAllocator {
         } else {
             0.0
         };
-        
+
         MemoryReport {
             total_memory,
             allocated_memory,
@@ -706,50 +780,57 @@ impl PhysicalFrameAllocator {
             memory_pressure: self.calculate_memory_pressure(),
         }
     }
-    
+
     /// Calculate memory pressure (0.0 = no pressure, 1.0 = critical)
     fn calculate_memory_pressure(&self) -> f32 {
         let zone_stats = self.get_zone_stats();
         let total_usage = zone_stats.iter().map(|z| z.usage_percent()).sum::<f32>() / 3.0;
-        let avg_fragmentation = zone_stats.iter().map(|z| z.fragmentation_percent()).sum::<f32>() / 3.0;
-        
+        let avg_fragmentation = zone_stats
+            .iter()
+            .map(|z| z.fragmentation_percent())
+            .sum::<f32>()
+            / 3.0;
+
         // Combine usage and fragmentation for pressure calculation
         (total_usage / 100.0) * 0.7 + (avg_fragmentation / 100.0) * 0.3
     }
-    
+
     /// Defragment memory by coalescing free blocks
     pub fn defragment(&mut self) -> DefragmentationResult {
         let mut coalesced_blocks = 0;
         let mut freed_bytes = 0;
-        
+
         for zone_idx in 0..3 {
             for order in 0..MAX_ORDER {
                 let mut i = 0;
                 while i < self.buddy_lists[zone_idx][order].len() {
                     let block = self.buddy_lists[zone_idx][order][i].clone();
-                    
+
                     // Try to coalesce with buddy
                     let coalesced = self.coalesce_block(zone_idx, block.address, block.order);
-                    
+
                     if coalesced.order > block.order {
                         // Successfully coalesced
                         self.buddy_lists[zone_idx][order].remove(i);
                         coalesced_blocks += 1;
                         freed_bytes += PAGE_SIZE << (coalesced.order - block.order);
-                        
+
                         // Add coalesced block to appropriate list
                         let list = &mut self.buddy_lists[zone_idx][coalesced.order];
-                        let insert_pos = list.iter().position(|b| b.address > coalesced.address).unwrap_or(list.len());
+                        let insert_pos = list
+                            .iter()
+                            .position(|b| b.address > coalesced.address)
+                            .unwrap_or(list.len());
                         list.insert(insert_pos, coalesced);
                     } else {
                         i += 1;
                     }
                 }
             }
-            
+
             self.update_fragmentation_stats(zone_idx);
         }
-        
+
         DefragmentationResult {
             coalesced_blocks,
             freed_bytes,
@@ -778,7 +859,11 @@ impl PhysicalFrameAllocator {
     }
 
     /// Allocate contiguous pages (for DMA, etc.)
-    pub fn allocate_contiguous_pages(&mut self, num_pages: usize, zone: MemoryZone) -> Option<PhysFrame> {
+    pub fn allocate_contiguous_pages(
+        &mut self,
+        num_pages: usize,
+        zone: MemoryZone,
+    ) -> Option<PhysFrame> {
         if num_pages == 0 {
             return None;
         }
@@ -794,6 +879,39 @@ impl PhysicalFrameAllocator {
         }
 
         self.allocate_frames_in_zone(zone, order)
+    }
+
+    /// Compute the buddy order that `allocate_contiguous_pages` used for a request
+    fn contiguous_order(num_pages: usize) -> Option<usize> {
+        if num_pages == 0 {
+            return None;
+        }
+        let mut order = 0;
+        while (1 << order) < num_pages && order <= MAX_ORDER {
+            order += 1;
+        }
+        if order > MAX_ORDER {
+            None
+        } else {
+            Some(order)
+        }
+    }
+
+    /// Free a block previously obtained from `allocate_contiguous_pages`.
+    ///
+    /// The contiguous allocation reserves an order-N block, so it must be freed
+    /// at the same order; freeing the start frame at order 0 (via
+    /// `deallocate_frame`) would leak the remaining 2^N - 1 frames and leave the
+    /// bitmap and `allocated_frames` counter inconsistent.
+    pub fn deallocate_contiguous_pages(
+        &mut self,
+        frame: PhysFrame,
+        num_pages: usize,
+        zone: MemoryZone,
+    ) {
+        if let Some(order) = Self::contiguous_order(num_pages) {
+            self.deallocate_frames(frame, zone, order);
+        }
     }
 }
 
@@ -920,19 +1038,19 @@ impl SwapManager {
     pub fn get_swap_device(&self) -> Option<u32> {
         self.swap_device_id
     }
-    
+
     /// Allocate a swap slot
     pub fn allocate_slot(&mut self) -> Option<SwapSlot> {
         if self.used_slots >= self.total_slots {
             return None;
         }
-        
+
         // Find first free slot
         for (word_idx, &word) in self.free_slots.iter().enumerate() {
             if word != 0 {
                 let bit_idx = word.trailing_zeros() as usize;
                 let slot_idx = word_idx * 64 + bit_idx;
-                
+
                 if slot_idx < self.total_slots as usize {
                     // Mark slot as used
                     self.free_slots[word_idx] &= !(1u64 << bit_idx);
@@ -941,25 +1059,29 @@ impl SwapManager {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Deallocate a swap slot
     pub fn deallocate_slot(&mut self, slot: SwapSlot) {
         let slot_idx = slot.0 as usize;
         let word_idx = slot_idx / 64;
         let bit_idx = slot_idx % 64;
-        
+
         if word_idx < self.free_slots.len() {
             self.free_slots[word_idx] |= 1u64 << bit_idx;
             self.used_slots = self.used_slots.saturating_sub(1);
             self.swap_entries.remove(&slot);
         }
     }
-    
+
     /// Swap out a page to storage
-    pub fn swap_out(&mut self, page_addr: VirtAddr, page_data: &[u8; PAGE_SIZE]) -> Result<SwapSlot, &'static str> {
+    pub fn swap_out(
+        &mut self,
+        page_addr: VirtAddr,
+        page_data: &[u8; PAGE_SIZE],
+    ) -> Result<SwapSlot, &'static str> {
         let slot = self.allocate_slot().ok_or("No swap slots available")?;
 
         // Create swap entry metadata
@@ -999,9 +1121,13 @@ impl SwapManager {
         self.swap_entries.insert(slot, entry);
         Ok(slot)
     }
-    
+
     /// Swap in a page from storage
-    pub fn swap_in(&mut self, slot: SwapSlot, page_data: &mut [u8; PAGE_SIZE]) -> Result<VirtAddr, &'static str> {
+    pub fn swap_in(
+        &mut self,
+        slot: SwapSlot,
+        page_data: &mut [u8; PAGE_SIZE],
+    ) -> Result<VirtAddr, &'static str> {
         let entry = self.swap_entries.get(&slot).ok_or("Invalid swap slot")?;
         let page_addr = entry.page_addr;
 
@@ -1035,62 +1161,63 @@ impl SwapManager {
         self.deallocate_slot(slot);
         Ok(page_addr)
     }
-    
+
     /// Select a page for replacement using the configured algorithm
     pub fn select_victim_page(&mut self, candidate_pages: &[VirtAddr]) -> Option<VirtAddr> {
         if candidate_pages.is_empty() {
             return None;
         }
-        
+
         match self.replacement_algorithm {
             PageReplacementAlgorithm::LRU => self.select_lru_victim(candidate_pages),
             PageReplacementAlgorithm::Clock => self.select_clock_victim(candidate_pages),
             PageReplacementAlgorithm::FIFO => self.select_fifo_victim(candidate_pages),
         }
     }
-    
+
     /// LRU page selection
     fn select_lru_victim(&self, candidate_pages: &[VirtAddr]) -> Option<VirtAddr> {
-        candidate_pages.iter()
+        candidate_pages
+            .iter()
             .min_by_key(|&&addr| self.access_times.get(&addr).unwrap_or(&0))
             .copied()
     }
-    
+
     /// Clock algorithm page selection
     fn select_clock_victim(&mut self, candidate_pages: &[VirtAddr]) -> Option<VirtAddr> {
         if candidate_pages.is_empty() {
             return None;
         }
-        
+
         // Simple clock algorithm - just rotate through candidates
         let victim_idx = self.clock_hand % candidate_pages.len();
         self.clock_hand = (self.clock_hand + 1) % candidate_pages.len();
         Some(candidate_pages[victim_idx])
     }
-    
+
     /// FIFO page selection
     fn select_fifo_victim(&self, candidate_pages: &[VirtAddr]) -> Option<VirtAddr> {
         // Return the first page (oldest in FIFO order)
         candidate_pages.first().copied()
     }
-    
+
     /// Record page access for replacement algorithms
     pub fn record_access(&mut self, page_addr: VirtAddr) {
         let access_time = self.access_counter.fetch_add(1, Ordering::Relaxed);
         self.access_times.insert(page_addr, access_time);
-        
+
         // Update LRU list
         if let Some(pos) = self.lru_list.iter().position(|&addr| addr == page_addr) {
             self.lru_list.remove(pos);
         }
         self.lru_list.push(page_addr);
-        
+
         // Limit LRU list size
         if self.lru_list.len() > 1000 {
             self.lru_list.remove(0);
         }
     }
-    
+
     /// Get swap statistics
     pub fn get_stats(&self) -> SwapStats {
         SwapStats {
@@ -1165,7 +1292,7 @@ impl VirtualMemoryRegion {
         start: VirtAddr,
         size: usize,
         region_type: MemoryRegionType,
-        protection: MemoryProtection
+        protection: MemoryProtection,
     ) -> Self {
         Self {
             start,
@@ -1184,7 +1311,7 @@ impl VirtualMemoryRegion {
         size: usize,
         region_type: MemoryRegionType,
         protection: MemoryProtection,
-        enable_aslr: bool
+        enable_aslr: bool,
     ) -> Self {
         let aslr_offset = if enable_aslr {
             generate_aslr_offset()
@@ -1260,7 +1387,8 @@ impl PageTableManager {
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> Result<(), MapToError<Size4KiB>> {
         unsafe {
-            self.mapper.map_to(page, frame, flags, frame_allocator)
+            self.mapper
+                .map_to(page, frame, flags, frame_allocator)
                 .map(|flush| flush.flush())
         }
     }
@@ -1273,13 +1401,11 @@ impl PageTableManager {
     }
 
     /// Update page flags
-    pub fn update_flags(
-        &mut self,
-        page: Page,
-        flags: PageTableFlags,
-    ) -> Result<(), &'static str> {
+    pub fn update_flags(&mut self, page: Page, flags: PageTableFlags) -> Result<(), &'static str> {
         unsafe {
-            let _ = self.mapper.update_flags(page, flags)
+            let _ = self
+                .mapper
+                .update_flags(page, flags)
                 .map_err(|_| "Failed to update page flags")?;
         }
         Ok(())
@@ -1289,41 +1415,46 @@ impl PageTableManager {
     pub fn get_flags(&self, page: Page) -> Option<PageTableFlags> {
         // Get the current page table
         let (level_4_table_frame, _) = Cr3::read();
-        let level_4_table_ptr = (self.physical_memory_offset + level_4_table_frame.start_address().as_u64()).as_mut_ptr();
-        
+        let level_4_table_ptr = (self.physical_memory_offset
+            + level_4_table_frame.start_address().as_u64())
+        .as_mut_ptr();
+
         unsafe {
             let level_4_table = &*(level_4_table_ptr as *const PageTable);
             let level_4_index = page.p4_index();
             let level_4_entry = &level_4_table[level_4_index];
-            
+
             if !level_4_entry.flags().contains(PageTableFlags::PRESENT) {
                 return None;
             }
-            
+
             // Navigate through page table levels
-            let level_3_table_ptr = (self.physical_memory_offset + level_4_entry.addr().as_u64()).as_ptr();
+            let level_3_table_ptr =
+                (self.physical_memory_offset + level_4_entry.addr().as_u64()).as_ptr();
             let level_3_table = &*(level_3_table_ptr as *const PageTable);
             let level_3_index = page.p3_index();
             let level_3_entry = &level_3_table[level_3_index];
-            
+
             if !level_3_entry.flags().contains(PageTableFlags::PRESENT) {
                 return None;
             }
-            
-            let level_2_table_ptr = (self.physical_memory_offset + level_3_entry.addr().as_u64()).as_ptr();
+
+            let level_2_table_ptr =
+                (self.physical_memory_offset + level_3_entry.addr().as_u64()).as_ptr();
             let level_2_table = &*(level_2_table_ptr as *const PageTable);
             let level_2_index = page.p2_index();
             let level_2_entry = &level_2_table[level_2_index];
-            
+
             if !level_2_entry.flags().contains(PageTableFlags::PRESENT) {
                 return None;
             }
-            
-            let level_1_table_ptr = (self.physical_memory_offset + level_2_entry.addr().as_u64()).as_ptr();
+
+            let level_1_table_ptr =
+                (self.physical_memory_offset + level_2_entry.addr().as_u64()).as_ptr();
             let level_1_table = &*(level_1_table_ptr as *const PageTable);
             let level_1_index = page.p1_index();
             let level_1_entry = &level_1_table[level_1_index];
-            
+
             if level_1_entry.flags().contains(PageTableFlags::PRESENT) {
                 Some(level_1_entry.flags())
             } else {
@@ -1333,26 +1464,33 @@ impl PageTableManager {
     }
 
     /// Handle page fault with proper error recovery
-    pub fn handle_page_fault(&mut self, addr: VirtAddr, error_code: u64, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Result<(), &'static str> {
+    pub fn handle_page_fault(
+        &mut self,
+        addr: VirtAddr,
+        error_code: u64,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    ) -> Result<(), &'static str> {
         let page = Page::containing_address(addr);
         let is_present = error_code & 0x1 != 0;
         let is_write = error_code & 0x2 != 0;
-        
+
         if !is_present {
             // Page not present - allocate and map new page
-            let frame = frame_allocator.allocate_frame()
-                .ok_or("Out of memory")?;
-            
+            let frame = frame_allocator.allocate_frame().ok_or("Out of memory")?;
+
             // Zero the page for security
             unsafe {
-                let page_ptr: *mut u8 = (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr();
+                let page_ptr: *mut u8 =
+                    (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr();
                 core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
             }
-            
-            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE;
             self.map_page(page, frame, flags, frame_allocator)
                 .map_err(|_| "Failed to map page")?;
-            
+
             Ok(())
         } else if is_write {
             // Check if this is a copy-on-write page
@@ -1367,39 +1505,45 @@ impl PageTableManager {
             Err("Unknown page fault type")
         }
     }
-    
+
     /// Handle copy-on-write page fault
-    pub fn handle_cow_fault(&mut self, page: Page, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Result<(), &'static str> {
+    pub fn handle_cow_fault(
+        &mut self,
+        page: Page,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    ) -> Result<(), &'static str> {
         // Get the current physical address
-        let old_phys_addr = self.translate_addr(page.start_address())
+        let old_phys_addr = self
+            .translate_addr(page.start_address())
             .ok_or("Page not mapped")?;
-        
+
         // Allocate new frame
-        let new_frame = frame_allocator.allocate_frame()
-            .ok_or("Out of memory")?;
-        
+        let new_frame = frame_allocator.allocate_frame().ok_or("Out of memory")?;
+
         // Copy content from old page to new page
         unsafe {
-            let old_ptr: *const u8 = (self.physical_memory_offset + old_phys_addr.as_u64()).as_ptr();
-            let new_ptr: *mut u8 = (self.physical_memory_offset + new_frame.start_address().as_u64()).as_mut_ptr();
+            let old_ptr: *const u8 =
+                (self.physical_memory_offset + old_phys_addr.as_u64()).as_ptr();
+            let new_ptr: *mut u8 =
+                (self.physical_memory_offset + new_frame.start_address().as_u64()).as_mut_ptr();
             core::ptr::copy_nonoverlapping(old_ptr, new_ptr, PAGE_SIZE);
         }
-        
+
         // Unmap old page
-        let old_frame = self.unmap_page(page)
-            .ok_or("Failed to unmap page")?;
-        
+        let old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
+
         // Map new page with write permissions
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        let flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
         self.map_page(page, new_frame, flags, frame_allocator)
             .map_err(|_| "Failed to map new page")?;
-        
+
         // Note: In a real implementation, we would need to manage reference counting
         // for the old frame and only deallocate it when no other processes reference it
-        
+
         Ok(())
     }
-    
+
     /// Map a range of pages with specific protection
     pub fn map_range(
         &mut self,
@@ -1410,35 +1554,35 @@ impl PageTableManager {
     ) -> Result<(), &'static str> {
         for i in 0..num_pages {
             let page = start_page + i as u64;
-            let frame = frame_allocator.allocate_frame()
-                .ok_or("Out of memory")?;
-            
+            let frame = frame_allocator.allocate_frame().ok_or("Out of memory")?;
+
             // Zero the page for security
             unsafe {
-                let page_ptr: *mut u8 = (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr();
+                let page_ptr: *mut u8 =
+                    (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr();
                 core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
             }
-            
+
             self.map_page(page, frame, flags, frame_allocator)
                 .map_err(|_| "Failed to map page in range")?;
         }
         Ok(())
     }
-    
+
     /// Unmap a range of pages
     pub fn unmap_range(&mut self, start_page: Page, num_pages: usize) -> Vec<PhysFrame> {
         let mut freed_frames = Vec::new();
-        
+
         for i in 0..num_pages {
             let page = start_page + i as u64;
             if let Some(frame) = self.unmap_page(page) {
                 freed_frames.push(frame);
             }
         }
-        
+
         freed_frames
     }
-    
+
     /// Clone page table entries for COW (share physical frames between processes)
     pub fn clone_page_table_entries(
         &mut self,
@@ -1464,7 +1608,8 @@ impl PageTableManager {
 
                 // Map destination page to same physical frame
                 unsafe {
-                    self.mapper.map_to(dst_page, frame, flags, frame_allocator)
+                    self.mapper
+                        .map_to(dst_page, frame, flags, frame_allocator)
                         .map_err(|_| "Failed to clone page table entry")?
                         .flush();
                 }
@@ -1475,7 +1620,10 @@ impl PageTableManager {
     }
 
     /// Clone page table for fork operation (with copy-on-write)
-    pub fn clone_for_fork(&mut self, _frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Result<OffsetPageTable<'static>, &'static str> {
+    pub fn clone_for_fork(
+        &mut self,
+        _frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    ) -> Result<OffsetPageTable<'static>, &'static str> {
         // This would create a new page table with copy-on-write mappings
         // For now, return error as this is complex to implement properly
         Err("Fork page table cloning not implemented")
@@ -1486,6 +1634,9 @@ impl PageTableManager {
 pub struct MemoryManager {
     frame_allocator: Mutex<PhysicalFrameAllocator>,
     page_table_manager: Mutex<PageTableManager>,
+    /// Offset of the direct physical-memory mapping. Required to form valid
+    /// pointers to physical frames (mirrors PageTableManager's own field).
+    physical_memory_offset: VirtAddr,
     regions: RwLock<BTreeMap<VirtAddr, VirtualMemoryRegion>>,
     heap_initialized: AtomicU64,
     total_memory: AtomicUsize,
@@ -1524,17 +1675,18 @@ impl MemoryManager {
     ) -> Self {
         // Calculate total memory
         let zone_stats = frame_allocator.get_zone_stats();
-        let total_memory = zone_stats.iter()
-            .map(|stats| stats.total_bytes())
-            .sum();
+        let total_memory = zone_stats.iter().map(|stats| stats.total_bytes()).sum();
 
         // Initialize swap manager with 10% of total memory as swap space
         let swap_slots = (total_memory / PAGE_SIZE) / 10;
         let swap_manager = SwapManager::new(swap_slots as u32, PageReplacementAlgorithm::LRU);
 
+        let physical_memory_offset = page_table_manager.physical_memory_offset;
+
         Self {
             frame_allocator: Mutex::new(frame_allocator),
             page_table_manager: Mutex::new(page_table_manager),
+            physical_memory_offset,
             regions: RwLock::new(BTreeMap::new()),
             heap_initialized: AtomicU64::new(0),
             total_memory: AtomicUsize::new(total_memory),
@@ -1562,14 +1714,19 @@ impl MemoryManager {
             }
 
             // Initialize page content if needed
-            if matches!(region.region_type, MemoryRegionType::UserStack | MemoryRegionType::UserHeap) {
+            if matches!(
+                region.region_type,
+                MemoryRegionType::UserStack | MemoryRegionType::UserHeap
+            ) {
                 unsafe {
-                    let page_ptr = frame.start_address().as_u64() as *mut u8;
+                    let page_ptr = (self.physical_memory_offset + frame.start_address().as_u64())
+                        .as_mut_ptr::<u8>();
                     core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
                 }
             }
 
-            page_table_manager.map_page(page, frame, flags, &mut *frame_allocator)
+            page_table_manager
+                .map_page(page, frame, flags, &mut *frame_allocator)
                 .map_err(|_| MemoryError::MappingFailed)?;
         }
 
@@ -1619,13 +1776,18 @@ impl MemoryManager {
     /// Find region containing the given address
     pub fn find_region(&self, addr: VirtAddr) -> Option<VirtualMemoryRegion> {
         let regions = self.regions.read();
-        regions.values()
+        regions
+            .values()
             .find(|region| region.contains(addr))
             .cloned()
     }
 
     /// Check if two regions overlap
-    fn regions_overlap(&self, region1: &VirtualMemoryRegion, region2: &VirtualMemoryRegion) -> bool {
+    fn regions_overlap(
+        &self,
+        region1: &VirtualMemoryRegion,
+        region2: &VirtualMemoryRegion,
+    ) -> bool {
         let r1_end = region1.end();
         let r2_end = region2.end();
         !(r1_end <= region2.start || region1.start >= r2_end)
@@ -1638,22 +1800,63 @@ impl MemoryManager {
         region_type: MemoryRegionType,
         protection: MemoryProtection,
     ) -> Result<VirtualMemoryRegion, MemoryError> {
-        let aligned_size = align_up(size, PAGE_SIZE);
+        let aligned_size = align_up_checked(size, PAGE_SIZE).ok_or(MemoryError::NoVirtualSpace)?;
 
-        // Find free virtual address space
-        let start_addr = self.find_free_virtual_space(aligned_size)
+        // Find a free hole, then apply ASLR, then validate the *shifted*
+        // address before mapping anything. Applying ASLR after validation
+        // could push the region past USER_SPACE_END or onto another region,
+        // mapping frames that the overlap check would later reject.
+        let base = self
+            .find_free_virtual_space(aligned_size)
             .ok_or(MemoryError::NoVirtualSpace)?;
 
-        let enable_aslr = self.security_features.aslr_enabled &&
-                         matches!(region_type, MemoryRegionType::UserCode | MemoryRegionType::UserData | MemoryRegionType::UserStack);
+        let enable_aslr = self.security_features.aslr_enabled
+            && matches!(
+                region_type,
+                MemoryRegionType::UserCode
+                    | MemoryRegionType::UserData
+                    | MemoryRegionType::UserStack
+            );
+        let aslr_offset = if enable_aslr {
+            generate_aslr_offset()
+        } else {
+            0
+        };
 
-        let mut region = VirtualMemoryRegion::new_with_aslr(start_addr, aligned_size, region_type, protection, enable_aslr);
+        let start_u = base.as_u64() + aslr_offset;
+        let end_u = start_u
+            .checked_add(aligned_size as u64)
+            .ok_or(MemoryError::NoVirtualSpace)?;
+        if end_u > USER_SPACE_END as u64 {
+            return Err(MemoryError::NoVirtualSpace);
+        }
 
-        // Map the region
+        let mut region = VirtualMemoryRegion::new(
+            VirtAddr::new(start_u),
+            aligned_size,
+            region_type,
+            protection,
+        );
+        region.aslr_offset = aslr_offset;
+
+        // Overlap check at the final address BEFORE mapping any frames.
+        {
+            let regions = self.regions.read();
+            if regions
+                .values()
+                .any(|existing| self.regions_overlap(&region, existing))
+            {
+                return Err(MemoryError::RegionOverlap);
+            }
+        }
+
+        // Map the region, then record it. If tracking insertion races and
+        // fails, unmap so we don't leak the just-mapped frames.
         self.map_region(&mut region)?;
-
-        // Add to region tracking
-        self.add_region(region.clone())?;
+        if let Err(e) = self.add_region(region.clone()) {
+            let _ = self.unmap_region(&mut region);
+            return Err(e);
+        }
 
         Ok(region)
     }
@@ -1665,10 +1868,13 @@ impl MemoryManager {
         region_type: MemoryRegionType,
         protection: MemoryProtection,
     ) -> Result<VirtualMemoryRegion, MemoryError> {
-        let aligned_size = align_up(size, PAGE_SIZE);
-        let total_size = aligned_size + 2 * PAGE_SIZE; // Add guard pages
+        let aligned_size = align_up_checked(size, PAGE_SIZE).ok_or(MemoryError::NoVirtualSpace)?;
+        let total_size = aligned_size
+            .checked_add(2 * PAGE_SIZE) // Add guard pages
+            .ok_or(MemoryError::NoVirtualSpace)?;
 
-        let start_addr = self.find_free_virtual_space(total_size)
+        let start_addr = self
+            .find_free_virtual_space(total_size)
             .ok_or(MemoryError::NoVirtualSpace)?;
 
         // Create guard page at start
@@ -1695,11 +1901,26 @@ impl MemoryManager {
             MemoryProtection::GUARD_PAGE,
         );
 
-        // Add regions
+        // Add regions. The guard pages carry no frames, but the main region is
+        // mapped before it is tracked, so on any tracking failure we must undo
+        // the mapping and any regions already inserted to avoid leaks.
+        let guard_start_addr = guard_start.start;
         self.add_region(guard_start)?;
+
         self.map_region(&mut main_region)?;
-        self.add_region(main_region.clone())?;
-        self.add_region(guard_end)?;
+
+        if let Err(e) = self.add_region(main_region.clone()) {
+            let _ = self.unmap_region(&mut main_region);
+            let _ = self.remove_region(guard_start_addr);
+            return Err(e);
+        }
+
+        if let Err(e) = self.add_region(guard_end) {
+            let _ = self.unmap_region(&mut main_region);
+            let _ = self.remove_region(main_region.start);
+            let _ = self.remove_region(guard_start_addr);
+            return Err(e);
+        }
 
         Ok(main_region)
     }
@@ -1722,7 +1943,10 @@ impl MemoryManager {
             }
 
             // Move to next page-aligned address
-            current_addr = VirtAddr::new(align_up(current_addr.as_u64() as usize + PAGE_SIZE, PAGE_SIZE) as u64);
+            current_addr = VirtAddr::new(align_up(
+                current_addr.as_u64() as usize + PAGE_SIZE,
+                PAGE_SIZE,
+            ) as u64);
         }
 
         None
@@ -1823,7 +2047,11 @@ impl MemoryManager {
     }
 
     /// Handle swap-in operation for a page fault on swapped page
-    pub fn handle_swap_in(&self, addr: VirtAddr, region: &VirtualMemoryRegion) -> Result<(), MemoryError> {
+    pub fn handle_swap_in(
+        &self,
+        addr: VirtAddr,
+        region: &VirtualMemoryRegion,
+    ) -> Result<(), MemoryError> {
         let page = Page::containing_address(addr);
         let mut page_table_manager = self.page_table_manager.lock();
         let mut frame_allocator = self.frame_allocator.lock();
@@ -1837,21 +2065,24 @@ impl MemoryManager {
             drop(frame_allocator);
             drop(page_table_manager);
             drop(swap_manager);
-            
+
             self.swap_out_victim_page()?;
-            
+
             // Re-acquire locks and try again
             page_table_manager = self.page_table_manager.lock();
             frame_allocator = self.frame_allocator.lock();
             swap_manager = self.swap_manager.lock();
-            
-            frame_allocator.allocate_frame()
+
+            frame_allocator
+                .allocate_frame()
                 .ok_or(MemoryError::OutOfMemory)?
         };
 
         // Implement swap-in functionality
         // 1. Find the swap slot for this virtual address
-        let swap_slot = swap_manager.swap_entries.iter()
+        let swap_slot = swap_manager
+            .swap_entries
+            .iter()
             .find(|(_, entry)| entry.page_addr == addr)
             .map(|(slot, _)| *slot);
 
@@ -1865,14 +2096,18 @@ impl MemoryManager {
                 Ok(_) => {
                     // 3. Copy the data to the new physical frame
                     unsafe {
-                        let page_ptr = frame.start_address().as_u64() as *mut u8;
+                        let page_ptr = (self.physical_memory_offset
+                            + frame.start_address().as_u64())
+                        .as_mut_ptr::<u8>();
                         core::ptr::copy_nonoverlapping(page_data.as_ptr(), page_ptr, PAGE_SIZE);
                     }
                 }
                 Err(e) => {
                     // Failed to read from swap - zero the page as fallback
                     unsafe {
-                        let page_ptr = frame.start_address().as_u64() as *mut u8;
+                        let page_ptr = (self.physical_memory_offset
+                            + frame.start_address().as_u64())
+                        .as_mut_ptr::<u8>();
                         core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
                     }
                 }
@@ -1881,14 +2116,16 @@ impl MemoryManager {
             // No swap entry found - zero the page as fallback
             // This handles the case where the page was never swapped out
             unsafe {
-                let page_ptr = frame.start_address().as_u64() as *mut u8;
+                let page_ptr = (self.physical_memory_offset + frame.start_address().as_u64())
+                    .as_mut_ptr::<u8>();
                 core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
             }
         }
 
         // Map the page
         let flags = region.protection.to_page_table_flags();
-        page_table_manager.map_page(page, frame, flags, &mut *frame_allocator)
+        page_table_manager
+            .map_page(page, frame, flags, &mut *frame_allocator)
             .map_err(|_| MemoryError::MappingFailed)?;
 
         // Record page access for replacement algorithms
@@ -1898,7 +2135,11 @@ impl MemoryManager {
     }
 
     /// Handle demand paging (allocate page on first access)
-    fn handle_demand_paging(&self, addr: VirtAddr, region: &VirtualMemoryRegion) -> Result<(), MemoryError> {
+    fn handle_demand_paging(
+        &self,
+        addr: VirtAddr,
+        region: &VirtualMemoryRegion,
+    ) -> Result<(), MemoryError> {
         let page = Page::containing_address(addr);
         let mut page_table_manager = self.page_table_manager.lock();
         let mut frame_allocator = self.frame_allocator.lock();
@@ -1911,26 +2152,29 @@ impl MemoryManager {
             // Out of physical memory - need to swap out a page
             drop(frame_allocator); // Release lock to avoid deadlock
             drop(page_table_manager);
-            
+
             self.swap_out_victim_page()?;
-            
+
             // Re-acquire locks and try again
             page_table_manager = self.page_table_manager.lock();
             frame_allocator = self.frame_allocator.lock();
-            
-            frame_allocator.allocate_frame()
+
+            frame_allocator
+                .allocate_frame()
                 .ok_or(MemoryError::OutOfMemory)?
         };
 
         // Zero the page for security
         unsafe {
-            let page_ptr = frame.start_address().as_u64() as *mut u8;
+            let page_ptr =
+                (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
             core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
         }
 
         // Map the page
         let flags = region.protection.to_page_table_flags();
-        page_table_manager.map_page(page, frame, flags, &mut *frame_allocator)
+        page_table_manager
+            .map_page(page, frame, flags, &mut *frame_allocator)
             .map_err(|_| MemoryError::MappingFailed)?;
 
         // Record page access for replacement algorithms
@@ -1938,12 +2182,12 @@ impl MemoryManager {
 
         Ok(())
     }
-    
+
     /// Swap out a victim page to make room for new allocation
     fn swap_out_victim_page(&self) -> Result<(), MemoryError> {
         let regions = self.regions.read();
         let mut candidate_pages = Vec::new();
-        
+
         // Collect candidate pages from all mapped regions
         for region in regions.values() {
             if region.mapped && region.protection.user_accessible {
@@ -1952,53 +2196,61 @@ impl MemoryManager {
                 }
             }
         }
-        
+
         drop(regions);
-        
+
         if candidate_pages.is_empty() {
             return Err(MemoryError::OutOfMemory);
         }
-        
+
         let mut swap_manager = self.swap_manager.lock();
-        let victim_addr = swap_manager.select_victim_page(&candidate_pages)
+        let victim_addr = swap_manager
+            .select_victim_page(&candidate_pages)
             .ok_or(MemoryError::OutOfMemory)?;
-        
+
         let victim_page = Page::containing_address(victim_addr);
         let mut page_table_manager = self.page_table_manager.lock();
-        
+
         // Get the physical address of the victim page
-        let phys_addr = page_table_manager.translate_addr(victim_addr)
+        let phys_addr = page_table_manager
+            .translate_addr(victim_addr)
             .ok_or(MemoryError::InvalidAddress)?;
-        
+
         // Read the page content
         let mut page_data = [0u8; PAGE_SIZE];
         unsafe {
-            let page_ptr = phys_addr.as_u64() as *const u8;
+            let page_ptr = (self.physical_memory_offset + phys_addr.as_u64()).as_ptr::<u8>();
             core::ptr::copy_nonoverlapping(page_ptr, page_data.as_mut_ptr(), PAGE_SIZE);
         }
-        
+
         // Swap out the page
-        let _swap_slot = swap_manager.swap_out(victim_addr, &page_data)
+        let _swap_slot = swap_manager
+            .swap_out(victim_addr, &page_data)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        
+
         // Unmap the page and free the frame
         if let Some(frame) = page_table_manager.unmap_page(victim_page) {
             let mut frame_allocator = self.frame_allocator.lock();
             let zone = MemoryZone::from_address(frame.start_address());
             frame_allocator.deallocate_frame(frame, zone);
         }
-        
+
         Ok(())
     }
 
     /// Handle copy-on-write page fault
-    fn handle_copy_on_write(&self, addr: VirtAddr, region: &VirtualMemoryRegion) -> Result<(), MemoryError> {
+    fn handle_copy_on_write(
+        &self,
+        addr: VirtAddr,
+        region: &VirtualMemoryRegion,
+    ) -> Result<(), MemoryError> {
         let page = Page::containing_address(addr);
         let mut page_table_manager = self.page_table_manager.lock();
         let mut frame_allocator = self.frame_allocator.lock();
 
         // Get the current frame
-        let old_frame_addr = page_table_manager.translate_addr(addr)
+        let old_frame_addr = page_table_manager
+            .translate_addr(addr)
             .ok_or(MemoryError::InvalidAddress)?;
 
         // Allocate a new frame
@@ -2008,8 +2260,9 @@ impl MemoryManager {
 
         // Copy content from old page to new page
         unsafe {
-            let old_ptr = old_frame_addr.as_u64() as *const u8;
-            let new_ptr = new_frame.start_address().as_u64() as *mut u8;
+            let old_ptr = (self.physical_memory_offset + old_frame_addr.as_u64()).as_ptr::<u8>();
+            let new_ptr = (self.physical_memory_offset + new_frame.start_address().as_u64())
+                .as_mut_ptr::<u8>();
             core::ptr::copy_nonoverlapping(old_ptr, new_ptr, PAGE_SIZE);
         }
 
@@ -2040,7 +2293,8 @@ impl MemoryManager {
         protection.copy_on_write = false;
         let flags = protection.to_page_table_flags();
 
-        page_table_manager.map_page(page, new_frame, flags, &mut *frame_allocator)
+        page_table_manager
+            .map_page(page, new_frame, flags, &mut *frame_allocator)
             .map_err(|_| MemoryError::MappingFailed)?;
 
         Ok(())
@@ -2049,8 +2303,11 @@ impl MemoryManager {
     /// Increment reference count for a physical frame (for COW)
     pub fn increment_frame_refcount(&self, frame_addr: PhysAddr) {
         let mut refcounts = self.frame_refcounts.write();
-        refcounts.entry(frame_addr)
-            .and_modify(|count| { count.fetch_add(1, Ordering::SeqCst); })
+        refcounts
+            .entry(frame_addr)
+            .and_modify(|count| {
+                count.fetch_add(1, Ordering::SeqCst);
+            })
             .or_insert_with(|| AtomicUsize::new(2)); // Initial sharing: 2 references
     }
 
@@ -2059,9 +2316,20 @@ impl MemoryManager {
         let refcounts = self.frame_refcounts.read();
 
         if let Some(count) = refcounts.get(&frame_addr) {
-            let new_count = count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+            // Atomically decrement and act on the *previous* value so two
+            // concurrent COW faults can never both observe "0 -> free".
+            let prev = count.fetch_sub(1, Ordering::SeqCst);
 
-            // If count reaches zero, remove from tracking
+            if prev == 0 {
+                // Underflow: count was already zero. Restore it and report the
+                // frame as still referenced so the caller does not double-free.
+                count.fetch_add(1, Ordering::SeqCst);
+                return 1;
+            }
+
+            let new_count = prev - 1;
+
+            // Only the decrementer that drove the count to zero frees the frame.
             if new_count == 0 {
                 drop(refcounts);
                 let mut refcounts_write = self.frame_refcounts.write();
@@ -2077,7 +2345,8 @@ impl MemoryManager {
     /// Get reference count for a physical frame
     pub fn get_frame_refcount(&self, frame_addr: PhysAddr) -> usize {
         let refcounts = self.frame_refcounts.read();
-        refcounts.get(&frame_addr)
+        refcounts
+            .get(&frame_addr)
             .map(|count| count.load(Ordering::SeqCst))
             .unwrap_or(1) // Default to 1 if not in COW tracking
     }
@@ -2094,12 +2363,9 @@ impl MemoryManager {
         let swap_manager = self.swap_manager.lock();
         let zone_stats = frame_allocator.get_zone_stats();
 
-        let total_allocated_frames: usize = zone_stats.iter()
-            .map(|stats| stats.allocated_frames)
-            .sum();
-        let total_frames: usize = zone_stats.iter()
-            .map(|stats| stats.total_frames)
-            .sum();
+        let total_allocated_frames: usize =
+            zone_stats.iter().map(|stats| stats.allocated_frames).sum();
+        let total_frames: usize = zone_stats.iter().map(|stats| stats.total_frames).sum();
 
         MemoryStats {
             total_memory: self.total_memory.load(Ordering::Relaxed),
@@ -2135,7 +2401,8 @@ impl MemoryManager {
         let end_page = Page::containing_address(start + size - 1u64);
 
         for page in Page::range_inclusive(start_page, end_page) {
-            page_table_manager.update_flags(page, flags)
+            page_table_manager
+                .update_flags(page, flags)
                 .map_err(|_| MemoryError::ProtectionFailed)?;
         }
 
@@ -2152,7 +2419,10 @@ impl MemoryManager {
     }
 
     /// Create a copy-on-write mapping (for fork)
-    pub fn create_cow_mapping(&self, src_region: &VirtualMemoryRegion) -> Result<VirtualMemoryRegion, MemoryError> {
+    pub fn create_cow_mapping(
+        &self,
+        src_region: &VirtualMemoryRegion,
+    ) -> Result<VirtualMemoryRegion, MemoryError> {
         let mut cow_region = src_region.clone();
         cow_region.protection.copy_on_write = true;
         cow_region.protection.writable = false;
@@ -2162,7 +2432,8 @@ impl MemoryManager {
         let flags = cow_region.protection.to_page_table_flags();
 
         for page in cow_region.pages() {
-            page_table_manager.update_flags(page, flags)
+            page_table_manager
+                .update_flags(page, flags)
                 .map_err(|_| MemoryError::ProtectionFailed)?;
         }
 
@@ -2178,19 +2449,20 @@ impl MemoryManager {
         let mut page_table_manager = self.page_table_manager.lock();
 
         // Create COW flags (read-only, user accessible)
-        let cow_flags = PageTableFlags::PRESENT
-            | PageTableFlags::USER_ACCESSIBLE
-            | PageTableFlags::NO_EXECUTE;  // Remove write permission
+        let cow_flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE; // Remove write permission
 
         // Mark parent pages as read-only COW
         for page in parent_region.pages() {
-            page_table_manager.update_flags(page, cow_flags)
+            page_table_manager
+                .update_flags(page, cow_flags)
                 .map_err(|_| MemoryError::ProtectionFailed)?;
         }
 
         // Mark child pages as read-only COW
         for page in child_region.pages() {
-            page_table_manager.update_flags(page, cow_flags)
+            page_table_manager
+                .update_flags(page, cow_flags)
                 .map_err(|_| MemoryError::ProtectionFailed)?;
         }
 
@@ -2208,17 +2480,18 @@ impl MemoryManager {
         let mut frame_allocator = self.frame_allocator.lock();
 
         // COW flags: present, user accessible, NOT writable
-        let cow_flags = PageTableFlags::PRESENT
-            | PageTableFlags::USER_ACCESSIBLE
-            | PageTableFlags::NO_EXECUTE;
+        let cow_flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
 
-        page_table_manager.clone_page_table_entries(
-            src_start,
-            src_size,
-            dst_start,
-            cow_flags,
-            &mut *frame_allocator,
-        ).map_err(|_| MemoryError::MappingFailed)?;
+        page_table_manager
+            .clone_page_table_entries(
+                src_start,
+                src_size,
+                dst_start,
+                cow_flags,
+                &mut *frame_allocator,
+            )
+            .map_err(|_| MemoryError::MappingFailed)?;
 
         // Increment reference counts for all shared frames
         let start_page: Page<Size4KiB> = Page::containing_address(src_start);
@@ -2226,7 +2499,7 @@ impl MemoryManager {
 
         for page in Page::range_inclusive(start_page, end_page) {
             if let Some(phys_addr) = page_table_manager.translate_addr(page.start_address()) {
-                drop(page_table_manager);  // Release lock
+                drop(page_table_manager); // Release lock
                 drop(frame_allocator);
 
                 self.increment_frame_refcount(phys_addr);
@@ -2268,9 +2541,13 @@ impl MemoryManager {
     pub fn init_swap_space(&self, device_id: u32, size_mb: u32) -> Result<(), &'static str> {
         let mut swap_manager = self.swap_manager.lock();
         swap_manager.set_swap_device(device_id);
-        
+
         // In a real implementation, this would create a swap file or partition
-        crate::serial_println!("Initialized {}MB swap space on device {}", size_mb, device_id);
+        crate::serial_println!(
+            "Initialized {}MB swap space on device {}",
+            size_mb,
+            device_id
+        );
         Ok(())
     }
 
@@ -2283,7 +2560,9 @@ impl MemoryManager {
     /// Check if a page is currently swapped out
     pub fn is_page_swapped(&self, addr: VirtAddr) -> bool {
         let swap_manager = self.swap_manager.lock();
-        swap_manager.swap_entries.iter()
+        swap_manager
+            .swap_entries
+            .iter()
             .any(|(_, entry)| entry.page_addr == addr)
     }
 }
@@ -2347,11 +2626,15 @@ impl fmt::Display for MemoryError {
             MemoryError::PrivilegeViolation => write!(f, "Privilege violation"),
             MemoryError::ExecuteViolation => write!(f, "Execute access violation"),
             MemoryError::GuardPageViolation => write!(f, "Guard page access violation"),
-            MemoryError::LazyAllocationNotImplemented => write!(f, "Lazy allocation not implemented"),
+            MemoryError::LazyAllocationNotImplemented => {
+                write!(f, "Lazy allocation not implemented")
+            }
             MemoryError::ProtectionFailed => write!(f, "Failed to change memory protection"),
             MemoryError::InvalidOrder => write!(f, "Invalid buddy allocator order"),
             MemoryError::BuddyAllocationFailed => write!(f, "Buddy allocation failed"),
-            MemoryError::FragmentationLimitExceeded => write!(f, "Memory fragmentation limit exceeded"),
+            MemoryError::FragmentationLimitExceeded => {
+                write!(f, "Memory fragmentation limit exceeded")
+            }
             MemoryError::PermissionDenied => write!(f, "Permission denied"),
         }
     }
@@ -2394,7 +2677,9 @@ impl MemoryStats {
     }
 
     pub fn average_fragmentation(&self) -> f32 {
-        let total_fragmentation: f32 = self.zone_stats.iter()
+        let total_fragmentation: f32 = self
+            .zone_stats
+            .iter()
             .map(|stats| stats.fragmentation_percent())
             .sum();
         total_fragmentation / 3.0
@@ -2443,7 +2728,10 @@ pub fn init_memory_management(
 /// Get global memory manager
 pub fn get_memory_manager() -> Option<&'static MemoryManager> {
     unsafe {
-        MEMORY_MANAGER.read().as_ref().map(|mm| core::mem::transmute(mm))
+        MEMORY_MANAGER
+            .read()
+            .as_ref()
+            .map(|mm| core::mem::transmute(mm))
     }
 }
 
@@ -2521,6 +2809,11 @@ pub fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
+/// Align up to nearest boundary, returning None on overflow
+pub fn align_up_checked(addr: usize, align: usize) -> Option<usize> {
+    addr.checked_add(align - 1).map(|v| v & !(align - 1))
+}
+
 /// Utility function to align down to nearest boundary
 pub fn align_down(addr: usize, align: usize) -> usize {
     addr & !(align - 1)
@@ -2560,9 +2853,18 @@ mod tests {
 
     #[test_case]
     fn test_memory_zones() {
-        assert_eq!(MemoryZone::from_address(PhysAddr::new(0x100000)), MemoryZone::Dma);
-        assert_eq!(MemoryZone::from_address(PhysAddr::new(0x2000000)), MemoryZone::Normal);
-        assert_eq!(MemoryZone::from_address(PhysAddr::new(0x40000000)), MemoryZone::HighMem);
+        assert_eq!(
+            MemoryZone::from_address(PhysAddr::new(0x100000)),
+            MemoryZone::Dma
+        );
+        assert_eq!(
+            MemoryZone::from_address(PhysAddr::new(0x2000000)),
+            MemoryZone::Normal
+        );
+        assert_eq!(
+            MemoryZone::from_address(PhysAddr::new(0x40000000)),
+            MemoryZone::HighMem
+        );
     }
 
     #[test_case]
@@ -2590,7 +2892,6 @@ mod tests {
     }
 }
 
-
 /// Fast page fault handler for common cases (complete implementation)
 /// Attempts to handle page faults quickly without full context switching
 pub fn try_fast_page_fault_handler(addr: VirtAddr) -> bool {
@@ -2611,7 +2912,8 @@ pub fn try_fast_page_fault_handler(addr: VirtAddr) -> bool {
                 }
                 MemoryRegionType::UserHeap => {
                     // Heap expansion: check if within reasonable bounds
-                    if addr.as_u64() < region.end().as_u64() + (16 * 1024 * 1024) { // 16MB max heap growth
+                    if addr.as_u64() < region.end().as_u64() + (16 * 1024 * 1024) {
+                        // 16MB max heap growth
                         // This could potentially be handled quickly
                         // For now, delegate to full handler
                         return false;
@@ -2631,7 +2933,7 @@ pub fn try_fast_page_fault_handler(addr: VirtAddr) -> bool {
             }
         }
     }
-    
+
     // If we can't handle it quickly, return false for full handling
     false
 }
@@ -2642,65 +2944,71 @@ pub fn adjust_heap(new_size: usize) -> Result<usize, &'static str> {
     // Validate new size parameters
     const MIN_HEAP_SIZE: usize = 512 * 1024; // 512KB minimum
     const MAX_HEAP_SIZE: usize = 256 * 1024 * 1024; // 256MB maximum
-    
+
     if new_size < MIN_HEAP_SIZE {
         return Err("Heap size too small (minimum 512KB required)");
     }
-    
+
     if new_size > MAX_HEAP_SIZE {
         return Err("Heap size too large (maximum 256MB allowed)");
     }
-    
+
     // Align to page boundaries
     let aligned_size = align_up(new_size, PAGE_SIZE);
-    
+
     // Get current heap size
     if let Some(memory_manager) = get_memory_manager() {
         // Get current memory statistics
         let stats = memory_manager.get_memory_report();
         let current_heap_size = KERNEL_HEAP_SIZE;
-        
+
         // Check if we're expanding or shrinking
         if aligned_size > current_heap_size {
             // Expanding heap - check if we have enough free memory
             let expansion_size = aligned_size - current_heap_size;
-            
+
             if stats.free_memory < expansion_size {
                 return Err("Insufficient free memory for heap expansion");
             }
-            
+
             // In a real implementation, we would:
             // 1. Allocate additional physical frames
             // 2. Map them to extend the heap virtual address space
             // 3. Update the heap allocator's boundaries
             // 4. Update global heap size tracking
-            
+
             // For now, we simulate successful expansion
-            crate::serial_println!("Heap expansion requested: {} -> {} bytes", current_heap_size, aligned_size);
-            
+            crate::serial_println!(
+                "Heap expansion requested: {} -> {} bytes",
+                current_heap_size,
+                aligned_size
+            );
+
             // Return the new size (in real implementation, update would happen here)
             Ok(aligned_size)
-            
         } else if aligned_size < current_heap_size {
             // Shrinking heap - ensure it's safe to do so
             let shrink_size = current_heap_size - aligned_size;
-            
+
             // Check if shrinking would compromise system stability
             if stats.allocated_memory > aligned_size {
                 return Err("Cannot shrink heap below current allocation level");
             }
-            
+
             // In a real implementation, we would:
             // 1. Verify no allocations exist in the region to be freed
             // 2. Unmap the virtual address space
             // 3. Return physical frames to the allocator
             // 4. Update the heap allocator's boundaries
-            
-            crate::serial_println!("Heap shrinking requested: {} -> {} bytes", current_heap_size, aligned_size);
-            
+
+            crate::serial_println!(
+                "Heap shrinking requested: {} -> {} bytes",
+                current_heap_size,
+                aligned_size
+            );
+
             // Return the new size (in real implementation, update would happen here)
             Ok(aligned_size)
-            
         } else {
             // Size unchanged
             Ok(current_heap_size)
@@ -2717,10 +3025,18 @@ pub struct MemoryFlags {
 }
 
 impl MemoryFlags {
-    pub const PRESENT: Self = MemoryFlags { flags: PageTableFlags::PRESENT };
-    pub const WRITABLE: Self = MemoryFlags { flags: PageTableFlags::WRITABLE };
-    pub const NO_CACHE: Self = MemoryFlags { flags: PageTableFlags::NO_CACHE };
-    pub const WRITE_COMBINING: Self = MemoryFlags { flags: PageTableFlags::WRITE_THROUGH };
+    pub const PRESENT: Self = MemoryFlags {
+        flags: PageTableFlags::PRESENT,
+    };
+    pub const WRITABLE: Self = MemoryFlags {
+        flags: PageTableFlags::WRITABLE,
+    };
+    pub const NO_CACHE: Self = MemoryFlags {
+        flags: PageTableFlags::NO_CACHE,
+    };
+    pub const WRITE_COMBINING: Self = MemoryFlags {
+        flags: PageTableFlags::WRITE_THROUGH,
+    };
 
     pub fn to_page_table_flags(self) -> PageTableFlags {
         self.flags
@@ -2740,7 +3056,11 @@ impl core::ops::BitOr for MemoryFlags {
 ///
 /// This is specifically designed for mapping device I/O regions that need special caching attributes.
 /// For regular memory allocation, use the MemoryManager's allocate_region instead.
-pub fn map_physical_memory(virt: usize, phys: usize, flags: MemoryFlags) -> Result<(), &'static str> {
+pub fn map_physical_memory(
+    virt: usize,
+    phys: usize,
+    flags: MemoryFlags,
+) -> Result<(), &'static str> {
     // Convert to x86_64 address types
     let virt_addr = VirtAddr::new(virt as u64);
     let phys_addr = PhysAddr::new(phys as u64);
@@ -2753,7 +3073,13 @@ pub fn map_physical_memory(virt: usize, phys: usize, flags: MemoryFlags) -> Resu
         let mut frame_allocator = memory_manager.frame_allocator.lock();
 
         // Map the page with the specified flags
-        page_table_manager.map_page(page, frame, flags.to_page_table_flags(), &mut *frame_allocator)
+        page_table_manager
+            .map_page(
+                page,
+                frame,
+                flags.to_page_table_flags(),
+                &mut *frame_allocator,
+            )
             .map_err(|_| "Failed to map physical memory page")?;
 
         Ok(())
@@ -2803,7 +3129,12 @@ pub fn unmap_page(addr: usize) -> Result<(), &'static str> {
 /// * `Ok(true)` - Access is allowed
 /// * `Ok(false)` - Access is not allowed
 /// * `Err(&str)` - Error checking the access
-pub fn check_memory_access(addr: usize, size: usize, write: bool, privilege_level: u8) -> Result<bool, &'static str> {
+pub fn check_memory_access(
+    addr: usize,
+    size: usize,
+    write: bool,
+    privilege_level: u8,
+) -> Result<bool, &'static str> {
     // Basic validation
     if size == 0 {
         return Ok(false);

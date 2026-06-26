@@ -8,16 +8,16 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
-pub mod ramfs;
 pub mod file_descriptor;
+pub mod ramfs;
 
 #[cfg(test)]
 pub mod examples;
@@ -342,7 +342,8 @@ impl Vfs {
         let mounts = self.mounts.read();
 
         // Find the mount point (longest matching prefix)
-        let mount = mounts.iter()
+        let mount = mounts
+            .iter()
             .filter(|m| path.starts_with(&m.path))
             .max_by_key(|m| m.path.len())
             .ok_or(VfsError::NotFound)?;
@@ -356,7 +357,8 @@ impl Vfs {
         }
 
         // Strip mount prefix and leading slash
-        let rel_path = path.strip_prefix(&mount.path)
+        let rel_path = path
+            .strip_prefix(&mount.path)
             .unwrap_or(path)
             .trim_start_matches('/');
 

@@ -49,10 +49,10 @@ pub fn init_memory(
 ) -> Result<MemoryStats, &'static str> {
     // For now, just analyze the memory map without setting up heap
     let stats = analyze_memory_map(memory_regions);
-    
+
     // Store stats for health monitoring
     store_memory_stats(stats.clone());
-    
+
     Ok(stats)
 }
 
@@ -79,7 +79,9 @@ pub fn store_memory_stats(stats: MemoryStats) {
 /// Get current memory statistics for health monitoring
 pub fn get_memory_stats() -> Result<MemoryStats, &'static str> {
     unsafe {
-        GLOBAL_MEMORY_STATS.clone().ok_or("Memory statistics not available")
+        GLOBAL_MEMORY_STATS
+            .clone()
+            .ok_or("Memory statistics not available")
     }
 }
 
@@ -110,6 +112,10 @@ pub fn init_heap_from_memory_map(
     const MIN_HEAP_ADDR: u64 = 0x10_0000; // 1MB
     const DESIRED_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16MB
 
+    // Find the highest usable memory region that's large enough for the heap.
+    // Using the last region avoids overlap with the kernel image which is
+    // typically loaded at low physical addresses.
+    let mut best_region: Option<(u64, usize)> = None;
     for region in memory_regions {
         if region.region_type != bootloader::bootinfo::MemoryRegionType::Usable {
             continue;
@@ -126,15 +132,19 @@ pub fn init_heap_from_memory_map(
 
         // Check if region is large enough
         if size >= DESIRED_HEAP_SIZE {
-            // Convert physical address to virtual address using the offset
-            let virt_start = phys_start + physical_memory_offset;
-            let heap_size = DESIRED_HEAP_SIZE.min(size);
-
-            unsafe {
-                allocator.lock().init(virt_start as usize, heap_size);
-            }
-            return Ok(());
+            best_region = Some((phys_start, size));
         }
+    }
+
+    if let Some((phys_start, size)) = best_region {
+        // Convert physical address to virtual address using the offset
+        let virt_start = phys_start + physical_memory_offset;
+        let heap_size = DESIRED_HEAP_SIZE.min(size);
+
+        unsafe {
+            allocator.lock().init(virt_start as usize, heap_size);
+        }
+        return Ok(());
     }
 
     Err("No suitable memory region found for heap")

@@ -4,10 +4,10 @@
 //! Framebuffer is at physical address 0xA0000
 //! Virtual address = physical_memory_offset + 0xA0000
 
-use x86_64::instructions::port::Port;
-use spin::Mutex;
-use lazy_static::lazy_static;
 use core::sync::atomic::{AtomicU64, Ordering};
+use lazy_static::lazy_static;
+use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 /// Screen dimensions for Mode 13h
 pub const SCREEN_WIDTH: usize = 320;
@@ -95,7 +95,10 @@ impl VgaMode13h {
         }
 
         let current_offset = PHYS_MEM_OFFSET.load(Ordering::Relaxed);
-        crate::serial_println!("VGA Mode 13h: Initializing with phys_mem_offset = 0x{:x}", current_offset);
+        crate::serial_println!(
+            "VGA Mode 13h: Initializing with phys_mem_offset = 0x{:x}",
+            current_offset
+        );
 
         unsafe {
             self.set_mode_13h();
@@ -173,10 +176,22 @@ impl VgaMode13h {
 
         // Attribute controller registers for Mode 13h
         let ac_regs: [(u8, u8); 21] = [
-            (0x00, 0x00), (0x01, 0x01), (0x02, 0x02), (0x03, 0x03),
-            (0x04, 0x04), (0x05, 0x05), (0x06, 0x06), (0x07, 0x07),
-            (0x08, 0x08), (0x09, 0x09), (0x0A, 0x0A), (0x0B, 0x0B),
-            (0x0C, 0x0C), (0x0D, 0x0D), (0x0E, 0x0E), (0x0F, 0x0F),
+            (0x00, 0x00),
+            (0x01, 0x01),
+            (0x02, 0x02),
+            (0x03, 0x03),
+            (0x04, 0x04),
+            (0x05, 0x05),
+            (0x06, 0x06),
+            (0x07, 0x07),
+            (0x08, 0x08),
+            (0x09, 0x09),
+            (0x0A, 0x0A),
+            (0x0B, 0x0B),
+            (0x0C, 0x0C),
+            (0x0D, 0x0D),
+            (0x0E, 0x0E),
+            (0x0F, 0x0F),
             (0x10, 0x41), // Mode control
             (0x11, 0x00), // Overscan color
             (0x12, 0x0F), // Color plane enable
@@ -258,42 +273,42 @@ impl VgaMode13h {
 
         // Standard 16 colors (VGA palette, values are 0-63)
         let standard_colors: [(u8, u8, u8); 16] = [
-            (0, 0, 0),       // 0: Black
-            (0, 0, 42),      // 1: Dark Blue
-            (0, 42, 0),      // 2: Dark Green
-            (0, 42, 42),     // 3: Dark Cyan
-            (42, 0, 0),      // 4: Dark Red
-            (42, 0, 42),     // 5: Dark Magenta
-            (42, 21, 0),     // 6: Brown
-            (42, 42, 42),    // 7: Light Gray
-            (21, 21, 21),    // 8: Dark Gray
-            (21, 21, 63),    // 9: Blue
-            (21, 63, 21),    // 10: Green
-            (21, 63, 63),    // 11: Cyan
-            (63, 21, 21),    // 12: Red
-            (63, 21, 63),    // 13: Magenta
-            (63, 63, 21),    // 14: Yellow
-            (63, 63, 63),    // 15: White
+            (0, 0, 0),    // 0: Black
+            (0, 0, 42),   // 1: Dark Blue
+            (0, 42, 0),   // 2: Dark Green
+            (0, 42, 42),  // 3: Dark Cyan
+            (42, 0, 0),   // 4: Dark Red
+            (42, 0, 42),  // 5: Dark Magenta
+            (42, 21, 0),  // 6: Brown
+            (42, 42, 42), // 7: Light Gray
+            (21, 21, 21), // 8: Dark Gray
+            (21, 21, 63), // 9: Blue
+            (21, 63, 21), // 10: Green
+            (21, 63, 63), // 11: Cyan
+            (63, 21, 21), // 12: Red
+            (63, 21, 63), // 13: Magenta
+            (63, 63, 21), // 14: Yellow
+            (63, 63, 63), // 15: White
         ];
 
         // Windows 95 special colors (indices 16-31)
         let win95_colors: [(u8, u8, u8); 16] = [
-            (0, 32, 32),     // 16: Desktop Teal
-            (0, 0, 50),      // 17: Title Bar Blue (active)
-            (32, 32, 32),    // 18: Title Bar Gray (inactive)
-            (48, 48, 48),    // 19: Button Face (3D gray)
-            (63, 63, 63),    // 20: Button Highlight (white)
-            (21, 21, 21),    // 21: Button Shadow (dark gray)
-            (63, 63, 63),    // 22: Window Background (white)
-            (48, 48, 48),    // 23: Menu Bar
-            (0, 42, 0),      // 24: Selection Green
-            (50, 50, 0),     // 25: Selection Yellow
-            (42, 42, 63),    // 26: Light Blue
-            (63, 48, 48),    // 27: Light Red
-            (48, 63, 48),    // 28: Light Green
-            (32, 32, 48),    // 29: Slate Blue
-            (48, 32, 32),    // 30: Maroon
-            (32, 48, 32),    // 31: Forest Green
+            (0, 32, 32),  // 16: Desktop Teal
+            (0, 0, 50),   // 17: Title Bar Blue (active)
+            (32, 32, 32), // 18: Title Bar Gray (inactive)
+            (48, 48, 48), // 19: Button Face (3D gray)
+            (63, 63, 63), // 20: Button Highlight (white)
+            (21, 21, 21), // 21: Button Shadow (dark gray)
+            (63, 63, 63), // 22: Window Background (white)
+            (48, 48, 48), // 23: Menu Bar
+            (0, 42, 0),   // 24: Selection Green
+            (50, 50, 0),  // 25: Selection Yellow
+            (42, 42, 63), // 26: Light Blue
+            (63, 48, 48), // 27: Light Red
+            (48, 63, 48), // 28: Light Green
+            (32, 32, 48), // 29: Slate Blue
+            (48, 32, 32), // 30: Maroon
+            (32, 48, 32), // 31: Forest Green
         ];
 
         // Set standard colors
@@ -434,10 +449,10 @@ pub fn vline(x: usize, y: usize, len: usize, color: u8) {
 
 /// Draw a rectangle outline
 pub fn draw_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
-    hline(x, y, w, color);           // Top
-    hline(x, y + h - 1, w, color);   // Bottom
-    vline(x, y, h, color);           // Left
-    vline(x + w - 1, y, h, color);   // Right
+    hline(x, y, w, color); // Top
+    hline(x, y + h - 1, w, color); // Bottom
+    vline(x, y, h, color); // Left
+    vline(x + w - 1, y, h, color); // Right
 }
 
 /// Draw a 3D raised button/border effect

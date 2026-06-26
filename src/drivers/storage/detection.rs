@@ -3,12 +3,17 @@
 //! This module provides comprehensive storage device detection,
 //! initialization, and management for the RustOS kernel.
 
-use super::{StorageDriverManager, StorageDriver, StorageDeviceType, StorageError};
 use super::ahci::{AhciDriver, AHCI_DEVICE_IDS};
+use super::ide::{create_ide_drivers, IdeDriver};
 use super::nvme::NvmeDriver;
-use super::ide::{IdeDriver, create_ide_drivers};
-use super::pci_scan::{PciDevice, scan_pci_devices};
-use alloc::{vec::Vec, string::{String, ToString}, boxed::Box, format};
+use super::pci_scan::{scan_pci_devices, PciDevice};
+use super::{StorageDeviceType, StorageDriver, StorageDriverManager, StorageError};
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 /// PCI class codes for storage controllers
 const PCI_CLASS_STORAGE: u8 = 0x01;
@@ -84,34 +89,34 @@ impl StorageDetector {
                 match device.subclass {
                     PCI_SUBCLASS_SATA => {
                         if let Err(e) = self.detect_ahci_controller(&device) {
-                            self.detection_results.errors.push(
-                                format!("AHCI detection failed for device {:04x}:{:04x}: {:?}", 
-                                       device.vendor_id, device.device_id, e)
-                            );
+                            self.detection_results.errors.push(format!(
+                                "AHCI detection failed for device {:04x}:{:04x}: {:?}",
+                                device.vendor_id, device.device_id, e
+                            ));
                         }
                     }
                     PCI_SUBCLASS_NVME => {
                         if let Err(e) = self.detect_nvme_controller(&device) {
-                            self.detection_results.errors.push(
-                                format!("NVMe detection failed for device {:04x}:{:04x}: {:?}", 
-                                       device.vendor_id, device.device_id, e)
-                            );
+                            self.detection_results.errors.push(format!(
+                                "NVMe detection failed for device {:04x}:{:04x}: {:?}",
+                                device.vendor_id, device.device_id, e
+                            ));
                         }
                     }
                     PCI_SUBCLASS_IDE => {
                         if let Err(e) = self.detect_pci_ide_controller(&device) {
-                            self.detection_results.errors.push(
-                                format!("PCI IDE detection failed for device {:04x}:{:04x}: {:?}", 
-                                       device.vendor_id, device.device_id, e)
-                            );
+                            self.detection_results.errors.push(format!(
+                                "PCI IDE detection failed for device {:04x}:{:04x}: {:?}",
+                                device.vendor_id, device.device_id, e
+                            ));
                         }
                     }
                     _ => {
                         // Unknown storage subclass
-                        self.detection_results.errors.push(
-                            format!("Unknown storage subclass 0x{:02x} for device {:04x}:{:04x}", 
-                                   device.subclass, device.vendor_id, device.device_id)
-                        );
+                        self.detection_results.errors.push(format!(
+                            "Unknown storage subclass 0x{:02x} for device {:04x}:{:04x}",
+                            device.subclass, device.vendor_id, device.device_id
+                        ));
                     }
                 }
             }
@@ -123,7 +128,8 @@ impl StorageDetector {
     /// Detect AHCI controller
     fn detect_ahci_controller(&mut self, device: &PciDevice) -> Result<(), StorageError> {
         // Check if this is a known AHCI device
-        let device_info = AHCI_DEVICE_IDS.iter()
+        let device_info = AHCI_DEVICE_IDS
+            .iter()
             .find(|info| info.vendor_id == device.vendor_id && info.device_id == device.device_id);
 
         if device_info.is_none() {
@@ -136,61 +142,15 @@ impl StorageDetector {
             return Err(StorageError::HardwareError);
         }
 
-        // Create AHCI driver
-        let driver_name = format!("AHCI Controller {:04x}:{:04x}", device.vendor_id, device.device_id);
-        let mut ahci_driver = AhciDriver::new(driver_name.clone(), device.vendor_id, device.device_id, base_addr);
-
-        // Initialize the controller
-        ahci_driver.init()?;
-
-        // Register the AHCI controller
-        let model = format!("AHCI Controller {:04x}:{:04x}", device.vendor_id, device.device_id);
-        let serial = format!("AHCI-{:04x}-{:04x}", device.vendor_id, device.device_id);
-        let firmware = "1.0".to_string();
-
-        let device_id = self.manager.register_device(
-            Box::new(ahci_driver) as Box<dyn StorageDriver>,
-            model,
-            serial,
-            firmware,
-            get_current_time(),
-        )?;
-
-        self.detection_results.ahci_controllers += 1;
-        Ok(())
+        // BAR5 MMIO is not mapped by the bootloader. Skip AHCI init to avoid page faults.
+        Err(StorageError::NotSupported)
     }
 
     /// Detect NVMe controller
     fn detect_nvme_controller(&mut self, device: &PciDevice) -> Result<(), StorageError> {
-        // Get BAR0 (NVMe base address)
-        let base_addr = device.bar0 as u64;
-        if base_addr == 0 {
-            return Err(StorageError::HardwareError);
-        }
-
-        // Create NVMe driver
-        let driver_name = format!("NVMe Controller {:04x}:{:04x}", device.vendor_id, device.device_id);
-        let mut nvme_driver = NvmeDriver::new(driver_name.clone(), base_addr);
-
-        // Initialize the controller
-        nvme_driver.init()?;
-
-        // Register the NVMe device
-        let model = format!("NVMe SSD {:04x}:{:04x}", device.vendor_id, device.device_id);
-        let serial = format!("NVME-{:04x}-{:04x}", device.vendor_id, device.device_id);
-        let firmware = "1.0".to_string();
-
-        let device_id = self.manager.register_device(
-            Box::new(nvme_driver) as Box<dyn StorageDriver>,
-            model,
-            serial,
-            firmware,
-            get_current_time(),
-        )?;
-
-        self.detection_results.nvme_controllers += 1;
-        self.detection_results.total_devices += 1;
-        Ok(())
+        // BAR0 MMIO is not mapped by the bootloader. Skip NVMe init to avoid page faults.
+        let _ = device;
+        Err(StorageError::NotSupported)
     }
 
     /// Detect PCI IDE controller
@@ -205,13 +165,19 @@ impl StorageDetector {
                 let model = if let Some(model) = driver.get_model() {
                     model
                 } else {
-                    format!("IDE Device on PCI {:04x}:{:04x}", device.vendor_id, device.device_id)
+                    format!(
+                        "IDE Device on PCI {:04x}:{:04x}",
+                        device.vendor_id, device.device_id
+                    )
                 };
 
                 let serial = if let Some(serial) = driver.get_serial() {
                     serial
                 } else {
-                    format!("IDE-{:04x}-{:04x}-{}", device.vendor_id, device.device_id, devices_found)
+                    format!(
+                        "IDE-{:04x}-{:04x}-{}",
+                        device.vendor_id, device.device_id, devices_found
+                    )
                 };
 
                 let firmware = "1.0".to_string();

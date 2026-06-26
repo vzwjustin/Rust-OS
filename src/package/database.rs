@@ -2,11 +2,11 @@
 //!
 //! This module manages the database of installed packages and their metadata.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use crate::package::{PackageError, PackageInfo, PackageMetadata, PackageResult, PackageStatus};
 use alloc::collections::BTreeMap;
 use alloc::format;
-use crate::package::{PackageResult, PackageError, PackageInfo, PackageMetadata, PackageStatus};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Package database for tracking installed packages
 pub struct PackageDatabase {
@@ -31,7 +31,8 @@ impl PackageDatabase {
 
     /// Remove a package from the database
     pub fn remove_package(&mut self, name: &str) -> PackageResult<PackageInfo> {
-        self.packages.remove(name)
+        self.packages
+            .remove(name)
             .ok_or_else(|| PackageError::NotFound(format!("Package {} not found", name)))
     }
 
@@ -52,7 +53,8 @@ impl PackageDatabase {
 
     /// Search for packages by name pattern
     pub fn search(&self, pattern: &str) -> Vec<&PackageInfo> {
-        self.packages.values()
+        self.packages
+            .values()
             .filter(|info| info.metadata.name.contains(pattern))
             .collect()
     }
@@ -64,7 +66,9 @@ impl PackageDatabase {
 
     /// Update package status
     pub fn update_status(&mut self, name: &str, status: PackageStatus) -> PackageResult<()> {
-        let package = self.packages.get_mut(name)
+        let package = self
+            .packages
+            .get_mut(name)
             .ok_or_else(|| PackageError::NotFound(format!("Package {} not found", name)))?;
         package.status = status;
         Ok(())

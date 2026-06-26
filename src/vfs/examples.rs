@@ -4,8 +4,8 @@
 
 #![allow(dead_code)]
 
-use alloc::format;
 use super::*;
+use alloc::format;
 
 /// Example 1: Basic file operations
 pub fn example_basic_file_ops() -> VfsResult<()> {
@@ -39,11 +39,19 @@ pub fn example_directory_ops() -> VfsResult<()> {
     vfs_mkdir("/tmp/test", 0o755)?;
 
     // Create files in directory
-    let fd = vfs_open("/tmp/test/file1.txt", OpenFlags::RDWR | OpenFlags::CREAT, 0o644)?;
+    let fd = vfs_open(
+        "/tmp/test/file1.txt",
+        OpenFlags::RDWR | OpenFlags::CREAT,
+        0o644,
+    )?;
     vfs_write(fd, b"File 1 content")?;
     vfs_close(fd)?;
 
-    let fd = vfs_open("/tmp/test/file2.txt", OpenFlags::RDWR | OpenFlags::CREAT, 0o644)?;
+    let fd = vfs_open(
+        "/tmp/test/file2.txt",
+        OpenFlags::RDWR | OpenFlags::CREAT,
+        0o644,
+    )?;
     vfs_write(fd, b"File 2 content")?;
     vfs_close(fd)?;
 
@@ -289,7 +297,7 @@ pub fn example_syscall_integration() {
         let open_flags = OpenFlags::new(flags as u32);
 
         // Call VFS
-        match vfs_open(path_str, open_flags, mode) {
+        match vfs_open(path_str, open_flags.bits(), mode) {
             Ok(fd) => fd,
             Err(_) => -1, // Return error code
         }

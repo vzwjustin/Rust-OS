@@ -7,10 +7,14 @@
 //! - Process creation/destruction stress tests
 //! - Interrupt handling under load
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
-use core::sync::atomic::{AtomicUsize, AtomicU64, AtomicBool, Ordering};
-use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
 use crate::data_structures::LockFreeMpscQueue;
+use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Stress test configuration
 #[derive(Debug, Clone)]
@@ -25,10 +29,10 @@ pub struct StressTestConfig {
 impl Default for StressTestConfig {
     fn default() -> Self {
         Self {
-            duration_ms: 10000,      // 10 seconds
+            duration_ms: 10000, // 10 seconds
             thread_count: 4,
             iterations_per_thread: 1000,
-            memory_pressure_mb: 64,  // 64MB
+            memory_pressure_mb: 64,   // 64MB
             target_throughput: 10000, // operations per second
         }
     }
@@ -78,7 +82,8 @@ impl StressTestWorker {
             self.operations_failed.fetch_add(1, Ordering::Relaxed);
         }
 
-        self.total_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.total_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
 
         // Update max latency
         let current_max = self.max_latency_us.load(Ordering::Relaxed);
@@ -312,9 +317,9 @@ fn test_syscall_stress() -> TestResult {
 /// Memory pressure stress test using real memory manager
 fn test_memory_pressure() -> TestResult {
     use crate::memory::{get_memory_manager, MemoryZone};
-    
+
     let config = StressTestConfig::default();
-    
+
     if let Some(memory_manager) = get_memory_manager() {
         let start_time = crate::time::uptime_us();
         let mut allocated_frames = Vec::new();
@@ -328,16 +333,17 @@ fn test_memory_pressure() -> TestResult {
         };
 
         // Allocate memory frames to create pressure
-        for i in 0..500 { // Reduced for real hardware
+        for i in 0..500 {
+            // Reduced for real hardware
             let manager = memory_manager;
-            
+
             // Try different zones to test zone management
             let zone = match i % 3 {
                 0 => MemoryZone::Normal,
                 1 => MemoryZone::HighMem,
                 _ => MemoryZone::Dma,
             };
-            
+
             if let Some(frame) = manager.allocate_frame_in_zone(zone) {
                 allocated_frames.push((frame, zone));
                 success_count += 1;
@@ -464,7 +470,9 @@ fn test_interrupt_stress() -> TestResult {
         // Perform CPU-intensive work to trigger timer interrupts
         for _ in 0..1000 {
             work_counter = work_counter.wrapping_add(1);
-            unsafe { core::arch::asm!("pause"); }
+            unsafe {
+                core::arch::asm!("pause");
+            }
         }
 
         // Yield to allow interrupt processing
@@ -479,10 +487,14 @@ fn test_interrupt_stress() -> TestResult {
 
     // Calculate interrupt processing statistics
     let timer_interrupts = final_stats.timer_count - initial_stats.timer_count;
-    let total_interrupts = (final_stats.timer_count + final_stats.keyboard_count + 
-                           final_stats.serial_count + final_stats.exception_count) -
-                          (initial_stats.timer_count + initial_stats.keyboard_count + 
-                           initial_stats.serial_count + initial_stats.exception_count);
+    let total_interrupts = (final_stats.timer_count
+        + final_stats.keyboard_count
+        + final_stats.serial_count
+        + final_stats.exception_count)
+        - (initial_stats.timer_count
+            + initial_stats.keyboard_count
+            + initial_stats.serial_count
+            + initial_stats.exception_count);
 
     let interrupt_rate = if duration_ms > 0 {
         (total_interrupts * 1000) / duration_ms
@@ -494,7 +506,9 @@ fn test_interrupt_stress() -> TestResult {
     // Timer interrupts should occur regularly (at least 10 Hz)
     if timer_interrupts > (config.duration_ms / 100) && // At least 10 Hz timer rate
        interrupt_rate > 10 && // Some interrupt activity
-       duration_ms <= config.duration_ms + 1000 { // Completed within reasonable time
+       duration_ms <= config.duration_ms + 1000
+    {
+        // Completed within reasonable time
         TestResult::Pass
     } else {
         // Check if interrupt system is at least functional
@@ -576,7 +590,7 @@ fn test_io_stress() -> TestResult {
 
         let request = crate::io_optimized::IoRequest {
             request_id: 0, // Will be assigned by scheduler
-            id: 0, // Will be assigned by scheduler
+            id: 0,         // Will be assigned by scheduler
             request_type: crate::io_optimized::IoRequestType::Read,
             priority: crate::io_optimized::IoPriority::Normal,
             target: 0,
@@ -634,12 +648,30 @@ pub fn run_stress_tests_with_config(config: StressTestConfig) -> Vec<StressTestM
     // This is a simplified version - in a real implementation,
     // each test would be run with the provided configuration
     let test_functions: [(&str, fn() -> crate::testing_framework::TestResult); 6] = [
-        ("Syscall Stress", test_syscall_stress as fn() -> crate::testing_framework::TestResult),
-        ("Memory Pressure", test_memory_pressure as fn() -> crate::testing_framework::TestResult),
-        ("Process Creation", test_process_creation_stress as fn() -> crate::testing_framework::TestResult),
-        ("Interrupt Stress", test_interrupt_stress as fn() -> crate::testing_framework::TestResult),
-        ("Network Throughput", test_network_throughput_stress as fn() -> crate::testing_framework::TestResult),
-        ("I/O Stress", test_io_stress as fn() -> crate::testing_framework::TestResult),
+        (
+            "Syscall Stress",
+            test_syscall_stress as fn() -> crate::testing_framework::TestResult,
+        ),
+        (
+            "Memory Pressure",
+            test_memory_pressure as fn() -> crate::testing_framework::TestResult,
+        ),
+        (
+            "Process Creation",
+            test_process_creation_stress as fn() -> crate::testing_framework::TestResult,
+        ),
+        (
+            "Interrupt Stress",
+            test_interrupt_stress as fn() -> crate::testing_framework::TestResult,
+        ),
+        (
+            "Network Throughput",
+            test_network_throughput_stress as fn() -> crate::testing_framework::TestResult,
+        ),
+        (
+            "I/O Stress",
+            test_io_stress as fn() -> crate::testing_framework::TestResult,
+        ),
     ];
 
     for (name, test_fn) in &test_functions {
@@ -667,33 +699,45 @@ pub fn run_stress_tests_with_config(config: StressTestConfig) -> Vec<StressTestM
 /// Get stress test configuration for different scenarios
 pub fn get_stress_test_configs() -> Vec<(String, StressTestConfig)> {
     vec![
-        ("Light Load".to_string(), StressTestConfig {
-            duration_ms: 5000,
-            thread_count: 2,
-            iterations_per_thread: 500,
-            memory_pressure_mb: 32,
-            target_throughput: 5000,
-        }),
-        ("Medium Load".to_string(), StressTestConfig {
-            duration_ms: 10000,
-            thread_count: 4,
-            iterations_per_thread: 1000,
-            memory_pressure_mb: 64,
-            target_throughput: 10000,
-        }),
-        ("Heavy Load".to_string(), StressTestConfig {
-            duration_ms: 15000,
-            thread_count: 8,
-            iterations_per_thread: 2000,
-            memory_pressure_mb: 128,
-            target_throughput: 20000,
-        }),
-        ("Extreme Load".to_string(), StressTestConfig {
-            duration_ms: 20000,
-            thread_count: 16,
-            iterations_per_thread: 5000,
-            memory_pressure_mb: 256,
-            target_throughput: 50000,
-        }),
+        (
+            "Light Load".to_string(),
+            StressTestConfig {
+                duration_ms: 5000,
+                thread_count: 2,
+                iterations_per_thread: 500,
+                memory_pressure_mb: 32,
+                target_throughput: 5000,
+            },
+        ),
+        (
+            "Medium Load".to_string(),
+            StressTestConfig {
+                duration_ms: 10000,
+                thread_count: 4,
+                iterations_per_thread: 1000,
+                memory_pressure_mb: 64,
+                target_throughput: 10000,
+            },
+        ),
+        (
+            "Heavy Load".to_string(),
+            StressTestConfig {
+                duration_ms: 15000,
+                thread_count: 8,
+                iterations_per_thread: 2000,
+                memory_pressure_mb: 128,
+                target_throughput: 20000,
+            },
+        ),
+        (
+            "Extreme Load".to_string(),
+            StressTestConfig {
+                duration_ms: 20000,
+                thread_count: 16,
+                iterations_per_thread: 5000,
+                memory_pressure_mb: 256,
+                target_throughput: 50000,
+            },
+        ),
     ]
 }

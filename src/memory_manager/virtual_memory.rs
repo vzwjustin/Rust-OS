@@ -2,14 +2,14 @@
 //!
 //! Implements mmap, munmap, mprotect, brk, and sbrk for virtual memory management.
 
-use x86_64::{PhysAddr, VirtAddr};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::Mutex;
+use x86_64::{PhysAddr, VirtAddr};
 
 use super::memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
 use super::page_table::{PageTable, PageTableFlags, PageTableManager};
-use super::{MmapFlags, MemoryStats};
+use super::{MemoryStats, MmapFlags};
 
 /// Virtual memory error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,12 +308,7 @@ impl VirtualMemoryManager {
     }
 
     /// Change protection for a range of addresses
-    fn protect_range(
-        &self,
-        start: VirtAddr,
-        end: VirtAddr,
-        prot: ProtectionFlags,
-    ) -> VmResult<()> {
+    fn protect_range(&self, start: VirtAddr, end: VirtAddr, prot: ProtectionFlags) -> VmResult<()> {
         let page_count = ((end.as_u64() - start.as_u64()) / 4096) as usize;
 
         // Convert protection flags to page table flags
@@ -438,7 +433,7 @@ impl VirtualMemoryManager {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_vm_creation() {
         let vm = VirtualMemoryManager::new(VirtAddr::new(0xFFFF_8000_0000_0000));
         let stats = vm.stats();
@@ -447,7 +442,7 @@ mod tests {
         assert_eq!(stats.total_allocated, 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_protection_flags_conversion() {
         let prot = ProtectionFlags::READ_WRITE;
         assert!(prot.is_readable());

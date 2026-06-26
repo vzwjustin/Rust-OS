@@ -8,13 +8,13 @@
 //! - Automated regression testing
 //! - Proper error handling and recovery
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-    vec,
     collections::BTreeMap,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
 };
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 // ============================================================================
 // Core Types and Enums
@@ -43,7 +43,10 @@ impl TestResult {
 
     /// Returns true if the test failed (Fail, Timeout, or Error)
     pub fn is_failure(&self) -> bool {
-        matches!(self, TestResult::Fail | TestResult::Timeout | TestResult::Error)
+        matches!(
+            self,
+            TestResult::Fail | TestResult::Timeout | TestResult::Error
+        )
     }
 
     /// Returns a human-readable string representation
@@ -720,14 +723,16 @@ pub mod mocks {
 
         pub fn allocate(&self, size: usize) -> *mut u8 {
             self.allocations.fetch_add(1, Ordering::Relaxed);
-            self.total_allocated.fetch_add(size as u64, Ordering::Relaxed);
+            self.total_allocated
+                .fetch_add(size as u64, Ordering::Relaxed);
             // Return a fake pointer for testing
             0x1000 as *mut u8
         }
 
         pub fn deallocate(&self, _ptr: *mut u8, size: usize) {
             self.deallocations.fetch_add(1, Ordering::Relaxed);
-            self.total_allocated.fetch_sub(size as u64, Ordering::Relaxed);
+            self.total_allocated
+                .fetch_sub(size as u64, Ordering::Relaxed);
         }
 
         pub fn simulate_allocation_failure(&self) {
@@ -1140,12 +1145,10 @@ static FRAMEWORK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initialize the global testing framework
 pub fn init_testing_framework() {
-    if FRAMEWORK_INITIALIZED.compare_exchange(
-        false,
-        true,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    ).is_ok() {
+    if FRAMEWORK_INITIALIZED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
         unsafe {
             TEST_FRAMEWORK = Some(TestFramework::new());
         }
@@ -1158,7 +1161,9 @@ pub fn get_test_framework() -> &'static mut TestFramework {
         if TEST_FRAMEWORK.is_none() {
             init_testing_framework();
         }
-        TEST_FRAMEWORK.as_mut().expect("Test framework not initialized")
+        TEST_FRAMEWORK
+            .as_mut()
+            .expect("Test framework not initialized")
     }
 }
 
@@ -1317,12 +1322,19 @@ pub fn generate_report(stats: &TestStats, results: &[TestExecutionResult]) -> St
     // Summary statistics
     report.push_str("Summary:\n");
     report.push_str(&alloc::format!("  Total Tests: {}\n", stats.total_tests));
-    report.push_str(&alloc::format!("  Passed: {} ({:.1}%)\n", stats.passed, stats.pass_rate()));
+    report.push_str(&alloc::format!(
+        "  Passed: {} ({:.1}%)\n",
+        stats.passed,
+        stats.pass_rate()
+    ));
     report.push_str(&alloc::format!("  Failed: {}\n", stats.failed));
     report.push_str(&alloc::format!("  Skipped: {}\n", stats.skipped));
     report.push_str(&alloc::format!("  Timeouts: {}\n", stats.timeouts));
     report.push_str(&alloc::format!("  Errors: {}\n", stats.errors));
-    report.push_str(&alloc::format!("  Execution Time: {}ms\n\n", stats.execution_time_ms));
+    report.push_str(&alloc::format!(
+        "  Execution Time: {}ms\n\n",
+        stats.execution_time_ms
+    ));
 
     // Individual test results
     if !results.is_empty() {

@@ -3,11 +3,14 @@
 //! Legacy IDE (Integrated Drive Electronics) and PATA (Parallel ATA) driver
 //! for older hard drives and optical drives.
 
-use super::{StorageDriver, StorageDeviceType, StorageDeviceState, StorageCapabilities, StorageError, StorageStats};
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use super::{
+    StorageCapabilities, StorageDeviceState, StorageDeviceType, StorageDriver, StorageError,
+    StorageStats,
+};
 use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 use alloc::vec;
+use alloc::vec::Vec;
 use core::arch::asm;
 
 /// IDE register offsets for primary controller
@@ -21,21 +24,21 @@ pub const IDE_SECONDARY_CTRL: u16 = 0x376;
 /// IDE I/O port registers (relative to base)
 #[repr(u16)]
 pub enum IdeIoReg {
-    Data = 0,           // Data port
-    Features = 1,       // Features/Error information
-    SectorCount = 2,    // Sector count
-    LbaLow = 3,         // LBA bits 0-7
-    LbaMid = 4,         // LBA bits 8-15
-    LbaHigh = 5,        // LBA bits 16-23
-    DriveHead = 6,      // Drive/Head register
-    Status = 7,         // Status register (read) / Command register (write)
+    Data = 0,        // Data port
+    Features = 1,    // Features/Error information
+    SectorCount = 2, // Sector count
+    LbaLow = 3,      // LBA bits 0-7
+    LbaMid = 4,      // LBA bits 8-15
+    LbaHigh = 5,     // LBA bits 16-23
+    DriveHead = 6,   // Drive/Head register
+    Status = 7,      // Status register (read) / Command register (write)
 }
 
 /// IDE control register
 #[repr(u16)]
 pub enum IdeCtrlReg {
-    AltStatus = 0,      // Alternative status (read) / Device control (write)
-    DriveAddress = 1,   // Drive address
+    AltStatus = 0,    // Alternative status (read) / Device control (write)
+    DriveAddress = 1, // Drive address
 }
 
 /// IDE status register bits
@@ -528,7 +531,9 @@ impl IdeDriver {
                 self.capabilities.capacity_bytes = sectors as u64 * 512;
             } else {
                 // CHS mode
-                let sectors = identify.cylinders as u64 * identify.heads as u64 * identify.sectors_per_track as u64;
+                let sectors = identify.cylinders as u64
+                    * identify.heads as u64
+                    * identify.sectors_per_track as u64;
                 self.capabilities.capacity_bytes = sectors * 512;
             }
 
@@ -556,7 +561,12 @@ impl IdeDriver {
     }
 
     /// Execute LBA28 read/write
-    fn execute_lba28(&mut self, command: IdeCommand, lba: u32, sector_count: u8) -> Result<(), StorageError> {
+    fn execute_lba28(
+        &mut self,
+        command: IdeCommand,
+        lba: u32,
+        sector_count: u8,
+    ) -> Result<(), StorageError> {
         if !self.supports_lba28 {
             return Err(StorageError::NotSupported);
         }
@@ -581,7 +591,12 @@ impl IdeDriver {
     }
 
     /// Execute LBA48 read/write
-    fn execute_lba48(&mut self, command: IdeCommand, lba: u64, sector_count: u16) -> Result<(), StorageError> {
+    fn execute_lba48(
+        &mut self,
+        command: IdeCommand,
+        lba: u64,
+        sector_count: u16,
+    ) -> Result<(), StorageError> {
         if !self.supports_lba48 {
             return Err(StorageError::NotSupported);
         }
@@ -619,7 +634,8 @@ impl IdeDriver {
         self.wait_drq()?;
 
         // Read 256 words (512 bytes)
-        let words = unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u16, 256) };
+        let words =
+            unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u16, 256) };
         for word in words.iter_mut() {
             *word = self.read_data();
         }
@@ -652,7 +668,7 @@ impl IdeDriver {
             let model_bytes: &[u8] = unsafe {
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(identify.model_number) as *const u8,
-                    40
+                    40,
                 )
             };
 
@@ -684,7 +700,7 @@ impl IdeDriver {
             let serial_bytes: &[u8] = unsafe {
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(identify.serial_number) as *const u8,
-                    20
+                    20,
                 )
             };
 
@@ -748,7 +764,11 @@ impl StorageDriver for IdeDriver {
         Ok(())
     }
 
-    fn read_sectors(&mut self, start_sector: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+    fn read_sectors(
+        &mut self,
+        start_sector: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StorageError> {
         if self.state != StorageDeviceState::Ready {
             return Err(StorageError::DeviceBusy);
         }
@@ -905,12 +925,27 @@ pub fn create_ide_drivers() -> Vec<Box<dyn StorageDriver>> {
     let mut drivers = Vec::new();
 
     // Primary IDE controller
-    drivers.push(Box::new(IdeDriver::new("IDE Primary Master".to_string(), false, false)) as Box<dyn StorageDriver>);
-    drivers.push(Box::new(IdeDriver::new("IDE Primary Slave".to_string(), false, true)) as Box<dyn StorageDriver>);
+    drivers.push(Box::new(IdeDriver::new(
+        "IDE Primary Master".to_string(),
+        false,
+        false,
+    )) as Box<dyn StorageDriver>);
+    drivers.push(
+        Box::new(IdeDriver::new("IDE Primary Slave".to_string(), false, true))
+            as Box<dyn StorageDriver>,
+    );
 
     // Secondary IDE controller
-    drivers.push(Box::new(IdeDriver::new("IDE Secondary Master".to_string(), true, false)) as Box<dyn StorageDriver>);
-    drivers.push(Box::new(IdeDriver::new("IDE Secondary Slave".to_string(), true, true)) as Box<dyn StorageDriver>);
+    drivers.push(Box::new(IdeDriver::new(
+        "IDE Secondary Master".to_string(),
+        true,
+        false,
+    )) as Box<dyn StorageDriver>);
+    drivers.push(Box::new(IdeDriver::new(
+        "IDE Secondary Slave".to_string(),
+        true,
+        true,
+    )) as Box<dyn StorageDriver>);
 
     drivers
 }

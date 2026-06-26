@@ -2,9 +2,9 @@
 //!
 //! Basic serial port driver for COM1 and COM2 using UART 16550.
 
-use uart_16550::SerialPort;
-use spin::Mutex;
 use lazy_static::lazy_static;
+use spin::Mutex;
+use uart_16550::SerialPort;
 
 lazy_static! {
     /// COM1 serial port (0x3F8)

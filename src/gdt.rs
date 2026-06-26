@@ -7,7 +7,9 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::segmentation::{Segment, CS, DS, ES, FS, GS, SS};
 use x86_64::instructions::tables::load_tss;
-use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector as GdtSegmentSelector};
+use x86_64::structures::gdt::{
+    Descriptor, GlobalDescriptorTable, SegmentSelector as GdtSegmentSelector,
+};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
@@ -184,7 +186,8 @@ pub fn get_execution_context() -> ExecutionContext {
     let cs = CS::get_reg();
     let ds = DS::get_reg();
     let ss = SS::get_reg();
-    let privilege_level = PrivilegeLevel::from_u16(cs.rpl() as u16).unwrap_or(PrivilegeLevel::Ring0);
+    let privilege_level =
+        PrivilegeLevel::from_u16(cs.rpl() as u16).unwrap_or(PrivilegeLevel::Ring0);
 
     ExecutionContext {
         privilege_level,
@@ -208,7 +211,7 @@ pub fn get_stack_info() -> StackInfo {
     unsafe {
         StackInfo {
             kernel_stack: VirtAddr::new(0), // Would be set during task switching
-            user_stack: None, // Would be set during task switching
+            user_stack: None,               // Would be set during task switching
             interrupt_stacks: [
                 TSS.interrupt_stack_table[0],
                 TSS.interrupt_stack_table[1],
@@ -325,7 +328,7 @@ pub fn test_gdt() {
     // Production: validate GDT setup internally without exposing details
     let _is_kernel = is_kernel_mode();
     let _is_user = is_user_mode();
-    
+
     // Validate segment selectors are valid
     let _info = get_segment_info(get_kernel_code_selector());
 }

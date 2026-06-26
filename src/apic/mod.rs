@@ -3,9 +3,9 @@
 //! This module implements Local APIC and IO APIC configuration using ACPI MADT data.
 //! It provides modern interrupt handling capabilities beyond the legacy PIC.
 
+use crate::acpi::{InterruptOverride, MadtInfo};
 use core::ptr;
 use x86_64::VirtAddr;
-use crate::acpi::{MadtInfo, InterruptOverride};
 
 /// Local APIC register offsets
 #[repr(u32)]
@@ -82,33 +82,36 @@ impl LocalApic {
         if version == 0 || version == 0xFFFFFFFF {
             return Err("Local APIC not present or not accessible");
         }
-        
+
         // Clear error status register
         self.write(LocalApicRegister::ErrorStatus, 0);
-        
+
         // Clear any pending interrupts
         self.write(LocalApicRegister::EndOfInterrupt, 0);
-        
+
         // Set spurious interrupt vector and enable APIC
         // Use vector 255 for spurious interrupts and enable APIC (bit 8)
         self.write(LocalApicRegister::SpuriousInterruptVector, 0x1FF);
 
         // Set task priority to 0 (accept all interrupts)
         self.write(LocalApicRegister::TaskPriority, 0);
-        
+
         // Configure timer to be masked initially
         self.write(LocalApicRegister::TimerLocalVectorTable, 0x10000); // Masked
-        
+
         // Configure performance counter to be masked
-        self.write(LocalApicRegister::PerformanceCounterLocalVectorTable, 0x10000); // Masked
-        
+        self.write(
+            LocalApicRegister::PerformanceCounterLocalVectorTable,
+            0x10000,
+        ); // Masked
+
         // Configure thermal sensor to be masked
         self.write(LocalApicRegister::ThermalLocalVectorTable, 0x10000); // Masked
-        
+
         // Configure LINT0 and LINT1 to be masked initially
         self.write(LocalApicRegister::LocalInterrupt0VectorTable, 0x10000); // Masked
         self.write(LocalApicRegister::LocalInterrupt1VectorTable, 0x10000); // Masked
-        
+
         // Configure error interrupt
         self.write(LocalApicRegister::ErrorVectorTable, 0x10000); // Masked for now
 
@@ -154,34 +157,38 @@ impl IoApic {
         if version == 0 || version == 0xFFFFFFFF {
             return Err("IO APIC not accessible");
         }
-        
+
         // Extract max redirection entries (bits 16-23)
         ioapic.max_redirections = ((version >> 16) & 0xFF) as u8;
-        
+
         // Validate reasonable number of redirection entries
         if ioapic.max_redirections == 0 || ioapic.max_redirections > 240 {
             return Err("Invalid IO APIC redirection entry count");
         }
-        
+
         // Validate and set IO APIC ID
         let current_id = (ioapic.read_register(IoApicRegister::Id) >> 24) & 0xFF;
         if current_id as u8 != id {
             // Try to set the correct ID
             ioapic.write_register(IoApicRegister::Id, (id as u32) << 24);
-            
+
             // Verify the ID was set correctly
             let new_id = (ioapic.read_register(IoApicRegister::Id) >> 24) & 0xFF;
             if new_id as u8 != id {
-                crate::serial_println!("Warning: IO APIC ID mismatch - expected {}, got {}", id, new_id);
+                crate::serial_println!(
+                    "Warning: IO APIC ID mismatch - expected {}, got {}",
+                    id,
+                    new_id
+                );
             }
         }
-        
+
         // Initialize all redirection entries to masked state
         ioapic.init_redirection_table()?;
 
         Ok(ioapic)
     }
-    
+
     /// Initialize redirection table with all entries masked
     fn init_redirection_table(&mut self) -> Result<(), &'static str> {
         for irq in 0..=self.max_redirections {
@@ -297,31 +304,36 @@ impl ApicSystem {
     }
 
     /// Initialize APIC system from MADT data
-    pub fn init_from_madt(&mut self, madt: &MadtInfo, physical_offset: u64) -> Result<(), &'static str> {
+    pub fn init_from_madt(
+        &mut self,
+        madt: &MadtInfo,
+        physical_offset: u64,
+    ) -> Result<(), &'static str> {
         // Initialize Local APIC
         let local_apic_virt = VirtAddr::new(physical_offset + madt.local_apic_address as u64);
         let mut local_apic = unsafe { LocalApic::new(local_apic_virt) };
         local_apic.init()?;
-        
-        
+
         self.local_apic = Some(local_apic);
 
         // Initialize IO APICs
         for acpi_ioapic in &madt.io_apics {
             let ioapic_virt = VirtAddr::new(physical_offset + acpi_ioapic.address as u64);
-            let ioapic = unsafe { 
-                IoApic::new(ioapic_virt, acpi_ioapic.id, acpi_ioapic.global_system_interrupt_base)?
+            let ioapic = unsafe {
+                IoApic::new(
+                    ioapic_virt,
+                    acpi_ioapic.id,
+                    acpi_ioapic.global_system_interrupt_base,
+                )?
             };
-            
-            
+
             self.io_apics.push(ioapic);
         }
 
         // Store interrupt overrides
         self.interrupt_overrides = madt.interrupt_overrides.clone();
-        
-        for _override_entry in &self.interrupt_overrides {
-        }
+
+        for _override_entry in &self.interrupt_overrides {}
 
         Ok(())
     }
@@ -339,53 +351,64 @@ impl ApicSystem {
         if vector < 32 {
             return Err("Interrupt vector must be >= 32");
         }
-        
+
         // Check for interrupt overrides first
         let (gsi, flags) = self.resolve_irq_to_gsi(irq);
-        
+
         // Find the appropriate IO APIC for this GSI
         // max_redirections() returns the maximum redirection entry index (0-based)
         // So we need to add 1 to get the count of entries
-        let ioapic = self.io_apics.iter_mut()
-            .find(|ioapic| gsi >= ioapic.gsi_base() && 
-                          gsi <= ioapic.gsi_base() + ioapic.max_redirections() as u32)
+        let ioapic = self
+            .io_apics
+            .iter_mut()
+            .find(|ioapic| {
+                gsi >= ioapic.gsi_base()
+                    && gsi <= ioapic.gsi_base() + ioapic.max_redirections() as u32
+            })
             .ok_or("No IO APIC found for GSI")?;
 
         let local_irq = (gsi - ioapic.gsi_base()) as u8;
-        
+
         // Validate local IRQ is within range
         if local_irq > ioapic.max_redirections() {
             return Err("IRQ exceeds IO APIC redirection table size");
         }
-        
+
         // Build redirection entry
         let mut entry = vector as u64;
-        
+
         // Set destination mode to physical (bit 11 = 0) and destination CPU
         entry |= (cpu_id as u64) << 56; // Destination CPU in bits 56-63
-        
+
         // Set delivery mode to fixed (bits 8-10 = 000)
         // entry |= 0 << 8; // Fixed delivery mode (default)
-        
+
         // Apply polarity and trigger mode from interrupt override flags
-        if flags & 0x02 != 0 { // Active low polarity
+        if flags & 0x02 != 0 {
+            // Active low polarity
             entry |= 1 << 13;
         }
         // Default is active high (bit 13 = 0)
-        
-        if flags & 0x08 != 0 { // Level triggered
+
+        if flags & 0x08 != 0 {
+            // Level triggered
             entry |= 1 << 15;
         }
         // Default is edge triggered (bit 15 = 0)
-        
+
         // Ensure interrupt is not masked (bit 16 = 0)
         // entry &= !(1 << 16); // Already 0 by default
 
         // Write the redirection entry
         ioapic.write_redirection_entry(local_irq, entry);
-        
-        crate::serial_println!("Configured IRQ {} -> GSI {} -> Vector {} on CPU {}", 
-                              irq, gsi, vector, cpu_id);
+
+        crate::serial_println!(
+            "Configured IRQ {} -> GSI {} -> Vector {} on CPU {}",
+            irq,
+            gsi,
+            vector,
+            cpu_id
+        );
 
         Ok(())
     }
@@ -418,11 +441,13 @@ lazy_static! {
 pub fn init_apic_system() -> Result<(), &'static str> {
     let madt = crate::acpi::madt().ok_or("MADT not available")?;
     let acpi_info = crate::acpi::acpi_info().ok_or("ACPI not initialized")?;
-    let physical_offset = acpi_info.physical_memory_offset.ok_or("Physical memory offset not available")?;
-    
+    let physical_offset = acpi_info
+        .physical_memory_offset
+        .ok_or("Physical memory offset not available")?;
+
     let mut apic_system = APIC_SYSTEM.lock();
     apic_system.init_from_madt(&madt, physical_offset)?;
-    
+
     Ok(())
 }
 

@@ -7,10 +7,14 @@
 //! - Network protocol implementations
 //! - Inter-process communication
 
-use alloc::{vec::Vec, vec, string::{String, ToString}};
-use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
-use crate::syscall::{SyscallNumber, SyscallContext, SyscallResult};
 use crate::scheduler::{Pid, Priority};
+use crate::syscall::{SyscallContext, SyscallNumber, SyscallResult};
+use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 /// Integration test suite for system calls
 pub fn create_syscall_integration_tests() -> TestSuite {
@@ -640,7 +644,7 @@ fn test_page_fault_handling() -> TestResult {
 fn test_heap_management() -> TestResult {
     // Test heap expansion and contraction
     let original_size = 64 * 1024; // 64KB
-    let new_size = 128 * 1024;     // 128KB
+    let new_size = 128 * 1024; // 128KB
 
     match crate::memory::adjust_heap(new_size) {
         Ok(actual_size) => {

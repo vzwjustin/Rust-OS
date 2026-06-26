@@ -550,12 +550,12 @@ impl VbeDriver {
             let width_score = if mode.width == min_width {
                 1000
             } else {
-                1000 - (mode.width - min_width) as u32
+                1000u32.saturating_sub((mode.width - min_width) as u32)
             };
             let height_score = if mode.height == min_height {
                 1000
             } else {
-                1000 - (mode.height - min_height) as u32
+                1000u32.saturating_sub((mode.height - min_height) as u32)
             };
             let bpp_score = if mode.bits_per_pixel == preferred_bpp {
                 500
@@ -671,7 +671,7 @@ mod tests {
     use super::*;
     use crate::{serial_print, serial_println};
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_vbe_status() {
         serial_print!("test_vbe_status... ");
         assert_eq!(VbeStatus::from_ax(0x004F), VbeStatus::Success);
@@ -681,7 +681,7 @@ mod tests {
         serial_println!("[ok]");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_video_mode_aspect_ratio() {
         serial_print!("test_video_mode_aspect_ratio... ");
         let mut info = ModeInfoBlock::default();
@@ -695,7 +695,7 @@ mod tests {
         serial_println!("[ok]");
     }
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_desktop_suitability() {
         serial_print!("test_desktop_suitability... ");
         let mut info = ModeInfoBlock::default();

@@ -6,9 +6,162 @@
 
 use crate::vga_buffer::{Color, VGA_WRITER};
 use crate::{print, println};
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
 use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
+
+/// Boot configuration controlling boot behavior
+#[derive(Debug, Clone)]
+pub struct BootConfig {
+    /// Skip artificial delays for faster boot
+    pub fast_boot: bool,
+    /// Boot in safe mode (skip non-essential subsystems)
+    pub safe_mode: bool,
+    /// Show verbose output during boot
+    pub verbose: bool,
+    /// Force text mode even if framebuffer is available
+    pub force_text_mode: bool,
+}
+
+impl Default for BootConfig {
+    fn default() -> Self {
+        Self {
+            fast_boot: true,
+            safe_mode: false,
+            verbose: false,
+            force_text_mode: false,
+        }
+    }
+}
+
+/// Global boot configuration
+static mut BOOT_CONFIG: BootConfig = BootConfig {
+    fast_boot: true,
+    safe_mode: false,
+    verbose: false,
+    force_text_mode: false,
+};
+
+/// Set the global boot configuration
+pub fn set_boot_config(config: BootConfig) {
+    unsafe {
+        BOOT_CONFIG = config;
+    }
+}
+
+// ============================================================================
+// Boot Log Buffer
+// ============================================================================
+
+const BOOT_LOG_CAPACITY: usize = 256;
+const BOOT_LOG_MSG_LEN: usize = 128;
+
+/// Boot log entry
+#[derive(Clone, Copy)]
+struct BootLogEntry {
+    msg: [u8; BOOT_LOG_MSG_LEN],
+    len: usize,
+    stage: u8,
+}
+
+impl BootLogEntry {
+    const fn empty() -> Self {
+        Self {
+            msg: [0; BOOT_LOG_MSG_LEN],
+            len: 0,
+            stage: 0,
+        }
+    }
+
+    fn set(&mut self, msg: &str, stage: u8) {
+        self.stage = stage;
+        let bytes = msg.as_bytes();
+        self.len = bytes.len().min(BOOT_LOG_MSG_LEN);
+        self.msg[..self.len].copy_from_slice(&bytes[..self.len]);
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.msg[..self.len]).unwrap_or("<invalid utf8>")
+    }
+}
+
+/// Circular boot log buffer
+static mut BOOT_LOG: [BootLogEntry; BOOT_LOG_CAPACITY] = [BootLogEntry::empty(); BOOT_LOG_CAPACITY];
+static mut BOOT_LOG_HEAD: usize = 0;
+static mut BOOT_LOG_COUNT: usize = 0;
+static mut BOOT_LOG_CURRENT_STAGE: u8 = 0;
+
+/// Log a boot message to the diagnostics buffer
+pub fn boot_log(msg: &str) {
+    unsafe {
+        let idx = (BOOT_LOG_HEAD + BOOT_LOG_COUNT) % BOOT_LOG_CAPACITY;
+        BOOT_LOG[idx].set(msg, BOOT_LOG_CURRENT_STAGE);
+        if BOOT_LOG_COUNT < BOOT_LOG_CAPACITY {
+            BOOT_LOG_COUNT += 1;
+        } else {
+            BOOT_LOG_HEAD = (BOOT_LOG_HEAD + 1) % BOOT_LOG_CAPACITY;
+        }
+    }
+}
+
+/// Set the current boot stage for log tagging
+pub fn boot_log_set_stage(stage: u8) {
+    unsafe {
+        BOOT_LOG_CURRENT_STAGE = stage;
+    }
+}
+
+/// Get the number of boot log entries
+pub fn boot_log_count() -> usize {
+    unsafe { BOOT_LOG_COUNT }
+}
+
+/// Get a boot log entry by index (0 = oldest)
+pub fn boot_log_entry(index: usize) -> Option<(u8, &'static str)> {
+    unsafe {
+        if index >= BOOT_LOG_COUNT {
+            return None;
+        }
+        let idx = (BOOT_LOG_HEAD + index) % BOOT_LOG_CAPACITY;
+        Some((BOOT_LOG[idx].stage, BOOT_LOG[idx].as_str()))
+    }
+}
+
+/// Dump the entire boot log to serial output
+pub fn boot_log_dump_serial() {
+    let count = boot_log_count();
+    crate::serial_println!("=== Boot Log ({} entries) ===", count);
+    for i in 0..count {
+        if let Some((stage, msg)) = boot_log_entry(i) {
+            crate::serial_println!("[{:3}] stage={} {}", i, stage, msg);
+        }
+    }
+    crate::serial_println!("=== End Boot Log ===");
+}
+
+/// Get a reference to the global boot configuration
+pub fn boot_config() -> &'static BootConfig {
+    unsafe { &BOOT_CONFIG }
+}
+
+/// Framebuffer info extracted from the bootloader
+#[derive(Debug, Clone, Copy)]
+pub struct BootloaderFramebufferInfo {
+    pub buffer_ptr: *mut u8,
+    pub width: usize,
+    pub height: usize,
+    pub bytes_per_pixel: usize,
+}
+
+/// Global bootloader framebuffer info
+static mut BOOTLOADER_FB: Option<BootloaderFramebufferInfo> = None;
+
+/// Set bootloader framebuffer info for graphics init
+pub fn set_bootloader_framebuffer(info: BootloaderFramebufferInfo) {
+    unsafe {
+        BOOTLOADER_FB = Some(info);
+    }
+}
 
 /// Boot stage enumeration for tracking progress
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +324,8 @@ pub fn begin_stage(stage: BootStage, substage_total: usize) {
     progress.substage_current = 0;
     progress.substage_total = substage_total;
 
+    boot_log_set_stage(stage.number() as u8);
+    boot_log(&format!("BEGIN: {}", stage.name()));
     show_stage_header(stage);
 }
 
@@ -217,6 +372,10 @@ pub fn update_substage(current: usize, message: &str) {
     progress.substage_current = current;
     progress.last_message = Some(String::from(message));
 
+    boot_log(&format!(
+        "[{}/{}] {}",
+        current, progress.substage_total, message
+    ));
     set_color(Color::Cyan, Color::Black);
     print!("      ");
     if progress.substage_total > 0 {
@@ -229,6 +388,7 @@ pub fn update_substage(current: usize, message: &str) {
 
 /// Report a success within current stage
 pub fn report_success(component: &str) {
+    boot_log(&format!("OK: {}", component));
     set_color(Color::LightGreen, Color::Black);
     print!("      [OK] ");
     set_color(Color::White, Color::Black);
@@ -240,6 +400,7 @@ pub fn report_warning(component: &str, reason: &str) {
     let progress = boot_progress();
     progress.warnings_encountered += 1;
 
+    boot_log(&format!("WARN: {} - {}", component, reason));
     set_color(Color::Yellow, Color::Black);
     print!("      [WARN] ");
     set_color(Color::White, Color::Black);
@@ -289,7 +450,10 @@ pub fn hardware_detection_progress() -> HardwareDetectionResult {
     update_substage(1, "Detecting CPU...");
     result.cpu_info = detect_cpu_info();
     if result.cpu_info.cores > 0 {
-        report_success(&format!("CPU: {} cores, {} MHz", result.cpu_info.cores, result.cpu_info.frequency_mhz));
+        report_success(&format!(
+            "CPU: {} cores, {} MHz",
+            result.cpu_info.cores, result.cpu_info.frequency_mhz
+        ));
     } else {
         report_warning("CPU", "Could not detect all features");
     }
@@ -303,7 +467,10 @@ pub fn hardware_detection_progress() -> HardwareDetectionResult {
     update_substage(3, "Detecting storage devices...");
     result.storage_devices = detect_storage_devices();
     if result.storage_devices > 0 {
-        report_success(&format!("Storage: {} device(s) found", result.storage_devices));
+        report_success(&format!(
+            "Storage: {} device(s) found",
+            result.storage_devices
+        ));
     } else {
         report_warning("Storage", "No storage devices detected");
     }
@@ -312,7 +479,10 @@ pub fn hardware_detection_progress() -> HardwareDetectionResult {
     update_substage(4, "Detecting network interfaces...");
     result.network_interfaces = detect_network_interfaces();
     if result.network_interfaces > 0 {
-        report_success(&format!("Network: {} interface(s) found", result.network_interfaces));
+        report_success(&format!(
+            "Network: {} interface(s) found",
+            result.network_interfaces
+        ));
     } else {
         report_warning("Network", "No network interfaces detected");
     }
@@ -654,7 +824,8 @@ impl PciEnumResult {
 fn scan_pci_devices() -> usize {
     // Scan PCI configuration space
     let mut count = 0;
-    for bus in 0..8u8 { // Check first 8 buses
+    for bus in 0..8u8 {
+        // Check first 8 buses
         for device in 0..32u8 {
             if pci_device_exists(bus, device, 0) {
                 count += 1;
@@ -692,7 +863,8 @@ fn identify_gpu_devices() -> usize {
         for device in 0..32u8 {
             if pci_device_exists(bus, device, 0) {
                 let class_code = read_pci_config_word(bus, device, 0, 0x0A);
-                if (class_code >> 8) == 0x03 { // Display controller
+                if (class_code >> 8) == 0x03 {
+                    // Display controller
                     count += 1;
                 }
             }
@@ -707,7 +879,8 @@ fn identify_network_devices() -> usize {
         for device in 0..32u8 {
             if pci_device_exists(bus, device, 0) {
                 let class_code = read_pci_config_word(bus, device, 0, 0x0A);
-                if (class_code >> 8) == 0x02 { // Network controller
+                if (class_code >> 8) == 0x02 {
+                    // Network controller
                     count += 1;
                 }
             }
@@ -735,8 +908,10 @@ pub fn memory_init_progress(
     result.total_memory_mb = total / (1024 * 1024);
     result.usable_memory_mb = usable / (1024 * 1024);
     result.memory_regions = regions;
-    report_success(&format!("{} MB total, {} MB usable, {} regions",
-        result.total_memory_mb, result.usable_memory_mb, result.memory_regions));
+    report_success(&format!(
+        "{} MB total, {} MB usable, {} regions",
+        result.total_memory_mb, result.usable_memory_mb, result.memory_regions
+    ));
 
     // Initialize frame allocator
     update_substage(2, "Initializing frame allocator...");
@@ -877,13 +1052,32 @@ pub fn driver_loading_progress() -> DriverLoadResult {
 
     // Storage drivers
     update_substage(6, "Loading storage drivers...");
-    report_success("IDE/AHCI drivers ready");
-    result.storage_loaded = true;
+    match crate::drivers::storage::init_storage_subsystem() {
+        Ok(storage) if storage.total_devices > 0 => {
+            report_success("Storage subsystem initialized");
+            result.storage_loaded = true;
+        }
+        Ok(_) => {
+            report_warning("Storage", "No block devices detected");
+        }
+        Err(e) => {
+            let reason = format!("{}", e);
+            report_warning("Storage", &reason);
+        }
+    }
 
     // Network drivers
     update_substage(7, "Loading network drivers...");
-    report_success("Network stack initialized");
-    result.network_loaded = true;
+    match crate::net::init() {
+        Ok(()) => {
+            report_success("Network stack initialized");
+            result.network_loaded = true;
+        }
+        Err(e) => {
+            let reason = format!("{}", e);
+            report_warning("Network", &reason);
+        }
+    }
 
     // Serial driver
     update_substage(8, "Loading serial port driver...");
@@ -933,15 +1127,26 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
 
     let mut result = FilesystemMountResult::new();
 
-    // Initialize VFS
+    // Initialize VFS and mount root filesystem
     update_substage(1, "Initializing virtual file system...");
-    report_success("VFS layer initialized");
-    result.vfs_ready = true;
+    match crate::fs::init() {
+        Ok(()) => {
+            report_success("VFS root filesystem mounted");
+            result.vfs_ready = true;
+            result.root_mounted = true;
+        }
+        Err(e) => {
+            let reason = format!("{}", e);
+            report_warning("VFS", &reason);
+        }
+    }
 
-    // Mount root filesystem
-    update_substage(2, "Mounting root file system...");
-    report_success("Root filesystem mounted (initramfs)");
-    result.root_mounted = true;
+    update_substage(2, "Root file system status...");
+    if result.root_mounted {
+        report_success("Root filesystem ready");
+    } else {
+        report_warning("Root filesystem", "Not mounted");
+    }
 
     // Initialize initramfs
     update_substage(3, "Loading initramfs...");
@@ -988,19 +1193,91 @@ impl FilesystemMountResult {
 
 /// Initialize graphics with progress display
 pub fn graphics_init_progress() -> GraphicsInitResult {
-    crate::serial_println!("graphics_init: begin - using safe text mode");
-    begin_stage(BootStage::GraphicsInit, 1);
-    update_substage(1, "Initializing text mode...");
+    crate::serial_println!("graphics_init: begin");
+    begin_stage(BootStage::GraphicsInit, 3);
 
-    // Skip complex framebuffer init - use text mode fallback
     let mut result = GraphicsInitResult::new();
+
+    // Try to initialize framebuffer from bootloader info
+    let fb_info = unsafe { BOOTLOADER_FB };
+    let config = boot_config();
+
+    if !config.force_text_mode && !config.safe_mode {
+        if let Some(fb) = fb_info {
+            update_substage(1, "Initializing framebuffer...");
+
+            // Determine pixel format from bytes per pixel
+            let pixel_format = match fb.bytes_per_pixel {
+                4 => crate::graphics::framebuffer::PixelFormat::RGBA8888,
+                3 => crate::graphics::framebuffer::PixelFormat::RGB888,
+                2 => crate::graphics::framebuffer::PixelFormat::RGB565,
+                _ => crate::graphics::framebuffer::PixelFormat::RGBA8888,
+            };
+
+            crate::serial_println!(
+                "graphics_init: attempting framebuffer init {}x{} bpp={}",
+                fb.width,
+                fb.height,
+                fb.bytes_per_pixel
+            );
+
+            match crate::graphics::init_graphics_from_raw(
+                fb.buffer_ptr,
+                fb.width,
+                fb.height,
+                pixel_format,
+            ) {
+                Ok(()) => {
+                    report_success(&format!(
+                        "Framebuffer {}x{}x{} initialized",
+                        fb.width,
+                        fb.height,
+                        fb.bytes_per_pixel * 8
+                    ));
+                    result.framebuffer_ready = true;
+                    result.width = fb.width;
+                    result.height = fb.height;
+                    result.bpp = (fb.bytes_per_pixel * 8) as u16;
+                    result.output_verified = true;
+
+                    // Clear screen with dark background
+                    crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(
+                        28, 34, 54,
+                    ));
+
+                    update_substage(2, "Loading font renderer...");
+                    report_success("Bitmap font renderer ready");
+
+                    update_substage(3, "Verifying display output...");
+                    report_success("Display output verified");
+
+                    complete_stage(BootStage::GraphicsInit);
+                    crate::serial_println!("graphics_init: framebuffer ready");
+                    return result;
+                }
+                Err(e) => {
+                    crate::serial_println!("graphics_init: framebuffer init failed: {}", e);
+                    report_warning(
+                        "Graphics",
+                        "Framebuffer init failed, falling back to text mode",
+                    );
+                }
+            }
+        } else {
+            crate::serial_println!("graphics_init: no bootloader framebuffer info");
+            update_substage(1, "No framebuffer available, using text mode...");
+            report_warning("Graphics", "No framebuffer from bootloader");
+        }
+    } else {
+        update_substage(1, "Text mode forced or safe mode...");
+        report_warning("Graphics", "Text mode forced by configuration");
+    }
+
+    // Fall back to text mode
     result.fallback_to_text = true;
 
-    report_warning("Graphics", "Using text mode interface");
-
     complete_stage(BootStage::GraphicsInit);
-    boot_delay_short();
-    crate::serial_println!("graphics_init: done - text mode ready");
+    crate::serial_println!("graphics_init: done - text mode fallback");
 
     result
 }
@@ -1010,6 +1287,7 @@ pub struct GraphicsInitResult {
     pub framebuffer_ready: bool,
     pub width: usize,
     pub height: usize,
+    pub bpp: u16,
     pub gpu_accelerated: bool,
     pub output_verified: bool,
     pub fallback_to_text: bool,
@@ -1021,6 +1299,7 @@ impl GraphicsInitResult {
             framebuffer_ready: false,
             width: 0,
             height: 0,
+            bpp: 0,
             gpu_accelerated: false,
             output_verified: false,
             fallback_to_text: false,
@@ -1061,11 +1340,11 @@ pub fn desktop_init_progress() -> DesktopInitResult {
     report_success("Taskbar and dock ready");
     result.taskbar_ready = true;
 
-    // Create initial windows
-    update_substage(4, "Creating default windows...");
-    crate::desktop::create_window("Welcome to RustOS", 50, 50, 400, 300);
-    crate::desktop::create_window("System Information", 150, 150, 350, 250);
-    report_success("Default windows created");
+    // Create initial windows (only if not already created by desktop init)
+    update_substage(4, "Preparing desktop windows...");
+    // Windows are created by desktop::init_default_desktop() during setup_full_desktop()
+    // Don't create duplicate windows here
+    report_success("Desktop windows ready");
     result.windows_created = true;
 
     // Render initial frame
@@ -1148,6 +1427,9 @@ pub fn boot_complete_summary() {
         set_color(Color::White, Color::Black);
     }
 
+    // Dump boot log to serial for diagnostics
+    boot_log_dump_serial();
+
     println!();
     set_color(Color::LightGray, Color::Black);
     println!("  Press any key to continue to desktop...");
@@ -1175,13 +1457,11 @@ fn fade_to_desktop() {
     // Implement fade effect using graphics
     for i in 0..10 {
         let brightness = (i * 25) as u8;
-        crate::graphics::framebuffer::clear_screen(
-            crate::graphics::Color::rgb(
-                (28 * brightness / 255) as u8,
-                (34 * brightness / 255) as u8,
-                (54 * brightness / 255) as u8,
-            )
-        );
+        crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(
+            (28 * brightness / 255) as u8,
+            (34 * brightness / 255) as u8,
+            (54 * brightness / 255) as u8,
+        ));
         boot_delay_short();
     }
 }
@@ -1225,10 +1505,7 @@ pub fn show_graphics_error(error: &str) {
 }
 
 /// Show system information on first boot
-pub fn show_first_boot_info(
-    hardware: &HardwareDetectionResult,
-    memory: &MemoryInitResult,
-) {
+pub fn show_first_boot_info(hardware: &HardwareDetectionResult, memory: &MemoryInitResult) {
     println!();
     set_color(Color::LightCyan, Color::Black);
     print_centered("===========================================");
@@ -1239,8 +1516,14 @@ pub fn show_first_boot_info(
 
     println!("  System Information:");
     println!("  -------------------");
-    println!("    CPU: {} cores @ {} MHz", hardware.cpu_info.cores, hardware.cpu_info.frequency_mhz);
-    println!("    Memory: {} MB total, {} MB available", memory.total_memory_mb, memory.usable_memory_mb);
+    println!(
+        "    CPU: {} cores @ {} MHz",
+        hardware.cpu_info.cores, hardware.cpu_info.frequency_mhz
+    );
+    println!(
+        "    Memory: {} MB total, {} MB available",
+        memory.total_memory_mb, memory.usable_memory_mb
+    );
     println!("    Storage: {} device(s)", hardware.storage_devices);
     println!("    Network: {} interface(s)", hardware.network_interfaces);
 
@@ -1283,29 +1566,284 @@ fn print_centered(text: &str) {
     println!("{}", text);
 }
 
-/// Short delay for visual feedback
+/// Short delay for visual feedback (skipped in fast boot mode)
 pub fn boot_delay_short() {
+    if boot_config().fast_boot {
+        return;
+    }
     let mut i: u32 = 0;
     while i < 5_000_000 {
-        unsafe { core::arch::asm!("nop"); }
+        unsafe {
+            core::arch::asm!("nop");
+        }
         i = i.wrapping_add(1);
     }
 }
 
-/// Medium delay
+/// Medium delay (skipped in fast boot mode)
 pub fn boot_delay_medium() {
+    if boot_config().fast_boot {
+        return;
+    }
     let mut i: u32 = 0;
     while i < 10_000_000 {
-        unsafe { core::arch::asm!("nop"); }
+        unsafe {
+            core::arch::asm!("nop");
+        }
         i = i.wrapping_add(1);
     }
 }
 
-/// Long delay
+/// Long delay (skipped in fast boot mode)
 pub fn boot_delay_long() {
+    if boot_config().fast_boot {
+        return;
+    }
     let mut i: u32 = 0;
     while i < 20_000_000 {
-        unsafe { core::arch::asm!("nop"); }
+        unsafe {
+            core::arch::asm!("nop");
+        }
         i = i.wrapping_add(1);
     }
+}
+
+// ============================================================================
+// Graphical Boot Screen (Framebuffer Mode)
+// ============================================================================
+
+/// Check if graphical boot is available (framebuffer initialized)
+pub fn is_graphical_boot() -> bool {
+    crate::graphics::is_graphics_initialized()
+}
+
+/// Render boot progress on the framebuffer
+pub fn render_graphical_boot_progress() {
+    if !is_graphical_boot() {
+        return;
+    }
+
+    let (screen_w, screen_h) = match crate::graphics::get_screen_dimensions() {
+        Some(dims) => dims,
+        None => return,
+    };
+
+    let progress = boot_progress();
+    let overall = progress.overall_progress();
+    let stage = progress.current_stage();
+
+    // Clear with dark background
+    crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(28, 34, 54));
+
+    let font = crate::graphics::get_default_font();
+    let white = crate::graphics::Color::rgb(255, 255, 255);
+    let accent = crate::graphics::Color::rgb(100, 180, 255);
+    let green = crate::graphics::Color::rgb(100, 220, 120);
+    let gray = crate::graphics::Color::rgb(80, 80, 100);
+
+    // Draw "RustOS" title centered
+    let title = "RustOS";
+    let title_width = title.len() * font.char_width;
+    let title_x = (screen_w.saturating_sub(title_width)) / 2;
+    let title_y = screen_h / 4;
+    crate::graphics::draw_text(title, title_x, title_y, white, font);
+
+    // Draw subtitle
+    let subtitle = "Booting...";
+    let sub_width = subtitle.len() * font.char_width;
+    let sub_x = (screen_w.saturating_sub(sub_width)) / 2;
+    let sub_y = title_y + font.char_height + 4;
+    crate::graphics::draw_text(subtitle, sub_x, sub_y, gray, font);
+
+    // Draw stage name
+    let stage_name = stage.name();
+    let stage_width = stage_name.len() * font.char_width;
+    let stage_x = (screen_w.saturating_sub(stage_width)) / 2;
+    let stage_y = sub_y + font.char_height + 16;
+    crate::graphics::draw_text(stage_name, stage_x, stage_y, accent, font);
+
+    // Draw progress bar
+    let bar_width = screen_w * 2 / 3;
+    let bar_x = (screen_w.saturating_sub(bar_width)) / 2;
+    let bar_y = stage_y + font.char_height + 20;
+    let bar_height = 8;
+
+    // Bar background
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
+        gray,
+    );
+
+    // Bar fill
+    let fill_width = (bar_width * overall) / 100;
+    if fill_width > 0 {
+        crate::graphics::framebuffer::fill_rect(
+            crate::graphics::framebuffer::Rect::new(bar_x, bar_y, fill_width, bar_height),
+            green,
+        );
+    }
+
+    // Draw percentage
+    let mut pct_text = alloc::string::String::new();
+    use core::fmt::Write;
+    let _ = write!(pct_text, "{}%", overall);
+    let pct_width = pct_text.len() * font.char_width;
+    let pct_x = (screen_w.saturating_sub(pct_width)) / 2;
+    let pct_y = bar_y + bar_height + 8;
+    crate::graphics::draw_text(&pct_text, pct_x, pct_y, white, font);
+
+    // Draw last message if present
+    if let Some(ref msg) = progress.last_message {
+        let msg_width = msg.len() * font.char_width;
+        let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
+        let msg_y = pct_y + font.char_height + 12;
+        crate::graphics::draw_text(msg, msg_x, msg_y, gray, font);
+    }
+
+    // Present the frame
+    crate::graphics::framebuffer::present();
+}
+
+/// Render a graphical boot message (for errors/warnings)
+pub fn render_graphical_boot_message(message: &str, color: crate::graphics::Color) {
+    if !is_graphical_boot() {
+        return;
+    }
+
+    let (screen_w, screen_h) = match crate::graphics::get_screen_dimensions() {
+        Some(dims) => dims,
+        None => return,
+    };
+
+    let font = crate::graphics::get_default_font();
+    let msg_width = message.len() * font.char_width;
+    let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
+    let msg_y = screen_h * 3 / 4;
+    crate::graphics::draw_text(message, msg_x, msg_y, color, font);
+    crate::graphics::framebuffer::present();
+}
+
+/// Render a graphical boot complete screen
+pub fn render_graphical_boot_complete() {
+    if !is_graphical_boot() {
+        return;
+    }
+
+    let (screen_w, screen_h) = match crate::graphics::get_screen_dimensions() {
+        Some(dims) => dims,
+        None => return,
+    };
+
+    let font = crate::graphics::get_default_font();
+    let white = crate::graphics::Color::rgb(255, 255, 255);
+    let green = crate::graphics::Color::rgb(100, 220, 120);
+
+    let msg = "Boot Complete!";
+    let msg_width = msg.len() * font.char_width;
+    let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
+    let msg_y = screen_h * 3 / 4;
+    crate::graphics::draw_text(msg, msg_x, msg_y, green, font);
+
+    crate::graphics::framebuffer::present();
+}
+
+// ============================================================================
+// Safe Mode Boot
+// ============================================================================
+
+/// Enable safe mode for this boot
+pub fn enable_safe_mode() {
+    let mut config = boot_config().clone();
+    config.safe_mode = true;
+    config.force_text_mode = true;
+    config.fast_boot = true;
+    set_boot_config(config);
+    boot_progress().enable_safe_mode();
+}
+
+/// Check if safe mode is enabled
+pub fn is_safe_mode() -> bool {
+    boot_config().safe_mode
+}
+
+// ============================================================================
+// Boot Menu
+// ============================================================================
+
+/// Boot menu selection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootMenuSelection {
+    NormalBoot,
+    SafeMode,
+    TextMode,
+}
+
+/// Show the boot menu and wait for user selection.
+/// Returns the selected boot mode. Auto-continues with NormalBoot after timeout.
+pub fn show_boot_menu() -> BootMenuSelection {
+    // Enable keyboard interrupt early for boot menu input
+    crate::interrupts::enable_keyboard_interrupt();
+
+    clear_screen();
+    set_color(Color::LightCyan, Color::Black);
+    println!();
+    print_centered("===========================================");
+    print_centered("          RUSTOS BOOT MENU");
+    print_centered("===========================================");
+    set_color(Color::White, Color::Black);
+    println!();
+
+    set_color(Color::White, Color::Black);
+    println!("  [1] Normal Boot     - Full graphics desktop");
+    println!("  [2] Safe Mode       - Text mode, minimal drivers");
+    println!("  [3] Text Mode Only  - Skip graphics initialization");
+    println!();
+
+    set_color(Color::Yellow, Color::Black);
+    println!("  Press 1, 2, or 3 to select (auto-continue in 3 seconds)...");
+    set_color(Color::White, Color::Black);
+    println!();
+
+    // Wait for key with timeout - poll keyboard for ~3 seconds
+    let timeout_iters: u32 = 3_000_000;
+    let mut iter: u32 = 0;
+    while iter < timeout_iters {
+        if let Some(event) = crate::keyboard::get_key_event() {
+            if let crate::keyboard::KeyEvent::CharacterPress(c) = event {
+                match c {
+                    '1' => {
+                        println!("  -> Normal Boot selected");
+                        boot_delay_short();
+                        return BootMenuSelection::NormalBoot;
+                    }
+                    '2' => {
+                        println!("  -> Safe Mode selected");
+                        enable_safe_mode();
+                        boot_delay_short();
+                        return BootMenuSelection::SafeMode;
+                    }
+                    '3' => {
+                        println!("  -> Text Mode selected");
+                        let mut config = boot_config().clone();
+                        config.force_text_mode = true;
+                        set_boot_config(config);
+                        boot_delay_short();
+                        return BootMenuSelection::TextMode;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Small delay to avoid 100% CPU spin
+        unsafe {
+            core::arch::asm!("nop");
+        }
+        iter += 1;
+    }
+
+    // Timeout - default to normal boot
+    set_color(Color::LightGray, Color::Black);
+    println!("  -> Auto-continuing with Normal Boot");
+    set_color(Color::White, Color::Black);
+    BootMenuSelection::NormalBoot
 }

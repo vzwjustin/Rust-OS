@@ -9,7 +9,7 @@ use crate::graphics::framebuffer::{self, Color, FramebufferInfo, Rect};
 use heapless::Vec;
 
 // Re-export commonly used types
-pub use window_manager::{DesktopEvent, MouseButton, WindowId, WindowManager};
+pub use window_manager::{ButtonId, DesktopEvent, MouseButton, WindowId, WindowManager};
 
 /// Simplified desktop environment configuration
 #[derive(Debug, Clone, Copy)]
@@ -73,35 +73,92 @@ impl Desktop {
 
     /// Initialize the desktop environment
     pub fn init(&mut self) -> Result<(), &'static str> {
+        unsafe { crate::early_serial_write_str("desktop:init begin\r\n") };
         self.status = DesktopStatus::Initializing;
 
         // Clear screen with background color
         framebuffer::clear_screen(self.config.background_color);
+        unsafe { crate::early_serial_write_str("desktop:screen cleared\r\n") };
 
         // Get actual screen dimensions from graphics system
         let (width, height) = if let Some((w, h)) = crate::graphics::get_screen_dimensions() {
             (w, h)
         } else {
             // Fall back to configured dimensions
-            (self.config.preferred_width as usize, self.config.preferred_height as usize)
+            (
+                self.config.preferred_width as usize,
+                self.config.preferred_height as usize,
+            )
         };
 
         // Initialize window manager with actual screen size
         self.window_manager = Some(WindowManager::new(width, height));
+        unsafe { crate::early_serial_write_str("desktop:wm new\r\n") };
 
         if self.config.show_splash {
             self.show_splash_screen();
+            unsafe { crate::early_serial_write_str("desktop:splash done\r\n") };
         }
 
-        // Create some demo windows to show modern desktop
+        // Create real shell/status windows for the initial desktop.
         if let Some(ref mut wm) = self.window_manager {
-            wm.create_window("Welcome to RustOS", 50, 50, 400, 300);
-            wm.create_window("File Manager", 150, 150, 350, 250);
-            wm.create_window("System Info", 250, 250, 300, 200);
+            unsafe { crate::early_serial_write_str("desktop:create windows\r\n") };
+            let welcome = wm.create_window("RustOS Desktop", 88, 56, 400, 260);
+            wm.set_window_content(
+                welcome,
+                &[
+                    "RustOS framebuffer desktop",
+                    "",
+                    "This is the kernel UI shell.",
+                    "It renders from real framebuffer",
+                    "and window-manager state.",
+                    "",
+                    "No userspace app registry",
+                    "is mounted yet.",
+                    "",
+                    "Use Activities for open",
+                    "window overview.",
+                ],
+            );
+
+            let status = wm.create_window("Runtime Status", 188, 152, 350, 220);
+            wm.set_window_content(
+                status,
+                &[
+                    "Runtime-backed values:",
+                    "",
+                    "Uptime: panel top-right",
+                    "Windows: panel task list",
+                    "Focus: launcher indicator",
+                    "",
+                    "Network: quick settings",
+                    "Audio: unavailable",
+                ],
+            );
+
+            let sysinfo = wm.create_window("Kernel Info", 288, 248, 300, 200);
+            wm.set_window_content(
+                sysinfo,
+                &[
+                    "RustOS",
+                    "",
+                    "Kernel: x86_64 no_std",
+                    "Display: 32-bit framebuffer",
+                    "Input: PS/2 keyboard/mouse",
+                    "",
+                    "Subsystem status is shown",
+                    "only when wired to kernel",
+                    "state.",
+                ],
+            );
+
+            wm.create_shell_window(112, 96, 440, 260);
             wm.force_redraw();
+            unsafe { crate::early_serial_write_str("desktop:windows done\r\n") };
         }
 
         self.status = DesktopStatus::Running;
+        unsafe { crate::early_serial_write_str("desktop:init done\r\n") };
         Ok(())
     }
 
@@ -110,9 +167,12 @@ impl Desktop {
         let (width, height) = if let Some((w, h)) = crate::graphics::get_screen_dimensions() {
             (w, h)
         } else {
-            (self.config.preferred_width as usize, self.config.preferred_height as usize)
+            (
+                self.config.preferred_width as usize,
+                self.config.preferred_height as usize,
+            )
         };
-        
+
         let center_x = width / 2;
         let center_y = height / 2;
 
@@ -135,14 +195,9 @@ impl Desktop {
         );
         framebuffer::fill_rect(inner_rect, Color::rgb(65, 75, 100));
         framebuffer::draw_rect(inner_rect, Color::rgb(120, 180, 240), 2);
-        
+
         // Add a title bar effect
-        let title_rect = Rect::new(
-            logo_rect.x,
-            logo_rect.y,
-            logo_rect.width,
-            30,
-        );
+        let title_rect = Rect::new(logo_rect.x, logo_rect.y, logo_rect.width, 30);
         framebuffer::fill_rect(title_rect, Color::rgb(80, 120, 180));
     }
 
@@ -181,11 +236,14 @@ impl Desktop {
                 DesktopEvent::MouseUp { x, y, button } => {
                     wm.handle_mouse_up(x, y, button);
                 }
-                DesktopEvent::KeyDown { key: _ } => {
-                    // Handle key down - simplified
+                DesktopEvent::KeyDown { key } => {
+                    wm.handle_key_down(key);
                 }
                 DesktopEvent::KeyUp { key: _ } => {
                     // Handle key up - simplified
+                }
+                DesktopEvent::Scroll { x, y, delta } => {
+                    wm.handle_scroll(x, y, delta);
                 }
                 DesktopEvent::WindowClose { window_id } => {
                     wm.close_window(window_id);
@@ -194,18 +252,14 @@ impl Desktop {
                     wm.focus_window(window_id);
                 }
                 DesktopEvent::WindowResize {
-                    window_id: _,
-                    width: _,
-                    height: _,
+                    window_id,
+                    width,
+                    height,
                 } => {
-                    // Handle window resize - simplified
+                    wm.resize_window(window_id, width, height);
                 }
-                DesktopEvent::WindowMove {
-                    window_id: _,
-                    x: _,
-                    y: _,
-                } => {
-                    // Handle window move - simplified
+                DesktopEvent::WindowMove { window_id, x, y } => {
+                    wm.move_window(window_id, x, y);
                 }
             }
         }
@@ -243,8 +297,8 @@ impl Desktop {
     }
 }
 
-use spin::Mutex;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 // Global desktop state (production)
 lazy_static! {
@@ -253,12 +307,16 @@ lazy_static! {
 
 /// Initialize the desktop environment
 pub fn init_default_desktop() -> Result<(), &'static str> {
+    unsafe { crate::early_serial_write_str("desktop:default begin\r\n") };
     let config = DesktopConfig::default();
     let mut desktop = Desktop::new(config);
+    unsafe { crate::early_serial_write_str("desktop:constructed\r\n") };
     desktop.init()?;
-    
+    unsafe { crate::early_serial_write_str("desktop:locking global\r\n") };
+
     let mut global = GLOBAL_DESKTOP.lock();
     *global = Some(desktop);
+    unsafe { crate::early_serial_write_str("desktop:stored global\r\n") };
     Ok(())
 }
 
@@ -278,7 +336,9 @@ pub fn update_desktop() {
 /// Get desktop status
 pub fn get_desktop_status() -> DesktopStatus {
     let global = GLOBAL_DESKTOP.lock();
-    global.as_ref().map_or(DesktopStatus::Uninitialized, |d| d.status())
+    global
+        .as_ref()
+        .map_or(DesktopStatus::Uninitialized, |d| d.status())
 }
 
 /// Create a window using the global window manager
@@ -303,8 +363,7 @@ pub fn close_window(window_id: WindowId) -> bool {
     let mut global = GLOBAL_DESKTOP.lock();
     if let Some(ref mut desktop) = *global {
         if let Some(ref mut wm) = desktop.window_manager_mut() {
-            wm.close_window(window_id);
-            return true;
+            return wm.close_window(window_id);
         }
     }
     false
@@ -315,7 +374,229 @@ pub fn focus_window(window_id: WindowId) -> bool {
     let mut global = GLOBAL_DESKTOP.lock();
     if let Some(ref mut desktop) = *global {
         if let Some(ref mut wm) = desktop.window_manager_mut() {
-            wm.focus_window(window_id);
+            return wm.focus_window(window_id);
+        }
+    }
+    false
+}
+
+/// Replace a window's text content.
+pub fn set_window_content(window_id: WindowId, lines: &[&'static str]) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.set_window_content(window_id, lines);
+        }
+    }
+    false
+}
+
+/// Create a simple message window.
+pub fn show_message_window(title: &'static str, lines: &[&'static str]) -> WindowId {
+    let id = create_window(title, 96, 96, 360, 180);
+    if id.0 != 0 {
+        let _ = set_window_content(id, lines);
+    }
+    id
+}
+
+/// Move a window to an absolute desktop position.
+pub fn move_window(window_id: WindowId, x: usize, y: usize) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.move_window(window_id, x, y);
+        }
+    }
+    false
+}
+
+/// Resize a window, clamped by the window manager.
+pub fn resize_window(window_id: WindowId, width: usize, height: usize) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.resize_window(window_id, width, height);
+        }
+    }
+    false
+}
+
+/// Get currently focused window.
+pub fn focused_window() -> Option<WindowId> {
+    let global = GLOBAL_DESKTOP.lock();
+    global
+        .as_ref()
+        .and_then(|desktop| desktop.window_manager())
+        .and_then(|wm| wm.get_focused_window())
+}
+
+/// Bring a window to the front and focus it.
+pub fn bring_window_to_front(window_id: WindowId) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.bring_to_front(window_id);
+        }
+    }
+    false
+}
+
+/// Center a window on the desktop.
+pub fn center_window(window_id: WindowId) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.center_window(window_id);
+        }
+    }
+    false
+}
+
+/// Show or hide a window without closing it.
+pub fn set_window_visible(window_id: WindowId, visible: bool) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.set_window_visible(window_id, visible);
+        }
+    }
+    false
+}
+
+/// Minimize a window.
+pub fn minimize_window(window_id: WindowId) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.minimize_window(window_id);
+        }
+    }
+    false
+}
+
+/// Restore a minimized or maximized window.
+pub fn restore_window(window_id: WindowId) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.restore_window(window_id);
+        }
+    }
+    false
+}
+
+/// Maximize a window to the usable desktop area.
+pub fn maximize_window(window_id: WindowId) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.maximize_window(window_id);
+        }
+    }
+    false
+}
+
+/// Clear all text content from a window.
+pub fn clear_window_content(window_id: WindowId) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.clear_window_content(window_id);
+        }
+    }
+    false
+}
+
+/// Append one text line to a window.
+pub fn append_window_line(window_id: WindowId, line: &'static str) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.append_window_line(window_id, line);
+        }
+    }
+    false
+}
+
+/// Create a global desktop button.
+pub fn create_button(rect: Rect, text: &'static str) -> ButtonId {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.create_button(rect, text);
+        }
+    }
+    ButtonId(0)
+}
+
+/// Get the visible button under a point.
+pub fn button_at_point(x: usize, y: usize) -> Option<ButtonId> {
+    let global = GLOBAL_DESKTOP.lock();
+    global
+        .as_ref()
+        .and_then(|desktop| desktop.window_manager())
+        .and_then(|wm| wm.button_at_point(x, y))
+}
+
+/// Enable or disable a button.
+pub fn set_button_enabled(button_id: ButtonId, enabled: bool) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.set_button_enabled(button_id, enabled);
+        }
+    }
+    false
+}
+
+/// Show or hide a button.
+pub fn set_button_visible(button_id: ButtonId, visible: bool) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.set_button_visible(button_id, visible);
+        }
+    }
+    false
+}
+
+/// Number of open windows.
+pub fn window_count() -> usize {
+    let global = GLOBAL_DESKTOP.lock();
+    global
+        .as_ref()
+        .and_then(|desktop| desktop.window_manager())
+        .map_or(0, |wm| wm.get_window_count())
+}
+
+/// Number of desktop buttons.
+pub fn button_count() -> usize {
+    let global = GLOBAL_DESKTOP.lock();
+    global
+        .as_ref()
+        .and_then(|desktop| desktop.window_manager())
+        .map_or(0, |wm| wm.get_button_count())
+}
+
+/// Move the cursor.
+pub fn set_cursor_position(x: usize, y: usize) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.set_cursor_position(x, y);
+            return true;
+        }
+    }
+    false
+}
+
+/// Show or hide the cursor.
+pub fn set_cursor_visible(visible: bool) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.set_cursor_visible(visible);
             return true;
         }
     }
@@ -395,26 +676,27 @@ pub fn invalidate_desktop() {
     }
 }
 
-/// Get window manager
-pub fn window_manager() -> Option<&'static WindowManager> {
-    None // Simplified - would return actual window manager
-}
-
 // =============================================================================
 // Wrapper functions for legacy API compatibility
 // =============================================================================
 
-/// Handle scroll event (stub implementation)
+/// Handle scroll event.
 pub fn handle_scroll(x: i32, y: i32, delta: i32) {
-    // TODO: Implement scroll handling
-    let _ = (x, y, delta);
-    // This would typically:
-    // 1. Get the window at position (x, y)
-    // 2. Send scroll event with delta to that window
-    // 3. Update the display if needed
+    if x < 0 || y < 0 || delta == 0 {
+        return;
+    }
+
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        desktop.add_event(DesktopEvent::Scroll {
+            x: x as usize,
+            y: y as usize,
+            delta,
+        });
+    }
 }
 
-// Simplified test functions (without #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test] attributes to avoid no_std issues)
+// Simplified test functions (without #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case] attributes to avoid no_std issues)
 #[cfg(test)]
 mod tests {
     use super::*;

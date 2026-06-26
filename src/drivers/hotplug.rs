@@ -3,11 +3,17 @@
 //! This module provides hot-plug device detection, driver loading,
 //! and dynamic device management capabilities.
 
-use super::{DriverInfo, DriverType, DriverStatus, DeviceInfo};
-use alloc::{vec::Vec, string::{String, ToString}, collections::BTreeMap, boxed::Box, format};
-use spin::{RwLock, Mutex};
-use lazy_static::lazy_static;
+use super::{DeviceInfo, DriverInfo, DriverStatus, DriverType};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::fmt;
+use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 /// Hot-plug event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,25 +127,25 @@ impl DriverMatch {
                 return false;
             }
         }
-        
+
         if let Some(did) = self.device_id {
             if did != device.device_id {
                 return false;
             }
         }
-        
+
         if let Some(class) = self.class_code {
             if class != device.class_code {
                 return false;
             }
         }
-        
+
         if let Some(subclass) = self.subclass {
             if subclass != device.subclass {
                 return false;
             }
         }
-        
+
         true
     }
 }
@@ -148,7 +154,7 @@ impl DriverMatch {
 pub trait HotplugHandler: Send + Sync {
     /// Handle hot-plug event
     fn handle_event(&self, notification: &HotplugNotification) -> Result<(), HotplugError>;
-    
+
     /// Get handler name
     fn name(&self) -> &str;
 }
@@ -283,14 +289,16 @@ impl HotplugManager {
             event: HotplugEvent::DeviceAdded,
             device_id: device_id.clone(),
             timestamp,
-            data: Some(format!("{}:{:04x}:{:04x}", 
-                device_info.get_vendor_name(), 
-                device_info.vendor_id, 
-                device_info.device_id)),
+            data: Some(format!(
+                "{}:{:04x}:{:04x}",
+                device_info.get_vendor_name(),
+                device_info.vendor_id,
+                device_info.device_id
+            )),
         };
 
         self.queue_event(notification);
-        
+
         // Production: device added silently
 
         // Try to find and load a driver
@@ -311,11 +319,11 @@ impl HotplugManager {
             if let Some(device) = devices.get_mut(device_id) {
                 device.state = DeviceState::Removing;
                 device.last_event_time = get_current_time();
-                
+
                 // Unload driver if loaded
                 if device.driver.is_some() {
                     device.driver = None;
-                    
+
                     let notification = HotplugNotification {
                         event: HotplugEvent::DriverUnloaded,
                         device_id: device_id.to_string(),
@@ -360,7 +368,7 @@ impl HotplugManager {
         // Find matching driver
         let driver_matches = self.driver_matches.read();
         let mut best_match: Option<&DriverMatch> = None;
-        
+
         for driver_match in driver_matches.iter() {
             if driver_match.matches(&device_info) {
                 if best_match.is_none() || driver_match.priority > best_match.unwrap().priority {
@@ -377,8 +385,9 @@ impl HotplugManager {
                 device_info.get_device_type(),
                 device_info.get_vendor_name().to_string(),
                 format!("Driver for {}", device_info.name),
-            ).with_device_id((device_info.vendor_id as u32) << 16 | device_info.device_id as u32)
-             .with_status(DriverStatus::Ready);
+            )
+            .with_device_id((device_info.vendor_id as u32) << 16 | device_info.device_id as u32)
+            .with_status(DriverStatus::Ready);
 
             // Update device with driver
             {
@@ -399,7 +408,7 @@ impl HotplugManager {
             };
 
             self.queue_event(notification);
-            
+
             // Production: driver loaded silently
         } else {
             // Production: no driver available (expected for unknown devices)
@@ -453,7 +462,8 @@ impl HotplugManager {
     /// Get devices by type
     pub fn get_devices_by_type(&self, driver_type: DriverType) -> Vec<HotplugDevice> {
         let devices = self.devices.read();
-        devices.values()
+        devices
+            .values()
             .filter(|device| device.device_info.get_device_type() == driver_type)
             .cloned()
             .collect()
@@ -464,7 +474,7 @@ impl HotplugManager {
         let devices = self.devices.read();
         let handlers = self.handlers.read();
         let driver_matches = self.driver_matches.read();
-        
+
         let mut stats = HotplugStats {
             total_devices: devices.len(),
             active_devices: 0,
@@ -508,9 +518,14 @@ impl HotplugManager {
                 let current_devices = self.devices.read();
                 for device in pci_devices {
                     // Create a unique device ID string from PCI location
-                    let pci_device_id = format!("pci_{:02x}:{:02x}.{:x}_{:04x}:{:04x}",
-                        device.bus, device.device, device.function,
-                        device.vendor_id, device.device_id);
+                    let pci_device_id = format!(
+                        "pci_{:02x}:{:02x}.{:x}_{:04x}:{:04x}",
+                        device.bus,
+                        device.device,
+                        device.function,
+                        device.vendor_id,
+                        device.device_id
+                    );
 
                     // If device not in our registry, it's new
                     if !current_devices.contains_key(&pci_device_id) {
@@ -572,7 +587,7 @@ impl DefaultHotplugHandler {
 impl HotplugHandler for DefaultHotplugHandler {
     fn handle_event(&self, _notification: &HotplugNotification) -> Result<(), HotplugError> {
         // Production: hot-plug event processed silently
-        
+
         Ok(())
     }
 

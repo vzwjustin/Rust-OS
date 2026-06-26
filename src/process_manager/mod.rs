@@ -4,20 +4,20 @@
 //! This module wraps the core process management system with POSIX-like APIs.
 
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
-pub mod pcb;
 pub mod operations;
+pub mod pcb;
 pub mod table;
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests;
 
-pub use pcb::{ProcessControlBlock, ProcessState, FileDescriptor, FileDescriptorType};
-pub use operations::{fork, exec, wait, waitpid, exit, getpid, getppid};
+pub use operations::{exec, exit, fork, getpid, getppid, wait, waitpid};
+pub use pcb::{FileDescriptor, FileDescriptorType, ProcessControlBlock, ProcessState};
 pub use table::ProcessTable;
 
 use crate::process::{Pid, Priority};

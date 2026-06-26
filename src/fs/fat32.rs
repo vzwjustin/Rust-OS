@@ -4,13 +4,20 @@
 //! with proper metadata handling and disk I/O operations.
 
 use super::{
-    FileSystem, FileSystemType, FileSystemStats, FileMetadata, FileType, FilePermissions,
-    DirectoryEntry, OpenFlags, FsResult, FsError, InodeNumber,
+    DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats, FileSystemType,
+    FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
 use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
-use alloc::{vec, vec::Vec, string::{String, ToString}, collections::BTreeMap, format, boxed::Box};
-use spin::RwLock;
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::mem;
+use spin::RwLock;
 
 /// FAT32 signature
 const FAT32_SIGNATURE: u16 = 0xAA55;
@@ -40,54 +47,54 @@ pub struct Fat32BootSector {
     pub num_heads: u16,             // Number of heads
     pub hidden_sectors: u32,        // Hidden sectors
     pub total_sectors_32: u32,      // Total sectors (FAT32)
-    
+
     // FAT32 specific fields
-    pub fat_size_32: u32,           // FAT size in sectors
-    pub ext_flags: u16,             // Extended flags
-    pub fs_version: u16,            // Filesystem version
-    pub root_cluster: u32,          // Root directory cluster
-    pub fs_info: u16,               // FSInfo sector
-    pub backup_boot_sector: u16,    // Backup boot sector
-    pub reserved: [u8; 12],         // Reserved
-    pub drive_number: u8,           // Drive number
-    pub reserved1: u8,              // Reserved
-    pub boot_signature: u8,         // Boot signature
-    pub volume_id: u32,             // Volume ID
-    pub volume_label: [u8; 11],     // Volume label
-    pub fs_type: [u8; 8],           // Filesystem type
-    pub boot_code: [u8; 420],       // Boot code
-    pub signature: u16,             // Boot sector signature (0xAA55)
+    pub fat_size_32: u32,        // FAT size in sectors
+    pub ext_flags: u16,          // Extended flags
+    pub fs_version: u16,         // Filesystem version
+    pub root_cluster: u32,       // Root directory cluster
+    pub fs_info: u16,            // FSInfo sector
+    pub backup_boot_sector: u16, // Backup boot sector
+    pub reserved: [u8; 12],      // Reserved
+    pub drive_number: u8,        // Drive number
+    pub reserved1: u8,           // Reserved
+    pub boot_signature: u8,      // Boot signature
+    pub volume_id: u32,          // Volume ID
+    pub volume_label: [u8; 11],  // Volume label
+    pub fs_type: [u8; 8],        // Filesystem type
+    pub boot_code: [u8; 420],    // Boot code
+    pub signature: u16,          // Boot sector signature (0xAA55)
 }
 
 /// FAT32 FSInfo structure
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Fat32FsInfo {
-    pub lead_signature: u32,        // 0x41615252
-    pub reserved1: [u8; 480],       // Reserved
-    pub struct_signature: u32,      // 0x61417272
-    pub free_count: u32,            // Free cluster count
-    pub next_free: u32,             // Next free cluster
-    pub reserved2: [u8; 12],        // Reserved
-    pub trail_signature: u32,       // 0xAA550000
+    pub lead_signature: u32,   // 0x41615252
+    pub reserved1: [u8; 480],  // Reserved
+    pub struct_signature: u32, // 0x61417272
+    pub free_count: u32,       // Free cluster count
+    pub next_free: u32,        // Next free cluster
+    pub reserved2: [u8; 12],   // Reserved
+    pub trail_signature: u32,  // 0xAA550000
 }
 
 /// FAT32 directory entry
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Fat32DirEntry {
-    pub name: [u8; 11],             // 8.3 filename
-    pub attr: u8,                   // File attributes
-    pub nt_reserved: u8,            // Reserved for Windows NT
-    pub create_time_tenth: u8,      // Creation time (tenths of second)
-    pub create_time: u16,           // Creation time
-    pub create_date: u16,           // Creation date
-    pub last_access_date: u16,      // Last access date
-    pub first_cluster_hi: u16,      // High 16 bits of first cluster
-    pub write_time: u16,            // Last write time
-    pub write_date: u16,            // Last write date
-    pub first_cluster_lo: u16,      // Low 16 bits of first cluster
-    pub file_size: u32,             // File size in bytes
+    pub name: [u8; 11],        // 8.3 filename
+    pub attr: u8,              // File attributes
+    pub nt_reserved: u8,       // Reserved for Windows NT
+    pub create_time_tenth: u8, // Creation time (tenths of second)
+    pub create_time: u16,      // Creation time
+    pub create_date: u16,      // Creation date
+    pub last_access_date: u16, // Last access date
+    pub first_cluster_hi: u16, // High 16 bits of first cluster
+    pub write_time: u16,       // Last write time
+    pub write_date: u16,       // Last write date
+    pub first_cluster_lo: u16, // Low 16 bits of first cluster
+    pub file_size: u32,        // File size in bytes
 }
 
 /// FAT32 file attributes
@@ -107,14 +114,14 @@ bitflags::bitflags! {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Fat32LfnEntry {
-    pub order: u8,                  // Order of this entry
-    pub name1: [u16; 5],            // First 5 characters
-    pub attr: u8,                   // Attributes (always 0x0F)
-    pub entry_type: u8,             // Entry type (always 0)
-    pub checksum: u8,               // Checksum of short name
-    pub name2: [u16; 6],            // Next 6 characters
-    pub first_cluster_lo: u16,      // Always 0
-    pub name3: [u16; 2],            // Last 2 characters
+    pub order: u8,             // Order of this entry
+    pub name1: [u16; 5],       // First 5 characters
+    pub attr: u8,              // Attributes (always 0x0F)
+    pub entry_type: u8,        // Entry type (always 0)
+    pub checksum: u8,          // Checksum of short name
+    pub name2: [u16; 6],       // Next 6 characters
+    pub first_cluster_lo: u16, // Always 0
+    pub name3: [u16; 2],       // Last 2 characters
 }
 
 /// FAT32 filesystem implementation
@@ -165,15 +172,13 @@ impl Fat32FileSystem {
     /// Read boot sector from disk
     fn read_boot_sector(&mut self) -> FsResult<()> {
         let mut buffer = vec![0u8; 512];
-        
+
         // Boot sector is at sector 0
-        read_storage_sectors(self.device_id, 0, &mut buffer)
-            .map_err(|_| FsError::IoError)?;
+        read_storage_sectors(self.device_id, 0, &mut buffer).map_err(|_| FsError::IoError)?;
 
         // Parse boot sector
-        self.boot_sector = unsafe {
-            core::ptr::read_unaligned(buffer.as_ptr() as *const Fat32BootSector)
-        };
+        self.boot_sector =
+            unsafe { core::ptr::read_unaligned(buffer.as_ptr() as *const Fat32BootSector) };
 
         // Validate signature
         if self.boot_sector.signature != FAT32_SIGNATURE {
@@ -189,6 +194,12 @@ impl Fat32FileSystem {
             return Err(FsError::InvalidArgument);
         }
 
+        // sectors_per_cluster and bytes_per_sector are used as divisors / multipliers
+        // when computing the layout; reject zero to avoid div-by-zero panics.
+        if self.boot_sector.sectors_per_cluster == 0 || self.boot_sector.bytes_per_sector == 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
         Ok(())
     }
 
@@ -200,17 +211,16 @@ impl Fat32FileSystem {
         }
 
         let mut buffer = vec![0u8; 512];
-        
+
         read_storage_sectors(self.device_id, self.boot_sector.fs_info as u64, &mut buffer)
             .map_err(|_| FsError::IoError)?;
 
-        self.fs_info = unsafe {
-            core::ptr::read_unaligned(buffer.as_ptr() as *const Fat32FsInfo)
-        };
+        self.fs_info = unsafe { core::ptr::read_unaligned(buffer.as_ptr() as *const Fat32FsInfo) };
 
         // Validate signatures
-        if self.fs_info.lead_signature != FAT32_FSINFO_SIGNATURE1 ||
-           self.fs_info.struct_signature != FAT32_FSINFO_SIGNATURE2 {
+        if self.fs_info.lead_signature != FAT32_FSINFO_SIGNATURE1
+            || self.fs_info.struct_signature != FAT32_FSINFO_SIGNATURE2
+        {
             // Invalid FSInfo, but not fatal
             self.fs_info = unsafe { mem::zeroed() };
         }
@@ -231,9 +241,13 @@ impl Fat32FileSystem {
         let fat_sectors = self.boot_sector.fat_size_32 * self.boot_sector.num_fats as u32;
         self.data_start_sector = self.fat_start_sector + fat_sectors;
 
-        // Calculate total clusters
+        // Calculate total clusters. Guard the subtraction: a malformed boot sector can
+        // have total_sectors_32 < data_start_sector, which would underflow.
+        // sectors_per_cluster is validated non-zero in read_boot_sector.
         let total_sectors = self.boot_sector.total_sectors_32;
-        let data_sectors = total_sectors - self.data_start_sector;
+        let data_sectors = total_sectors
+            .checked_sub(self.data_start_sector)
+            .ok_or(FsError::InvalidArgument)?;
         self.total_clusters = data_sectors / self.sectors_per_cluster;
 
         self.root_cluster = self.boot_sector.root_cluster;
@@ -379,7 +393,7 @@ impl Fat32FileSystem {
     /// Parse 8.3 filename
     fn parse_83_name(name: &[u8; 11]) -> String {
         let mut result = String::new();
-        
+
         // Add name part (first 8 bytes)
         for i in 0..8 {
             if name[i] == b' ' {
@@ -413,7 +427,8 @@ impl Fat32FileSystem {
 
         for cluster in cluster_chain {
             let cluster_data = self.read_cluster(cluster)?;
-            let entries_per_cluster = self.bytes_per_cluster as usize / mem::size_of::<Fat32DirEntry>();
+            let entries_per_cluster =
+                self.bytes_per_cluster as usize / mem::size_of::<Fat32DirEntry>();
 
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<Fat32DirEntry>();
@@ -460,7 +475,7 @@ impl Fat32FileSystem {
                     // Reconstruct long filename
                     let mut long_name = String::new();
                     lfn_entries.sort_by_key(|e| e.order & 0x1F);
-                    
+
                     for lfn in &lfn_entries {
                         // Extract characters from LFN entry
                         // SAFETY: lfn is a packed struct representing FAT32 on-disk format.
@@ -514,8 +529,13 @@ impl Fat32FileSystem {
                 };
 
                 // Calculate inode number from cluster
-                let first_cluster = ((dir_entry.first_cluster_hi as u32) << 16) | (dir_entry.first_cluster_lo as u32);
-                let inode = if first_cluster == 0 { 1 } else { first_cluster as u64 };
+                let first_cluster = ((dir_entry.first_cluster_hi as u32) << 16)
+                    | (dir_entry.first_cluster_lo as u32);
+                let inode = if first_cluster == 0 {
+                    1
+                } else {
+                    first_cluster as u64
+                };
 
                 entries.push(DirectoryEntry {
                     name: filename,
@@ -543,7 +563,9 @@ impl Fat32FileSystem {
 
             for entry in entries {
                 if entry.name.to_lowercase() == component.to_lowercase() {
-                    if entry.file_type != FileType::Directory && *component != *components.last().unwrap() {
+                    if entry.file_type != FileType::Directory
+                        && *component != *components.last().unwrap()
+                    {
                         return Err(FsError::NotADirectory);
                     }
                     current_cluster = entry.inode as u32;
@@ -576,10 +598,11 @@ impl Fat32FileSystem {
             if entry.name.to_lowercase() == basename.to_lowercase() {
                 // Find the actual directory entry to get metadata
                 let cluster_chain = self.get_cluster_chain(parent_cluster)?;
-                
+
                 for cluster_num in cluster_chain {
                     let cluster_data = self.read_cluster(cluster_num)?;
-                    let entries_per_cluster = self.bytes_per_cluster as usize / mem::size_of::<Fat32DirEntry>();
+                    let entries_per_cluster =
+                        self.bytes_per_cluster as usize / mem::size_of::<Fat32DirEntry>();
 
                     for i in 0..entries_per_cluster {
                         let offset = i * mem::size_of::<Fat32DirEntry>();
@@ -597,7 +620,9 @@ impl Fat32FileSystem {
                             continue;
                         }
 
-                        if dir_entry.attr & Fat32Attr::LONG_NAME.bits() == Fat32Attr::LONG_NAME.bits() {
+                        if dir_entry.attr & Fat32Attr::LONG_NAME.bits()
+                            == Fat32Attr::LONG_NAME.bits()
+                        {
                             continue;
                         }
 
@@ -754,7 +779,11 @@ impl FileSystem for Fat32FileSystem {
             }
 
             let cluster_data = self.read_cluster(cluster)?;
-            let copy_offset = if i == start_cluster_idx { start_offset } else { 0 };
+            let copy_offset = if i == start_cluster_idx {
+                start_offset
+            } else {
+                0
+            };
             let copy_len = core::cmp::min(cluster_data.len() - copy_offset, remaining);
 
             buffer[bytes_read..bytes_read + copy_len]
@@ -774,7 +803,7 @@ impl FileSystem for Fat32FileSystem {
 
     fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
         let cluster = inode as u32;
-        
+
         // For root directory
         if cluster == self.root_cluster {
             return Ok(FileMetadata {

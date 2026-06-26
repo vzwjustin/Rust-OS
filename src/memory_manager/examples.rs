@@ -6,8 +6,8 @@
 
 use super::api::*;
 use super::{MmapFlags, ProtectionFlags};
-use x86_64::{PhysAddr, VirtAddr};
 use crate::{print, println};
+use x86_64::{PhysAddr, VirtAddr};
 
 /// Example 1: Basic memory allocation with mmap
 pub fn example_basic_allocation() -> Result<(), super::VmError> {
@@ -217,9 +217,8 @@ pub fn example_page_table() -> Result<(), super::VmError> {
     // Map a virtual page
     let virt = VirtAddr::new(0x1000);
     let phys = PhysAddr::new(0x10000);
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE;
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
     page_table_map(&mut page_table, virt, phys, flags)?;
 
@@ -422,7 +421,7 @@ pub fn run_all_examples() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_all_examples() {
         // In a test environment, we would initialize the memory manager first
         // For now, these serve as documentation

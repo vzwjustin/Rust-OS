@@ -12,11 +12,10 @@ use core::cmp;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use super::{GPUCapabilities, GPUVendor, GPUTier};
+use super::{GPUCapabilities, GPUTier, GPUVendor};
 
 lazy_static! {
-    static ref AI_GPU_INTEGRATION: Mutex<AIGPUIntegration> =
-        Mutex::new(AIGPUIntegration::new());
+    static ref AI_GPU_INTEGRATION: Mutex<AIGPUIntegration> = Mutex::new(AIGPUIntegration::new());
 }
 
 /// Detailed profile describing how suitable a GPU is for AI workloads.
@@ -81,7 +80,12 @@ impl AIGPUProfile {
             score += score / 3;
         }
 
-        if self.supports_fp16 && matches!(kind, AIWorkloadKind::Vision | AIWorkloadKind::Recommendation) {
+        if self.supports_fp16
+            && matches!(
+                kind,
+                AIWorkloadKind::Vision | AIWorkloadKind::Recommendation
+            )
+        {
             score += score / 5;
         }
 
@@ -205,8 +209,7 @@ pub fn plan_workload(profile: WorkloadProfile) -> Vec<WorkloadAssignment> {
     let mut total_weight = 0u64;
     for gpu in &manager.profiles {
         let base_weight = if profile.realtime {
-            (cmp::max(gpu.max_concurrent_streams as u64, 1) * 128)
-                + gpu.throughput_score as u64
+            (cmp::max(gpu.max_concurrent_streams as u64, 1) * 128) + gpu.throughput_score as u64
         } else {
             gpu.throughput_score as u64
         };
@@ -263,4 +266,3 @@ fn estimate_latency_ms(profile: &AIGPUProfile, batches: u32, realtime: bool) -> 
 
     base + batch_factor.saturating_sub(memory_bonus)
 }
-

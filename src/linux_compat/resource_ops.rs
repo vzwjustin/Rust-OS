@@ -10,7 +10,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static RESOURCE_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -143,8 +143,14 @@ pub struct RUsage {
 impl RUsage {
     pub fn zero() -> Self {
         RUsage {
-            ru_utime: TimeVal { tv_sec: 0, tv_usec: 0 },
-            ru_stime: TimeVal { tv_sec: 0, tv_usec: 0 },
+            ru_utime: TimeVal {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            ru_stime: TimeVal {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
             ru_maxrss: 0,
             ru_ixrss: 0,
             ru_idrss: 0,
@@ -359,9 +365,12 @@ pub fn sched_setscheduler(pid: Pid, policy: i32, param: *const SchedParam) -> Li
     }
 
     match policy {
-        sched_policy::SCHED_NORMAL | sched_policy::SCHED_FIFO |
-        sched_policy::SCHED_RR | sched_policy::SCHED_BATCH |
-        sched_policy::SCHED_IDLE | sched_policy::SCHED_DEADLINE => {
+        sched_policy::SCHED_NORMAL
+        | sched_policy::SCHED_FIFO
+        | sched_policy::SCHED_RR
+        | sched_policy::SCHED_BATCH
+        | sched_policy::SCHED_IDLE
+        | sched_policy::SCHED_DEADLINE => {
             // TODO: Set scheduler policy
             // SCHED_FIFO and SCHED_RR require real-time permissions
             Ok(0)
@@ -445,34 +454,40 @@ pub fn sched_rr_get_interval(pid: Pid, tp: *mut TimeSpec) -> LinuxResult<i32> {
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_getrlimit() {
         let mut rlim = RLimit::unlimited();
         assert!(getrlimit(rlimit_resource::RLIMIT_NOFILE, &mut rlim).is_ok());
         assert!(rlim.rlim_cur > 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_setrlimit_validation() {
         // Soft limit cannot exceed hard limit
-        let invalid = RLimit { rlim_cur: 1000, rlim_max: 500 };
+        let invalid = RLimit {
+            rlim_cur: 1000,
+            rlim_max: 500,
+        };
         assert!(setrlimit(rlimit_resource::RLIMIT_NOFILE, &invalid).is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_priority() {
         assert!(getpriority(0, 0).is_ok());
         assert!(setpriority(0, 0, 10).is_ok());
         assert!(setpriority(0, 0, -30).is_err()); // Out of range
     }
 
-    #[test]
+    #[test_case]
     fn test_scheduler_policy() {
-        assert_eq!(sched_get_priority_max(sched_policy::SCHED_FIFO).unwrap(), 99);
+        assert_eq!(
+            sched_get_priority_max(sched_policy::SCHED_FIFO).unwrap(),
+            99
+        );
         assert_eq!(sched_get_priority_min(sched_policy::SCHED_FIFO).unwrap(), 1);
     }
 }

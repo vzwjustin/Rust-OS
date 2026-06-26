@@ -2,9 +2,9 @@
 //!
 //! Real multiprocessor support using APIC and x86_64 features
 
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
-use x86_64::VirtAddr;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
+use x86_64::VirtAddr;
 
 /// Maximum number of CPUs supported
 pub const MAX_CPUS: usize = 256;
@@ -69,16 +69,16 @@ pub fn init() -> Result<(), &'static str> {
     if INITIALIZED.load(Ordering::Acquire) {
         return Ok(());
     }
-    
+
     // Get Local APIC base from MSR
     let apic_base = unsafe { read_msr(0x1B) };
     if apic_base & (1 << 11) == 0 {
         return Err("APIC not enabled");
     }
-    
+
     let apic_phys = apic_base & 0xFFFF_F000;
     LOCAL_APIC_BASE.store(apic_phys, Ordering::Release);
-    
+
     // Initialize BSP (Bootstrap Processor) data
     let mut cpu_data = CPU_DATA.lock();
     cpu_data[0] = CpuData {
@@ -87,13 +87,13 @@ pub fn init() -> Result<(), &'static str> {
         online: true,
         idle_time: 0,
         kernel_stack: VirtAddr::zero(), // Will be set by memory manager
-        tss_selector: 0, // Will be set by GDT
+        tss_selector: 0,                // Will be set by GDT
     };
-    
+
     CPU_COUNT.store(1, Ordering::Release);
     ONLINE_CPUS.store(1, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
-    
+
     Ok(())
 }
 
@@ -114,13 +114,13 @@ pub fn get_apic_id() -> u32 {
 pub fn current_cpu() -> u32 {
     let apic_id = get_apic_id();
     let cpu_data = CPU_DATA.lock();
-    
+
     for i in 0..CPU_COUNT.load(Ordering::Acquire) as usize {
         if cpu_data[i].apic_id == apic_id {
             return cpu_data[i].cpu_id;
         }
     }
-    
+
     // Default to 0 if not found (shouldn't happen)
     0
 }
@@ -143,18 +143,18 @@ pub fn is_initialized() -> bool {
 /// Send Inter-Processor Interrupt
 pub fn send_ipi(target_cpu: u32, vector: u8) -> Result<(), &'static str> {
     let cpu_data = CPU_DATA.lock();
-    
+
     if target_cpu >= CPU_COUNT.load(Ordering::Acquire) {
         return Err("Invalid CPU ID");
     }
-    
+
     if !cpu_data[target_cpu as usize].online {
         return Err("Target CPU not online");
     }
-    
+
     let apic_id = cpu_data[target_cpu as usize].apic_id;
     drop(cpu_data);
-    
+
     if let Some(base) = get_apic_base() {
         unsafe {
             // Set target APIC ID in ICR high
@@ -175,8 +175,7 @@ pub fn broadcast_ipi(vector: u8) -> Result<(), &'static str> {
             // Set broadcast mode in ICR high
             write_apic(base, apic_regs::APIC_ICR_HIGH, 0);
             // Send IPI with broadcast flag (bit 19) and all except self (bit 18)
-            write_apic(base, apic_regs::APIC_ICR_LOW, 
-                      (vector as u32) | (3 << 18));
+            write_apic(base, apic_regs::APIC_ICR_LOW, (vector as u32) | (3 << 18));
         }
         Ok(())
     } else {

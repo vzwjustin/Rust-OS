@@ -19,8 +19,8 @@
 //! The implementation includes security flags to detect and prevent ARP spoofing attacks.
 //! Static entries can be configured for critical infrastructure to prevent cache poisoning.
 
-use super::{NetworkAddress, NetworkResult, NetworkError};
-use alloc::{vec::Vec, collections::BTreeMap, string::String};
+use super::{NetworkAddress, NetworkError, NetworkResult};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use spin::RwLock;
 
 /// ARP entry states
@@ -113,7 +113,10 @@ impl ArpEntry {
             request_count: 0,
             interface,
             is_static: true,
-            security_flags: ArpSecurityFlags { trusted: true, ..Default::default() },
+            security_flags: ArpSecurityFlags {
+                trusted: true,
+                ..Default::default()
+            },
         }
     }
 
@@ -157,8 +160,8 @@ impl ArpEntry {
             ArpEntryState::Reachable => now - self.updated > max_age_ms,
             ArpEntryState::Stale => now - self.updated > max_age_ms * 2,
             ArpEntryState::Delay => now - self.last_used > 5000, // 5 seconds
-            ArpEntryState::Probe => now - self.updated > 1000, // 1 second
-            ArpEntryState::Failed => true, // Always expired
+            ArpEntryState::Probe => now - self.updated > 1000,   // 1 second
+            ArpEntryState::Failed => true,                       // Always expired
         }
     }
 
@@ -258,7 +261,12 @@ impl ArpTable {
     }
 
     /// Add or update ARP entry
-    pub fn update_entry(&self, ip: NetworkAddress, mac: NetworkAddress, interface: String) -> NetworkResult<()> {
+    pub fn update_entry(
+        &self,
+        ip: NetworkAddress,
+        mac: NetworkAddress,
+        interface: String,
+    ) -> NetworkResult<()> {
         let mut entries = self.entries.write();
         let mut stats = self.stats.write();
 
@@ -323,7 +331,12 @@ impl ArpTable {
     }
 
     /// Add static ARP entry
-    pub fn add_static_entry(&self, ip: NetworkAddress, mac: NetworkAddress, interface: String) -> NetworkResult<()> {
+    pub fn add_static_entry(
+        &self,
+        ip: NetworkAddress,
+        mac: NetworkAddress,
+        interface: String,
+    ) -> NetworkResult<()> {
         let mut entries = self.entries.write();
         let mut stats = self.stats.write();
 
@@ -374,7 +387,12 @@ impl ArpTable {
     }
 
     /// Handle gratuitous ARP
-    pub fn handle_gratuitous_arp(&self, ip: NetworkAddress, mac: NetworkAddress, interface: String) -> NetworkResult<()> {
+    pub fn handle_gratuitous_arp(
+        &self,
+        ip: NetworkAddress,
+        mac: NetworkAddress,
+        interface: String,
+    ) -> NetworkResult<()> {
         if !self.config.allow_gratuitous {
             return Err(NetworkError::NotSupported);
         }
@@ -464,13 +482,29 @@ impl ArpTable {
     }
 
     /// Update state-based statistics
-    fn update_state_stats(&self, entries: &BTreeMap<NetworkAddress, ArpEntry>, stats: &mut ArpTableStats) {
+    fn update_state_stats(
+        &self,
+        entries: &BTreeMap<NetworkAddress, ArpEntry>,
+        stats: &mut ArpTableStats,
+    ) {
         stats.total_entries = entries.len();
         stats.static_entries = entries.values().filter(|e| e.is_static).count();
-        stats.reachable_entries = entries.values().filter(|e| e.state == ArpEntryState::Reachable).count();
-        stats.stale_entries = entries.values().filter(|e| e.state == ArpEntryState::Stale).count();
-        stats.incomplete_entries = entries.values().filter(|e| e.state == ArpEntryState::Incomplete).count();
-        stats.failed_entries = entries.values().filter(|e| e.state == ArpEntryState::Failed).count();
+        stats.reachable_entries = entries
+            .values()
+            .filter(|e| e.state == ArpEntryState::Reachable)
+            .count();
+        stats.stale_entries = entries
+            .values()
+            .filter(|e| e.state == ArpEntryState::Stale)
+            .count();
+        stats.incomplete_entries = entries
+            .values()
+            .filter(|e| e.state == ArpEntryState::Incomplete)
+            .count();
+        stats.failed_entries = entries
+            .values()
+            .filter(|e| e.state == ArpEntryState::Failed)
+            .count();
     }
 }
 
@@ -503,7 +537,11 @@ static ARP_TABLE: ArpTable = ArpTable {
 /// Public API functions
 
 /// Update ARP entry
-pub fn update_arp_entry(ip: NetworkAddress, mac: NetworkAddress, interface: String) -> NetworkResult<()> {
+pub fn update_arp_entry(
+    ip: NetworkAddress,
+    mac: NetworkAddress,
+    interface: String,
+) -> NetworkResult<()> {
     ARP_TABLE.update_entry(ip, mac, interface)
 }
 
@@ -513,7 +551,11 @@ pub fn lookup_arp(ip: &NetworkAddress) -> Option<NetworkAddress> {
 }
 
 /// Add static ARP entry
-pub fn add_static_arp(ip: NetworkAddress, mac: NetworkAddress, interface: String) -> NetworkResult<()> {
+pub fn add_static_arp(
+    ip: NetworkAddress,
+    mac: NetworkAddress,
+    interface: String,
+) -> NetworkResult<()> {
     ARP_TABLE.add_static_entry(ip, mac, interface)
 }
 
@@ -533,7 +575,11 @@ pub fn age_arp_table() {
 }
 
 /// Handle gratuitous ARP
-pub fn handle_gratuitous_arp(ip: NetworkAddress, mac: NetworkAddress, interface: String) -> NetworkResult<()> {
+pub fn handle_gratuitous_arp(
+    ip: NetworkAddress,
+    mac: NetworkAddress,
+    interface: String,
+) -> NetworkResult<()> {
     ARP_TABLE.handle_gratuitous_arp(ip, mac, interface)
 }
 
@@ -634,11 +680,14 @@ pub fn send_arp_request(target_ip: NetworkAddress, interface: String) -> Network
 
         // Access network stack to get interface details
         let network_stack = crate::net::network_stack();
-        let iface = network_stack.get_interface(&interface)
+        let iface = network_stack
+            .get_interface(&interface)
             .ok_or(NetworkError::InvalidAddress)?;
 
         let src_mac = iface.mac_address;
-        let src_ip = *iface.ip_addresses.first()
+        let src_ip = *iface
+            .ip_addresses
+            .first()
             .ok_or(NetworkError::InvalidAddress)?;
 
         (src_mac, src_ip)

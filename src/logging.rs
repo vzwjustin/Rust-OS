@@ -1,13 +1,13 @@
 // RustOS Comprehensive Logging and Debugging System
 // Structured logging with multiple output targets and debugging interfaces
 
-use core::fmt::{self, Write};
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use spin::{Mutex, RwLock};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt::{self, Write};
 use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 /// Log levels for structured logging
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -35,12 +35,12 @@ impl LogLevel {
 
     pub fn color_code(&self) -> &'static str {
         match self {
-            LogLevel::Trace => "\x1b[37m",    // White
-            LogLevel::Debug => "\x1b[36m",    // Cyan
-            LogLevel::Info => "\x1b[32m",     // Green
-            LogLevel::Warn => "\x1b[33m",     // Yellow
-            LogLevel::Error => "\x1b[31m",    // Red
-            LogLevel::Fatal => "\x1b[35m",    // Magenta
+            LogLevel::Trace => "\x1b[37m", // White
+            LogLevel::Debug => "\x1b[36m", // Cyan
+            LogLevel::Info => "\x1b[32m",  // Green
+            LogLevel::Warn => "\x1b[33m",  // Yellow
+            LogLevel::Error => "\x1b[31m", // Red
+            LogLevel::Fatal => "\x1b[35m", // Magenta
         }
     }
 }
@@ -292,19 +292,19 @@ lazy_static! {
 /// Initialize the logging system
 pub fn init_logging() {
     let mut logger = LOGGER.lock();
-    
+
     // Add serial output
     logger.add_output(Box::new(SerialLogOutput::new()));
-    
+
     // Add VGA output
     logger.add_output(Box::new(VgaLogOutput::new()));
-    
+
     // Add memory buffer for debugging (keep last 1000 entries)
     logger.add_output(Box::new(MemoryLogOutput::new(1000)));
-    
+
     // Set default log level
     logger.set_min_level(LogLevel::Debug);
-    
+
     crate::serial_println!("Logging system initialized with multiple outputs");
 }
 
@@ -458,7 +458,7 @@ pub mod profiling {
     }
 
     lazy_static! {
-        static ref PERF_COUNTERS: Mutex<BTreeMap<String, PerfCounter>> = 
+        static ref PERF_COUNTERS: Mutex<BTreeMap<String, PerfCounter>> =
             Mutex::new(BTreeMap::new());
     }
 
@@ -479,10 +479,11 @@ pub mod profiling {
         pub fn finish(self) {
             let elapsed_ns = self.start_time.elapsed_ns();
             let mut counters = PERF_COUNTERS.lock();
-            
-            let counter = counters.entry(self.name.clone())
+
+            let counter = counters
+                .entry(self.name.clone())
                 .or_insert_with(|| PerfCounter::new(self.name));
-            
+
             counter.record(elapsed_ns);
         }
     }
@@ -505,13 +506,23 @@ pub mod profiling {
     /// Display performance statistics
     pub fn display_perf_stats() {
         let stats = get_perf_stats();
-        
+
         log_info!("profiling", "=== PERFORMANCE STATISTICS ===");
-        log_info!("profiling", "{:<30} {:>8} {:>12} {:>12} {:>12} {:>12}", 
-            "Function", "Count", "Total(μs)", "Min(μs)", "Max(μs)", "Avg(μs)");
-        
+        log_info!(
+            "profiling",
+            "{:<30} {:>8} {:>12} {:>12} {:>12} {:>12}",
+            "Function",
+            "Count",
+            "Total(μs)",
+            "Min(μs)",
+            "Max(μs)",
+            "Avg(μs)"
+        );
+
         for stat in stats {
-            log_info!("profiling", "{:<30} {:>8} {:>12} {:>12} {:>12} {:>12}",
+            log_info!(
+                "profiling",
+                "{:<30} {:>8} {:>12} {:>12} {:>12} {:>12}",
                 stat.name,
                 stat.count,
                 stat.total_time_ns / 1000,
@@ -520,7 +531,7 @@ pub mod profiling {
                 stat.avg_time_ns / 1000
             );
         }
-        
+
         log_info!("profiling", "=== END PERFORMANCE STATISTICS ===");
     }
 }
@@ -633,12 +644,12 @@ pub mod debug {
 
             let logs = get_recent_logs();
             let recent_logs: Vec<_> = logs.iter().rev().take(count).collect();
-            
+
             let mut result = alloc::format!("Recent {} log entries:\n", recent_logs.len());
             for log in recent_logs.iter().rev() {
                 result.push_str(&alloc::format!("{}\n", log));
             }
-            
+
             Ok(result)
         }
     }
@@ -657,20 +668,21 @@ pub mod debug {
     /// Execute a debug command
     pub fn execute_debug_command(command: &str, args: &[&str]) -> Result<String, String> {
         let commands = DEBUG_COMMANDS.lock();
-        
+
         for cmd in commands.iter() {
             if cmd.name() == command {
                 return cmd.execute(args);
             }
         }
-        
+
         Err(alloc::format!("Unknown command: {}", command))
     }
 
     /// List available debug commands
     pub fn list_debug_commands() -> Vec<(String, String)> {
         let commands = DEBUG_COMMANDS.lock();
-        commands.iter()
+        commands
+            .iter()
             .map(|cmd| (cmd.name().to_string(), cmd.description().to_string()))
             .collect()
     }
@@ -683,7 +695,7 @@ pub mod debug {
     /// Debug console interface
     pub fn debug_console() {
         log_info!("debug", "Debug console started. Type 'help' for commands.");
-        
+
         // In a real implementation, this would read from keyboard input
         // For now, just display available commands
         let commands = list_debug_commands();
@@ -701,40 +713,56 @@ pub mod kernel_debug {
     /// Dump kernel state for debugging
     pub fn dump_kernel_state() {
         log_info!("kernel", "=== KERNEL STATE DUMP ===");
-        
+
         // System uptime
         let uptime = crate::time::uptime_ms();
-        log_info!("kernel", "Uptime: {}.{:03} seconds", uptime / 1000, uptime % 1000);
-        
+        log_info!(
+            "kernel",
+            "Uptime: {}.{:03} seconds",
+            uptime / 1000,
+            uptime % 1000
+        );
+
         // Timer information
         let timer_stats = crate::time::get_timer_stats();
-        log_info!("kernel", "Timer: {:?}, TSC: {} Hz", timer_stats.active_timer, timer_stats.tsc_frequency);
-        
+        log_info!(
+            "kernel",
+            "Timer: {:?}, TSC: {} Hz",
+            timer_stats.active_timer,
+            timer_stats.tsc_frequency
+        );
+
         // Memory information
         if let Ok(mem_stats) = crate::memory_basic::get_memory_stats() {
-            log_info!("kernel", "Memory: {} MB total, {} MB usable", 
+            log_info!(
+                "kernel",
+                "Memory: {} MB total, {} MB usable",
                 mem_stats.total_memory / (1024 * 1024),
-                mem_stats.usable_memory / (1024 * 1024));
+                mem_stats.usable_memory / (1024 * 1024)
+            );
         }
-        
+
         // Health information
         let health = crate::health::get_health_status();
         log_info!("kernel", "System Health: {:?}", health);
-        
+
         // Interrupt statistics
         let int_stats = crate::interrupts::get_interrupt_stats();
-        log_info!("kernel", "Interrupts: {} total", 
-            int_stats.timer_count + int_stats.keyboard_count + int_stats.exception_count);
-        
+        log_info!(
+            "kernel",
+            "Interrupts: {} total",
+            int_stats.timer_count + int_stats.keyboard_count + int_stats.exception_count
+        );
+
         log_info!("kernel", "=== END KERNEL STATE DUMP ===");
     }
 
     /// Validate kernel subsystems
     pub fn validate_kernel_subsystems() -> bool {
         log_info!("kernel", "Validating kernel subsystems...");
-        
+
         let mut all_valid = true;
-        
+
         // Check timer system
         if !crate::time::is_initialized() {
             log_error!("kernel", "Timer system not initialized");
@@ -742,27 +770,27 @@ pub mod kernel_debug {
         } else {
             log_debug!("kernel", "Timer system: OK");
         }
-        
+
         // Check interrupt system
         if !crate::interrupts::are_enabled() {
             log_warn!("kernel", "Interrupts are disabled");
         } else {
             log_debug!("kernel", "Interrupt system: OK");
         }
-        
+
         // Check health monitoring
         if !crate::health::is_system_healthy() {
             log_warn!("kernel", "System health is poor");
         } else {
             log_debug!("kernel", "Health monitoring: OK");
         }
-        
+
         if all_valid {
             log_info!("kernel", "All kernel subsystems validated successfully");
         } else {
             log_error!("kernel", "Some kernel subsystems failed validation");
         }
-        
+
         all_valid
     }
 }
@@ -770,16 +798,19 @@ pub mod kernel_debug {
 /// Initialize all logging and debugging systems
 pub fn init_logging_and_debugging() {
     init_logging();
-    
+
     log_info!("system", "Logging and debugging system initialized");
-    log_info!("system", "Available log levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL");
+    log_info!(
+        "system",
+        "Available log levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL"
+    );
     log_info!("system", "Performance profiling enabled");
     log_info!("system", "Debug console available");
-    
+
     // Test the logging system
     log_debug!("system", "Debug logging test");
     log_trace!("system", "Trace logging test");
-    
+
     // Initialize debug console
     debug::debug_console();
 }

@@ -1,13 +1,13 @@
 // RustOS System Health Monitoring and Diagnostics
 // Provides comprehensive system health monitoring and automatic recovery
 
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
-use alloc::vec::Vec;
-use alloc::vec;
+use crate::error::{ErrorContext, ErrorSeverity, KernelError, ERROR_MANAGER};
 use alloc::string::{String, ToString};
-use spin::{Mutex, RwLock};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use lazy_static::lazy_static;
-use crate::error::{KernelError, ErrorSeverity, ErrorContext, ERROR_MANAGER};
+use spin::{Mutex, RwLock};
 
 /// System health metrics
 #[derive(Debug, Clone)]
@@ -24,14 +24,14 @@ pub struct SystemHealthMetrics {
 /// Health monitoring thresholds
 #[derive(Debug, Clone)]
 pub struct HealthThresholds {
-    pub critical_cpu_usage: u8,      // 95%
-    pub critical_memory_usage: u8,   // 90%
-    pub critical_error_rate: u32,    // 100 errors/min
-    pub critical_temperature: u8,    // 85°C
-    pub warning_cpu_usage: u8,       // 80%
-    pub warning_memory_usage: u8,    // 75%
-    pub warning_error_rate: u32,     // 50 errors/min
-    pub warning_temperature: u8,     // 75°C
+    pub critical_cpu_usage: u8,    // 95%
+    pub critical_memory_usage: u8, // 90%
+    pub critical_error_rate: u32,  // 100 errors/min
+    pub critical_temperature: u8,  // 85°C
+    pub warning_cpu_usage: u8,     // 80%
+    pub warning_memory_usage: u8,  // 75%
+    pub warning_error_rate: u32,   // 50 errors/min
+    pub warning_temperature: u8,   // 75°C
 }
 
 impl Default for HealthThresholds {
@@ -52,11 +52,11 @@ impl Default for HealthThresholds {
 /// Health status levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
-    Excellent,  // 90-100
-    Good,       // 70-89
-    Fair,       // 50-69
-    Poor,       // 30-49
-    Critical,   // 0-29
+    Excellent, // 90-100
+    Good,      // 70-89
+    Fair,      // 50-69
+    Poor,      // 30-49
+    Critical,  // 0-29
 }
 
 impl HealthStatus {
@@ -131,10 +131,10 @@ impl HealthMonitor {
 
     fn register_core_components(&self) {
         let mut components = self.components.write();
-        
+
         let core_components = vec![
             "Memory Manager",
-            "Process Scheduler", 
+            "Process Scheduler",
             "Interrupt Handler",
             "Timer System",
             "Network Stack",
@@ -169,7 +169,7 @@ impl HealthMonitor {
         }
 
         let mut metrics = self.metrics.write();
-        
+
         // Update basic metrics
         metrics.uptime_seconds = crate::time::uptime_ms() / 1000;
         metrics.last_update = current_time;
@@ -189,7 +189,8 @@ impl HealthMonitor {
         // Calculate overall health score
         metrics.health_score = self.calculate_health_score(&metrics);
 
-        self.last_health_check.store(current_time, Ordering::Relaxed);
+        self.last_health_check
+            .store(current_time, Ordering::Relaxed);
 
         // Check for critical conditions
         self.check_critical_conditions(&metrics);
@@ -200,7 +201,7 @@ impl HealthMonitor {
         // In a real implementation, this would use performance counters
         let timer_stats = crate::time::get_timer_stats();
         let interrupt_count = crate::interrupts::get_interrupt_count();
-        
+
         // Very basic estimation based on interrupt frequency
         let base_usage = (interrupt_count % 100) as u8;
         base_usage.min(100)
@@ -221,12 +222,13 @@ impl HealthMonitor {
         if let Some(manager) = ERROR_MANAGER.try_lock() {
             let history = manager.get_error_history();
             let current_time = crate::time::get_system_time_ms();
-            
+
             // Count errors in the last minute
-            let recent_errors = history.iter()
+            let recent_errors = history
+                .iter()
                 .filter(|e| current_time - e.timestamp < 60000)
                 .count();
-            
+
             recent_errors as u32
         } else {
             0
@@ -276,10 +278,12 @@ impl HealthMonitor {
 
         // Component health impact
         let components = self.components.read();
-        let critical_components = components.iter()
+        let critical_components = components
+            .iter()
             .filter(|c| c.status == HealthStatus::Critical)
             .count();
-        let poor_components = components.iter()
+        let poor_components = components
+            .iter()
             .filter(|c| c.status == HealthStatus::Poor)
             .count();
 
@@ -335,13 +339,18 @@ impl HealthMonitor {
         }
     }
 
-    pub fn update_component_health(&self, component_name: &str, status: HealthStatus, error: Option<String>) {
+    pub fn update_component_health(
+        &self,
+        component_name: &str,
+        status: HealthStatus,
+        error: Option<String>,
+    ) {
         let mut components = self.components.write();
-        
+
         if let Some(component) = components.iter_mut().find(|c| c.name == component_name) {
             component.status = status;
             component.last_check = crate::time::get_system_time_ms();
-            
+
             if error.is_some() {
                 component.error_count += 1;
                 component.last_error = error;
@@ -371,7 +380,8 @@ impl HealthMonitor {
     }
 
     pub fn set_check_interval(&self, interval_ms: u64) {
-        self.health_check_interval.store(interval_ms, Ordering::Relaxed);
+        self.health_check_interval
+            .store(interval_ms, Ordering::Relaxed);
     }
 
     pub fn get_system_diagnostics(&self) -> SystemDiagnostics {
@@ -410,10 +420,10 @@ lazy_static! {
 /// Initialize the health monitoring system
 pub fn init_health_monitoring() {
     HEALTH_MONITOR.init();
-    
+
     // Schedule periodic health checks
     let _timer_id = crate::time::schedule_periodic_timer(5000000, health_check_callback); // 5 seconds
-    
+
     crate::serial_println!("Health monitoring system initialized with 5-second intervals");
 }
 
@@ -449,13 +459,16 @@ pub fn set_monitoring_enabled(enabled: bool) {
 
 /// Check if system is healthy
 pub fn is_system_healthy() -> bool {
-    matches!(get_health_status(), HealthStatus::Excellent | HealthStatus::Good)
+    matches!(
+        get_health_status(),
+        HealthStatus::Excellent | HealthStatus::Good
+    )
 }
 
 /// Display health information for debugging
 pub fn display_health_info() {
     let diagnostics = get_system_diagnostics();
-    
+
     crate::serial_println!("=== SYSTEM HEALTH DIAGNOSTICS ===");
     crate::serial_println!("Overall Status: {:?}", diagnostics.health_status);
     crate::serial_println!("Health Score: {}/100", diagnostics.metrics.health_score);
@@ -463,18 +476,29 @@ pub fn display_health_info() {
     crate::serial_println!("Memory Usage: {}%", diagnostics.metrics.memory_usage);
     crate::serial_println!("Error Rate: {} errors/min", diagnostics.metrics.error_rate);
     crate::serial_println!("Uptime: {} seconds", diagnostics.metrics.uptime_seconds);
-    
+
     if let Some(temp) = diagnostics.metrics.temperature {
         crate::serial_println!("CPU Temperature: {}°C", temp);
     }
-    
+
     crate::serial_println!("Total Errors: {}", diagnostics.total_errors);
-    crate::serial_println!("Monitoring: {}", if diagnostics.monitoring_enabled { "Enabled" } else { "Disabled" });
-    
+    crate::serial_println!(
+        "Monitoring: {}",
+        if diagnostics.monitoring_enabled {
+            "Enabled"
+        } else {
+            "Disabled"
+        }
+    );
+
     crate::serial_println!("Component Health:");
     for component in &diagnostics.components {
-        crate::serial_println!("  {}: {:?} (errors: {})", 
-            component.name, component.status, component.error_count);
+        crate::serial_println!(
+            "  {}: {:?} (errors: {})",
+            component.name,
+            component.status,
+            component.error_count
+        );
         if let Some(ref error) = component.last_error {
             crate::serial_println!("    Last error: {}", error);
         }
@@ -508,7 +532,7 @@ macro_rules! report_component_recovery {
         $crate::health::update_component_health(
             $component,
             $crate::health::HealthStatus::Good,
-            None
+            None,
         );
     };
 }

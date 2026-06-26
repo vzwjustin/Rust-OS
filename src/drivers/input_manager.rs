@@ -3,10 +3,10 @@
 //! This module provides a unified interface for all input devices (keyboard, mouse, etc.)
 //! and manages cursor position, button states, and event routing to the desktop environment.
 
-use spin::Mutex;
-use heapless::spsc::Queue;
+use crate::drivers::ps2_mouse::{MouseButtons, MousePacket};
 use crate::keyboard::{KeyEvent, SpecialKey};
-use crate::drivers::ps2_mouse::{MousePacket, MouseButtons};
+use heapless::spsc::Queue;
+use spin::Mutex;
 
 /// Maximum number of input events in the queue
 const INPUT_EVENT_QUEUE_SIZE: usize = 128;
@@ -31,9 +31,17 @@ pub enum InputEvent {
     /// Mouse moved (absolute position)
     MouseMove { x: usize, y: usize },
     /// Mouse button pressed
-    MouseButtonDown { button: MouseButton, x: usize, y: usize },
+    MouseButtonDown {
+        button: MouseButton,
+        x: usize,
+        y: usize,
+    },
     /// Mouse button released
-    MouseButtonUp { button: MouseButton, x: usize, y: usize },
+    MouseButtonUp {
+        button: MouseButton,
+        x: usize,
+        y: usize,
+    },
     /// Mouse wheel scrolled
     MouseScroll { delta: i8, x: usize, y: usize },
 }
@@ -52,12 +60,18 @@ impl CursorBounds {
 
     /// Default VGA text mode bounds
     pub fn vga_text() -> Self {
-        Self { max_x: 79, max_y: 24 }
+        Self {
+            max_x: 79,
+            max_y: 24,
+        }
     }
 
     /// Standard VGA graphics bounds (640x480)
     pub fn vga_graphics() -> Self {
-        Self { max_x: 639, max_y: 479 }
+        Self {
+            max_x: 639,
+            max_y: 479,
+        }
     }
 
     /// Constrain a position to within bounds
@@ -154,13 +168,13 @@ impl InputManagerState {
                 InputEvent::MouseButtonDown {
                     button: MouseButton::Left,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             } else {
                 InputEvent::MouseButtonUp {
                     button: MouseButton::Left,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             };
             self.queue_event(event);
@@ -172,13 +186,13 @@ impl InputManagerState {
                 InputEvent::MouseButtonDown {
                     button: MouseButton::Right,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             } else {
                 InputEvent::MouseButtonUp {
                     button: MouseButton::Right,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             };
             self.queue_event(event);
@@ -190,13 +204,13 @@ impl InputManagerState {
                 InputEvent::MouseButtonDown {
                     button: MouseButton::Middle,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             } else {
                 InputEvent::MouseButtonUp {
                     button: MouseButton::Middle,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             };
             self.queue_event(event);
@@ -208,13 +222,13 @@ impl InputManagerState {
                 InputEvent::MouseButtonDown {
                     button: MouseButton::Button4,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             } else {
                 InputEvent::MouseButtonUp {
                     button: MouseButton::Button4,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             };
             self.queue_event(event);
@@ -226,13 +240,13 @@ impl InputManagerState {
                 InputEvent::MouseButtonDown {
                     button: MouseButton::Button5,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             } else {
                 InputEvent::MouseButtonUp {
                     button: MouseButton::Button5,
                     x: self.cursor_x,
-                    y: self.cursor_y
+                    y: self.cursor_y,
                 }
             };
             self.queue_event(event);
@@ -271,10 +285,9 @@ pub fn set_cursor_bounds(max_x: usize, max_y: usize) {
         manager.bounds = CursorBounds::new(max_x, max_y);
 
         // Constrain current cursor position to new bounds
-        let (x, y) = manager.bounds.constrain(
-            manager.cursor_x as i32,
-            manager.cursor_y as i32
-        );
+        let (x, y) = manager
+            .bounds
+            .constrain(manager.cursor_x as i32, manager.cursor_y as i32);
         manager.cursor_x = x;
         manager.cursor_y = y;
     }

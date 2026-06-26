@@ -3,12 +3,12 @@
 //! This module provides PCI bus enumeration, device detection,
 //! and configuration space access for hot-plug support.
 
-use super::DeviceInfo;
 use super::hotplug::add_device;
-use alloc::{vec::Vec, collections::BTreeMap, format};
-use spin::{RwLock, Mutex};
-use lazy_static::lazy_static;
+use super::DeviceInfo;
+use alloc::{collections::BTreeMap, format, vec::Vec};
 use core::fmt;
+use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 /// PCI configuration space registers
 pub const PCI_VENDOR_ID: u8 = 0x00;
@@ -43,12 +43,17 @@ pub struct PciAddress {
 
 impl PciAddress {
     pub fn new(bus: u8, device: u8, function: u8) -> Self {
-        Self { bus, device, function, slot: device }
+        Self {
+            bus,
+            device,
+            function,
+            slot: device,
+        }
     }
 
     /// Convert to configuration address format
     pub fn config_address(&self, register: u8) -> u32 {
-        0x80000000 
+        0x80000000
             | ((self.bus as u32) << 16)
             | ((self.device as u32) << 11)
             | ((self.function as u32) << 8)
@@ -85,10 +90,12 @@ pub struct PciDevice {
 impl PciDevice {
     /// Create device info from PCI device
     pub fn to_device_info(&self) -> DeviceInfo {
-        let name = format!("{} PCI Device {:04x}:{:04x}",
+        let name = format!(
+            "{} PCI Device {:04x}:{:04x}",
             self.get_vendor_name(),
             self.vendor_id,
-            self.device_id);
+            self.device_id
+        );
 
         DeviceInfo::new(
             self.vendor_id,
@@ -235,10 +242,10 @@ impl PciBus {
     pub fn init(&self) -> PciResult<()> {
         // Detect configuration method
         self.detect_config_method()?;
-        
+
         // Scan for devices
         self.scan_bus()?;
-        
+
         // Production: PCI subsystem initialized
         Ok(())
     }
@@ -311,7 +318,7 @@ impl PciBus {
         match config_method {
             ConfigMethod::IoPort => {
                 let config_address = address.config_address(register);
-                
+
                 // Write address to CONFIG_ADDRESS (0xCF8)
                 unsafe {
                     x86_64::instructions::port::Port::new(0xCF8).write(config_address);
@@ -338,7 +345,12 @@ impl PciBus {
     }
 
     /// Write 32-bit value to configuration space
-    pub fn write_config_dword(&self, address: PciAddress, register: u8, value: u32) -> PciResult<()> {
+    pub fn write_config_dword(
+        &self,
+        address: PciAddress,
+        register: u8,
+        value: u32,
+    ) -> PciResult<()> {
         if register & 0x03 != 0 {
             return Err(PciError::InvalidRegister);
         }
@@ -347,7 +359,7 @@ impl PciBus {
         match config_method {
             ConfigMethod::IoPort => {
                 let config_address = address.config_address(register);
-                
+
                 unsafe {
                     x86_64::instructions::port::Port::new(0xCF8).write(config_address);
                     x86_64::instructions::port::Port::new(0xCFC).write(value);
@@ -381,14 +393,19 @@ impl PciBus {
     }
 
     /// Write 16-bit value to configuration space
-    pub fn write_config_word(&self, address: PciAddress, register: u8, value: u16) -> PciResult<()> {
+    pub fn write_config_word(
+        &self,
+        address: PciAddress,
+        register: u8,
+        value: u16,
+    ) -> PciResult<()> {
         let aligned_reg = register & 0xFC;
         let shift = (register & 0x02) * 8;
-        
+
         let dword = self.read_config_dword(address, aligned_reg)?;
         let mask = 0xFFFF << shift;
         let new_dword = (dword & !mask) | ((value as u32) << shift);
-        
+
         self.write_config_dword(address, aligned_reg, new_dword)
     }
 
@@ -403,11 +420,11 @@ impl PciBus {
     pub fn write_config_byte(&self, address: PciAddress, register: u8, value: u8) -> PciResult<()> {
         let aligned_reg = register & 0xFC;
         let shift = (register & 0x03) * 8;
-        
+
         let dword = self.read_config_dword(address, aligned_reg)?;
         let mask = 0xFF << shift;
         let new_dword = (dword & !mask) | ((value as u32) << shift);
-        
+
         self.write_config_dword(address, aligned_reg, new_dword)
     }
 
@@ -443,13 +460,14 @@ impl PciBus {
         }
 
         // Read subsystem information (for header type 0)
-        let (subsystem_vendor_id, subsystem_device_id) = if (header_type & 0x7F) == PCI_HEADER_TYPE_NORMAL {
-            let sub_vendor = self.read_config_word(address, 0x2C).ok();
-            let sub_device = self.read_config_word(address, 0x2E).ok();
-            (sub_vendor, sub_device)
-        } else {
-            (None, None)
-        };
+        let (subsystem_vendor_id, subsystem_device_id) =
+            if (header_type & 0x7F) == PCI_HEADER_TYPE_NORMAL {
+                let sub_vendor = self.read_config_word(address, 0x2C).ok();
+                let sub_device = self.read_config_word(address, 0x2E).ok();
+                (sub_vendor, sub_device)
+            } else {
+                (None, None)
+            };
 
         // Read interrupt information
         let interrupt_line = self.read_config_byte(address, 0x3C).ok();
@@ -486,7 +504,7 @@ impl PciBus {
             for device in 0..32 {
                 for function in 0..8 {
                     let address = PciAddress::new(bus, device, function);
-                    
+
                     if let Ok(pci_device) = self.read_device_config(address) {
                         // Production: PCI device enumerated silently
                         let _device_id = pci_device.device_id;
@@ -534,7 +552,8 @@ impl PciBus {
     /// Get devices by class
     pub fn get_devices_by_class(&self, class_code: u8) -> Vec<PciDevice> {
         let devices = self.devices.read();
-        devices.values()
+        devices
+            .values()
             .filter(|device| device.class_code == class_code)
             .cloned()
             .collect()
@@ -543,7 +562,8 @@ impl PciBus {
     /// Get devices by vendor
     pub fn get_devices_by_vendor(&self, vendor_id: u16) -> Vec<PciDevice> {
         let devices = self.devices.read();
-        devices.values()
+        devices
+            .values()
             .filter(|device| device.vendor_id == vendor_id)
             .cloned()
             .collect()
@@ -586,11 +606,11 @@ impl PciBus {
             if device.class_code < 18 {
                 stats.devices_by_class[device.class_code as usize] += 1;
             }
-            
+
             if device.is_bridge() {
                 stats.bridges += 1;
             }
-            
+
             if device.is_multifunction() {
                 stats.multifunction_devices += 1;
             }
@@ -648,7 +668,8 @@ pub fn get_pci_stats() -> PciStats {
 /// Find devices by vendor and device ID
 pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
     let devices = PCI_BUS.list_devices();
-    devices.into_iter()
+    devices
+        .into_iter()
         .find(|device| device.vendor_id == vendor_id && device.device_id == device_id)
 }
 

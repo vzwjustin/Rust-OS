@@ -8,11 +8,11 @@
 //! - Branch prediction hints
 //! - Memory prefetching
 
-use core::sync::atomic::{AtomicUsize, AtomicU64, AtomicPtr, Ordering};
-use core::ptr;
-use core::mem::size_of;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::mem::size_of;
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 
 /// Cache line size for x86_64 (typically 64 bytes)
@@ -114,12 +114,10 @@ impl<T> LockFreeStack<T> {
             }
 
             let next = unsafe { (*head).next };
-            match self.head.compare_exchange_weak(
-                head,
-                next,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .head
+                .compare_exchange_weak(head, next, Ordering::Release, Ordering::Relaxed)
+            {
                 Ok(_) => {
                     let data = unsafe { Box::from_raw(head).data };
                     return Some(data);
@@ -158,8 +156,7 @@ impl PerCpuAllocator {
     pub const fn new() -> Self {
         const INIT_STACK: CacheAligned<LockFreeStack<usize>> =
             CacheAligned::new(LockFreeStack::new());
-        const INIT_STATS: CacheAligned<AtomicU64> =
-            CacheAligned::new(AtomicU64::new(0));
+        const INIT_STATS: CacheAligned<AtomicU64> = CacheAligned::new(AtomicU64::new(0));
 
         Self {
             cpu_freelists: [INIT_STACK; MAX_CPUS],
@@ -386,10 +383,7 @@ impl MemoryPrefetcher {
         // Cast to *const i8 for compatibility
         let addr_i8 = addr as *const i8;
         unsafe {
-            core::arch::x86_64::_mm_prefetch(
-                addr_i8,
-                core::arch::x86_64::_MM_HINT_T0,
-            );
+            core::arch::x86_64::_mm_prefetch(addr_i8, core::arch::x86_64::_MM_HINT_T0);
         }
     }
 
@@ -399,10 +393,7 @@ impl MemoryPrefetcher {
         // Cast to *const i8 for compatibility
         let addr_i8 = addr as *const i8;
         unsafe {
-            core::arch::x86_64::_mm_prefetch(
-                addr_i8,
-                core::arch::x86_64::_MM_HINT_T0,
-            );
+            core::arch::x86_64::_mm_prefetch(addr_i8, core::arch::x86_64::_MM_HINT_T0);
         }
     }
 
@@ -410,10 +401,7 @@ impl MemoryPrefetcher {
     #[inline(always)]
     pub fn prefetch_line(addr: *const u8) {
         unsafe {
-            core::arch::x86_64::_mm_prefetch(
-                addr as *const i8,
-                core::arch::x86_64::_MM_HINT_T0,
-            );
+            core::arch::x86_64::_mm_prefetch(addr as *const i8, core::arch::x86_64::_MM_HINT_T0);
         }
     }
 
@@ -620,13 +608,22 @@ impl PerformanceMonitor {
 
     /// Record allocation
     pub fn record_allocation(&self, size: u64, time_ns: u64) {
-        self.allocation_stats.total_allocations.fetch_add(1, Ordering::Relaxed);
-        self.allocation_stats.total_bytes_allocated.fetch_add(size, Ordering::Relaxed);
-        self.timing_stats.total_allocation_time.fetch_add(time_ns, Ordering::Relaxed);
+        self.allocation_stats
+            .total_allocations
+            .fetch_add(1, Ordering::Relaxed);
+        self.allocation_stats
+            .total_bytes_allocated
+            .fetch_add(size, Ordering::Relaxed);
+        self.timing_stats
+            .total_allocation_time
+            .fetch_add(time_ns, Ordering::Relaxed);
 
         // Update max allocation time
         loop {
-            let current_max = self.timing_stats.max_allocation_time.load(Ordering::Relaxed);
+            let current_max = self
+                .timing_stats
+                .max_allocation_time
+                .load(Ordering::Relaxed);
             if time_ns <= current_max {
                 break;
             }
@@ -644,30 +641,66 @@ impl PerformanceMonitor {
 
     /// Record deallocation
     pub fn record_deallocation(&self, size: u64, time_ns: u64) {
-        self.allocation_stats.total_deallocations.fetch_add(1, Ordering::Relaxed);
-        self.allocation_stats.total_bytes_freed.fetch_add(size, Ordering::Relaxed);
-        self.timing_stats.total_deallocation_time.fetch_add(time_ns, Ordering::Relaxed);
+        self.allocation_stats
+            .total_deallocations
+            .fetch_add(1, Ordering::Relaxed);
+        self.allocation_stats
+            .total_bytes_freed
+            .fetch_add(size, Ordering::Relaxed);
+        self.timing_stats
+            .total_deallocation_time
+            .fetch_add(time_ns, Ordering::Relaxed);
     }
 
     /// Record allocation failure
     pub fn record_allocation_failure(&self) {
-        self.allocation_stats.allocation_failures.fetch_add(1, Ordering::Relaxed);
+        self.allocation_stats
+            .allocation_failures
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get current statistics
     pub fn get_stats(&self) -> PerformanceStats {
         PerformanceStats {
-            total_allocations: self.allocation_stats.total_allocations.load(Ordering::Relaxed),
-            total_deallocations: self.allocation_stats.total_deallocations.load(Ordering::Relaxed),
-            total_bytes_allocated: self.allocation_stats.total_bytes_allocated.load(Ordering::Relaxed),
-            total_bytes_freed: self.allocation_stats.total_bytes_freed.load(Ordering::Relaxed),
-            allocation_failures: self.allocation_stats.allocation_failures.load(Ordering::Relaxed),
+            total_allocations: self
+                .allocation_stats
+                .total_allocations
+                .load(Ordering::Relaxed),
+            total_deallocations: self
+                .allocation_stats
+                .total_deallocations
+                .load(Ordering::Relaxed),
+            total_bytes_allocated: self
+                .allocation_stats
+                .total_bytes_allocated
+                .load(Ordering::Relaxed),
+            total_bytes_freed: self
+                .allocation_stats
+                .total_bytes_freed
+                .load(Ordering::Relaxed),
+            allocation_failures: self
+                .allocation_stats
+                .allocation_failures
+                .load(Ordering::Relaxed),
             average_allocation_time: {
-                let total_time = self.timing_stats.total_allocation_time.load(Ordering::Relaxed);
-                let total_allocs = self.allocation_stats.total_allocations.load(Ordering::Relaxed);
-                if total_allocs > 0 { total_time / total_allocs } else { 0 }
+                let total_time = self
+                    .timing_stats
+                    .total_allocation_time
+                    .load(Ordering::Relaxed);
+                let total_allocs = self
+                    .allocation_stats
+                    .total_allocations
+                    .load(Ordering::Relaxed);
+                if total_allocs > 0 {
+                    total_time / total_allocs
+                } else {
+                    0
+                }
             },
-            max_allocation_time: self.timing_stats.max_allocation_time.load(Ordering::Relaxed),
+            max_allocation_time: self
+                .timing_stats
+                .max_allocation_time
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -698,9 +731,7 @@ impl HighResTimer {
     /// Get current timestamp in nanoseconds (using TSC)
     #[inline(always)]
     pub fn now_ns() -> u64 {
-        unsafe {
-            core::arch::x86_64::_rdtsc()
-        }
+        unsafe { core::arch::x86_64::_rdtsc() }
     }
 
     /// Measure execution time of a closure

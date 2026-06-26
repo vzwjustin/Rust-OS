@@ -8,10 +8,16 @@
 //! - Latency and throughput measurements
 //! - Resource utilization analysis
 
-use alloc::{vec::Vec, vec, string::{String, ToString}, collections::BTreeMap, format};
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
-use crate::testing_framework::{TestResult, TestCase, TestSuite, TestType};
-use crate::data_structures::{LockFreeMpscQueue, CacheFriendlyRingBuffer, CACHE_LINE_SIZE};
+use crate::data_structures::{CacheFriendlyRingBuffer, LockFreeMpscQueue, CACHE_LINE_SIZE};
+use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Performance metric types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,7 +104,9 @@ pub struct PerformanceMonitor {
     total_samples: AtomicU64,
     sample_buffer: CacheFriendlyRingBuffer<PerformanceSample>,
     metrics_queue: LockFreeMpscQueue<PerformanceSample>,
-    _padding: [u8; CACHE_LINE_SIZE - 3 * core::mem::size_of::<AtomicU64>() - core::mem::size_of::<AtomicBool>()],
+    _padding: [u8; CACHE_LINE_SIZE
+        - 3 * core::mem::size_of::<AtomicU64>()
+        - core::mem::size_of::<AtomicBool>()],
 }
 
 impl PerformanceMonitor {
@@ -113,7 +121,9 @@ impl PerformanceMonitor {
             total_samples: AtomicU64::new(0),
             sample_buffer,
             metrics_queue,
-            _padding: [0; CACHE_LINE_SIZE - 3 * core::mem::size_of::<AtomicU64>() - core::mem::size_of::<AtomicBool>()],
+            _padding: [0; CACHE_LINE_SIZE
+                - 3 * core::mem::size_of::<AtomicU64>()
+                - core::mem::size_of::<AtomicBool>()],
         })
     }
 
@@ -246,7 +256,9 @@ impl BenchmarkSuite {
                     MetricType::Latency => MetricUnit::Microseconds,
                     MetricType::Throughput => MetricUnit::OperationsPerSecond,
                     MetricType::CpuUtilization | MetricType::CacheHitRate => MetricUnit::Percentage,
-                    MetricType::MemoryUsage | MetricType::NetworkBandwidth | MetricType::DiskIo => MetricUnit::Bytes,
+                    MetricType::MemoryUsage | MetricType::NetworkBandwidth | MetricType::DiskIo => {
+                        MetricUnit::Bytes
+                    }
                     _ => MetricUnit::Count,
                 },
                 component: config.name.clone(),
@@ -264,15 +276,16 @@ impl BenchmarkSuite {
         let passed = self.check_benchmark_criteria(config, &stats);
 
         // Check for regression
-        let (regression_detected, baseline_comparison) = if let Some(baseline) = self.baseline_results.get(&config.name) {
-            let current_mean = stats.mean;
-            let baseline_mean = baseline.mean;
-            let difference_percent = ((current_mean - baseline_mean) / baseline_mean) * 100.0;
-            let regression = difference_percent.abs() > config.regression_threshold;
-            (regression, Some(difference_percent))
-        } else {
-            (false, None)
-        };
+        let (regression_detected, baseline_comparison) =
+            if let Some(baseline) = self.baseline_results.get(&config.name) {
+                let current_mean = stats.mean;
+                let baseline_mean = baseline.mean;
+                let difference_percent = ((current_mean - baseline_mean) / baseline_mean) * 100.0;
+                let regression = difference_percent.abs() > config.regression_threshold;
+                (regression, Some(difference_percent))
+            } else {
+                (false, None)
+            };
 
         BenchmarkResult {
             config: config.clone(),
@@ -334,7 +347,9 @@ impl BenchmarkSuite {
             _ => {
                 // Default operation
                 for _ in 0..100 {
-                    unsafe { core::arch::asm!("nop"); }
+                    unsafe {
+                        core::arch::asm!("nop");
+                    }
                 }
             }
         }
@@ -378,7 +393,9 @@ impl BenchmarkSuite {
                 }
                 _ => {
                     // Default operation
-                    unsafe { core::arch::asm!("nop"); }
+                    unsafe {
+                        core::arch::asm!("nop");
+                    }
                 }
             }
             operations += 1;
@@ -407,13 +424,13 @@ impl BenchmarkSuite {
     fn measure_network_bandwidth(&self) -> f64 {
         // Measure actual network bandwidth from driver statistics
         // This would read from network driver counters in real implementation
-        let (packets_sent, bytes_sent, packets_received, bytes_received) = 
+        let (packets_sent, bytes_sent, packets_received, bytes_received) =
             crate::network::get_interface_stats().unwrap_or((0, 0, 0, 0));
-        
+
         // Calculate bandwidth based on actual traffic
         let total_bytes = bytes_sent + bytes_received;
         let measurement_window_seconds = 1.0; // 1 second measurement window
-        
+
         total_bytes as f64 / measurement_window_seconds
     }
 
@@ -423,7 +440,7 @@ impl BenchmarkSuite {
         // This would use hardware performance counters in real implementation
         let cache_refs = crate::performance_monitor::read_cpu_counter(0x2E); // Cache references
         let cache_misses = crate::performance_monitor::read_cpu_counter(0x2F); // Cache misses
-        
+
         if cache_refs > 0 {
             let hit_rate = ((cache_refs - cache_misses) as f64 / cache_refs as f64) * 100.0;
             hit_rate.max(0.0).min(100.0) // Clamp to valid percentage range
@@ -441,7 +458,8 @@ impl BenchmarkSuite {
     /// Measure interrupts using real interrupt statistics
     fn measure_interrupts(&self) -> f64 {
         let stats = crate::interrupts::get_stats();
-        (stats.timer_count + stats.keyboard_count + stats.serial_count + stats.exception_count) as f64
+        (stats.timer_count + stats.keyboard_count + stats.serial_count + stats.exception_count)
+            as f64
     }
 
     /// Measure system calls
@@ -478,9 +496,14 @@ impl BenchmarkSuite {
             values[values.len() / 2]
         };
 
-        let variance = values.iter()
-            .map(|v| { let diff = v - mean; diff * diff })
-            .sum::<f64>() / values.len() as f64;
+        let variance = values
+            .iter()
+            .map(|v| {
+                let diff = v - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+            / values.len() as f64;
         let std_dev = if variance >= 0.0 {
             // Simple sqrt implementation for no_std
             let mut x = variance;
@@ -490,7 +513,9 @@ impl BenchmarkSuite {
                 y = variance / x;
             }
             x
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let percentile_95 = values[(0.95 * values.len() as f64) as usize];
         let percentile_99 = values[(0.99 * values.len() as f64) as usize];
@@ -613,7 +638,7 @@ fn benchmark_syscall_latency() -> TestResult {
         iterations: 10000,
         target_metric: MetricType::Latency,
         expected_min: None,
-        expected_max: Some(10.0), // 10 microseconds max
+        expected_max: Some(10.0),   // 10 microseconds max
         regression_threshold: 20.0, // 20%
     };
 
@@ -630,12 +655,12 @@ fn benchmark_syscall_latency() -> TestResult {
 /// Benchmark memory allocation performance using real memory manager
 fn benchmark_memory_allocation() -> TestResult {
     use crate::memory::{get_memory_manager, MemoryZone};
-    
+
     // Test real memory allocation performance
     let start_time = crate::time::uptime_us();
     let iterations = 1000;
     let mut successful_allocations = 0;
-    
+
     if let Some(memory_manager) = get_memory_manager() {
         let mut allocated_frames = Vec::new();
 
@@ -652,7 +677,7 @@ fn benchmark_memory_allocation() -> TestResult {
             memory_manager.deallocate_frame(frame, MemoryZone::Normal);
         }
     }
-    
+
     let end_time = crate::time::uptime_us();
     let elapsed_us = end_time - start_time;
     let avg_latency_us = if successful_allocations > 0 {
@@ -660,7 +685,7 @@ fn benchmark_memory_allocation() -> TestResult {
     } else {
         u64::MAX
     };
-    
+
     // Pass if average latency is under 10 microseconds and we had successful allocations
     if avg_latency_us < 10 && successful_allocations > iterations / 2 {
         TestResult::Pass
@@ -680,7 +705,7 @@ fn benchmark_context_switch() -> TestResult {
         iterations: 1000,
         target_metric: MetricType::Latency,
         expected_min: None,
-        expected_max: Some(50.0), // 50 microseconds max
+        expected_max: Some(50.0),   // 50 microseconds max
         regression_threshold: 30.0, // 30%
     };
 
@@ -704,7 +729,9 @@ fn benchmark_interrupt_latency() -> TestResult {
     // Wait for several timer interrupts to occur
     let measurement_duration = 50000; // 50ms
     while crate::time::uptime_us() - start_time < measurement_duration {
-        unsafe { core::arch::asm!("pause"); }
+        unsafe {
+            core::arch::asm!("pause");
+        }
     }
 
     let end_tsc = crate::performance_monitor::read_tsc();
@@ -713,8 +740,10 @@ fn benchmark_interrupt_latency() -> TestResult {
 
     // Calculate interrupt handling performance
     let timer_interrupts = final_stats.timer_count - initial_stats.timer_count;
-    let total_interrupts = (final_stats.timer_count + final_stats.keyboard_count + final_stats.serial_count) -
-                          (initial_stats.timer_count + initial_stats.keyboard_count + initial_stats.serial_count);
+    let total_interrupts = (final_stats.timer_count
+        + final_stats.keyboard_count
+        + final_stats.serial_count)
+        - (initial_stats.timer_count + initial_stats.keyboard_count + initial_stats.serial_count);
 
     if total_interrupts > 0 {
         let elapsed_cycles = end_tsc - start_tsc;
@@ -826,38 +855,47 @@ pub fn get_system_performance_summary() -> BTreeMap<String, PerformanceStats> {
     let (memory_used, memory_total) = crate::performance_monitor::memory_usage();
 
     // Convert to performance stats format
-    summary.insert("interrupts".to_string(), PerformanceStats {
-        min: 0.0,
-        max: interrupt_stats.timer_count as f64,
-        mean: (interrupt_stats.timer_count + interrupt_stats.keyboard_count) as f64 / 2.0,
-        median: interrupt_stats.timer_count as f64,
-        std_dev: 0.0,
-        percentile_95: interrupt_stats.timer_count as f64,
-        percentile_99: interrupt_stats.timer_count as f64,
-        sample_count: 1,
-    });
+    summary.insert(
+        "interrupts".to_string(),
+        PerformanceStats {
+            min: 0.0,
+            max: interrupt_stats.timer_count as f64,
+            mean: (interrupt_stats.timer_count + interrupt_stats.keyboard_count) as f64 / 2.0,
+            median: interrupt_stats.timer_count as f64,
+            std_dev: 0.0,
+            percentile_95: interrupt_stats.timer_count as f64,
+            percentile_99: interrupt_stats.timer_count as f64,
+            sample_count: 1,
+        },
+    );
 
-    summary.insert("syscalls".to_string(), PerformanceStats {
-        min: 0.0,
-        max: syscall_stats.total_calls as f64,
-        mean: syscall_stats.successful_calls as f64,
-        median: syscall_stats.successful_calls as f64,
-        std_dev: 0.0,
-        percentile_95: syscall_stats.total_calls as f64,
-        percentile_99: syscall_stats.total_calls as f64,
-        sample_count: 1,
-    });
+    summary.insert(
+        "syscalls".to_string(),
+        PerformanceStats {
+            min: 0.0,
+            max: syscall_stats.total_calls as f64,
+            mean: syscall_stats.successful_calls as f64,
+            median: syscall_stats.successful_calls as f64,
+            std_dev: 0.0,
+            percentile_95: syscall_stats.total_calls as f64,
+            percentile_99: syscall_stats.total_calls as f64,
+            sample_count: 1,
+        },
+    );
 
-    summary.insert("memory".to_string(), PerformanceStats {
-        min: 0.0,
-        max: memory_total as f64,
-        mean: memory_used as f64,
-        median: memory_used as f64,
-        std_dev: 0.0,
-        percentile_95: memory_used as f64,
-        percentile_99: memory_used as f64,
-        sample_count: 1,
-    });
+    summary.insert(
+        "memory".to_string(),
+        PerformanceStats {
+            min: 0.0,
+            max: memory_total as f64,
+            mean: memory_used as f64,
+            median: memory_used as f64,
+            std_dev: 0.0,
+            percentile_95: memory_used as f64,
+            percentile_99: memory_used as f64,
+            sample_count: 1,
+        },
+    );
 
     summary
 }

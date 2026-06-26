@@ -407,12 +407,7 @@ impl DnsResourceRecord {
         if self.rtype != DnsRecordType::A || self.rdata.len() != 4 {
             return Err(NetworkError::ProtocolError);
         }
-        Ok([
-            self.rdata[0],
-            self.rdata[1],
-            self.rdata[2],
-            self.rdata[3],
-        ])
+        Ok([self.rdata[0], self.rdata[1], self.rdata[2], self.rdata[3]])
     }
 
     /// Get text from TXT record data
@@ -639,6 +634,12 @@ impl DnsMessage {
     }
 
     fn parse_name(data: &[u8], mut offset: usize) -> Result<(String, usize), NetworkError> {
+        // Cap total compression-pointer follows to prevent cyclic pointers from
+        // hanging the kernel forever. A valid name can never need more jumps than
+        // there are bytes in the message.
+        const MAX_JUMPS: usize = 128;
+        let mut jumps = 0usize;
+
         let mut name = String::new();
         let mut jumped = false;
         let mut jump_offset = 0;
@@ -666,6 +667,12 @@ impl DnsMessage {
                 if !jumped {
                     jump_offset = offset + 1;
                     jumped = true;
+                }
+
+                jumps += 1;
+                if jumps > MAX_JUMPS {
+                    // Cyclic or malicious compression pointers - bail out.
+                    return Err(NetworkError::InvalidPacket);
                 }
 
                 offset = (((len & 0x3F) as usize) << 8) | (data[offset + 1] as usize);
@@ -898,7 +905,7 @@ pub fn extract_ipv4_addresses(message: &DnsMessage) -> Vec<Ipv4Address> {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_record_types() {
         assert_eq!(u16::from(DnsRecordType::A), 1);
         assert_eq!(u16::from(DnsRecordType::Ns), 2);
@@ -911,7 +918,7 @@ mod tests {
         assert_eq!(DnsRecordType::from(15u16), DnsRecordType::Mx);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_header() {
         let mut header = DnsHeader::new(12345);
         header.qdcount = 1;
@@ -926,7 +933,7 @@ mod tests {
         assert_eq!(parsed_header.qr, false);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_query_creation() {
         let message = DnsMessage::new_query(1001, String::from("example.com"), DnsRecordType::A);
 
@@ -937,7 +944,7 @@ mod tests {
         assert_eq!(message.questions[0].qtype, DnsRecordType::A);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_resource_record() {
         let ip_bytes = vec![192, 168, 1, 1];
         let record = DnsResourceRecord::new(
@@ -957,7 +964,7 @@ mod tests {
         assert_eq!(ip_addr, Ipv4Address::new(192, 168, 1, 1));
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_resolver() {
         let mut resolver = DnsResolver::new();
         let server = Ipv4Address::new(8, 8, 8, 8);
@@ -975,7 +982,7 @@ mod tests {
         assert_eq!(resolver.stats().cache_misses, 1);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_response_codes() {
         assert_eq!(u8::from(DnsResponseCode::NoError), 0);
         assert_eq!(u8::from(DnsResponseCode::FormErr), 1);
@@ -988,7 +995,7 @@ mod tests {
         assert_eq!(DnsResponseCode::from(3u8), DnsResponseCode::NxDomain);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_dns_classes() {
         assert_eq!(u16::from(DnsClass::In), 1);
         assert_eq!(u16::from(DnsClass::Ch), 3);
@@ -999,7 +1006,7 @@ mod tests {
         assert_eq!(DnsClass::from(4u16), DnsClass::Hs);
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_record_type_display() {
         assert_eq!(format!("{}", DnsRecordType::A), "A");
         assert_eq!(format!("{}", DnsRecordType::Ns), "NS");
@@ -1007,7 +1014,7 @@ mod tests {
         assert_eq!(format!("{}", DnsRecordType::Mx), "MX");
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_response_code_display() {
         assert_eq!(format!("{}", DnsResponseCode::NoError), "NOERROR");
         assert_eq!(format!("{}", DnsResponseCode::FormErr), "FORMERR");
@@ -1015,7 +1022,7 @@ mod tests {
         assert_eq!(format!("{}", DnsResponseCode::NxDomain), "NXDOMAIN");
     }
 
-    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case]
     fn test_txt_record() {
         let txt_data = vec![
             5, b'h', b'e', b'l', b'l', b'o', 5, b'w', b'o', b'r', b'l', b'd',

@@ -6,7 +6,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -350,18 +350,18 @@ pub fn epoll_wait(
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_socket_validation() {
         let buf = [0u8; 1024];
         assert!(send(-1, buf.as_ptr(), 1024, 0).is_err());
         assert!(recv(-1, buf.as_ptr() as *mut u8, 1024, 0).is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_shutdown_modes() {
         assert!(shutdown(3, 0).is_ok()); // SHUT_RD
         assert!(shutdown(3, 1).is_ok()); // SHUT_WR

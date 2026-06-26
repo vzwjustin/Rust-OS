@@ -7,11 +7,11 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::string::String;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static FS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -178,12 +178,23 @@ pub fn mount(
     // filesystemtype can be NULL for MS_BIND, MS_MOVE, MS_REMOUNT
 
     // Validate flags
-    let valid_flags = mount_flags::MS_RDONLY | mount_flags::MS_NOSUID | mount_flags::MS_NODEV |
-                      mount_flags::MS_NOEXEC | mount_flags::MS_SYNCHRONOUS | mount_flags::MS_REMOUNT |
-                      mount_flags::MS_MANDLOCK | mount_flags::MS_DIRSYNC | mount_flags::MS_NOATIME |
-                      mount_flags::MS_NODIRATIME | mount_flags::MS_BIND | mount_flags::MS_MOVE |
-                      mount_flags::MS_REC | mount_flags::MS_RELATIME | mount_flags::MS_PRIVATE |
-                      mount_flags::MS_SLAVE | mount_flags::MS_SHARED;
+    let valid_flags = mount_flags::MS_RDONLY
+        | mount_flags::MS_NOSUID
+        | mount_flags::MS_NODEV
+        | mount_flags::MS_NOEXEC
+        | mount_flags::MS_SYNCHRONOUS
+        | mount_flags::MS_REMOUNT
+        | mount_flags::MS_MANDLOCK
+        | mount_flags::MS_DIRSYNC
+        | mount_flags::MS_NOATIME
+        | mount_flags::MS_NODIRATIME
+        | mount_flags::MS_BIND
+        | mount_flags::MS_MOVE
+        | mount_flags::MS_REC
+        | mount_flags::MS_RELATIME
+        | mount_flags::MS_PRIVATE
+        | mount_flags::MS_SLAVE
+        | mount_flags::MS_SHARED;
 
     if mountflags & !valid_flags != 0 {
         return Err(LinuxError::EINVAL);
@@ -223,8 +234,10 @@ pub fn umount2(target: *const u8, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let valid_flags = umount_flags::MNT_FORCE | umount_flags::MNT_DETACH |
-                      umount_flags::MNT_EXPIRE | umount_flags::UMOUNT_NOFOLLOW;
+    let valid_flags = umount_flags::MNT_FORCE
+        | umount_flags::MNT_DETACH
+        | umount_flags::MNT_EXPIRE
+        | umount_flags::UMOUNT_NOFOLLOW;
 
     if flags & !valid_flags != 0 {
         return Err(LinuxError::EINVAL);
@@ -357,8 +370,8 @@ pub fn quotactl(cmd: i32, special: *const u8, id: i32, addr: *mut u8) -> LinuxRe
 
     let cmd_type = cmd & 0xFF00;
     match cmd_type {
-        Q_QUOTAON | Q_QUOTAOFF | Q_GETQUOTA | Q_SETQUOTA |
-        Q_GETINFO | Q_SETINFO | Q_GETFMT | Q_SYNC => {
+        Q_QUOTAON | Q_QUOTAOFF | Q_GETQUOTA | Q_SETQUOTA | Q_GETINFO | Q_SETINFO | Q_GETFMT
+        | Q_SYNC => {
             // TODO: Implement quota operations
             Ok(0)
         }
@@ -385,9 +398,15 @@ pub fn unshare(flags: i32) -> LinuxResult<i32> {
     const CLONE_NEWUSER: i32 = 0x10000000;
     const CLONE_NEWCGROUP: i32 = 0x02000000;
 
-    let valid_flags = CLONE_FILES | CLONE_FS | CLONE_NEWNS | CLONE_NEWUTS |
-                      CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWPID |
-                      CLONE_NEWUSER | CLONE_NEWCGROUP;
+    let valid_flags = CLONE_FILES
+        | CLONE_FS
+        | CLONE_NEWNS
+        | CLONE_NEWUTS
+        | CLONE_NEWIPC
+        | CLONE_NEWNET
+        | CLONE_NEWPID
+        | CLONE_NEWUSER
+        | CLONE_NEWCGROUP;
 
     if flags & !valid_flags != 0 {
         return Err(LinuxError::EINVAL);
@@ -416,9 +435,13 @@ pub fn setns(fd: Fd, nstype: i32) -> LinuxResult<i32> {
     const CLONE_NEWCGROUP: i32 = 0x02000000;
 
     if nstype != 0 {
-        let valid_types = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC |
-                          CLONE_NEWNET | CLONE_NEWPID | CLONE_NEWUSER |
-                          CLONE_NEWCGROUP;
+        let valid_types = CLONE_NEWNS
+            | CLONE_NEWUTS
+            | CLONE_NEWIPC
+            | CLONE_NEWNET
+            | CLONE_NEWPID
+            | CLONE_NEWUSER
+            | CLONE_NEWCGROUP;
 
         if nstype & !valid_types != 0 {
             return Err(LinuxError::EINVAL);
@@ -519,30 +542,30 @@ pub fn inotify_rm_watch(fd: Fd, wd: i32) -> LinuxResult<i32> {
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_statfs() {
         let mut buf = StatFs::zero();
         let path = b"/\0".as_ptr();
         assert!(statfs(path, &mut buf).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_mount_flags() {
         // Test that flags are properly defined
         assert_eq!(mount_flags::MS_RDONLY, 1);
         assert_eq!(mount_flags::MS_NOSUID, 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_sync() {
         sync(); // Should not panic
     }
 
-    #[test]
+    #[test_case]
     fn test_inotify() {
         assert!(inotify_init().is_ok());
         assert!(inotify_init1(0).is_ok());

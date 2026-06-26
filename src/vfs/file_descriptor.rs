@@ -2,9 +2,9 @@
 //!
 //! This module manages open file descriptors for the VFS layer.
 
-use alloc::sync::Arc;
+use super::{InodeOps, OpenFlags, VfsError, VfsResult};
 use alloc::collections::BTreeMap;
-use super::{InodeOps, OpenFlags, VfsResult, VfsError};
+use alloc::sync::Arc;
 
 /// Open file descriptor
 pub struct FileDescriptor {

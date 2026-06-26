@@ -4,20 +4,20 @@
 //! including process control blocks, scheduling, system calls, and context switching.
 
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 
-pub mod scheduler;
-pub mod syscalls;
 pub mod context;
-pub mod sync;
-pub mod integration;
-pub mod thread;
-pub mod ipc;
-pub mod elf_loader;
 pub mod dynamic_linker;
+pub mod elf_loader;
+pub mod integration;
+pub mod ipc;
+pub mod scheduler;
+pub mod sync;
+pub mod syscalls;
+pub mod thread;
 
 /// Process ID type
 pub type Pid = u32;
@@ -103,12 +103,30 @@ pub struct CpuContext {
 impl Default for CpuContext {
     fn default() -> Self {
         Self {
-            rax: 0, rbx: 0, rcx: 0, rdx: 0,
-            rsi: 0, rdi: 0, rbp: 0, rsp: 0,
-            r8: 0, r9: 0, r10: 0, r11: 0,
-            r12: 0, r13: 0, r14: 0, r15: 0,
-            rip: 0, rflags: 0x202, // Enable interrupts by default
-            cs: 0x08, ds: 0x10, es: 0x10, fs: 0x10, gs: 0x10, ss: 0x10,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            rsp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rip: 0,
+            rflags: 0x202, // Enable interrupts by default
+            cs: 0x08,
+            ds: 0x10,
+            es: 0x10,
+            fs: 0x10,
+            gs: 0x10,
+            ss: 0x10,
         }
     }
 }
@@ -144,16 +162,16 @@ impl Default for MemoryInfo {
     fn default() -> Self {
         Self {
             page_directory: 0,
-            vm_start: 0x400000,  // 4MB
-            vm_size: 0x100000,   // 1MB default
-            code_start: 0x400000, // 4MB
-            code_size: 0,        // Set during load
-            data_start: 0x500000, // 5MB
-            data_size: 0,        // Set during load
-            heap_start: 0x600000, // 6MB
-            heap_size: 0x100000,  // 1MB
+            vm_start: 0x400000,       // 4MB
+            vm_size: 0x100000,        // 1MB default
+            code_start: 0x400000,     // 4MB
+            code_size: 0,             // Set during load
+            data_start: 0x500000,     // 5MB
+            data_size: 0,             // Set during load
+            heap_start: 0x600000,     // 6MB
+            heap_size: 0x100000,      // 1MB
             stack_start: 0x7FFFFF000, // Near top of user space
-            stack_size: 0x2000,   // 8KB default stack
+            stack_size: 0x2000,       // 8KB default stack
         }
     }
 }
@@ -224,6 +242,15 @@ impl FileDescriptor {
     pub fn from_inode(inode: crate::fs::Inode, flags: u32) -> Self {
         Self {
             fd_type: FileDescriptorType::VfsFile { inode },
+            flags,
+            offset: 0,
+        }
+    }
+
+    /// Create a new file descriptor from a raw VFS file descriptor
+    pub fn from_vfs_fd(vfs_fd: i32, flags: u32) -> Self {
+        Self {
+            fd_type: FileDescriptorType::VfsHandle { vfs_fd },
             flags,
             offset: 0,
         }
@@ -316,6 +343,7 @@ pub enum FileDescriptorType {
     StandardOutput,
     StandardError,
     VfsFile { inode: crate::fs::Inode },
+    VfsHandle { vfs_fd: i32 },
     Socket { socket_id: u32 },
     Pipe { pipe_id: u32 },
 }
@@ -424,11 +452,14 @@ impl ProcessControlBlock {
     /// Allocate a new file descriptor
     pub fn allocate_fd(&mut self, fd_type: FileDescriptorType) -> u32 {
         let fd = self.next_fd;
-        self.fd_table.insert(fd, FileDescriptor {
-            fd_type,
-            flags: 0,
-            offset: 0,
-        });
+        self.fd_table.insert(
+            fd,
+            FileDescriptor {
+                fd_type,
+                flags: 0,
+                offset: 0,
+            },
+        );
         self.next_fd += 1;
         fd
     }
@@ -496,22 +527,31 @@ impl ProcessManager {
     }
 
     /// Create a new process
-    pub fn create_process(&self, name: &str, parent_pid: Option<Pid>, priority: Priority) -> Result<Pid, &'static str> {
-        let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
-
-        if self.process_count.load(Ordering::SeqCst) >= MAX_PROCESSES {
-            return Err("Maximum process count exceeded");
-        }
-
-        let mut pcb = ProcessControlBlock::new(pid, parent_pid, name);
-        pcb.priority = priority;
-
-        {
+    pub fn create_process(
+        &self,
+        name: &str,
+        parent_pid: Option<Pid>,
+        priority: Priority,
+    ) -> Result<Pid, &'static str> {
+        // ponytail: take the processes write lock first so the count limit check
+        // and the insert are a single atomic step (no TOCTOU where two callers
+        // both pass the check and overshoot MAX_PROCESSES). The PID is only
+        // allocated after the limit passes, so a rejected create never burns a PID.
+        let pid = {
             let mut processes = self.processes.write();
-            processes.insert(pid, pcb);
-        }
 
-        self.process_count.fetch_add(1, Ordering::SeqCst);
+            if self.process_count.load(Ordering::SeqCst) >= MAX_PROCESSES {
+                return Err("Maximum process count exceeded");
+            }
+
+            let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
+            let mut pcb = ProcessControlBlock::new(pid, parent_pid, name);
+            pcb.priority = priority;
+
+            processes.insert(pid, pcb);
+            self.process_count.fetch_add(1, Ordering::SeqCst);
+            pid
+        };
 
         // Add to scheduler
         {
@@ -558,6 +598,27 @@ impl ProcessManager {
     pub fn get_process(&self, pid: Pid) -> Option<ProcessControlBlock> {
         let processes = self.processes.read();
         processes.get(&pid).cloned()
+    }
+
+    /// Mutate a process in place under the processes lock.
+    ///
+    /// `get_process` returns a *clone*, so any mutation made to it is dropped.
+    /// Syscall handlers that need to persist changes (fd table, file offsets,
+    /// heap size, priority, ...) must route through this helper so the edit
+    /// lands on the real `ProcessControlBlock`.
+    ///
+    /// Returns `None` if no process with `pid` exists, otherwise `Some(f(...))`.
+    ///
+    /// ponytail: the closure runs while the `processes` write lock is held, so it
+    /// must NOT call back into `ProcessManager` methods that lock `processes`
+    /// (e.g. `get_process`) or the scheduler — do any VFS / memory work before
+    /// calling this and keep the closure to plain field/map updates.
+    pub fn with_process_mut<F, R>(&self, pid: Pid, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut ProcessControlBlock) -> R,
+    {
+        let mut processes = self.processes.write();
+        processes.get_mut(&pid).map(f)
     }
 
     /// Get current running process ID
@@ -623,7 +684,10 @@ impl ProcessManager {
             let mut scheduler = self.scheduler.lock();
             let priority = {
                 let processes = self.processes.read();
-                processes.get(&pid).map(|p| p.priority).unwrap_or(Priority::Normal)
+                processes
+                    .get(&pid)
+                    .map(|p| p.priority)
+                    .unwrap_or(Priority::Normal)
             };
             scheduler.add_process(pid, priority)?;
         }
@@ -634,9 +698,10 @@ impl ProcessManager {
     /// List all processes
     pub fn list_processes(&self) -> Vec<(Pid, String, ProcessState, Priority)> {
         let processes = self.processes.read();
-        processes.iter().map(|(&pid, pcb)| {
-            (pid, pcb.name_str().to_string(), pcb.state, pcb.priority)
-        }).collect()
+        processes
+            .iter()
+            .map(|(&pid, pcb)| (pid, pcb.name_str().to_string(), pcb.state, pcb.priority))
+            .collect()
     }
 
     /// Create a thread for a process
@@ -658,7 +723,8 @@ impl ProcessManager {
 
         // Create the thread
         let thread_manager = thread::get_thread_manager();
-        let tid = thread_manager.create_user_thread(pid, name, priority, stack_size, entry_point)?;
+        let tid =
+            thread_manager.create_user_thread(pid, name, priority, stack_size, entry_point)?;
 
         // If this is the first thread for the process, mark it as main thread
         {

@@ -18,8 +18,8 @@
 //! Current implementation supports IPv4 only. IPv6 support is planned for future releases.
 //! ICMPv6 checksum calculation requires IPv6 pseudo-header implementation.
 
-use super::{NetworkAddress, NetworkResult, NetworkError, PacketBuffer, NetworkStack};
-use alloc::{vec, vec::Vec, collections::BTreeMap};
+use super::{NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 use spin::RwLock;
 
 /// UDP header size
@@ -63,7 +63,12 @@ impl UdpHeader {
 
     /// Calculate UDP checksum
     /// RFC 768 (IPv4) and RFC 2460 Section 8.1 (IPv6)
-    pub fn calculate_checksum(&self, src_ip: &NetworkAddress, dst_ip: &NetworkAddress, payload: &[u8]) -> u16 {
+    pub fn calculate_checksum(
+        &self,
+        src_ip: &NetworkAddress,
+        dst_ip: &NetworkAddress,
+        payload: &[u8],
+    ) -> u16 {
         let mut sum = 0u32;
 
         // Pseudo-header (differs between IPv4 and IPv6)
@@ -234,7 +239,8 @@ impl UdpSocket {
             UdpSocketOption::RecvBufferSize(size) => {
                 self.socket_options.recv_buffer_size = size;
                 // Limit receive buffer if needed
-                while self.recv_buffer.len() > size / 1500 { // Approximate packets
+                while self.recv_buffer.len() > size / 1500 {
+                    // Approximate packets
                     self.recv_buffer.remove(0);
                     self.statistics.dropped_packets += 1;
                 }
@@ -253,16 +259,32 @@ impl UdpSocket {
     /// Get socket option
     pub fn get_option(&self, option_type: UdpSocketOptionType) -> UdpSocketOption {
         match option_type {
-            UdpSocketOptionType::ReuseAddr => UdpSocketOption::ReuseAddr(self.socket_options.reuse_addr),
-            UdpSocketOptionType::ReusePort => UdpSocketOption::ReusePort(self.socket_options.reuse_port),
+            UdpSocketOptionType::ReuseAddr => {
+                UdpSocketOption::ReuseAddr(self.socket_options.reuse_addr)
+            }
+            UdpSocketOptionType::ReusePort => {
+                UdpSocketOption::ReusePort(self.socket_options.reuse_port)
+            }
             UdpSocketOptionType::Broadcast => UdpSocketOption::Broadcast(self.broadcast),
-            UdpSocketOptionType::RecvBufferSize => UdpSocketOption::RecvBufferSize(self.socket_options.recv_buffer_size),
-            UdpSocketOptionType::SendBufferSize => UdpSocketOption::SendBufferSize(self.socket_options.send_buffer_size),
-            UdpSocketOptionType::RecvTimeout => UdpSocketOption::RecvTimeout(self.socket_options.recv_timeout),
-            UdpSocketOptionType::SendTimeout => UdpSocketOption::SendTimeout(self.socket_options.send_timeout),
+            UdpSocketOptionType::RecvBufferSize => {
+                UdpSocketOption::RecvBufferSize(self.socket_options.recv_buffer_size)
+            }
+            UdpSocketOptionType::SendBufferSize => {
+                UdpSocketOption::SendBufferSize(self.socket_options.send_buffer_size)
+            }
+            UdpSocketOptionType::RecvTimeout => {
+                UdpSocketOption::RecvTimeout(self.socket_options.recv_timeout)
+            }
+            UdpSocketOptionType::SendTimeout => {
+                UdpSocketOption::SendTimeout(self.socket_options.send_timeout)
+            }
             UdpSocketOptionType::Ttl => UdpSocketOption::Ttl(self.socket_options.ttl),
-            UdpSocketOptionType::MulticastTtl => UdpSocketOption::MulticastTtl(self.socket_options.multicast_ttl),
-            UdpSocketOptionType::MulticastLoop => UdpSocketOption::MulticastLoop(self.socket_options.multicast_loop),
+            UdpSocketOptionType::MulticastTtl => {
+                UdpSocketOption::MulticastTtl(self.socket_options.multicast_ttl)
+            }
+            UdpSocketOptionType::MulticastLoop => {
+                UdpSocketOption::MulticastLoop(self.socket_options.multicast_loop)
+            }
             UdpSocketOptionType::Dscp => UdpSocketOption::Dscp(self.socket_options.dscp),
         }
     }
@@ -335,7 +357,7 @@ impl UdpSocket {
         if !group.is_multicast() {
             return Err(NetworkError::InvalidAddress);
         }
-        
+
         if !self.multicast_groups.contains(&group) {
             self.multicast_groups.push(group);
         }
@@ -389,14 +411,22 @@ impl UdpManager {
     }
 
     /// Check if address/port combination can be bound
-    fn can_bind(&self, addr: NetworkAddress, port: u16, reuse_addr: bool, reuse_port: bool) -> bool {
+    fn can_bind(
+        &self,
+        addr: NetworkAddress,
+        port: u16,
+        reuse_addr: bool,
+        reuse_port: bool,
+    ) -> bool {
         let sockets = self.sockets.read();
 
         // Check for exact match
         if let Some(existing) = sockets.get(&(addr, port)) {
             // Allow binding if both sockets have reuse options set
-            return reuse_addr && existing.socket_options.reuse_addr &&
-                   reuse_port && existing.socket_options.reuse_port;
+            return reuse_addr
+                && existing.socket_options.reuse_addr
+                && reuse_port
+                && existing.socket_options.reuse_port;
         }
 
         // Check for wildcard conflicts
@@ -467,7 +497,8 @@ impl UdpManager {
         let mut port_usage = self.port_usage.write();
         let mut stats = self.global_stats.write();
 
-        let idle_sockets: Vec<_> = sockets.iter()
+        let idle_sockets: Vec<_> = sockets
+            .iter()
             .filter(|(_, socket)| socket.is_idle(idle_timeout_ms))
             .map(|((addr, port), _)| (*addr, *port))
             .collect();
@@ -499,7 +530,7 @@ impl UdpManager {
         local_addr: NetworkAddress,
         local_port: u16,
         reuse_addr: bool,
-        reuse_port: bool
+        reuse_port: bool,
     ) -> NetworkResult<()> {
         // Validate port range
         if local_port == 0 {
@@ -587,13 +618,18 @@ impl UdpManager {
         sockets.get(&key).cloned()
     }
 
-    pub fn update_socket<F>(&self, local_addr: NetworkAddress, local_port: u16, f: F) -> NetworkResult<()>
+    pub fn update_socket<F>(
+        &self,
+        local_addr: NetworkAddress,
+        local_port: u16,
+        f: F,
+    ) -> NetworkResult<()>
     where
         F: FnOnce(&mut UdpSocket),
     {
         let mut sockets = self.sockets.write();
         let key = (local_addr, local_port);
-        
+
         if let Some(socket) = sockets.get_mut(&key) {
             f(socket);
             Ok(())
@@ -603,7 +639,11 @@ impl UdpManager {
     }
 
     /// Find sockets that should receive a datagram with comprehensive routing
-    pub fn find_receiving_sockets(&self, dest_addr: &NetworkAddress, dest_port: u16) -> Vec<(NetworkAddress, u16)> {
+    pub fn find_receiving_sockets(
+        &self,
+        dest_addr: &NetworkAddress,
+        dest_port: u16,
+    ) -> Vec<(NetworkAddress, u16)> {
         let sockets = self.sockets.read();
         let mut receivers = Vec::new();
         let mut exact_matches = Vec::new();
@@ -646,12 +686,14 @@ impl UdpManager {
             // Additional filtering based on socket state
             if should_receive {
                 // Check if socket is in valid state to receive
-                if socket.is_idle(300000) { // 5 minutes idle timeout
+                if socket.is_idle(300000) {
+                    // 5 minutes idle timeout
                     continue;
                 }
 
                 // Check receive buffer space
-                let current_buffer_size: usize = socket.recv_buffer.iter().map(|d| d.data.len()).sum();
+                let current_buffer_size: usize =
+                    socket.recv_buffer.iter().map(|d| d.data.len()).sum();
                 if current_buffer_size >= socket.socket_options.recv_buffer_size {
                     // Buffer full, would drop packet
                     continue;
@@ -791,7 +833,7 @@ pub fn process_packet(
     mut packet: PacketBuffer,
 ) -> NetworkResult<()> {
     let header = UdpHeader::parse(&mut packet)?;
-    
+
     // Production: UDP packet processed silently
 
     // Validate length
@@ -805,7 +847,9 @@ pub fn process_packet(
     }
 
     // Read payload
-    let payload = packet.read(payload_length).ok_or(NetworkError::InvalidPacket)?;
+    let payload = packet
+        .read(payload_length)
+        .ok_or(NetworkError::InvalidPacket)?;
 
     // Verify checksum (if not zero)
     if header.checksum != 0 {
@@ -836,9 +880,11 @@ pub fn process_packet(
             timestamp: get_current_time(),
         };
 
-        UDP_MANAGER.update_socket(local_addr, local_port, |socket| {
-            socket.add_datagram(datagram);
-        }).ok(); // Ignore errors for delivery
+        UDP_MANAGER
+            .update_socket(local_addr, local_port, |socket| {
+                socket.add_datagram(datagram);
+            })
+            .ok(); // Ignore errors for delivery
     }
 
     Ok(())
@@ -890,7 +936,7 @@ pub fn send_udp_packet(
 pub fn udp_socket() -> NetworkResult<(NetworkAddress, u16)> {
     let local_addr = NetworkAddress::IPv4([0, 0, 0, 0]); // Wildcard address
     let local_port = UDP_MANAGER.allocate_port();
-    
+
     UDP_MANAGER.bind_socket(local_addr, local_port)?;
     Ok((local_addr, local_port))
 }
@@ -913,12 +959,9 @@ pub fn udp_connect(
 }
 
 /// Send data through UDP socket
-pub fn udp_send(
-    local_addr: NetworkAddress,
-    local_port: u16,
-    data: &[u8],
-) -> NetworkResult<usize> {
-    let socket = UDP_MANAGER.get_socket(&local_addr, local_port)
+pub fn udp_send(local_addr: NetworkAddress, local_port: u16, data: &[u8]) -> NetworkResult<usize> {
+    let socket = UDP_MANAGER
+        .get_socket(&local_addr, local_port)
         .ok_or(NetworkError::InvalidAddress)?;
 
     if let (Some(remote_addr), Some(remote_port)) = (socket.remote_addr, socket.remote_port) {
@@ -938,7 +981,8 @@ pub fn udp_send_to(
     data: &[u8],
 ) -> NetworkResult<usize> {
     // Verify socket exists
-    UDP_MANAGER.get_socket(&local_addr, local_port)
+    UDP_MANAGER
+        .get_socket(&local_addr, local_port)
         .ok_or(NetworkError::InvalidAddress)?;
 
     send_udp_packet(local_addr, local_port, remote_addr, remote_port, data)?;
@@ -946,9 +990,12 @@ pub fn udp_send_to(
 }
 
 /// Receive data from UDP socket
-pub fn udp_recv(local_addr: NetworkAddress, local_port: u16) -> NetworkResult<Option<(Vec<u8>, NetworkAddress, u16)>> {
+pub fn udp_recv(
+    local_addr: NetworkAddress,
+    local_port: u16,
+) -> NetworkResult<Option<(Vec<u8>, NetworkAddress, u16)>> {
     let mut result = None;
-    
+
     UDP_MANAGER.update_socket(local_addr, local_port, |socket| {
         if let Some(datagram) = socket.get_datagram() {
             result = Some((datagram.data, datagram.source_addr, datagram.source_port));
@@ -960,7 +1007,8 @@ pub fn udp_recv(local_addr: NetworkAddress, local_port: u16) -> NetworkResult<Op
 
 /// Check if UDP socket has data available
 pub fn udp_has_data(local_addr: NetworkAddress, local_port: u16) -> bool {
-    UDP_MANAGER.get_socket(&local_addr, local_port)
+    UDP_MANAGER
+        .get_socket(&local_addr, local_port)
         .map(|socket| socket.has_data())
         .unwrap_or(false)
 }
@@ -971,7 +1019,11 @@ pub fn udp_close(local_addr: NetworkAddress, local_port: u16) -> NetworkResult<(
 }
 
 /// Set socket broadcast option
-pub fn udp_set_broadcast(local_addr: NetworkAddress, local_port: u16, broadcast: bool) -> NetworkResult<()> {
+pub fn udp_set_broadcast(
+    local_addr: NetworkAddress,
+    local_port: u16,
+    broadcast: bool,
+) -> NetworkResult<()> {
     UDP_MANAGER.update_socket(local_addr, local_port, |socket| {
         socket.broadcast = broadcast;
     })
@@ -1075,7 +1127,7 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
 
-    #[cfg(feature = "disabled-tests")] // #[test]
+    #[cfg(feature = "disabled-tests")] // #[test_case]
     fn process_packet_accepts_valid_checksum() {
         {
             let mut sockets = UDP_MANAGER.sockets.write();
@@ -1116,7 +1168,9 @@ mod tests {
 
         assert!(result.is_ok());
 
-        let socket = UDP_MANAGER.get_socket(&dst_ip, dest_port).expect("socket should exist");
+        let socket = UDP_MANAGER
+            .get_socket(&dst_ip, dest_port)
+            .expect("socket should exist");
         assert_eq!(socket.recv_buffer.len(), 1);
         assert_eq!(socket.recv_buffer[0].data.as_slice(), payload);
         assert_eq!(socket.recv_buffer[0].source_port, header.source_port);

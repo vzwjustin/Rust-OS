@@ -4,8 +4,8 @@
 //! for RustOS, enabling execution of userspace programs.
 
 use core::arch::asm;
-use x86_64::VirtAddr;
 use x86_64::structures::gdt::SegmentSelector;
+use x86_64::VirtAddr;
 
 /// Switch from kernel mode (Ring 0) to user mode (Ring 3)
 ///
@@ -135,8 +135,11 @@ pub unsafe fn execute_in_user_mode(entry_point: u64, user_stack: u64) -> ! {
     }
 
     // Log the transition for debugging
-    crate::serial_println!("Switching to user mode: entry=0x{:x}, stack=0x{:x}",
-        entry_point, user_stack);
+    crate::serial_println!(
+        "Switching to user mode: entry=0x{:x}, stack=0x{:x}",
+        entry_point,
+        user_stack
+    );
 
     // Perform the switch
     switch_to_user_mode(entry_point, user_stack);
@@ -383,7 +386,7 @@ pub fn test_user_mode_switch() {
     // This would normally be actual user code
     // For testing, we just verify the switch mechanism
     let entry_point: u64 = 0x400000; // Example user space address
-    let user_stack: u64 = 0x500000;  // Example user stack
+    let user_stack: u64 = 0x500000; // Example user stack
 
     // In a real test, we would:
     // 1. Map user pages

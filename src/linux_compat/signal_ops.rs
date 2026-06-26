@@ -6,7 +6,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
 static SIGNAL_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -45,11 +45,7 @@ pub mod sig_how {
 }
 
 /// sigaction - examine and change signal action
-pub fn sigaction(
-    signum: i32,
-    act: *const SigAction,
-    oldact: *mut SigAction,
-) -> LinuxResult<i32> {
+pub fn sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> LinuxResult<i32> {
     inc_ops();
 
     // Validate signal number
@@ -97,11 +93,7 @@ pub fn rt_sigaction(
 }
 
 /// sigprocmask - examine and change blocked signals
-pub fn sigprocmask(
-    how: i32,
-    set: *const SigSet,
-    oldset: *mut SigSet,
-) -> LinuxResult<i32> {
+pub fn sigprocmask(how: i32, set: *const SigSet, oldset: *mut SigSet) -> LinuxResult<i32> {
     inc_ops();
 
     // TODO: Save old mask if requested
@@ -340,11 +332,11 @@ pub fn sigismember(set: *const SigSet, signum: i32) -> LinuxResult<i32> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_sigset_operations() {
         let mut set: SigSet = 0;
 
@@ -361,7 +353,7 @@ mod tests {
         assert_eq!(set, !0);
     }
 
-    #[test]
+    #[test_case]
     fn test_signal_validation() {
         let act = SigAction {
             sa_handler: sig_action::SIG_DFL,

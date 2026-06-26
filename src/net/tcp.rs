@@ -22,10 +22,10 @@
 //! Path MTU discovery (PMTUD) and explicit congestion notification (ECN) are planned
 //! enhancements for future versions.
 
-use super::{NetworkAddress, NetworkResult, NetworkError, PacketBuffer, NetworkStack};
-use alloc::{vec::Vec, collections::BTreeMap};
-use spin::RwLock;
+use super::{NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer};
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::cmp;
+use spin::RwLock;
 
 /// TCP header minimum size
 pub const TCP_HEADER_MIN_SIZE: usize = 20;
@@ -54,7 +54,10 @@ impl TcpState {
 
     /// Check if state allows data reception
     pub fn can_recv_data(&self) -> bool {
-        matches!(self, TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2)
+        matches!(
+            self,
+            TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2
+        )
     }
 
     /// Check if connection is active
@@ -114,14 +117,30 @@ impl TcpFlags {
 
     pub fn to_byte(&self) -> u8 {
         let mut flags = 0u8;
-        if self.fin { flags |= 0x01; }
-        if self.syn { flags |= 0x02; }
-        if self.rst { flags |= 0x04; }
-        if self.psh { flags |= 0x08; }
-        if self.ack { flags |= 0x10; }
-        if self.urg { flags |= 0x20; }
-        if self.ece { flags |= 0x40; }
-        if self.cwr { flags |= 0x80; }
+        if self.fin {
+            flags |= 0x01;
+        }
+        if self.syn {
+            flags |= 0x02;
+        }
+        if self.rst {
+            flags |= 0x04;
+        }
+        if self.psh {
+            flags |= 0x08;
+        }
+        if self.ack {
+            flags |= 0x10;
+        }
+        if self.urg {
+            flags |= 0x20;
+        }
+        if self.ece {
+            flags |= 0x40;
+        }
+        if self.cwr {
+            flags |= 0x80;
+        }
         flags
     }
 }
@@ -167,10 +186,12 @@ impl TcpHeader {
         let dest_port = u16::from_be_bytes([dst_port_bytes[0], dst_port_bytes[1]]);
 
         let seq_bytes = buffer.read(4).ok_or(NetworkError::InvalidPacket)?;
-        let sequence_number = u32::from_be_bytes([seq_bytes[0], seq_bytes[1], seq_bytes[2], seq_bytes[3]]);
+        let sequence_number =
+            u32::from_be_bytes([seq_bytes[0], seq_bytes[1], seq_bytes[2], seq_bytes[3]]);
 
         let ack_bytes = buffer.read(4).ok_or(NetworkError::InvalidPacket)?;
-        let acknowledgment_number = u32::from_be_bytes([ack_bytes[0], ack_bytes[1], ack_bytes[2], ack_bytes[3]]);
+        let acknowledgment_number =
+            u32::from_be_bytes([ack_bytes[0], ack_bytes[1], ack_bytes[2], ack_bytes[3]]);
 
         let offset_flags_bytes = buffer.read(2).ok_or(NetworkError::InvalidPacket)?;
         let data_offset = (offset_flags_bytes[0] >> 4) & 0x0f;
@@ -189,7 +210,9 @@ impl TcpHeader {
         let header_length = (data_offset as usize) * 4;
         let options_length = header_length.saturating_sub(TCP_HEADER_MIN_SIZE);
         let options = if options_length > 0 {
-            let options_bytes = buffer.read(options_length).ok_or(NetworkError::InvalidPacket)?;
+            let options_bytes = buffer
+                .read(options_length)
+                .ok_or(NetworkError::InvalidPacket)?;
             options_bytes.to_vec()
         } else {
             Vec::new()
@@ -211,7 +234,12 @@ impl TcpHeader {
 
     /// Calculate TCP checksum
     /// RFC 793 (IPv4) and RFC 2460 Section 8.1 (IPv6)
-    pub fn calculate_checksum(&self, src_ip: &NetworkAddress, dst_ip: &NetworkAddress, payload: &[u8]) -> u16 {
+    pub fn calculate_checksum(
+        &self,
+        src_ip: &NetworkAddress,
+        dst_ip: &NetworkAddress,
+        payload: &[u8],
+    ) -> u16 {
         let mut sum = 0u32;
 
         // Pseudo-header (differs between IPv4 and IPv6)
@@ -480,7 +508,7 @@ impl TcpManager {
     ) -> NetworkResult<()> {
         let key = (local_addr, local_port, remote_addr, remote_port);
         let mut connections = self.connections.write();
-        
+
         if connections.contains_key(&key) {
             return Err(NetworkError::AddressInUse);
         }
@@ -502,7 +530,11 @@ impl TcpManager {
         connections.get(&key).cloned()
     }
 
-    pub fn update_connection<F>(&self, key: (NetworkAddress, u16, NetworkAddress, u16), f: F) -> NetworkResult<()>
+    pub fn update_connection<F>(
+        &self,
+        key: (NetworkAddress, u16, NetworkAddress, u16),
+        f: F,
+    ) -> NetworkResult<()>
     where
         F: FnOnce(&mut TcpConnection),
     {
@@ -524,7 +556,7 @@ impl TcpManager {
     ) -> NetworkResult<()> {
         let mut connections = self.connections.write();
         let key = (*local_addr, local_port, *remote_addr, remote_port);
-        
+
         if connections.remove(&key).is_some() {
             Ok(())
         } else {
@@ -556,9 +588,25 @@ fn secure_random_u32() -> u32 {
         } else {
             // Fallback to TSC-based PRNG (not cryptographically secure, but functional)
             // In production, this should trigger a warning or use an alternative CSPRNG
-            (core::arch::x86_64::_rdtsc() as u32).wrapping_mul(1103515245).wrapping_add(12345)
+            (core::arch::x86_64::_rdtsc() as u32)
+                .wrapping_mul(1103515245)
+                .wrapping_add(12345)
         }
     }
+}
+
+/// Modular (RFC 1982) sequence-number comparisons that tolerate u32 wraparound.
+#[inline]
+fn seq_lt(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+#[inline]
+fn seq_gt(a: u32, b: u32) -> bool {
+    seq_lt(b, a)
+}
+#[inline]
+fn seq_leq(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) <= 0
 }
 
 /// Process incoming TCP packet
@@ -569,16 +617,33 @@ pub fn process_packet(
     mut packet: PacketBuffer,
 ) -> NetworkResult<()> {
     let header = TcpHeader::parse(&mut packet)?;
-    
+
+    // Validate the TCP checksum on the receive path (pseudo-header + header +
+    // payload), the same way UDP/ICMP do. Drop the segment if it fails.
+    {
+        let payload = &packet.as_slice()[packet.position..];
+        let mut checksum_header = header.clone();
+        checksum_header.checksum = 0;
+        if checksum_header.calculate_checksum(&src_ip, &dst_ip, payload) != header.checksum {
+            return Err(NetworkError::InvalidPacket);
+        }
+    }
+
     // Production: process TCP packet without debug output
 
     // Find existing connection
     let connection_key = (dst_ip, header.dest_port, src_ip, header.source_port);
-    
-    if let Some(mut connection) = TCP_MANAGER.get_connection(&dst_ip, header.dest_port, &src_ip, header.source_port) {
+
+    if let Some(mut connection) =
+        TCP_MANAGER.get_connection(&dst_ip, header.dest_port, &src_ip, header.source_port)
+    {
         // Process packet for existing connection
-        process_connection_packet(&mut connection, &header, &packet.as_slice()[packet.position..])?;
-        
+        process_connection_packet(
+            &mut connection,
+            &header,
+            &packet.as_slice()[packet.position..],
+        )?;
+
         // Update connection in manager
         TCP_MANAGER.update_connection(connection_key, |conn| {
             *conn = connection;
@@ -587,10 +652,22 @@ pub fn process_packet(
         // Handle new connection attempt
         if header.flags.syn && !header.flags.ack {
             // Handle new TCP connection attempt
-            handle_new_connection(dst_ip, header.dest_port, src_ip, header.source_port, &header)?;
+            handle_new_connection(
+                dst_ip,
+                header.dest_port,
+                src_ip,
+                header.source_port,
+                &header,
+            )?;
         } else {
             // Send RST for non-existent connection
-            send_rst_packet(dst_ip, header.dest_port, src_ip, header.source_port, header.sequence_number + 1)?;
+            send_rst_packet(
+                dst_ip,
+                header.dest_port,
+                src_ip,
+                header.source_port,
+                header.sequence_number.wrapping_add(1),
+            )?;
         }
     }
 
@@ -652,7 +729,7 @@ fn process_connection_packet(
                 connection.local_port,
                 connection.remote_addr,
                 connection.remote_port,
-                header.sequence_number + 1,
+                header.sequence_number.wrapping_add(1),
             )?;
         }
     }
@@ -684,7 +761,7 @@ fn handle_listen_state(connection: &mut TcpConnection, header: &TcpHeader) -> Ne
         connection.generate_isn();
         connection.state = TcpState::SynReceived;
         connection.established_time = current_time_ms();
-        
+
         // Send SYN-ACK
         send_syn_ack_packet(connection)?;
     } else if header.flags.rst {
@@ -711,10 +788,10 @@ fn handle_syn_sent_state(connection: &mut TcpConnection, header: &TcpHeader) -> 
             connection.recv_sequence = header.sequence_number.wrapping_add(1);
             connection.state = TcpState::Established;
             connection.established_time = current_time_ms();
-            
+
             // Send ACK
             send_ack_packet(connection)?;
-            
+
             // Reset retransmission counter
             connection.syn_retries = 0;
         } else {
@@ -740,7 +817,10 @@ fn handle_syn_sent_state(connection: &mut TcpConnection, header: &TcpHeader) -> 
 }
 
 /// Handle SYN-RECEIVED state
-fn handle_syn_received_state(connection: &mut TcpConnection, header: &TcpHeader) -> NetworkResult<()> {
+fn handle_syn_received_state(
+    connection: &mut TcpConnection,
+    header: &TcpHeader,
+) -> NetworkResult<()> {
     if header.flags.ack && !header.flags.syn {
         // ACK received
         if header.acknowledgment_number == connection.send_sequence.wrapping_add(1) {
@@ -776,13 +856,13 @@ fn handle_established_state(
             // In-order data
             connection.recv_buffer.extend_from_slice(payload);
             connection.recv_sequence = connection.recv_sequence.wrapping_add(payload.len() as u32);
-            
+
             // Send ACK
             send_ack_packet(connection)?;
-            
+
             // Reset duplicate ACK counter
             connection.reset_duplicate_acks();
-        } else if header.sequence_number > connection.recv_sequence {
+        } else if seq_gt(header.sequence_number, connection.recv_sequence) {
             // Out-of-order data - store for later processing
             // For now, just send duplicate ACK
             send_ack_packet(connection)?;
@@ -793,19 +873,19 @@ fn handle_established_state(
     // Handle ACK
     if header.flags.ack {
         let ack_num = header.acknowledgment_number;
-        if ack_num > connection.send_ack && ack_num <= connection.send_sequence {
+        if seq_gt(ack_num, connection.send_ack) && seq_leq(ack_num, connection.send_sequence) {
             // Valid ACK
             let acked_bytes = ack_num.wrapping_sub(connection.send_ack);
             connection.send_ack = ack_num;
-            
+
             // Update congestion window
             connection.update_cwnd(acked_bytes);
-            
+
             // Remove acknowledged data from send buffer
             if acked_bytes as usize <= connection.send_unacked.len() {
                 connection.send_unacked.drain(0..acked_bytes as usize);
             }
-            
+
             connection.reset_duplicate_acks();
         } else if ack_num == connection.send_ack {
             // Duplicate ACK
@@ -842,7 +922,7 @@ fn handle_fin_wait1_state(connection: &mut TcpConnection, header: &TcpHeader) ->
         // Simultaneous close or FIN received
         connection.recv_sequence = connection.recv_sequence.wrapping_add(1);
         send_ack_packet(connection)?;
-        
+
         if connection.state == TcpState::FinWait2 {
             connection.state = TcpState::TimeWait;
         } else {
@@ -873,10 +953,14 @@ fn handle_fin_wait2_state(connection: &mut TcpConnection, header: &TcpHeader) ->
 }
 
 /// Handle CLOSE-WAIT state
-fn handle_close_wait_state(connection: &mut TcpConnection, header: &TcpHeader) -> NetworkResult<()> {
+fn handle_close_wait_state(
+    connection: &mut TcpConnection,
+    header: &TcpHeader,
+) -> NetworkResult<()> {
     // Application should close the connection
     // For now, automatically close after a timeout
-    if current_time_ms() - connection.established_time > 30000 { // 30 seconds
+    if current_time_ms() - connection.established_time > 30000 {
+        // 30 seconds
         connection.state = TcpState::LastAck;
         send_fin_packet(connection)?;
     }
@@ -928,7 +1012,8 @@ fn handle_time_wait_state(connection: &mut TcpConnection, header: &TcpHeader) ->
     }
 
     // Check for timeout (2*MSL)
-    if current_time_ms() - connection.last_ack_time > 240000 { // 4 minutes
+    if current_time_ms() - connection.last_ack_time > 240000 {
+        // 4 minutes
         connection.state = TcpState::Closed;
     }
 
@@ -965,17 +1050,20 @@ fn handle_new_connection(
     // Create new connection
     let mut connection = TcpConnection::new(local_addr, local_port, remote_addr, remote_port);
     connection.state = TcpState::Listen;
-    connection.recv_sequence = header.sequence_number + 1;
+    connection.recv_sequence = header.sequence_number.wrapping_add(1);
     connection.generate_isn();
     connection.state = TcpState::SynReceived;
 
     // Store connection
     let key = (local_addr, local_port, remote_addr, remote_port);
-    TCP_MANAGER.connections.write().insert(key, connection.clone());
+    TCP_MANAGER
+        .connections
+        .write()
+        .insert(key, connection.clone());
 
     // Send SYN-ACK
     send_syn_ack_packet(&connection)?;
-    
+
     Ok(())
 }
 
@@ -1097,12 +1185,16 @@ fn send_tcp_packet(
 }
 
 /// TCP socket operations
-pub fn tcp_connect(local_addr: NetworkAddress, remote_addr: NetworkAddress, remote_port: u16) -> NetworkResult<u16> {
+pub fn tcp_connect(
+    local_addr: NetworkAddress,
+    remote_addr: NetworkAddress,
+    remote_port: u16,
+) -> NetworkResult<u16> {
     let local_port = TCP_MANAGER.allocate_port();
-    
+
     // Create connection
     TCP_MANAGER.create_connection(local_addr, local_port, remote_addr, remote_port)?;
-    
+
     // Start connection process
     let key = (local_addr, local_port, remote_addr, remote_port);
     TCP_MANAGER.update_connection(key, |conn| {
@@ -1113,9 +1205,19 @@ pub fn tcp_connect(local_addr: NetworkAddress, remote_addr: NetworkAddress, remo
     // Send SYN packet
     let mut flags = TcpFlags::new();
     flags.syn = true;
-    
-    send_tcp_packet(local_addr, local_port, remote_addr, remote_port, 0, 0, flags, 65535, &[])?;
-    
+
+    send_tcp_packet(
+        local_addr,
+        local_port,
+        remote_addr,
+        remote_port,
+        0,
+        0,
+        flags,
+        65535,
+        &[],
+    )?;
+
     Ok(local_port)
 }
 
@@ -1139,12 +1241,13 @@ pub fn tcp_close(
     local_addr: NetworkAddress,
     local_port: u16,
     remote_addr: NetworkAddress,
-    remote_port: u16
+    remote_port: u16,
 ) -> NetworkResult<()> {
     let key = (local_addr, local_port, remote_addr, remote_port);
 
     // Get current connection state
-    let connection = TCP_MANAGER.get_connection(&local_addr, local_port, &remote_addr, remote_port)
+    let connection = TCP_MANAGER
+        .get_connection(&local_addr, local_port, &remote_addr, remote_port)
         .ok_or(NetworkError::InvalidAddress)?;
 
     match connection.state {

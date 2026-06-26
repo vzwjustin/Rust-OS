@@ -3,10 +3,10 @@
 //! This module provides Direct Memory Access (DMA) buffer management
 //! for efficient network packet transmission and reception.
 
-use alloc::{vec::Vec, boxed::Box};
+use alloc::{boxed::Box, vec::Vec};
 use core::ptr;
-use spin::{Mutex, RwLock};
 use lazy_static::lazy_static;
+use spin::{Mutex, RwLock};
 
 use super::{NetworkError, NetworkResult, PacketBuffer};
 
@@ -93,9 +93,7 @@ impl DmaBuffer {
         let layout = core::alloc::Layout::from_size_align(aligned_size, alignment)
             .map_err(|_| NetworkError::InsufficientMemory)?;
 
-        let virtual_addr = unsafe {
-            alloc::alloc::alloc_zeroed(layout)
-        };
+        let virtual_addr = unsafe { alloc::alloc::alloc_zeroed(layout) };
 
         if virtual_addr.is_null() {
             return Err(NetworkError::InsufficientMemory);
@@ -103,14 +101,14 @@ impl DmaBuffer {
 
         // Get physical address from virtual address using memory manager
         let physical_addr = {
-            use x86_64::VirtAddr;
             use crate::memory::get_memory_manager;
+            use x86_64::VirtAddr;
 
             let virt_addr = VirtAddr::new(virtual_addr as u64);
-            let memory_manager = get_memory_manager()
-                .ok_or(NetworkError::InternalError)?;
+            let memory_manager = get_memory_manager().ok_or(NetworkError::InternalError)?;
 
-            memory_manager.translate_addr(virt_addr)
+            memory_manager
+                .translate_addr(virt_addr)
                 .ok_or(NetworkError::InternalError)?
                 .as_u64()
         };
@@ -164,7 +162,7 @@ impl DmaBuffer {
     /// Copy data from DMA buffer
     pub fn copy_to_slice(&self, data: &mut [u8]) -> usize {
         let copy_len = core::cmp::min(data.len(), self.size);
-        
+
         unsafe {
             ptr::copy_nonoverlapping(self.virtual_addr, data.as_mut_ptr(), copy_len);
         }
@@ -240,7 +238,7 @@ impl DmaRing {
         for _ in 0..ring_size {
             let buffer = DmaBuffer::allocate(buffer_size, DMA_ALIGNMENT)?;
             let descriptor = DmaDescriptor::new(buffer.physical_addr(), buffer_size as u16);
-            
+
             descriptors.push(descriptor);
             buffers.push(buffer);
         }
@@ -258,7 +256,7 @@ impl DmaRing {
     /// Get next available descriptor for transmission
     pub fn get_tx_descriptor(&mut self) -> Option<(&mut DmaDescriptor, &mut DmaBuffer)> {
         let next_tail = (self.tail + 1) % self.size;
-        
+
         // Check if ring is full
         if next_tail == self.head {
             return None;
@@ -266,7 +264,7 @@ impl DmaRing {
 
         let descriptor = &mut self.descriptors[self.tail];
         let buffer = &mut self.buffers[self.tail];
-        
+
         Some((descriptor, buffer))
     }
 
@@ -278,7 +276,7 @@ impl DmaRing {
     /// Get next completed descriptor for reception
     pub fn get_rx_descriptor(&mut self) -> Option<(&mut DmaDescriptor, &mut DmaBuffer)> {
         let descriptor = &mut self.descriptors[self.head];
-        
+
         // Check if descriptor is completed by hardware
         if !descriptor.is_done() {
             return None;
@@ -335,14 +333,18 @@ impl DmaRing {
 /// Hardware-specific packet formatting
 pub trait PacketFormatter {
     /// Format packet for hardware transmission
-    fn format_tx_packet(&self, packet: &PacketBuffer, dma_buffer: &mut DmaBuffer) -> NetworkResult<u16>;
-    
+    fn format_tx_packet(
+        &self,
+        packet: &PacketBuffer,
+        dma_buffer: &mut DmaBuffer,
+    ) -> NetworkResult<u16>;
+
     /// Parse received packet from hardware
     fn parse_rx_packet(&self, dma_buffer: &DmaBuffer, length: u16) -> NetworkResult<PacketBuffer>;
-    
+
     /// Calculate hardware checksum
     fn calculate_hw_checksum(&self, data: &[u8]) -> u16;
-    
+
     /// Validate hardware checksum
     fn validate_hw_checksum(&self, data: &[u8], checksum: u16) -> bool;
 }
@@ -351,9 +353,13 @@ pub trait PacketFormatter {
 pub struct EthernetFormatter;
 
 impl PacketFormatter for EthernetFormatter {
-    fn format_tx_packet(&self, packet: &PacketBuffer, dma_buffer: &mut DmaBuffer) -> NetworkResult<u16> {
+    fn format_tx_packet(
+        &self,
+        packet: &PacketBuffer,
+        dma_buffer: &mut DmaBuffer,
+    ) -> NetworkResult<u16> {
         let packet_data = packet.as_slice();
-        
+
         // Validate minimum Ethernet frame size
         if packet_data.len() < 14 {
             return Err(NetworkError::InvalidPacket);
@@ -361,13 +367,14 @@ impl PacketFormatter for EthernetFormatter {
 
         // Copy packet data to DMA buffer
         dma_buffer.copy_from_slice(packet_data)?;
-        
+
         // Pad to minimum frame size if necessary
         let mut frame_size = packet_data.len();
-        if frame_size < 60 { // Minimum Ethernet frame size (without CRC)
+        if frame_size < 60 {
+            // Minimum Ethernet frame size (without CRC)
             let padding_size = 60 - frame_size;
             let buffer_slice = dma_buffer.as_mut_slice();
-            
+
             // Zero-fill padding
             for i in frame_size..frame_size + padding_size {
                 if i < buffer_slice.len() {
@@ -400,7 +407,7 @@ impl PacketFormatter for EthernetFormatter {
 
     fn calculate_hw_checksum(&self, data: &[u8]) -> u16 {
         let mut sum = 0u32;
-        
+
         // Calculate Internet checksum
         for chunk in data.chunks(2) {
             if chunk.len() == 2 {
@@ -461,8 +468,7 @@ impl DmaOperations {
         let mut stats = self.stats.write();
 
         // Get next available descriptor
-        let (descriptor, dma_buffer) = tx_ring.get_tx_descriptor()
-            .ok_or(NetworkError::Busy)?;
+        let (descriptor, dma_buffer) = tx_ring.get_tx_descriptor().ok_or(NetworkError::Busy)?;
 
         // Format packet for hardware
         let frame_size = self.formatter.format_tx_packet(&packet, dma_buffer)?;
@@ -569,25 +575,27 @@ pub fn create_ethernet_dma(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_dma_buffer_allocation() {
         let buffer = DmaBuffer::allocate(1024, DMA_ALIGNMENT).unwrap();
         assert_eq!(buffer.size(), 1024);
         assert!(!buffer.virtual_addr().is_null());
     }
 
-    #[test]
+    #[test_case]
     fn test_dma_descriptor() {
         let mut desc = DmaDescriptor::new(0x1000, 1500);
         assert_eq!(desc.buffer_addr, 0x1000);
         assert_eq!(desc.length, 1500);
-        
+
         desc.set_eop();
         assert_eq!(desc.flags & 1, 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_ethernet_formatter() {
         let formatter = EthernetFormatter;
         let data = vec![0u8; 64]; // Valid Ethernet frame

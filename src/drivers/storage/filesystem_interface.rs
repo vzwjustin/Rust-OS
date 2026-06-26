@@ -3,12 +3,12 @@
 //! Provides a unified interface between storage drivers and filesystem layers.
 //! Supports block-level operations, partition management, and filesystem detection.
 
-use super::{StorageDriver, StorageError, StorageDeviceInfo};
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-use alloc::vec;
+use super::{StorageDeviceInfo, StorageDriver, StorageError};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Partition table types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,7 +304,9 @@ impl PartitionManager {
             if entry.is_valid() {
                 // Read first sector of partition to detect filesystem
                 let mut part_buffer = [0u8; 512];
-                if super::read_storage_sectors(device_id, entry.start_lba as u64, &mut part_buffer).is_ok() {
+                if super::read_storage_sectors(device_id, entry.start_lba as u64, &mut part_buffer)
+                    .is_ok()
+                {
                     let fs_type = self.detect_filesystem(&part_buffer);
 
                     let partition = PartitionInfo {
@@ -412,10 +414,12 @@ impl PartitionManager {
         device_id: u32,
         partition_num: u8,
     ) -> Result<PartitionBlockDevice, StorageError> {
-        let partitions = self.get_partitions(device_id)
+        let partitions = self
+            .get_partitions(device_id)
             .ok_or(StorageError::DeviceNotFound)?;
 
-        let partition = partitions.iter()
+        let partition = partitions
+            .iter()
             .find(|p| p.number == partition_num)
             .ok_or(StorageError::InvalidSector)?;
 
@@ -532,10 +536,16 @@ impl FilesystemInterface {
     }
 
     /// Create block device for filesystem access
-    pub fn create_block_device(&self, device_id: u32, partition_num: Option<u8>) -> Result<Box<dyn BlockDevice>, StorageError> {
+    pub fn create_block_device(
+        &self,
+        device_id: u32,
+        partition_num: Option<u8>,
+    ) -> Result<Box<dyn BlockDevice>, StorageError> {
         if let Some(part_num) = partition_num {
             // Access specific partition
-            let part_device = self.partition_manager.create_partition_block_device(device_id, part_num)?;
+            let part_device = self
+                .partition_manager
+                .create_partition_block_device(device_id, part_num)?;
             Ok(Box::new(part_device))
         } else {
             // Access whole device

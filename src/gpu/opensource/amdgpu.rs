@@ -3,10 +3,10 @@
 //! This module provides integration with the AMDGPU opensource driver
 //! for modern AMD graphics cards (GCN and RDNA architectures).
 
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// AMDGPU driver context for AMD GPUs
 #[derive(Debug)]
@@ -17,9 +17,9 @@ pub struct AMDGPUContext {
     pub compute_units: u32,
     pub vram_size: u64,
     pub gart_size: u64,
-    pub has_uvd: bool,     // Unified Video Decoder
-    pub has_vce: bool,     // Video Compression Engine
-    pub has_vcn: bool,     // Video Core Next
+    pub has_uvd: bool, // Unified Video Decoder
+    pub has_vce: bool, // Video Compression Engine
+    pub has_vcn: bool, // Video Core Next
     pub ring_count: u8,
     pub queue_count: u32,
 }
@@ -28,22 +28,22 @@ pub struct AMDGPUContext {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AMDGPUFamily {
     // GCN generations
-    SouthernIslands,  // GCN 1.0 (HD 7000, R7/R9 200)
-    SeaIslands,       // GCN 2.0 (R7/R9 300)
-    VolcanicIslands,  // GCN 3.0 (R9 Fury, RX 400/500)
-    ArcticIslands,    // GCN 4.0 (RX 500)
-    Vega,             // GCN 5.0 (RX Vega)
+    SouthernIslands, // GCN 1.0 (HD 7000, R7/R9 200)
+    SeaIslands,      // GCN 2.0 (R7/R9 300)
+    VolcanicIslands, // GCN 3.0 (R9 Fury, RX 400/500)
+    ArcticIslands,   // GCN 4.0 (RX 500)
+    Vega,            // GCN 5.0 (RX Vega)
 
     // RDNA generations
-    Navi10,           // RDNA 1.0 (RX 5000)
-    Navi14,           // RDNA 1.0 (RX 5500)
-    Navi21,           // RDNA 2.0 (RX 6800/6900)
-    Navi22,           // RDNA 2.0 (RX 6700)
-    Navi23,           // RDNA 2.0 (RX 6600)
-    Navi24,           // RDNA 2.0 (RX 6500/6400)
-    Navi31,           // RDNA 3.0 (RX 7900)
-    Navi32,           // RDNA 3.0 (RX 7800/7700)
-    Navi33,           // RDNA 3.0 (RX 7600)
+    Navi10, // RDNA 1.0 (RX 5000)
+    Navi14, // RDNA 1.0 (RX 5500)
+    Navi21, // RDNA 2.0 (RX 6800/6900)
+    Navi22, // RDNA 2.0 (RX 6700)
+    Navi23, // RDNA 2.0 (RX 6600)
+    Navi24, // RDNA 2.0 (RX 6500/6400)
+    Navi31, // RDNA 3.0 (RX 7900)
+    Navi32, // RDNA 3.0 (RX 7800/7700)
+    Navi33, // RDNA 3.0 (RX 7600)
 }
 
 /// AMD chip classes for feature detection
@@ -140,8 +140,13 @@ impl AMDGPUContext {
             AMDGPUFamily::ArcticIslands => AMDChipClass::GCN4,
             AMDGPUFamily::Vega => AMDChipClass::GCN5,
             AMDGPUFamily::Navi10 | AMDGPUFamily::Navi14 => AMDChipClass::RDNA1,
-            AMDGPUFamily::Navi21 | AMDGPUFamily::Navi22 | AMDGPUFamily::Navi23 | AMDGPUFamily::Navi24 => AMDChipClass::RDNA2,
-            AMDGPUFamily::Navi31 | AMDGPUFamily::Navi32 | AMDGPUFamily::Navi33 => AMDChipClass::RDNA3,
+            AMDGPUFamily::Navi21
+            | AMDGPUFamily::Navi22
+            | AMDGPUFamily::Navi23
+            | AMDGPUFamily::Navi24 => AMDChipClass::RDNA2,
+            AMDGPUFamily::Navi31 | AMDGPUFamily::Navi32 | AMDGPUFamily::Navi33 => {
+                AMDChipClass::RDNA3
+            }
         }
     }
 
@@ -149,82 +154,82 @@ impl AMDGPUContext {
         match family {
             AMDGPUFamily::SouthernIslands => {
                 match device_id {
-                    0x6798..=0x679B => 32,  // HD 7970/7950
-                    0x6818..=0x681F => 28,  // HD 7870
-                    0x6800..=0x6809 => 20,  // HD 7770
+                    0x6798..=0x679B => 32, // HD 7970/7950
+                    0x6818..=0x681F => 28, // HD 7870
+                    0x6800..=0x6809 => 20, // HD 7770
                     _ => 16,
                 }
             }
             AMDGPUFamily::SeaIslands => {
                 match device_id {
-                    0x6600..=0x6603 => 44,  // R9 290X/290
-                    0x6610..=0x6613 => 40,  // R9 280X
-                    0x6640..=0x6641 => 28,  // R9 270X
+                    0x6600..=0x6603 => 44, // R9 290X/290
+                    0x6610..=0x6613 => 40, // R9 280X
+                    0x6640..=0x6641 => 28, // R9 270X
                     _ => 20,
                 }
             }
             AMDGPUFamily::VolcanicIslands => {
                 match device_id {
-                    0x7300 => 64,           // R9 Fury X
+                    0x7300 => 64,          // R9 Fury X
                     0x7310..=0x7312 => 56, // R9 Fury
                     _ => 36,
                 }
             }
             AMDGPUFamily::ArcticIslands => {
                 match device_id {
-                    0x67C0..=0x67C7 => 64,  // RX 480/580
-                    0x67D0..=0x67DF => 36,  // RX 470/570
-                    0x67E0..=0x67EF => 32,  // RX 460/560
+                    0x67C0..=0x67C7 => 64, // RX 480/580
+                    0x67D0..=0x67DF => 36, // RX 470/570
+                    0x67E0..=0x67EF => 32, // RX 460/560
                     _ => 28,
                 }
             }
             AMDGPUFamily::Vega => {
                 match device_id {
-                    0x6860..=0x6863 => 64,  // RX Vega 64
-                    0x6864..=0x6867 => 56,  // RX Vega 56
+                    0x6860..=0x6863 => 64, // RX Vega 64
+                    0x6864..=0x6867 => 56, // RX Vega 56
                     _ => 64,
                 }
             }
             AMDGPUFamily::Navi10 => {
                 match device_id {
-                    0x7310 => 40,           // RX 5700 XT
-                    0x7312 => 36,           // RX 5700
+                    0x7310 => 40, // RX 5700 XT
+                    0x7312 => 36, // RX 5700
                     _ => 40,
                 }
             }
             AMDGPUFamily::Navi14 => {
                 match device_id {
-                    0x7340 => 24,           // RX 5500 XT
-                    0x7341 => 22,           // RX 5500
+                    0x7340 => 24, // RX 5500 XT
+                    0x7341 => 22, // RX 5500
                     _ => 24,
                 }
             }
             AMDGPUFamily::Navi21 => {
                 match device_id {
-                    0x73A1 => 80,           // RX 6900 XT
-                    0x73A2 => 72,           // RX 6800 XT
-                    0x73A3 => 60,           // RX 6800
+                    0x73A1 => 80, // RX 6900 XT
+                    0x73A2 => 72, // RX 6800 XT
+                    0x73A3 => 60, // RX 6800
                     _ => 80,
                 }
             }
             AMDGPUFamily::Navi22 => {
                 match device_id {
-                    0x73C0 => 40,           // RX 6700 XT
-                    0x73C1 => 36,           // RX 6700
+                    0x73C0 => 40, // RX 6700 XT
+                    0x73C1 => 36, // RX 6700
                     _ => 40,
                 }
             }
             AMDGPUFamily::Navi23 => {
                 match device_id {
-                    0x73AB => 32,           // RX 6600 XT
-                    0x73AE => 28,           // RX 6600
+                    0x73AB => 32, // RX 6600 XT
+                    0x73AE => 28, // RX 6600
                     _ => 32,
                 }
             }
-            AMDGPUFamily::Navi24 => 16,     // RX 6500/6400
-            AMDGPUFamily::Navi31 => 96,     // RX 7900 XTX/XT
-            AMDGPUFamily::Navi32 => 60,     // RX 7800/7700
-            AMDGPUFamily::Navi33 => 32,     // RX 7600
+            AMDGPUFamily::Navi24 => 16, // RX 6500/6400
+            AMDGPUFamily::Navi31 => 96, // RX 7900 XTX/XT
+            AMDGPUFamily::Navi32 => 60, // RX 7800/7700
+            AMDGPUFamily::Navi33 => 32, // RX 7600
         }
     }
 
@@ -235,7 +240,7 @@ impl AMDGPUContext {
             AMDGPUFamily::VolcanicIslands => (4, 8),
             AMDGPUFamily::ArcticIslands => {
                 match device_id {
-                    0x67C0..=0x67C7 => (8, 16),  // RX 480/580
+                    0x67C0..=0x67C7 => (8, 16), // RX 480/580
                     _ => (4, 8),
                 }
             }
@@ -268,8 +273,13 @@ impl AMDGPUContext {
             AMDGPUFamily::ArcticIslands => (true, true, false),
             AMDGPUFamily::Vega => (false, false, true), // VCN 1.0
             AMDGPUFamily::Navi10 | AMDGPUFamily::Navi14 => (false, false, true), // VCN 2.0
-            AMDGPUFamily::Navi21 | AMDGPUFamily::Navi22 | AMDGPUFamily::Navi23 | AMDGPUFamily::Navi24 => (false, false, true), // VCN 3.0
-            AMDGPUFamily::Navi31 | AMDGPUFamily::Navi32 | AMDGPUFamily::Navi33 => (false, false, true), // VCN 4.0
+            AMDGPUFamily::Navi21
+            | AMDGPUFamily::Navi22
+            | AMDGPUFamily::Navi23
+            | AMDGPUFamily::Navi24 => (false, false, true), // VCN 3.0
+            AMDGPUFamily::Navi31 | AMDGPUFamily::Navi32 | AMDGPUFamily::Navi33 => {
+                (false, false, true)
+            } // VCN 4.0
         }
     }
 
@@ -375,9 +385,15 @@ impl AMDGPUContext {
         firmware.push(format!("amdgpu/{}_ce.bin", family_name));
 
         // MEC (compute) firmware
-        if matches!(self.chip_class,
-            AMDChipClass::GCN3 | AMDChipClass::GCN4 | AMDChipClass::GCN5 |
-            AMDChipClass::RDNA1 | AMDChipClass::RDNA2 | AMDChipClass::RDNA3) {
+        if matches!(
+            self.chip_class,
+            AMDChipClass::GCN3
+                | AMDChipClass::GCN4
+                | AMDChipClass::GCN5
+                | AMDChipClass::RDNA1
+                | AMDChipClass::RDNA2
+                | AMDChipClass::RDNA3
+        ) {
             firmware.push(format!("amdgpu/{}_mec.bin", family_name));
             firmware.push(format!("amdgpu/{}_mec2.bin", family_name));
         }
@@ -387,9 +403,14 @@ impl AMDGPUContext {
 
         // SDMA (System DMA) firmware
         firmware.push(format!("amdgpu/{}_sdma.bin", family_name));
-        if matches!(self.chip_class,
-            AMDChipClass::GCN4 | AMDChipClass::GCN5 | AMDChipClass::RDNA1 |
-            AMDChipClass::RDNA2 | AMDChipClass::RDNA3) {
+        if matches!(
+            self.chip_class,
+            AMDChipClass::GCN4
+                | AMDChipClass::GCN5
+                | AMDChipClass::RDNA1
+                | AMDChipClass::RDNA2
+                | AMDChipClass::RDNA3
+        ) {
             firmware.push(format!("amdgpu/{}_sdma1.bin", family_name));
         }
 
@@ -421,7 +442,10 @@ impl AMDGPUContext {
             glsl_version: match self.chip_class {
                 AMDChipClass::GCN1 | AMDChipClass::GCN2 => 420,
                 AMDChipClass::GCN3 | AMDChipClass::GCN4 => 450,
-                AMDChipClass::GCN5 | AMDChipClass::RDNA1 | AMDChipClass::RDNA2 | AMDChipClass::RDNA3 => 460,
+                AMDChipClass::GCN5
+                | AMDChipClass::RDNA1
+                | AMDChipClass::RDNA2
+                | AMDChipClass::RDNA3 => 460,
             },
             opencl_support: self.get_opencl_version().is_some(),
             ray_tracing: self.supports_ray_tracing(),

@@ -15,6 +15,10 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+macro_rules! println {
+    ($($arg:tt)*) => {};
+}
+
 // Note: These would be imported from the rustos crate in actual usage
 // For this example, we're showing the conceptual usage
 
@@ -209,6 +213,3 @@ pub fn run_all_examples() {
 }
 
 // Placeholder print function for examples
-fn println!(msg: &str) {
-    // In actual kernel, this would use the kernel's println! macro
-}

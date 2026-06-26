@@ -2,10 +2,10 @@
 //!
 //! This adapter handles native RustOS package format, optimized for the kernel.
 
+use crate::package::adapters::PackageAdapter;
+use crate::package::{ExtractedPackage, PackageError, PackageMetadata, PackageResult};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use crate::package::{PackageResult, PackageError, PackageMetadata, ExtractedPackage};
-use crate::package::adapters::PackageAdapter;
 
 /// Native RustOS package adapter
 pub struct NativeAdapter;
@@ -20,13 +20,13 @@ impl NativeAdapter {
 impl PackageAdapter for NativeAdapter {
     fn extract(&self, _data: &[u8]) -> PackageResult<ExtractedPackage> {
         Err(PackageError::NotImplemented(
-            "Native RustOS package extraction not yet implemented".to_string()
+            "Native RustOS package extraction not yet implemented".to_string(),
         ))
     }
 
     fn parse_metadata(&self, _data: &[u8]) -> PackageResult<PackageMetadata> {
         Err(PackageError::NotImplemented(
-            "Native RustOS package metadata parsing not yet implemented".to_string()
+            "Native RustOS package metadata parsing not yet implemented".to_string(),
         ))
     }
 

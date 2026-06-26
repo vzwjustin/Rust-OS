@@ -3,15 +3,14 @@
 //! Loads ELF executables into memory and sets up process address space.
 
 use super::*;
-use crate::elf_loader::types::*;
 use crate::elf_loader::parser::*;
+use crate::elf_loader::types::*;
+use crate::memory::PAGE_SIZE;
+use alloc::vec::Vec;
 use x86_64::structures::paging::{
-    PageTableFlags, Mapper, Page, Size4KiB, FrameAllocator,
-    mapper::MapToError,
+    mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
 };
 use x86_64::VirtAddr;
-use alloc::vec::Vec;
-use crate::memory::PAGE_SIZE;
 
 /// Default stack size (8 MB)
 const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -46,11 +45,17 @@ pub fn load_elf_image(binary_data: &[u8], load_bias: Option<VirtAddr>) -> Result
         VirtAddr::new(0)
     };
 
-    // Calculate entry point
+    // Calculate entry point. e_entry is attacker-controlled, so use try_new and
+    // checked arithmetic to reject non-canonical / overflowing addresses instead of
+    // panicking inside VirtAddr::new / the Add impl.
     let entry_point = if is_pie {
-        base_address + header.e_entry
+        let addr = base_address
+            .as_u64()
+            .checked_add(header.e_entry)
+            .ok_or(ElfError::InvalidEntryPoint)?;
+        VirtAddr::try_new(addr).map_err(|_| ElfError::InvalidEntryPoint)?
     } else {
-        VirtAddr::new(header.e_entry)
+        VirtAddr::try_new(header.e_entry).map_err(|_| ElfError::InvalidEntryPoint)?
     };
 
     // Load segments
@@ -58,13 +63,22 @@ pub fn load_elf_image(binary_data: &[u8], load_bias: Option<VirtAddr>) -> Result
     let mut max_addr = 0u64;
 
     for segment in segments {
+        // segment.vaddr() is attacker-controlled; reject non-canonical / overflowing
+        // addresses via try_new + checked arithmetic rather than panicking.
         let vaddr = if is_pie {
-            base_address + segment.vaddr()
+            let addr = base_address
+                .as_u64()
+                .checked_add(segment.vaddr())
+                .ok_or(ElfError::InvalidProgramHeader)?;
+            VirtAddr::try_new(addr).map_err(|_| ElfError::InvalidProgramHeader)?
         } else {
-            VirtAddr::new(segment.vaddr())
+            VirtAddr::try_new(segment.vaddr()).map_err(|_| ElfError::InvalidProgramHeader)?
         };
 
-        let segment_end = vaddr.as_u64() + segment.mem_size() as u64;
+        let segment_end = vaddr
+            .as_u64()
+            .checked_add(segment.mem_size() as u64)
+            .ok_or(ElfError::SizeOverflow)?;
         max_addr = max_addr.max(segment_end);
 
         let segment_type = match segment.p_type {
@@ -97,7 +111,8 @@ pub fn load_elf_image(binary_data: &[u8], load_bias: Option<VirtAddr>) -> Result
 
     // Calculate program break (for heap)
     // Align up to page boundary
-    let program_break = VirtAddr::new(align_up(max_addr, PAGE_SIZE as u64));
+    let program_break = VirtAddr::try_new(align_up(max_addr, PAGE_SIZE as u64))
+        .map_err(|_| ElfError::SizeOverflow)?;
 
     // Set stack address
     let stack_address = VirtAddr::new(DEFAULT_STACK_TOP);
@@ -156,6 +171,18 @@ where
     A: FrameAllocator<Size4KiB>,
 {
     let start_addr = segment.vaddr;
+
+    // Reject any segment whose [vaddr, vaddr + mem_size) range escapes the user
+    // address space before mapping it USER_ACCESSIBLE. vaddr is attacker-controlled.
+    let start = start_addr.as_u64();
+    let end = start
+        .checked_add(segment.mem_size as u64)
+        .ok_or(ElfError::SizeOverflow)?;
+    if start < crate::memory::USER_SPACE_START as u64 || end > crate::memory::USER_SPACE_END as u64
+    {
+        return Err(ElfError::InvalidProgramHeader);
+    }
+
     let end_addr = start_addr + segment.mem_size as u64;
 
     // Get page table flags
@@ -185,10 +212,7 @@ where
 
         if segment_offset < prog_header.offset() + segment.file_size {
             // This page contains file data
-            let bytes_to_copy = core::cmp::min(
-                PAGE_SIZE,
-                segment.file_size - page_offset as usize,
-            );
+            let bytes_to_copy = core::cmp::min(PAGE_SIZE, segment.file_size - page_offset as usize);
 
             if bytes_to_copy > 0 && segment_offset + bytes_to_copy <= binary_data.len() {
                 let src = &binary_data[segment_offset..segment_offset + bytes_to_copy];
@@ -199,18 +223,18 @@ where
 
                     // Zero the rest of the page if needed
                     if bytes_to_copy < PAGE_SIZE {
-                        core::ptr::write_bytes(dst.add(bytes_to_copy), 0, PAGE_SIZE - bytes_to_copy);
+                        core::ptr::write_bytes(
+                            dst.add(bytes_to_copy),
+                            0,
+                            PAGE_SIZE - bytes_to_copy,
+                        );
                     }
                 }
             }
         } else {
             // This is BSS (zero-initialized data)
             unsafe {
-                core::ptr::write_bytes(
-                    page.start_address().as_mut_ptr::<u8>(),
-                    0,
-                    PAGE_SIZE,
-                );
+                core::ptr::write_bytes(page.start_address().as_mut_ptr::<u8>(), 0, PAGE_SIZE);
             }
         }
     }
@@ -256,11 +280,7 @@ where
 
         // Zero the stack page
         unsafe {
-            core::ptr::write_bytes(
-                page.start_address().as_mut_ptr::<u8>(),
-                0,
-                PAGE_SIZE,
-            );
+            core::ptr::write_bytes(page.start_address().as_mut_ptr::<u8>(), 0, PAGE_SIZE);
         }
     }
 
@@ -282,7 +302,7 @@ fn align_down(value: u64, align: u64) -> u64 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_alignment() {
         assert_eq!(align_up(0x1000, 0x1000), 0x1000);
         assert_eq!(align_up(0x1001, 0x1000), 0x2000);
@@ -293,7 +313,7 @@ mod tests {
         assert_eq!(align_down(0x1fff, 0x1000), 0x1000);
     }
 
-    #[test]
+    #[test_case]
     fn test_segment_flags() {
         let flags = SegmentFlags {
             readable: true,

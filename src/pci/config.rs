@@ -150,20 +150,32 @@ impl fmt::Display for BarInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.bar_type {
             BarType::Unused => write!(f, "Unused"),
-            BarType::Io => write!(f, "I/O at 0x{:08x} (size: 0x{:x})", self.base_address, self.size),
+            BarType::Io => write!(
+                f,
+                "I/O at 0x{:08x} (size: 0x{:x})",
+                self.base_address, self.size
+            ),
             BarType::Memory32 => write!(
                 f,
                 "Memory32 at 0x{:08x} (size: 0x{:x}){}",
                 self.base_address,
                 self.size,
-                if self.prefetchable { " [prefetchable]" } else { "" }
+                if self.prefetchable {
+                    " [prefetchable]"
+                } else {
+                    ""
+                }
             ),
             BarType::Memory64 => write!(
                 f,
                 "Memory64 at 0x{:016x} (size: 0x{:x}){}",
                 self.base_address,
                 self.size,
-                if self.prefetchable { " [prefetchable]" } else { "" }
+                if self.prefetchable {
+                    " [prefetchable]"
+                } else {
+                    ""
+                }
             ),
         }
     }
@@ -173,10 +185,10 @@ impl fmt::Display for BarInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PowerState {
-    D0 = 0, // Fully On
-    D1 = 1, // Low Power
-    D2 = 2, // Lower Power
-    D3Hot = 3, // Off, but PCI config space accessible
+    D0 = 0,     // Fully On
+    D1 = 1,     // Low Power
+    D2 = 2,     // Lower Power
+    D3Hot = 3,  // Off, but PCI config space accessible
     D3Cold = 4, // Off, PCI config space not accessible
 }
 
@@ -270,17 +282,39 @@ impl PciConfigManager {
 
         while i < 6 {
             let bar_offset = PCI_BAR0 + (i * 4) as u8;
-            let original_value = self.scanner().read_config_dword(device.bus, device.device, device.function, bar_offset);
+            let original_value = self.scanner().read_config_dword(
+                device.bus,
+                device.device,
+                device.function,
+                bar_offset,
+            );
 
             let mut bar_info = BarInfo::from_raw(original_value);
 
             if bar_info.bar_type != BarType::Unused {
                 // Determine BAR size by writing all 1s and reading back
-                self.scanner().write_config_dword(device.bus, device.device, device.function, bar_offset, 0xFFFFFFFF);
-                let size_mask = self.scanner().read_config_dword(device.bus, device.device, device.function, bar_offset);
+                self.scanner().write_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    bar_offset,
+                    0xFFFFFFFF,
+                );
+                let size_mask = self.scanner().read_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    bar_offset,
+                );
 
                 // Restore original value
-                self.scanner().write_config_dword(device.bus, device.device, device.function, bar_offset, original_value);
+                self.scanner().write_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    bar_offset,
+                    original_value,
+                );
 
                 // Calculate size
                 let size_bits = if bar_info.is_io() {
@@ -296,13 +330,35 @@ impl PciConfigManager {
                 // Handle 64-bit BARs
                 if bar_info.bar_type == BarType::Memory64 && i < 5 {
                     let next_bar_offset = PCI_BAR0 + ((i + 1) * 4) as u8;
-                    let upper_value = self.scanner().read_config_dword(device.bus, device.device, device.function, next_bar_offset);
+                    let upper_value = self.scanner().read_config_dword(
+                        device.bus,
+                        device.device,
+                        device.function,
+                        next_bar_offset,
+                    );
                     bar_info.base_address |= (upper_value as u64) << 32;
 
                     // Determine upper 32-bit size
-                    self.scanner().write_config_dword(device.bus, device.device, device.function, next_bar_offset, 0xFFFFFFFF);
-                    let upper_size_mask = self.scanner().read_config_dword(device.bus, device.device, device.function, next_bar_offset);
-                    self.scanner().write_config_dword(device.bus, device.device, device.function, next_bar_offset, upper_value);
+                    self.scanner().write_config_dword(
+                        device.bus,
+                        device.device,
+                        device.function,
+                        next_bar_offset,
+                        0xFFFFFFFF,
+                    );
+                    let upper_size_mask = self.scanner().read_config_dword(
+                        device.bus,
+                        device.device,
+                        device.function,
+                        next_bar_offset,
+                    );
+                    self.scanner().write_config_dword(
+                        device.bus,
+                        device.device,
+                        device.function,
+                        next_bar_offset,
+                        upper_value,
+                    );
 
                     if upper_size_mask != 0 {
                         let full_size_mask = ((upper_size_mask as u64) << 32) | (size_bits as u64);
@@ -334,7 +390,12 @@ impl PciConfigManager {
 
     /// Enable or disable I/O space access
     pub fn set_io_enable(&self, device: &PciDevice, enable: bool) -> Result<(), &'static str> {
-        let mut command = self.scanner().read_config_word(device.bus, device.device, device.function, PCI_COMMAND);
+        let mut command = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_COMMAND,
+        );
 
         if enable {
             command |= PCI_COMMAND_IO;
@@ -342,13 +403,24 @@ impl PciConfigManager {
             command &= !PCI_COMMAND_IO;
         }
 
-        self.scanner().write_config_word(device.bus, device.device, device.function, PCI_COMMAND, command);
+        self.scanner().write_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_COMMAND,
+            command,
+        );
         Ok(())
     }
 
     /// Enable or disable memory space access
     pub fn set_memory_enable(&self, device: &PciDevice, enable: bool) -> Result<(), &'static str> {
-        let mut command = self.scanner().read_config_word(device.bus, device.device, device.function, PCI_COMMAND);
+        let mut command = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_COMMAND,
+        );
 
         if enable {
             command |= PCI_COMMAND_MEMORY;
@@ -356,13 +428,28 @@ impl PciConfigManager {
             command &= !PCI_COMMAND_MEMORY;
         }
 
-        self.scanner().write_config_word(device.bus, device.device, device.function, PCI_COMMAND, command);
+        self.scanner().write_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_COMMAND,
+            command,
+        );
         Ok(())
     }
 
     /// Enable or disable bus mastering
-    pub fn set_bus_master_enable(&self, device: &PciDevice, enable: bool) -> Result<(), &'static str> {
-        let mut command = self.scanner().read_config_word(device.bus, device.device, device.function, PCI_COMMAND);
+    pub fn set_bus_master_enable(
+        &self,
+        device: &PciDevice,
+        enable: bool,
+    ) -> Result<(), &'static str> {
+        let mut command = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_COMMAND,
+        );
 
         if enable {
             command |= PCI_COMMAND_MASTER;
@@ -370,34 +457,58 @@ impl PciConfigManager {
             command &= !PCI_COMMAND_MASTER;
         }
 
-        self.scanner().write_config_word(device.bus, device.device, device.function, PCI_COMMAND, command);
+        self.scanner().write_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_COMMAND,
+            command,
+        );
         Ok(())
     }
 
     /// Get current command register value
     pub fn get_command(&self, device: &PciDevice) -> u16 {
-        self.scanner().read_config_word(device.bus, device.device, device.function, PCI_COMMAND)
+        self.scanner()
+            .read_config_word(device.bus, device.device, device.function, PCI_COMMAND)
     }
 
     /// Get current status register value
     pub fn get_status(&self, device: &PciDevice) -> u16 {
-        self.scanner().read_config_word(device.bus, device.device, device.function, PCI_STATUS)
+        self.scanner()
+            .read_config_word(device.bus, device.device, device.function, PCI_STATUS)
     }
 
     /// Set interrupt line
     pub fn set_interrupt_line(&self, device: &PciDevice, irq: u8) -> Result<(), &'static str> {
-        self.scanner().write_config_byte(device.bus, device.device, device.function, PCI_INTERRUPT_LINE, irq);
+        self.scanner().write_config_byte(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_INTERRUPT_LINE,
+            irq,
+        );
         Ok(())
     }
 
     /// Get interrupt line
     pub fn get_interrupt_line(&self, device: &PciDevice) -> u8 {
-        self.scanner().read_config_byte(device.bus, device.device, device.function, PCI_INTERRUPT_LINE)
+        self.scanner().read_config_byte(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_INTERRUPT_LINE,
+        )
     }
 
     /// Get interrupt pin
     pub fn get_interrupt_pin(&self, device: &PciDevice) -> u8 {
-        self.scanner().read_config_byte(device.bus, device.device, device.function, PCI_INTERRUPT_PIN)
+        self.scanner().read_config_byte(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_INTERRUPT_PIN,
+        )
     }
 
     /// Read MSI capability if present
@@ -410,34 +521,79 @@ impl PciConfigManager {
         let mut msi_config = MsiConfig::default();
 
         // Read MSI Control Register
-        let control = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 2);
+        let control = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 2,
+        );
         msi_config.enabled = (control & 0x01) != 0;
         msi_config.multiple_message_capable = ((control >> 1) & 0x07) as u8;
         msi_config.multiple_message_enable = ((control >> 4) & 0x07) as u8;
 
         // Read Message Address
-        let addr_low = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 4);
+        let addr_low = self.scanner().read_config_dword(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 4,
+        );
 
         if (control & 0x80) != 0 {
             // 64-bit address
-            let addr_high = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 8);
+            let addr_high = self.scanner().read_config_dword(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 8,
+            );
             msi_config.address = ((addr_high as u64) << 32) | (addr_low as u64);
-            msi_config.data = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 12);
+            msi_config.data = self.scanner().read_config_word(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 12,
+            );
 
             if (control & 0x100) != 0 {
                 // Per-vector masking capable
-                msi_config.mask_bits = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 16);
-                msi_config.pending_bits = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 20);
+                msi_config.mask_bits = self.scanner().read_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    cap_ptr + 16,
+                );
+                msi_config.pending_bits = self.scanner().read_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    cap_ptr + 20,
+                );
             }
         } else {
             // 32-bit address
             msi_config.address = addr_low as u64;
-            msi_config.data = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 8);
+            msi_config.data = self.scanner().read_config_word(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 8,
+            );
 
             if (control & 0x100) != 0 {
                 // Per-vector masking capable
-                msi_config.mask_bits = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 12);
-                msi_config.pending_bits = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 16);
+                msi_config.mask_bits = self.scanner().read_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    cap_ptr + 12,
+                );
+                msi_config.pending_bits = self.scanner().read_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    cap_ptr + 16,
+                );
             }
         }
 
@@ -454,18 +610,33 @@ impl PciConfigManager {
         let mut msi_x_config = MsiXConfig::default();
 
         // Read MSI-X Control Register
-        let control = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 2);
+        let control = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 2,
+        );
         msi_x_config.enabled = (control & 0x8000) != 0;
         msi_x_config.function_mask = (control & 0x4000) != 0;
         msi_x_config.table_size = (control & 0x07FF) + 1;
 
         // Read Table Offset/BIR
-        let table_reg = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 4);
+        let table_reg = self.scanner().read_config_dword(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 4,
+        );
         msi_x_config.table_bar = (table_reg & 0x07) as u8;
         msi_x_config.table_offset = table_reg & 0xFFFFFFF8;
 
         // Read Pending Offset/BIR
-        let pending_reg = self.scanner().read_config_dword(device.bus, device.device, device.function, cap_ptr + 8);
+        let pending_reg = self.scanner().read_config_dword(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 8,
+        );
         msi_x_config.pending_bar = (pending_reg & 0x07) as u8;
         msi_x_config.pending_offset = pending_reg & 0xFFFFFFF8;
 
@@ -475,19 +646,45 @@ impl PciConfigManager {
     /// Find a specific capability by ID
     pub fn find_capability(&self, device: &PciDevice, cap_id: u8) -> Option<u8> {
         // Check if device has capabilities
-        let status = self.scanner().read_config_word(device.bus, device.device, device.function, PCI_STATUS);
+        let status =
+            self.scanner()
+                .read_config_word(device.bus, device.device, device.function, PCI_STATUS);
         if (status & PCI_STATUS_CAP_LIST) == 0 {
             return None;
         }
 
-        let mut cap_ptr = self.scanner().read_config_byte(device.bus, device.device, device.function, PCI_CAPABILITIES_PTR) & 0xFC;
+        let mut cap_ptr = self.scanner().read_config_byte(
+            device.bus,
+            device.device,
+            device.function,
+            PCI_CAPABILITIES_PTR,
+        ) & 0xFC;
 
+        // PCI config space is 256 bytes and capabilities are at least 4 bytes apart, so
+        // there can be at most 48 of them. Cap the iterations so a cyclic (malformed)
+        // capability-pointer chain cannot spin forever.
+        let mut iterations = 0;
         while cap_ptr != 0 && cap_ptr != 0xFF {
-            let current_cap_id = self.scanner().read_config_byte(device.bus, device.device, device.function, cap_ptr);
+            if iterations >= 48 {
+                return None;
+            }
+            iterations += 1;
+
+            let current_cap_id = self.scanner().read_config_byte(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr,
+            );
             if current_cap_id == cap_id {
                 return Some(cap_ptr);
             }
-            cap_ptr = self.scanner().read_config_byte(device.bus, device.device, device.function, cap_ptr + 1) & 0xFC;
+            cap_ptr = self.scanner().read_config_byte(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 1,
+            ) & 0xFC;
         }
 
         None
@@ -500,7 +697,12 @@ impl PciConfigManager {
         }
 
         let cap_ptr = self.find_capability(device, 0x01)?;
-        let pmcsr = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 4);
+        let pmcsr = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 4,
+        );
         let power_state = pmcsr & 0x03;
 
         match power_state {
@@ -513,49 +715,108 @@ impl PciConfigManager {
     }
 
     /// Set device power state
-    pub fn set_power_state(&self, device: &PciDevice, state: PowerState) -> Result<(), &'static str> {
+    pub fn set_power_state(
+        &self,
+        device: &PciDevice,
+        state: PowerState,
+    ) -> Result<(), &'static str> {
         if !device.capabilities.power_management {
             return Err("Device does not support power management");
         }
 
-        let cap_ptr = self.find_capability(device, 0x01).ok_or("Power management capability not found")?;
-        let mut pmcsr = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 4);
+        let cap_ptr = self
+            .find_capability(device, 0x01)
+            .ok_or("Power management capability not found")?;
+        let mut pmcsr = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 4,
+        );
 
         // Clear current power state bits
         pmcsr &= !0x03;
         // Set new power state
         pmcsr |= state as u16;
 
-        self.scanner().write_config_word(device.bus, device.device, device.function, cap_ptr + 4, pmcsr);
+        self.scanner().write_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 4,
+            pmcsr,
+        );
         Ok(())
     }
 
     /// Enable MSI interrupts
-    pub fn enable_msi(&self, device: &PciDevice, address: u64, data: u16) -> Result<(), &'static str> {
+    pub fn enable_msi(
+        &self,
+        device: &PciDevice,
+        address: u64,
+        data: u16,
+    ) -> Result<(), &'static str> {
         if !device.capabilities.msi {
             return Err("Device does not support MSI");
         }
 
-        let cap_ptr = self.find_capability(device, 0x05).ok_or("MSI capability not found")?;
+        let cap_ptr = self
+            .find_capability(device, 0x05)
+            .ok_or("MSI capability not found")?;
 
         // Read control register to check address size
-        let control = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 2);
+        let control = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 2,
+        );
 
         // Write address
-        self.scanner().write_config_dword(device.bus, device.device, device.function, cap_ptr + 4, address as u32);
+        self.scanner().write_config_dword(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 4,
+            address as u32,
+        );
 
         if (control & 0x80) != 0 {
             // 64-bit address
-            self.scanner().write_config_dword(device.bus, device.device, device.function, cap_ptr + 8, (address >> 32) as u32);
-            self.scanner().write_config_word(device.bus, device.device, device.function, cap_ptr + 12, data);
+            self.scanner().write_config_dword(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 8,
+                (address >> 32) as u32,
+            );
+            self.scanner().write_config_word(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 12,
+                data,
+            );
         } else {
             // 32-bit address
-            self.scanner().write_config_word(device.bus, device.device, device.function, cap_ptr + 8, data);
+            self.scanner().write_config_word(
+                device.bus,
+                device.device,
+                device.function,
+                cap_ptr + 8,
+                data,
+            );
         }
 
         // Enable MSI
         let new_control = control | 0x01;
-        self.scanner().write_config_word(device.bus, device.device, device.function, cap_ptr + 2, new_control);
+        self.scanner().write_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 2,
+            new_control,
+        );
 
         Ok(())
     }
@@ -566,12 +827,25 @@ impl PciConfigManager {
             return Err("Device does not support MSI");
         }
 
-        let cap_ptr = self.find_capability(device, 0x05).ok_or("MSI capability not found")?;
+        let cap_ptr = self
+            .find_capability(device, 0x05)
+            .ok_or("MSI capability not found")?;
 
         // Disable MSI
-        let control = self.scanner().read_config_word(device.bus, device.device, device.function, cap_ptr + 2);
+        let control = self.scanner().read_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 2,
+        );
         let new_control = control & !0x01;
-        self.scanner().write_config_word(device.bus, device.device, device.function, cap_ptr + 2, new_control);
+        self.scanner().write_config_word(
+            device.bus,
+            device.device,
+            device.function,
+            cap_ptr + 2,
+            new_control,
+        );
 
         Ok(())
     }
@@ -581,16 +855,18 @@ impl PciConfigManager {
         // Production: only report critical configuration problems
         let command = self.get_command(device);
         let status = self.get_status(device);
-        
+
         // Report critical errors only
-        if (status & 0xF900) != 0 { // Error bits
+        if (status & 0xF900) != 0 {
+            // Error bits
             crate::println!("PCI {} error: status 0x{:04x}", device.location(), status);
         }
 
         // Report if critical device is disabled
         let class_val = device.class_code as u8;
         if (class_val == 0x03 || class_val == 0x02) && // VGA or Network
-           (command & (PCI_COMMAND_IO | PCI_COMMAND_MEMORY)) == 0 {
+           (command & (PCI_COMMAND_IO | PCI_COMMAND_MEMORY)) == 0
+        {
             crate::println!("Critical device {} disabled", device.location());
         }
     }

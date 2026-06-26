@@ -3,10 +3,10 @@
 //! This module provides automatic hardware discovery, device categorization,
 //! resource conflict detection, and hot-plug support preparation.
 
-use crate::pci::{PciClass, PciDevice, PciBusScanner, get_pci_scanner};
 use crate::pci::config::PciConfigManager;
-use alloc::vec::Vec;
+use crate::pci::{get_pci_scanner, PciBusScanner, PciClass, PciDevice};
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::fmt;
 
 /// Hardware detection results
@@ -166,7 +166,9 @@ impl HardwareDetector {
         // Categorize devices by class
         for device in devices {
             let class = device.class_code;
-            results.devices_by_class.entry(class)
+            results
+                .devices_by_class
+                .entry(class)
                 .or_insert_with(Vec::new)
                 .push(device.clone());
 
@@ -200,7 +202,10 @@ impl HardwareDetector {
     }
 
     /// Detect resource conflicts between devices
-    fn detect_resource_conflicts(&self, scanner: &PciBusScanner) -> Result<Vec<ResourceConflict>, &'static str> {
+    fn detect_resource_conflicts(
+        &self,
+        scanner: &PciBusScanner,
+    ) -> Result<Vec<ResourceConflict>, &'static str> {
         let mut conflicts = Vec::new();
         let devices = scanner.get_devices();
         let config_manager = PciConfigManager::new(scanner);
@@ -228,7 +233,8 @@ impl HardwareDetector {
             // Track interrupt usage
             let irq_line = config_manager.get_interrupt_line(device);
             if irq_line != 0 && irq_line != 0xFF {
-                interrupt_map.entry(irq_line)
+                interrupt_map
+                    .entry(irq_line)
                     .or_insert_with(Vec::new)
                     .push(device.clone());
             }
@@ -317,14 +323,16 @@ impl HardwareDetector {
         }
 
         // High severity for storage or network conflicts
-        if matches!(dev1.class_code, PciClass::MassStorage | PciClass::Network) ||
-           matches!(dev2.class_code, PciClass::MassStorage | PciClass::Network) {
+        if matches!(dev1.class_code, PciClass::MassStorage | PciClass::Network)
+            || matches!(dev2.class_code, PciClass::MassStorage | PciClass::Network)
+        {
             return ConflictSeverity::High;
         }
 
         // Medium severity for multimedia or graphics
-        if matches!(dev1.class_code, PciClass::Multimedia | PciClass::Display) ||
-           matches!(dev2.class_code, PciClass::Multimedia | PciClass::Display) {
+        if matches!(dev1.class_code, PciClass::Multimedia | PciClass::Display)
+            || matches!(dev2.class_code, PciClass::Multimedia | PciClass::Display)
+        {
             return ConflictSeverity::Medium;
         }
 
@@ -334,14 +342,14 @@ impl HardwareDetector {
     /// Check if interrupt sharing is problematic for specific device types
     fn is_interrupt_sharing_problematic(&self, dev1: &PciDevice, dev2: &PciDevice) -> bool {
         // Real-time or high-performance devices shouldn't share interrupts
-        matches!(dev1.class_code, PciClass::MassStorage | PciClass::Network) &&
-        matches!(dev2.class_code, PciClass::MassStorage | PciClass::Network)
+        matches!(dev1.class_code, PciClass::MassStorage | PciClass::Network)
+            && matches!(dev2.class_code, PciClass::MassStorage | PciClass::Network)
     }
 
     /// Determine if a device is critical for system operation
     fn is_critical_device(&self, device: &PciDevice) -> bool {
         match device.class_code {
-            PciClass::Bridge => true, // Bridge devices are critical
+            PciClass::Bridge => true,           // Bridge devices are critical
             PciClass::SystemPeripheral => true, // System devices
             PciClass::MassStorage => {
                 // Storage controllers are critical if they're likely the boot device
@@ -370,36 +378,32 @@ impl HardwareDetector {
                     _ => "generic_net",
                 }
             }
-            DeviceCategory::StorageController => {
-                match device.subclass {
-                    0x01 => "ide",
-                    0x06 => "ahci",
-                    0x07 => "nvme",
-                    _ => "generic_storage",
-                }
-            }
+            DeviceCategory::StorageController => match device.subclass {
+                0x01 => "ide",
+                0x06 => "ahci",
+                0x07 => "nvme",
+                _ => "generic_storage",
+            },
             DeviceCategory::GraphicsCard => {
                 match device.vendor_id {
-                    0x8086 => "i915",   // Intel
-                    0x1002 => "amdgpu", // AMD/ATI
+                    0x8086 => "i915",    // Intel
+                    0x1002 => "amdgpu",  // AMD/ATI
                     0x10DE => "nouveau", // NVIDIA
                     _ => "generic_gpu",
                 }
             }
             DeviceCategory::AudioDevice => "hda",
-            DeviceCategory::UsbController => {
-                match device.subclass {
-                    0x00 => "uhci",
-                    0x10 => "ohci",
-                    0x20 => "ehci",
-                    0x30 => "xhci",
-                    _ => "generic_usb",
-                }
-            }
+            DeviceCategory::UsbController => match device.subclass {
+                0x00 => "uhci",
+                0x10 => "ohci",
+                0x20 => "ehci",
+                0x30 => "xhci",
+                _ => "generic_usb",
+            },
             DeviceCategory::WirelessCard => {
                 match device.vendor_id {
-                    0x8086 => "iwlwifi", // Intel
-                    0x168C => "ath9k",   // Atheros
+                    0x8086 => "iwlwifi",   // Intel
+                    0x168C => "ath9k",     // Atheros
                     0x14E4 => "brcm80211", // Broadcom
                     _ => "generic_wifi",
                 }
@@ -439,13 +443,16 @@ impl HardwareDetector {
     /// Production hardware detection report - only critical issues
     pub fn print_detection_report(&self, results: &HardwareDetectionResults) {
         // Production: only report critical information and errors
-        
+
         // Report only critical resource conflicts
         if !results.resource_conflicts.is_empty() {
             for conflict in &results.resource_conflicts {
                 if conflict.severity == ConflictSeverity::Critical {
-                    crate::println!("Critical PCI conflict: {} and {}",
-                                   conflict.device1.location(), conflict.device2.location());
+                    crate::println!(
+                        "Critical PCI conflict: {} and {}",
+                        conflict.device1.location(),
+                        conflict.device2.location()
+                    );
                 }
             }
         }
@@ -484,7 +491,9 @@ pub fn find_device_by_location(location: &str) -> Option<PciDevice> {
     let device = u8::from_str_radix(dev_func[0], 16).ok()?;
     let function = u8::from_str_radix(dev_func[1], 10).ok()?;
 
-    scanner.get_devices().iter()
+    scanner
+        .get_devices()
+        .iter()
         .find(|d| d.bus == bus && d.device == device && d.function == function)
         .cloned()
 }
@@ -494,7 +503,9 @@ pub fn get_devices_by_category(category: DeviceCategory) -> Vec<PciDevice> {
     let scanner = get_pci_scanner().lock();
     let detector = HardwareDetector::new();
 
-    scanner.get_devices().iter()
+    scanner
+        .get_devices()
+        .iter()
         .filter(|device| detector.get_device_category(device) == category)
         .cloned()
         .collect()

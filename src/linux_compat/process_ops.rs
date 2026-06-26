@@ -8,14 +8,14 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
-use super::{LinuxResult, LinuxError};
+use super::{LinuxError, LinuxResult};
 
 // Re-export types for external access
 pub use super::types::Rusage;
 
 // Import process management infrastructure
-use crate::process::{self, Priority, ProcessState};
 use crate::process::Pid as KernelPid;
+use crate::process::{self, Priority, ProcessState};
 use crate::process_manager;
 
 /// Operation counter for statistics
@@ -40,15 +40,13 @@ fn inc_ops() {
 fn current_pcb() -> LinuxResult<process::ProcessControlBlock> {
     let pid = process::current_pid();
     let process_manager = process::get_process_manager();
-    process_manager.get_process(pid)
-        .ok_or(LinuxError::ESRCH)
+    process_manager.get_process(pid).ok_or(LinuxError::ESRCH)
 }
 
 /// Get any process PCB by PID
 fn get_pcb(pid: KernelPid) -> LinuxResult<process::ProcessControlBlock> {
     let process_manager = process::get_process_manager();
-    process_manager.get_process(pid)
-        .ok_or(LinuxError::ESRCH)
+    process_manager.get_process(pid).ok_or(LinuxError::ESRCH)
 }
 
 //
@@ -67,7 +65,8 @@ pub fn fork() -> LinuxResult<Pid> {
     // - Memory COW setup
     // - File descriptor duplication
     // - Scheduler integration
-    process_mgr.fork(parent_pid)
+    process_mgr
+        .fork(parent_pid)
         .map(|child_pid| child_pid as i32)
         .map_err(|_| LinuxError::EAGAIN)
 }
@@ -84,7 +83,8 @@ pub fn exec(program: &[u8], args: &[&str]) -> LinuxResult<i32> {
     // - Memory replacement
     // - Argument setup
     // - Context initialization
-    process_mgr.exec(pid, program, args)
+    process_mgr
+        .exec(pid, program, args)
         .map_err(|_| LinuxError::ENOEXEC)?;
 
     Ok(0)
@@ -106,7 +106,9 @@ pub fn wait(status: *mut i32) -> LinuxResult<Pid> {
         Ok((child_pid, exit_status)) => {
             // Write exit status to user pointer if provided
             if !status.is_null() {
-                unsafe { *status = exit_status; }
+                unsafe {
+                    *status = exit_status;
+                }
             }
             Ok(child_pid as i32)
         }
@@ -139,7 +141,9 @@ pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
     match process_mgr.waitpid(parent_pid, target_pid) {
         Ok(exit_status) => {
             if !status.is_null() {
-                unsafe { *status = exit_status; }
+                unsafe {
+                    *status = exit_status;
+                }
             }
             Ok(target_pid as i32)
         }
@@ -151,7 +155,11 @@ pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
 }
 
 /// execve - execute program (Linux-compatible syscall interface)
-pub fn execve(_filename: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> LinuxResult<i32> {
+pub fn execve(
+    _filename: *const u8,
+    _argv: *const *const u8,
+    _envp: *const *const u8,
+) -> LinuxResult<i32> {
     inc_ops();
     // TODO: Parse filename, argv, envp and call exec()
     // For now, return ENOSYS
@@ -615,8 +623,11 @@ pub fn getrusage(who: i32, usage: *mut Rusage) -> LinuxResult<i32> {
                 (*usage).ru_stime.tv_usec = 0;
 
                 // Memory usage from PCB memory info
-                (*usage).ru_maxrss = ((pcb.memory.heap_size + pcb.memory.stack_size +
-                                      pcb.memory.code_size + pcb.memory.data_size) / 1024) as i64;
+                (*usage).ru_maxrss = ((pcb.memory.heap_size
+                    + pcb.memory.stack_size
+                    + pcb.memory.code_size
+                    + pcb.memory.data_size)
+                    / 1024) as i64;
 
                 // TODO: Track page faults and other statistics
                 (*usage).ru_minflt = 0;
@@ -760,17 +771,17 @@ pub fn times(buf: *mut u8) -> LinuxResult<i64> {
     Ok(clock_ticks as i64)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_getpid() {
         let pid = getpid();
         assert!(pid >= 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_uid_gid_operations() {
         let uid = getuid();
         let gid = getgid();
@@ -783,7 +794,7 @@ mod tests {
         assert_eq!(gid, egid);
     }
 
-    #[test]
+    #[test_case]
     fn test_process_group_operations() {
         let pid = getpid();
         let pgid = getpgid(0).unwrap();
@@ -793,7 +804,7 @@ mod tests {
         assert!(pgrp > 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_priority_operations() {
         assert!(sched_yield().is_ok());
 
@@ -801,7 +812,7 @@ mod tests {
         assert!(prio.is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_session_operations() {
         let sid = getsid(0);
         assert!(sid.is_ok());

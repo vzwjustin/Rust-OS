@@ -3,8 +3,8 @@
 //! This module provides integration with the Intel i915 opensource driver
 //! for Intel integrated graphics processors.
 
-use alloc::vec;
 use alloc::string::ToString;
+use alloc::vec;
 
 /// Intel i915 driver context for Intel GPUs
 #[derive(Debug)]
@@ -26,49 +26,70 @@ pub struct I915Context {
 /// Intel GPU generations
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IntelGeneration {
-    Gen2,     // i8xx
-    Gen3,     // i915, i945
-    Gen4,     // i965, G35
-    Gen45,    // G45, Q45
-    Gen5,     // Ironlake
-    Gen6,     // Sandy Bridge
-    Gen7,     // Ivy Bridge
-    Gen75,    // Haswell
-    Gen8,     // Broadwell
-    Gen9,     // Skylake, Kaby Lake
-    Gen95,    // Coffee Lake, Whiskey Lake
-    Gen11,    // Ice Lake
-    Gen12,    // Tiger Lake, Rocket Lake
-    Gen125,   // Alder Lake, DG1
+    Gen2,   // i8xx
+    Gen3,   // i915, i945
+    Gen4,   // i965, G35
+    Gen45,  // G45, Q45
+    Gen5,   // Ironlake
+    Gen6,   // Sandy Bridge
+    Gen7,   // Ivy Bridge
+    Gen75,  // Haswell
+    Gen8,   // Broadwell
+    Gen9,   // Skylake, Kaby Lake
+    Gen95,  // Coffee Lake, Whiskey Lake
+    Gen11,  // Ice Lake
+    Gen12,  // Tiger Lake, Rocket Lake
+    Gen125, // Alder Lake, DG1
 }
 
 /// Intel GPU platforms
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IntelPlatform {
-    I830, I845, I855, I865,                    // Gen2
-    I915, I945,                                // Gen3
-    I965, G35, Q35, Q33,                       // Gen4
-    G45, Q45, G41,                             // Gen4.5
-    Ironlake,                                  // Gen5
-    SandyBridge,                               // Gen6
-    IvyBridge,                                 // Gen7
-    Haswell, BayTrail,                         // Gen7.5
-    Broadwell, Cherryview,                     // Gen8
-    Skylake, Broxton, KabyLake, GeminiLake,   // Gen9
-    CoffeeLake, WhiskeyLake, CometLake,        // Gen9.5
-    IceLake, ElkhartLake, JasperLake,          // Gen11
-    TigerLake, RocketLake, DG1,                // Gen12
-    AlderLake, DG2,                            // Gen12.5
+    I830,
+    I845,
+    I855,
+    I865, // Gen2
+    I915,
+    I945, // Gen3
+    I965,
+    G35,
+    Q35,
+    Q33, // Gen4
+    G45,
+    Q45,
+    G41,         // Gen4.5
+    Ironlake,    // Gen5
+    SandyBridge, // Gen6
+    IvyBridge,   // Gen7
+    Haswell,
+    BayTrail, // Gen7.5
+    Broadwell,
+    Cherryview, // Gen8
+    Skylake,
+    Broxton,
+    KabyLake,
+    GeminiLake, // Gen9
+    CoffeeLake,
+    WhiskeyLake,
+    CometLake, // Gen9.5
+    IceLake,
+    ElkhartLake,
+    JasperLake, // Gen11
+    TigerLake,
+    RocketLake,
+    DG1, // Gen12
+    AlderLake,
+    DG2, // Gen12.5
 }
 
 /// Video engine support for Intel GPUs
 #[derive(Debug, Clone)]
 pub struct VideoEngineSupport {
-    pub has_bsd: bool,     // Bit Stream Decoder
-    pub has_blt: bool,     // Blitter engine
-    pub has_vebox: bool,   // Video Enhancement Box
-    pub has_vcs: bool,     // Video Command Streamer
-    pub has_vcs2: bool,    // Second Video Command Streamer
+    pub has_bsd: bool,   // Bit Stream Decoder
+    pub has_blt: bool,   // Blitter engine
+    pub has_vebox: bool, // Video Enhancement Box
+    pub has_vcs: bool,   // Video Command Streamer
+    pub has_vcs2: bool,  // Second Video Command Streamer
     pub has_hevc_decode: bool,
     pub has_hevc_encode: bool,
     pub has_vp9_decode: bool,
@@ -125,32 +146,34 @@ impl I915Context {
             0x0152 | 0x0156 | 0x015A | 0x0162 | 0x0166 | 0x016A => IntelGeneration::Gen7,
 
             // Gen7.5 (Haswell)
-            0x0402 | 0x0406 | 0x040A | 0x0412 | 0x0416 | 0x041A | 0x041E |
-            0x0422 | 0x0426 | 0x042A | 0x042B | 0x042E |
-            0x0A02 | 0x0A06 | 0x0A0A | 0x0A0B | 0x0A0E | 0x0A12 | 0x0A16 |
-            0x0A1A | 0x0A1E | 0x0A22 | 0x0A26 | 0x0A2A | 0x0A2B | 0x0A2E |
-            0x0D12 | 0x0D16 | 0x0D1A | 0x0D1B | 0x0D1E | 0x0D22 | 0x0D26 |
-            0x0D2A | 0x0D2B | 0x0D2E => IntelGeneration::Gen75,
+            0x0402 | 0x0406 | 0x040A | 0x0412 | 0x0416 | 0x041A | 0x041E | 0x0422 | 0x0426
+            | 0x042A | 0x042B | 0x042E | 0x0A02 | 0x0A06 | 0x0A0A | 0x0A0B | 0x0A0E | 0x0A12
+            | 0x0A16 | 0x0A1A | 0x0A1E | 0x0A22 | 0x0A26 | 0x0A2A | 0x0A2B | 0x0A2E | 0x0D12
+            | 0x0D16 | 0x0D1A | 0x0D1B | 0x0D1E | 0x0D22 | 0x0D26 | 0x0D2A | 0x0D2B | 0x0D2E => {
+                IntelGeneration::Gen75
+            }
 
             // Gen8 (Broadwell)
-            0x1602 | 0x1606 | 0x160A | 0x160B | 0x160D | 0x160E |
-            0x1612 | 0x1616 | 0x161A | 0x161B | 0x161D | 0x161E |
-            0x1622 | 0x1626 | 0x162A | 0x162B | 0x162D | 0x162E => IntelGeneration::Gen8,
+            0x1602 | 0x1606 | 0x160A | 0x160B | 0x160D | 0x160E | 0x1612 | 0x1616 | 0x161A
+            | 0x161B | 0x161D | 0x161E | 0x1622 | 0x1626 | 0x162A | 0x162B | 0x162D | 0x162E => {
+                IntelGeneration::Gen8
+            }
 
             // Gen9 (Skylake, Kaby Lake)
-            0x1902 | 0x1906 | 0x190A | 0x190B | 0x190E |
-            0x1912 | 0x1913 | 0x1915 | 0x1916 | 0x1917 | 0x191A | 0x191B | 0x191D | 0x191E |
-            0x1921 | 0x1923 | 0x1926 | 0x1927 | 0x192A | 0x192B | 0x192D |
-            0x5902 | 0x5906 | 0x590A | 0x590B | 0x590E |
-            0x5912 | 0x5913 | 0x5915 | 0x5916 | 0x5917 | 0x591A | 0x591B | 0x591C | 0x591D | 0x591E |
-            0x5921 | 0x5923 | 0x5926 | 0x5927 => IntelGeneration::Gen9,
+            0x1902 | 0x1906 | 0x190A | 0x190B | 0x190E | 0x1912 | 0x1913 | 0x1915 | 0x1916
+            | 0x1917 | 0x191A | 0x191B | 0x191D | 0x191E | 0x1921 | 0x1923 | 0x1926 | 0x1927
+            | 0x192A | 0x192B | 0x192D | 0x5902 | 0x5906 | 0x590A | 0x590B | 0x590E | 0x5912
+            | 0x5913 | 0x5915 | 0x5916 | 0x5917 | 0x591A | 0x591B | 0x591C | 0x591D | 0x591E
+            | 0x5921 | 0x5923 | 0x5926 | 0x5927 => IntelGeneration::Gen9,
 
             // Gen9.5 (Coffee Lake, Whiskey Lake)
-            0x3E90 | 0x3E91 | 0x3E92 | 0x3E93 | 0x3E94 | 0x3E96 | 0x3E98 | 0x3E9A | 0x3E9B |
-            0x3EA0 | 0x3EA5 | 0x3EA6 | 0x3EA7 | 0x3EA8 => IntelGeneration::Gen95,
+            0x3E90 | 0x3E91 | 0x3E92 | 0x3E93 | 0x3E94 | 0x3E96 | 0x3E98 | 0x3E9A | 0x3E9B
+            | 0x3EA0 | 0x3EA5 | 0x3EA6 | 0x3EA7 | 0x3EA8 => IntelGeneration::Gen95,
 
             // Gen11 (Ice Lake)
-            0x8A50 | 0x8A51 | 0x8A52 | 0x8A53 | 0x8A5A | 0x8A5B | 0x8A5C | 0x8A5D => IntelGeneration::Gen11,
+            0x8A50 | 0x8A51 | 0x8A52 | 0x8A53 | 0x8A5A | 0x8A5B | 0x8A5C | 0x8A5D => {
+                IntelGeneration::Gen11
+            }
 
             // Gen12 (Tiger Lake)
             0x9A40 | 0x9A49 | 0x9A60 | 0x9A68 | 0x9A70 | 0x9A78 => IntelGeneration::Gen12,
@@ -191,12 +214,15 @@ impl I915Context {
 
     fn get_execution_units(device_id: u16, generation: IntelGeneration) -> u32 {
         match generation {
-            IntelGeneration::Gen2 | IntelGeneration::Gen3 | IntelGeneration::Gen4 | IntelGeneration::Gen45 => 0,
+            IntelGeneration::Gen2
+            | IntelGeneration::Gen3
+            | IntelGeneration::Gen4
+            | IntelGeneration::Gen45 => 0,
             IntelGeneration::Gen5 => 12,
             IntelGeneration::Gen6 => match device_id {
-                0x0102 | 0x0106 | 0x010A => 6,  // HD 2000
-                0x0112 | 0x0116 => 12,          // HD 3000
-                0x0122 | 0x0126 => 12,          // HD 3000
+                0x0102 | 0x0106 | 0x010A => 6, // HD 2000
+                0x0112 | 0x0116 => 12,         // HD 3000
+                0x0122 | 0x0126 => 12,         // HD 3000
                 _ => 6,
             },
             IntelGeneration::Gen7 => match device_id {
@@ -205,7 +231,7 @@ impl I915Context {
                 _ => 16,
             },
             IntelGeneration::Gen75 => match device_id {
-                0x0402 | 0x0406 | 0x040A => 20,        // HD Graphics
+                0x0402 | 0x0406 | 0x040A => 20,          // HD Graphics
                 0x0412 | 0x0416 | 0x041A | 0x041E => 20, // HD 4600
                 0x0422 | 0x0426 | 0x042A | 0x042B => 40, // Iris 5100
                 0x0A22 | 0x0A26 | 0x0A2A | 0x0A2B => 40, // Iris 5100
@@ -219,30 +245,30 @@ impl I915Context {
                 _ => 24,
             },
             IntelGeneration::Gen9 => match device_id {
-                0x1902 | 0x1906 | 0x190A | 0x190B => 12, // HD 510
+                0x1902 | 0x1906 | 0x190A | 0x190B => 12,          // HD 510
                 0x1912 | 0x1913 | 0x1915 | 0x1916 | 0x1917 => 24, // HD 530/520
-                0x1926 | 0x1927 => 48,                   // Iris 540/550
-                0x192A | 0x192B | 0x192D => 72,          // Iris Pro 580/555
-                0x5902 | 0x5906 | 0x590A | 0x590B => 12, // HD 610
+                0x1926 | 0x1927 => 48,                            // Iris 540/550
+                0x192A | 0x192B | 0x192D => 72,                   // Iris Pro 580/555
+                0x5902 | 0x5906 | 0x590A | 0x590B => 12,          // HD 610
                 0x5912 | 0x5913 | 0x5915 | 0x5916 | 0x5917 => 24, // HD 630/620
-                0x5926 | 0x5927 => 48,                   // Iris Plus 640/650
+                0x5926 | 0x5927 => 48,                            // Iris Plus 640/650
                 _ => 24,
             },
             IntelGeneration::Gen95 => match device_id {
-                0x3E90 | 0x3E93 => 12,          // UHD 610
+                0x3E90 | 0x3E93 => 12,                   // UHD 610
                 0x3E91 | 0x3E92 | 0x3E98 | 0x3E9B => 24, // UHD 630
                 0x3EA5 | 0x3EA6 | 0x3EA7 | 0x3EA8 => 48, // Iris Plus 655/645
                 _ => 24,
             },
             IntelGeneration::Gen11 => match device_id {
-                0x8A50 | 0x8A5A => 32,          // Iris Plus G1
-                0x8A51 | 0x8A5B => 48,          // Iris Plus G4
+                0x8A50 | 0x8A5A => 32,                   // Iris Plus G1
+                0x8A51 | 0x8A5B => 48,                   // Iris Plus G4
                 0x8A52 | 0x8A53 | 0x8A5C | 0x8A5D => 64, // Iris Plus G7
                 _ => 64,
             },
             IntelGeneration::Gen12 => match device_id {
                 0x9A60 | 0x9A68 | 0x9A70 | 0x9A78 => 32, // UHD Graphics
-                0x9A40 | 0x9A49 => 96,                    // Iris Xe G7
+                0x9A40 | 0x9A49 => 96,                   // Iris Xe G7
                 _ => 96,
             },
             IntelGeneration::Gen125 => 96, // Xe Graphics
@@ -261,8 +287,8 @@ impl I915Context {
             IntelGeneration::Gen8 => (100, 1000),
             IntelGeneration::Gen9 => match device_id {
                 0x1926 | 0x1927 | 0x192A | 0x192B | 0x192D => (300, 1100), // Iris
-                0x5926 | 0x5927 => (300, 1100),                           // Iris Plus
-                _ => (300, 950),                                          // HD Graphics
+                0x5926 | 0x5927 => (300, 1100),                            // Iris Plus
+                _ => (300, 950),                                           // HD Graphics
             },
             IntelGeneration::Gen95 => (350, 1150),
             IntelGeneration::Gen11 => (300, 1100),
@@ -288,34 +314,29 @@ impl I915Context {
         // Returns (gt1, gt2, gt3, gt4)
         match device_id {
             // GT1 devices
-            0x0102 | 0x0106 | 0x010A | 0x0152 | 0x0156 | 0x015A |
-            0x0402 | 0x0406 | 0x040A | 0x0A02 | 0x0A06 | 0x0A0A | 0x0A0B | 0x0A0E |
-            0x1602 | 0x1606 | 0x160A | 0x160B | 0x160D | 0x160E |
-            0x1902 | 0x1906 | 0x190A | 0x190B | 0x190E |
-            0x5902 | 0x5906 | 0x590A | 0x590B | 0x590E |
-            0x3E90 | 0x3E93 | 0x9A60 | 0x9A68 | 0x9A70 | 0x9A78 => (true, false, false, false),
+            0x0102 | 0x0106 | 0x010A | 0x0152 | 0x0156 | 0x015A | 0x0402 | 0x0406 | 0x040A
+            | 0x0A02 | 0x0A06 | 0x0A0A | 0x0A0B | 0x0A0E | 0x1602 | 0x1606 | 0x160A | 0x160B
+            | 0x160D | 0x160E | 0x1902 | 0x1906 | 0x190A | 0x190B | 0x190E | 0x5902 | 0x5906
+            | 0x590A | 0x590B | 0x590E | 0x3E90 | 0x3E93 | 0x9A60 | 0x9A68 | 0x9A70 | 0x9A78 => {
+                (true, false, false, false)
+            }
 
             // GT2 devices
-            0x0112 | 0x0116 | 0x0122 | 0x0126 | 0x0162 | 0x0166 | 0x016A |
-            0x0412 | 0x0416 | 0x041A | 0x041E | 0x0A12 | 0x0A16 | 0x0A1A | 0x0A1E |
-            0x0D12 | 0x0D16 | 0x0D1A | 0x0D1B | 0x0D1E |
-            0x1612 | 0x1616 | 0x161A | 0x161B | 0x161D | 0x161E |
-            0x1912 | 0x1913 | 0x1915 | 0x1916 | 0x1917 | 0x191A | 0x191B | 0x191D | 0x191E |
-            0x1921 | 0x1923 |
-            0x5912 | 0x5913 | 0x5915 | 0x5916 | 0x5917 | 0x591A | 0x591B | 0x591C | 0x591D | 0x591E |
-            0x5921 | 0x5923 |
-            0x3E91 | 0x3E92 | 0x3E94 | 0x3E96 | 0x3E98 | 0x3E9A | 0x3E9B |
-            0x8A50 | 0x8A51 | 0x8A5A | 0x8A5B |
-            0x9A40 | 0x9A49 => (false, true, false, false),
+            0x0112 | 0x0116 | 0x0122 | 0x0126 | 0x0162 | 0x0166 | 0x016A | 0x0412 | 0x0416
+            | 0x041A | 0x041E | 0x0A12 | 0x0A16 | 0x0A1A | 0x0A1E | 0x0D12 | 0x0D16 | 0x0D1A
+            | 0x0D1B | 0x0D1E | 0x1612 | 0x1616 | 0x161A | 0x161B | 0x161D | 0x161E | 0x1912
+            | 0x1913 | 0x1915 | 0x1916 | 0x1917 | 0x191A | 0x191B | 0x191D | 0x191E | 0x1921
+            | 0x1923 | 0x5912 | 0x5913 | 0x5915 | 0x5916 | 0x5917 | 0x591A | 0x591B | 0x591C
+            | 0x591D | 0x591E | 0x5921 | 0x5923 | 0x3E91 | 0x3E92 | 0x3E94 | 0x3E96 | 0x3E98
+            | 0x3E9A | 0x3E9B | 0x8A50 | 0x8A51 | 0x8A5A | 0x8A5B | 0x9A40 | 0x9A49 => {
+                (false, true, false, false)
+            }
 
             // GT3 devices
-            0x0422 | 0x0426 | 0x042A | 0x042B | 0x042E |
-            0x0A22 | 0x0A26 | 0x0A2A | 0x0A2B | 0x0A2E |
-            0x1622 | 0x1626 | 0x162A | 0x162B | 0x162D | 0x162E |
-            0x1926 | 0x1927 | 0x192A | 0x192B | 0x192D |
-            0x5926 | 0x5927 |
-            0x3EA5 | 0x3EA6 | 0x3EA7 | 0x3EA8 |
-            0x8A52 | 0x8A53 | 0x8A5C | 0x8A5D => (false, false, true, false),
+            0x0422 | 0x0426 | 0x042A | 0x042B | 0x042E | 0x0A22 | 0x0A26 | 0x0A2A | 0x0A2B
+            | 0x0A2E | 0x1622 | 0x1626 | 0x162A | 0x162B | 0x162D | 0x162E | 0x1926 | 0x1927
+            | 0x192A | 0x192B | 0x192D | 0x5926 | 0x5927 | 0x3EA5 | 0x3EA6 | 0x3EA7 | 0x3EA8
+            | 0x8A52 | 0x8A53 | 0x8A5C | 0x8A5D => (false, false, true, false),
 
             // GT4 devices
             0x0D22 | 0x0D26 | 0x0D2A | 0x0D2B | 0x0D2E => (false, false, false, true),
@@ -324,51 +345,108 @@ impl I915Context {
         }
     }
 
-    fn get_video_engines(generation: IntelGeneration, _platform: IntelPlatform) -> VideoEngineSupport {
+    fn get_video_engines(
+        generation: IntelGeneration,
+        _platform: IntelPlatform,
+    ) -> VideoEngineSupport {
         VideoEngineSupport {
-            has_bsd: matches!(generation,
-                IntelGeneration::Gen5 | IntelGeneration::Gen6 | IntelGeneration::Gen7 |
-                IntelGeneration::Gen75 | IntelGeneration::Gen8 | IntelGeneration::Gen9 |
-                IntelGeneration::Gen95 | IntelGeneration::Gen11 | IntelGeneration::Gen12 |
-                IntelGeneration::Gen125),
-            has_blt: matches!(generation,
-                IntelGeneration::Gen6 | IntelGeneration::Gen7 | IntelGeneration::Gen75 |
-                IntelGeneration::Gen8 | IntelGeneration::Gen9 | IntelGeneration::Gen95 |
-                IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125),
-            has_vebox: matches!(generation,
-                IntelGeneration::Gen75 | IntelGeneration::Gen8 | IntelGeneration::Gen9 |
-                IntelGeneration::Gen95 | IntelGeneration::Gen11 | IntelGeneration::Gen12 |
-                IntelGeneration::Gen125),
-            has_vcs: matches!(generation,
-                IntelGeneration::Gen8 | IntelGeneration::Gen9 | IntelGeneration::Gen95 |
-                IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125),
-            has_vcs2: matches!(generation,
-                IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125),
-            has_hevc_decode: matches!(generation,
-                IntelGeneration::Gen9 | IntelGeneration::Gen95 | IntelGeneration::Gen11 |
-                IntelGeneration::Gen12 | IntelGeneration::Gen125),
-            has_hevc_encode: matches!(generation,
-                IntelGeneration::Gen95 | IntelGeneration::Gen11 | IntelGeneration::Gen12 |
-                IntelGeneration::Gen125),
-            has_vp9_decode: matches!(generation,
-                IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125),
-            has_av1_decode: matches!(generation,
-                IntelGeneration::Gen12 | IntelGeneration::Gen125),
+            has_bsd: matches!(
+                generation,
+                IntelGeneration::Gen5
+                    | IntelGeneration::Gen6
+                    | IntelGeneration::Gen7
+                    | IntelGeneration::Gen75
+                    | IntelGeneration::Gen8
+                    | IntelGeneration::Gen9
+                    | IntelGeneration::Gen95
+                    | IntelGeneration::Gen11
+                    | IntelGeneration::Gen12
+                    | IntelGeneration::Gen125
+            ),
+            has_blt: matches!(
+                generation,
+                IntelGeneration::Gen6
+                    | IntelGeneration::Gen7
+                    | IntelGeneration::Gen75
+                    | IntelGeneration::Gen8
+                    | IntelGeneration::Gen9
+                    | IntelGeneration::Gen95
+                    | IntelGeneration::Gen11
+                    | IntelGeneration::Gen12
+                    | IntelGeneration::Gen125
+            ),
+            has_vebox: matches!(
+                generation,
+                IntelGeneration::Gen75
+                    | IntelGeneration::Gen8
+                    | IntelGeneration::Gen9
+                    | IntelGeneration::Gen95
+                    | IntelGeneration::Gen11
+                    | IntelGeneration::Gen12
+                    | IntelGeneration::Gen125
+            ),
+            has_vcs: matches!(
+                generation,
+                IntelGeneration::Gen8
+                    | IntelGeneration::Gen9
+                    | IntelGeneration::Gen95
+                    | IntelGeneration::Gen11
+                    | IntelGeneration::Gen12
+                    | IntelGeneration::Gen125
+            ),
+            has_vcs2: matches!(
+                generation,
+                IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125
+            ),
+            has_hevc_decode: matches!(
+                generation,
+                IntelGeneration::Gen9
+                    | IntelGeneration::Gen95
+                    | IntelGeneration::Gen11
+                    | IntelGeneration::Gen12
+                    | IntelGeneration::Gen125
+            ),
+            has_hevc_encode: matches!(
+                generation,
+                IntelGeneration::Gen95
+                    | IntelGeneration::Gen11
+                    | IntelGeneration::Gen12
+                    | IntelGeneration::Gen125
+            ),
+            has_vp9_decode: matches!(
+                generation,
+                IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125
+            ),
+            has_av1_decode: matches!(generation, IntelGeneration::Gen12 | IntelGeneration::Gen125),
         }
     }
 
     pub fn supports_hardware_acceleration(&self) -> bool {
-        matches!(self.generation,
-            IntelGeneration::Gen6 | IntelGeneration::Gen7 | IntelGeneration::Gen75 |
-            IntelGeneration::Gen8 | IntelGeneration::Gen9 | IntelGeneration::Gen95 |
-            IntelGeneration::Gen11 | IntelGeneration::Gen12 | IntelGeneration::Gen125)
+        matches!(
+            self.generation,
+            IntelGeneration::Gen6
+                | IntelGeneration::Gen7
+                | IntelGeneration::Gen75
+                | IntelGeneration::Gen8
+                | IntelGeneration::Gen9
+                | IntelGeneration::Gen95
+                | IntelGeneration::Gen11
+                | IntelGeneration::Gen12
+                | IntelGeneration::Gen125
+        )
     }
 
     pub fn supports_compute(&self) -> bool {
-        matches!(self.generation,
-            IntelGeneration::Gen75 | IntelGeneration::Gen8 | IntelGeneration::Gen9 |
-            IntelGeneration::Gen95 | IntelGeneration::Gen11 | IntelGeneration::Gen12 |
-            IntelGeneration::Gen125)
+        matches!(
+            self.generation,
+            IntelGeneration::Gen75
+                | IntelGeneration::Gen8
+                | IntelGeneration::Gen9
+                | IntelGeneration::Gen95
+                | IntelGeneration::Gen11
+                | IntelGeneration::Gen12
+                | IntelGeneration::Gen125
+        )
     }
 
     pub fn supports_video_decode(&self) -> bool {
@@ -395,17 +473,29 @@ impl I915Context {
     }
 
     pub fn get_vulkan_support(&self) -> bool {
-        matches!(self.generation,
-            IntelGeneration::Gen75 | IntelGeneration::Gen8 | IntelGeneration::Gen9 |
-            IntelGeneration::Gen95 | IntelGeneration::Gen11 | IntelGeneration::Gen12 |
-            IntelGeneration::Gen125)
+        matches!(
+            self.generation,
+            IntelGeneration::Gen75
+                | IntelGeneration::Gen8
+                | IntelGeneration::Gen9
+                | IntelGeneration::Gen95
+                | IntelGeneration::Gen11
+                | IntelGeneration::Gen12
+                | IntelGeneration::Gen125
+        )
     }
 
     pub fn get_opencl_support(&self) -> bool {
-        matches!(self.generation,
-            IntelGeneration::Gen75 | IntelGeneration::Gen8 | IntelGeneration::Gen9 |
-            IntelGeneration::Gen95 | IntelGeneration::Gen11 | IntelGeneration::Gen12 |
-            IntelGeneration::Gen125)
+        matches!(
+            self.generation,
+            IntelGeneration::Gen75
+                | IntelGeneration::Gen8
+                | IntelGeneration::Gen9
+                | IntelGeneration::Gen95
+                | IntelGeneration::Gen11
+                | IntelGeneration::Gen12
+                | IntelGeneration::Gen125
+        )
     }
 
     pub fn get_driver_features(&self) -> super::DriverCapabilities {
@@ -440,7 +530,10 @@ pub fn initialize_i915_driver(device_id: u16) -> Result<I915Context, &'static st
     let context = I915Context::new(device_id);
 
     // Check if the device is supported
-    if matches!(context.generation, IntelGeneration::Gen2 | IntelGeneration::Gen3) {
+    if matches!(
+        context.generation,
+        IntelGeneration::Gen2 | IntelGeneration::Gen3
+    ) {
         return Err("Legacy Intel GPU not fully supported");
     }
 

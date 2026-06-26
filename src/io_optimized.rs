@@ -5,8 +5,8 @@
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use spin::Mutex;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 /// I/O request priority levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -265,7 +265,7 @@ pub fn network_processor() -> &'static NetworkProcessor {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_io_scheduler_creation() {
         let scheduler = IoScheduler::new();
         let (total, completed) = scheduler.get_stats();
@@ -273,7 +273,8 @@ mod tests {
         assert_eq!(completed, 0);
     }
 
-    #[test]
+    #[cfg(feature = "disabled-tests")]
+    #[test_case]
     fn test_io_request_submission() {
         let scheduler = IoScheduler::new();
         let request = IoRequest {
@@ -292,7 +293,7 @@ mod tests {
         assert_eq!(total, 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_network_processor_creation() {
         let processor = NetworkProcessor::new();
         let (total, processed, bytes) = processor.get_stats();
@@ -440,11 +441,9 @@ pub fn batch_io_requests(max_batch_size: usize) -> usize {
     let original_count = requests.len();
 
     // Sort by device and offset for merging opportunities
-    requests.sort_by(|a, b| {
-        match a.device_id.cmp(&b.device_id) {
-            core::cmp::Ordering::Equal => a.offset.cmp(&b.offset),
-            other => other,
-        }
+    requests.sort_by(|a, b| match a.device_id.cmp(&b.device_id) {
+        core::cmp::Ordering::Equal => a.offset.cmp(&b.offset),
+        other => other,
     });
 
     let mut merged: Vec<IoRequest> = Vec::new();

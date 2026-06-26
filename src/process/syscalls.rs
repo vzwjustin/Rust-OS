@@ -3,11 +3,11 @@
 //! This module implements the system call interface for RustOS, providing
 //! a standardized way for processes to request kernel services.
 
-use super::{Pid, ProcessManager, ProcessState, Priority};
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::vec;
+use super::{Pid, Priority, ProcessManager, ProcessState};
 use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// System call numbers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,9 +21,9 @@ pub enum SyscallNumber {
     GetPid = 4,
     GetPpid = 5,
     Sleep = 6,
-    Clone = 7,          // Create thread/process (flexible fork)
-    Execve = 8,         // Execute program (enhanced)
-    WaitId = 9,         // Wait for process state change
+    Clone = 7,  // Create thread/process (flexible fork)
+    Execve = 8, // Execute program (enhanced)
+    WaitId = 9, // Wait for process state change
 
     // File I/O
     Open = 10,
@@ -32,25 +32,25 @@ pub enum SyscallNumber {
     Write = 13,
     Seek = 14,
     Stat = 15,
-    OpenAt = 16,        // Open file relative to directory fd
-    MkdirAt = 17,       // Create directory
-    UnlinkAt = 18,      // Delete file/directory
-    Fchmod = 19,        // Change file permissions
+    OpenAt = 16,   // Open file relative to directory fd
+    MkdirAt = 17,  // Create directory
+    UnlinkAt = 18, // Delete file/directory
+    Fchmod = 19,   // Change file permissions
 
     // Memory management
     Mmap = 20,
     Munmap = 21,
     Brk = 22,
     Sbrk = 23,
-    MProtect = 24,      // Change memory protection
-    Madvise = 25,       // Give advice about memory usage
+    MProtect = 24, // Change memory protection
+    Madvise = 25,  // Give advice about memory usage
 
     // Process communication
     Pipe = 30,
     Signal = 31,
     Kill = 32,
-    Futex = 33,         // Fast userspace mutex
-    
+    Futex = 33, // Fast userspace mutex
+
     // Networking (for dynamic linker supporting network libraries)
     Socket = 35,
     Bind = 36,
@@ -67,19 +67,19 @@ pub enum SyscallNumber {
     SetPriority = 50,
     GetPriority = 51,
     SetTidAddress = 52, // Set thread ID address
-    
+
     // I/O control
-    Ioctl = 60,         // Device-specific operations
-    Fcntl = 61,         // File control operations
+    Ioctl = 60, // Device-specific operations
+    Fcntl = 61, // File control operations
 
     // Package management (experimental)
-    PkgInstall = 200,   // Install package
-    PkgRemove = 201,    // Remove package
-    PkgSearch = 202,    // Search packages
-    PkgInfo = 203,      // Get package info
-    PkgList = 204,      // List installed packages
-    PkgUpdate = 205,    // Update package database
-    PkgUpgrade = 206,   // Upgrade package
+    PkgInstall = 200, // Install package
+    PkgRemove = 201,  // Remove package
+    PkgSearch = 202,  // Search packages
+    PkgInfo = 203,    // Get package info
+    PkgList = 204,    // List installed packages
+    PkgUpdate = 205,  // Update package database
+    PkgUpgrade = 206, // Upgrade package
 }
 
 impl From<u64> for SyscallNumber {
@@ -219,7 +219,12 @@ impl SyscallDispatcher {
     }
 
     /// Dispatch a system call
-    pub fn dispatch(&mut self, syscall_number: u64, args: &[u64], process_manager: &ProcessManager) -> Result<u64, &'static str> {
+    pub fn dispatch(
+        &mut self,
+        syscall_number: u64,
+        args: &[u64],
+        process_manager: &ProcessManager,
+    ) -> Result<u64, &'static str> {
         self.total_syscalls += 1;
 
         let syscall = SyscallNumber::from(syscall_number);
@@ -272,7 +277,9 @@ impl SyscallDispatcher {
             SyscallNumber::SetTime => self.sys_settime(args, process_manager, current_pid),
             SyscallNumber::SetPriority => self.sys_setpriority(args, process_manager, current_pid),
             SyscallNumber::GetPriority => self.sys_getpriority(args, process_manager, current_pid),
-            SyscallNumber::SetTidAddress => self.sys_set_tid_address(args, process_manager, current_pid),
+            SyscallNumber::SetTidAddress => {
+                self.sys_set_tid_address(args, process_manager, current_pid)
+            }
             SyscallNumber::Ioctl => self.sys_ioctl(args, process_manager, current_pid),
             SyscallNumber::Fcntl => self.sys_fcntl(args, process_manager, current_pid),
             SyscallNumber::PkgInstall => self.sys_pkg_install(args),
@@ -293,7 +300,12 @@ impl SyscallDispatcher {
     // Process management system calls
 
     /// sys_exit - Terminate the calling process
-    fn sys_exit(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_exit(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let exit_status = args.get(0).copied().unwrap_or(0) as i32;
 
         match process_manager.terminate_process(current_pid, exit_status) {
@@ -303,7 +315,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_fork - Create a new process with copy-on-write memory
-    fn sys_fork(&self, _args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_fork(
+        &self,
+        _args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         use crate::process::integration::get_integration_manager;
 
         // Validate parent process exists
@@ -335,7 +352,7 @@ impl SyscallDispatcher {
 
                     // Copy signal handlers from parent to child
                     child_process.signal_handlers = parent_process.signal_handlers.clone();
-                    
+
                     // In a real fork implementation, we would:
                     // - Return 0 to child process
                     // - Return child_pid to parent process
@@ -352,11 +369,16 @@ impl SyscallDispatcher {
     }
 
     /// sys_exec - Execute a new program
-    fn sys_exec(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
-        use crate::process::elf_loader::{ElfLoader, ElfLoaderError};
+    fn sys_exec(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         use crate::fs::OpenFlags;
-        use alloc::vec::Vec;
+        use crate::process::elf_loader::{ElfLoader, ElfLoaderError};
         use alloc::string::String;
+        use alloc::vec::Vec;
 
         // Step 1: Validate and read program path from user space
         let program_path_ptr = args.get(0).copied().unwrap_or(0);
@@ -404,14 +426,17 @@ impl SyscallDispatcher {
         let vfs = crate::fs::vfs();
 
         // Open the file for reading
-        let fd = match vfs.open(&program_path, OpenFlags {
-            read: true,
-            write: false,
-            create: false,
-            append: false,
-            truncate: false,
-            exclusive: false,
-        }) {
+        let fd = match vfs.open(
+            &program_path,
+            OpenFlags {
+                read: true,
+                write: false,
+                create: false,
+                append: false,
+                truncate: false,
+                exclusive: false,
+            },
+        ) {
             Ok(fd) => fd,
             Err(_) => return SyscallResult::Error(SyscallError::FileNotFound),
         };
@@ -450,8 +475,8 @@ impl SyscallDispatcher {
 
         // Step 3: Initialize ELF loader with security features enabled
         let elf_loader = ElfLoader::new(
-            true,  // enable_aslr - Address Space Layout Randomization
-            true,  // enable_nx - No-Execute protection
+            true, // enable_aslr - Address Space Layout Randomization
+            true, // enable_nx - No-Execute protection
         );
 
         // Step 4: Parse and load ELF binary
@@ -482,14 +507,20 @@ impl SyscallDispatcher {
 
         // Update memory layout
         process.memory.code_start = loaded_binary.base_address.as_u64();
-        process.memory.code_size = loaded_binary.code_regions.iter()
+        process.memory.code_size = loaded_binary
+            .code_regions
+            .iter()
             .map(|r| r.size as u64)
             .sum();
 
-        process.memory.data_start = loaded_binary.data_regions.first()
+        process.memory.data_start = loaded_binary
+            .data_regions
+            .first()
             .map(|r| r.start.as_u64())
             .unwrap_or(0);
-        process.memory.data_size = loaded_binary.data_regions.iter()
+        process.memory.data_size = loaded_binary
+            .data_regions
+            .iter()
             .map(|r| r.size as u64)
             .sum();
 
@@ -528,7 +559,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_wait - Wait for child process to terminate
-    fn sys_wait(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_wait(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let wait_pid = args.get(0).map(|&p| p as i32).unwrap_or(-1);
 
         // Get current process
@@ -538,7 +574,9 @@ impl SyscallDispatcher {
         };
 
         // Find child processes
-        let children: Vec<Pid> = process_manager.processes.read()
+        let children: Vec<Pid> = process_manager
+            .processes
+            .read()
             .iter()
             .filter_map(|(pid, pcb)| {
                 if pcb.parent_pid == Some(current_pid) {
@@ -584,7 +622,7 @@ impl SyscallDispatcher {
         if current_pid == 0 {
             return SyscallResult::Error(SyscallError::ProcessNotFound);
         }
-        
+
         // Verify the process actually exists in the process table
         match process_manager.get_process(current_pid) {
             Some(_) => SyscallResult::Success(current_pid as u64),
@@ -607,7 +645,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_sleep - Sleep for specified time
-    fn sys_sleep(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_sleep(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let sleep_time_ms = args.get(0).copied().unwrap_or(0);
 
         if sleep_time_ms == 0 {
@@ -639,7 +682,7 @@ impl SyscallDispatcher {
                 // });
 
                 SyscallResult::Success(0)
-            },
+            }
             Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
         }
     }
@@ -647,7 +690,12 @@ impl SyscallDispatcher {
     // File I/O system calls
 
     /// sys_open - Open a file
-    fn sys_open(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_open(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let path_ptr = args.get(0).copied().unwrap_or(0);
         let flags = args.get(1).copied().unwrap_or(0) as u32;
         let mode = args.get(2).copied().unwrap_or(0o644) as u32;
@@ -679,13 +727,18 @@ impl SyscallDispatcher {
                 } else {
                     SyscallResult::Error(SyscallError::ProcessNotFound)
                 }
-            },
+            }
             Err(_) => SyscallResult::Error(SyscallError::FileNotFound),
         }
     }
 
     /// sys_close - Close a file descriptor
-    fn sys_close(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_close(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let fd = args.get(0).copied().unwrap_or(0) as u32;
 
         // Get process and close file descriptor
@@ -701,7 +754,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_read - Read from a file descriptor
-    fn sys_read(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_read(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let fd = args.get(0).copied().unwrap_or(0) as u32;
         let buffer_ptr = args.get(1).copied().unwrap_or(0);
         let count = args.get(2).copied().unwrap_or(0) as usize;
@@ -734,7 +792,7 @@ impl SyscallDispatcher {
                         } else {
                             SyscallResult::Error(SyscallError::InvalidAddress)
                         }
-                    },
+                    }
                     Err(_) => SyscallResult::Error(SyscallError::IoError),
                 }
             } else {
@@ -746,7 +804,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_write - Write to a file descriptor
-    fn sys_write(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_write(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let fd = args.get(0).copied().unwrap_or(0) as u32;
         let buffer_ptr = args.get(1).copied().unwrap_or(0);
         let count = args.get(2).copied().unwrap_or(0) as usize;
@@ -776,9 +839,7 @@ impl SyscallDispatcher {
                 }
 
                 match file_desc.write(&buffer) {
-                    Ok(bytes_written) => {
-                        SyscallResult::Success(bytes_written as u64)
-                    },
+                    Ok(bytes_written) => SyscallResult::Success(bytes_written as u64),
                     Err(_) => SyscallResult::Error(SyscallError::IoError),
                 }
             } else {
@@ -790,7 +851,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_seek - Seek in a file
-    fn sys_seek(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_seek(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let fd = args.get(0).copied().unwrap_or(0) as u32;
         let offset = args.get(1).copied().unwrap_or(0) as i64;
         let whence = args.get(2).copied().unwrap_or(0) as u32;
@@ -805,9 +871,9 @@ impl SyscallDispatcher {
                 let current_offset = file_desc.offset() as i64;
 
                 let new_offset = match whence {
-                    0 => offset, // SEEK_SET
+                    0 => offset,                  // SEEK_SET
                     1 => current_offset + offset, // SEEK_CUR
-                    2 => file_size + offset, // SEEK_END
+                    2 => file_size + offset,      // SEEK_END
                     _ => return SyscallResult::Error(SyscallError::InvalidArgument),
                 };
 
@@ -829,7 +895,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_stat - Get file status
-    fn sys_stat(&self, args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_stat(
+        &self,
+        args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         let path_ptr = args.get(0).copied().unwrap_or(0);
         let stat_buf_ptr = args.get(1).copied().unwrap_or(0);
 
@@ -883,7 +954,7 @@ impl SyscallDispatcher {
                 let stat_bytes = unsafe {
                     core::slice::from_raw_parts(
                         &stat as *const _ as *const u8,
-                        core::mem::size_of::<Stat>()
+                        core::mem::size_of::<Stat>(),
                     )
                 };
 
@@ -892,7 +963,7 @@ impl SyscallDispatcher {
                 } else {
                     SyscallResult::Error(SyscallError::InvalidAddress)
                 }
-            },
+            }
             Err(_) => SyscallResult::Error(SyscallError::FileNotFound),
         }
     }
@@ -900,8 +971,13 @@ impl SyscallDispatcher {
     // Memory management system calls
 
     /// sys_mmap - Map memory using production memory manager
-    fn sys_mmap(&self, args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
-        use crate::memory::{allocate_memory, MemoryRegionType, MemoryProtection};
+    fn sys_mmap(
+        &self,
+        args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
+        use crate::memory::{allocate_memory, MemoryProtection, MemoryRegionType};
 
         let _addr = args.get(0).copied().unwrap_or(0);
         let length = args.get(1).copied().unwrap_or(0);
@@ -951,7 +1027,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_munmap - Unmap memory using production memory manager
-    fn sys_munmap(&self, args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_munmap(
+        &self,
+        args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         use crate::memory::deallocate_memory;
         use x86_64::VirtAddr;
 
@@ -970,8 +1051,15 @@ impl SyscallDispatcher {
     }
 
     /// sys_brk - Change data segment size using production memory manager
-    fn sys_brk(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
-        use crate::memory::{allocate_memory, deallocate_memory, MemoryRegionType, MemoryProtection, PAGE_SIZE};
+    fn sys_brk(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
+        use crate::memory::{
+            allocate_memory, deallocate_memory, MemoryProtection, MemoryRegionType, PAGE_SIZE,
+        };
 
         let new_brk = args.get(0).copied().unwrap_or(0);
 
@@ -996,13 +1084,14 @@ impl SyscallDispatcher {
         if new_brk > current_heap_end {
             // Expand heap
             let expansion_size = new_brk - current_heap_end;
-            
+
             // Limit heap expansion to prevent abuse (max 1GB heap)
             if process.memory.heap_size + expansion_size > 1024 * 1024 * 1024 {
                 return SyscallResult::Error(SyscallError::OutOfMemory);
             }
-            
-            let aligned_size = ((expansion_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
+
+            let aligned_size =
+                ((expansion_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
 
             let protection = MemoryProtection {
                 readable: true,
@@ -1015,28 +1104,33 @@ impl SyscallDispatcher {
                 guard_page: false,
             };
 
-            match allocate_memory(aligned_size as usize, MemoryRegionType::UserHeap, protection) {
+            match allocate_memory(
+                aligned_size as usize,
+                MemoryRegionType::UserHeap,
+                protection,
+            ) {
                 Ok(_) => {
                     // Update process heap size
                     process.memory.heap_size += expansion_size;
                     SyscallResult::Success(new_brk)
-                },
+                }
                 Err(_) => SyscallResult::Error(SyscallError::OutOfMemory),
             }
         } else if new_brk < current_heap_end {
             // Shrink heap
             let shrink_size = current_heap_end - new_brk;
-            let aligned_size = ((shrink_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
-            
+            let aligned_size =
+                ((shrink_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
+
             // Calculate the address to deallocate from
             let dealloc_start = current_heap_end - aligned_size;
-            
+
             match deallocate_memory(x86_64::VirtAddr::new(dealloc_start)) {
                 Ok(()) => {
                     // Update process heap size
                     process.memory.heap_size -= shrink_size;
                     SyscallResult::Success(new_brk)
-                },
+                }
                 Err(_) => SyscallResult::Error(SyscallError::InvalidArgument),
             }
         } else {
@@ -1046,7 +1140,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_sbrk - Change data segment size incrementally
-    fn sys_sbrk(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_sbrk(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let increment = args.get(0).copied().unwrap_or(0) as i64;
 
         // Get current process
@@ -1072,26 +1171,37 @@ impl SyscallDispatcher {
     // Inter-process communication
 
     /// sys_pipe - Create a pipe
-    fn sys_pipe(&self, args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_pipe(
+        &self,
+        args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         let pipefd_ptr = args.get(0).copied().unwrap_or(0);
-        
+
         if pipefd_ptr == 0 {
             return SyscallResult::Error(SyscallError::InvalidArgument);
         }
 
         // Use production IPC pipe creation
-        match crate::ipc::create_pipe(4096) { // 4KB pipe buffer
+        match crate::ipc::create_pipe(4096) {
+            // 4KB pipe buffer
             Ok(pipe_id) => {
                 // In real implementation, would write pipe FDs to user memory
                 // Return pipe ID for now
                 SyscallResult::Success(pipe_id as u64)
             }
-            Err(_) => SyscallResult::Error(SyscallError::OperationNotSupported)
+            Err(_) => SyscallResult::Error(SyscallError::OperationNotSupported),
         }
     }
 
     /// sys_signal - Set signal handler
-    fn sys_signal(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_signal(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let signal = args.get(0).copied().unwrap_or(0) as u32;
         let handler = args.get(1).copied().unwrap_or(0);
 
@@ -1115,7 +1225,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_kill - Send signal to process
-    fn sys_kill(&self, args: &[u64], process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_kill(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         let target_pid = args.get(0).copied().unwrap_or(0) as Pid;
         let signal = args.get(1).copied().unwrap_or(0) as u32;
 
@@ -1125,7 +1240,8 @@ impl SyscallDispatcher {
                 Ok(()) => SyscallResult::Success(0),
                 Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
             }
-        } else if signal == 15 { // SIGTERM
+        } else if signal == 15 {
+            // SIGTERM
             // Request process termination
             if let Some(mut target) = process_manager.get_process(target_pid) {
                 // Check if process has a signal handler for SIGTERM
@@ -1147,7 +1263,8 @@ impl SyscallDispatcher {
             } else {
                 SyscallResult::Error(SyscallError::ProcessNotFound)
             }
-        } else if signal == 2 { // SIGINT
+        } else if signal == 2 {
+            // SIGINT
             // Interrupt signal (Ctrl+C)
             if let Some(mut target) = process_manager.get_process(target_pid) {
                 if let Some(&handler) = target.signal_handlers.get(&2) {
@@ -1158,7 +1275,8 @@ impl SyscallDispatcher {
                     SyscallResult::Success(0)
                 } else {
                     // Default action: terminate
-                    match process_manager.terminate_process(target_pid, 130) { // 128 + signal number
+                    match process_manager.terminate_process(target_pid, 130) {
+                        // 128 + signal number
                         Ok(()) => SyscallResult::Success(0),
                         Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
                     }
@@ -1166,13 +1284,15 @@ impl SyscallDispatcher {
             } else {
                 SyscallResult::Error(SyscallError::ProcessNotFound)
             }
-        } else if signal == 19 { // SIGSTOP
+        } else if signal == 19 {
+            // SIGSTOP
             // Stop process
             match process_manager.block_process(target_pid) {
                 Ok(()) => SyscallResult::Success(0),
                 Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
             }
-        } else if signal == 18 { // SIGCONT
+        } else if signal == 18 {
+            // SIGCONT
             // Continue process
             match process_manager.unblock_process(target_pid) {
                 Ok(()) => SyscallResult::Success(0),
@@ -1197,7 +1317,12 @@ impl SyscallDispatcher {
     // System information
 
     /// sys_uname - Get system information
-    fn sys_uname(&self, args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_uname(
+        &self,
+        args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         use core::mem::size_of;
 
         let buf_ptr = args.get(0).copied().unwrap_or(0);
@@ -1235,12 +1360,8 @@ impl SyscallDispatcher {
         copy_str_to_buf(&mut utsname.machine, "x86_64");
 
         // Copy to user space
-        let utsname_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &utsname as *const _ as *const u8,
-                UTSNAME_SIZE
-            )
-        };
+        let utsname_bytes =
+            unsafe { core::slice::from_raw_parts(&utsname as *const _ as *const u8, UTSNAME_SIZE) };
 
         if self.copy_to_user(buf_ptr, utsname_bytes).is_ok() {
             SyscallResult::Success(0)
@@ -1256,7 +1377,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_settime - Set system time
-    fn sys_settime(&self, args: &[u64], _process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_settime(
+        &self,
+        args: &[u64],
+        _process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let new_time = args.get(0).copied().unwrap_or(0);
 
         // Check for root/admin privileges
@@ -1276,7 +1402,12 @@ impl SyscallDispatcher {
     // Process control
 
     /// sys_setpriority - Set process priority
-    fn sys_setpriority(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_setpriority(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let target_pid = args.get(0).copied().unwrap_or(current_pid as u64) as Pid;
         let priority_value = args.get(1).copied().unwrap_or(0) as u8;
 
@@ -1312,14 +1443,14 @@ impl SyscallDispatcher {
                 if !crate::security::check_permission(current_pid, "sys_admin") {
                     return SyscallResult::Error(SyscallError::PermissionDenied);
                 }
-            },
+            }
             Priority::High => {
                 if let Some(ctx) = crate::security::get_context(current_pid) {
                     if ctx.level == crate::security::SecurityLevel::User && !ctx.is_root() {
                         return SyscallResult::Error(SyscallError::PermissionDenied);
                     }
                 }
-            },
+            }
             _ => {} // Normal, Low, Idle available to all
         }
 
@@ -1341,7 +1472,12 @@ impl SyscallDispatcher {
     }
 
     /// sys_getpriority - Get process priority
-    fn sys_getpriority(&self, args: &[u64], process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+    fn sys_getpriority(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
         let target_pid = args.get(0).copied().unwrap_or(current_pid as u64) as Pid;
 
         match process_manager.get_process(target_pid) {
@@ -1353,115 +1489,205 @@ impl SyscallDispatcher {
     // Extended system calls for Linux application support
 
     /// sys_clone - Create thread/process (flexible fork)
-    fn sys_clone(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_clone(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement clone() for thread creation
         // This is critical for dynamic linking and pthread support
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_execve - Execute program (enhanced version)
-    fn sys_execve(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_execve(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement execve() with environment variables and argument parsing
         // Required for shell and process launching
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_waitid - Wait for process state change
-    fn sys_waitid(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_waitid(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement waitid() for advanced process waiting
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_openat - Open file relative to directory fd
-    fn sys_openat(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_openat(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement openat() for relative path operations
         // Critical for package manager file operations
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_mkdirat - Create directory at path relative to fd
-    fn sys_mkdirat(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_mkdirat(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement mkdirat() for directory creation
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_unlinkat - Delete file/directory at path relative to fd
-    fn sys_unlinkat(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_unlinkat(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement unlinkat() for file deletion
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_fchmod - Change file permissions
-    fn sys_fchmod(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_fchmod(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement fchmod() for permission management
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_mprotect - Change memory protection
-    fn sys_mprotect(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_mprotect(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement mprotect() for dynamic memory protection changes
         // Critical for dynamic linker (making GOT writable, then read-only)
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_madvise - Give advice about memory usage
-    fn sys_madvise(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_madvise(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement madvise() for memory usage hints
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_futex - Fast userspace mutex
-    fn sys_futex(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_futex(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement futex() for efficient thread synchronization
         // Critical for pthread and libc threading support
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_socket - Create socket
-    fn sys_socket(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_socket(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement socket() for network communication
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_bind - Bind socket to address
-    fn sys_bind(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_bind(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement bind() for socket binding
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_connect - Connect socket
-    fn sys_connect(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_connect(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement connect() for socket connections
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_listen - Listen on socket
-    fn sys_listen(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_listen(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement listen() for socket listening
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_accept - Accept socket connection
-    fn sys_accept(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_accept(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement accept() for accepting connections
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_set_tid_address - Set thread ID address
-    fn sys_set_tid_address(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_set_tid_address(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement set_tid_address() for thread ID management
         // Used by dynamic linker and pthread initialization
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_ioctl - Device-specific I/O control
-    fn sys_ioctl(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_ioctl(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement ioctl() for device control
         SyscallResult::Error(SyscallError::OperationNotSupported)
     }
 
     /// sys_fcntl - File control operations
-    fn sys_fcntl(&self, _args: &[u64], _process_manager: &ProcessManager, _current_pid: Pid) -> SyscallResult {
+    fn sys_fcntl(
+        &self,
+        _args: &[u64],
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
+    ) -> SyscallResult {
         // TODO: Implement fcntl() for file descriptor control
         // Critical for file locking and flag manipulation
         SyscallResult::Error(SyscallError::OperationNotSupported)
@@ -1471,7 +1697,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_install(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            200, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            200,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::PermissionDenied),
@@ -1480,7 +1710,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_remove(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            201, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            201,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::PermissionDenied),
@@ -1489,7 +1723,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_search(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            202, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            202,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::NotFound),
@@ -1498,7 +1736,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_info(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            203, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            203,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::NotFound),
@@ -1507,7 +1749,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_list(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            204, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            204,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::OperationNotSupported),
@@ -1516,7 +1762,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_update(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            205, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            205,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::OperationNotSupported),
@@ -1525,7 +1775,11 @@ impl SyscallDispatcher {
 
     fn sys_pkg_upgrade(&self, args: &[u64]) -> SyscallResult {
         match crate::package::handle_package_syscall(
-            206, args[0] as usize, args[1] as usize, args[2] as usize, args[3] as usize
+            206,
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::PermissionDenied),
@@ -1558,16 +1812,14 @@ impl SyscallDispatcher {
     fn copy_from_user(&self, user_ptr: u64, buffer: &mut [u8]) -> Result<(), SyscallError> {
         use crate::memory::user_space::UserSpaceMemory;
 
-        UserSpaceMemory::copy_from_user(user_ptr, buffer)
-            .map_err(|_| SyscallError::InvalidAddress)
+        UserSpaceMemory::copy_from_user(user_ptr, buffer).map_err(|_| SyscallError::InvalidAddress)
     }
 
     /// Copy data to user space
     fn copy_to_user(&self, user_ptr: u64, buffer: &[u8]) -> Result<(), SyscallError> {
         use crate::memory::user_space::UserSpaceMemory;
 
-        UserSpaceMemory::copy_to_user(user_ptr, buffer)
-            .map_err(|_| SyscallError::InvalidAddress)
+        UserSpaceMemory::copy_to_user(user_ptr, buffer).map_err(|_| SyscallError::InvalidAddress)
     }
 }
 

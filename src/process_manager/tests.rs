@@ -7,12 +7,13 @@
 use super::*;
 use crate::process::Priority;
 
-#[test]
+#[test_case]
 fn test_process_creation() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let pid = pm.create_process(Some(0), "test_process", Priority::Normal)
+    let pid = pm
+        .create_process(Some(0), "test_process", Priority::Normal)
         .expect("Failed to create process");
 
     assert!(pid > 0);
@@ -24,16 +25,16 @@ fn test_process_creation() {
     assert_eq!(pcb.name_str(), "test_process");
 }
 
-#[test]
+#[test_case]
 fn test_fork() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let parent_pid = pm.create_process(Some(0), "parent", Priority::Normal)
+    let parent_pid = pm
+        .create_process(Some(0), "parent", Priority::Normal)
         .expect("Failed to create parent");
 
-    let child_pid = pm.fork(parent_pid)
-        .expect("Failed to fork");
+    let child_pid = pm.fork(parent_pid).expect("Failed to fork");
 
     assert!(child_pid > parent_pid);
 
@@ -45,12 +46,13 @@ fn test_fork() {
     assert_eq!(parent.child_count, 1);
 }
 
-#[test]
+#[test_case]
 fn test_exit_and_zombie() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let pid = pm.create_process(Some(0), "test", Priority::Normal)
+    let pid = pm
+        .create_process(Some(0), "test", Priority::Normal)
         .expect("Failed to create process");
 
     pm.exit(pid, 42).expect("Failed to exit");
@@ -60,23 +62,22 @@ fn test_exit_and_zombie() {
     assert_eq!(pcb.exit_status, Some(42));
 }
 
-#[test]
+#[test_case]
 fn test_wait_for_child() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let parent_pid = pm.create_process(Some(0), "parent", Priority::Normal)
+    let parent_pid = pm
+        .create_process(Some(0), "parent", Priority::Normal)
         .expect("Failed to create parent");
 
-    let child_pid = pm.fork(parent_pid)
-        .expect("Failed to fork");
+    let child_pid = pm.fork(parent_pid).expect("Failed to fork");
 
     // Exit child
     pm.exit(child_pid, 123).expect("Failed to exit child");
 
     // Wait for child
-    let (pid, status) = pm.wait(parent_pid)
-        .expect("Failed to wait");
+    let (pid, status) = pm.wait(parent_pid).expect("Failed to wait");
 
     assert_eq!(pid, child_pid);
     assert_eq!(status, 123);
@@ -85,12 +86,13 @@ fn test_wait_for_child() {
     assert!(pm.get_process(child_pid).is_none());
 }
 
-#[test]
+#[test_case]
 fn test_waitpid_specific_child() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let parent_pid = pm.create_process(Some(0), "parent", Priority::Normal)
+    let parent_pid = pm
+        .create_process(Some(0), "parent", Priority::Normal)
         .expect("Failed to create parent");
 
     let child1 = pm.fork(parent_pid).expect("Failed to fork child1");
@@ -100,8 +102,7 @@ fn test_waitpid_specific_child() {
     pm.exit(child2, 99).expect("Failed to exit child2");
 
     // Wait specifically for child2
-    let status = pm.waitpid(parent_pid, child2)
-        .expect("Failed to waitpid");
+    let status = pm.waitpid(parent_pid, child2).expect("Failed to waitpid");
 
     assert_eq!(status, 99);
 
@@ -110,12 +111,13 @@ fn test_waitpid_specific_child() {
     assert!(pm.get_process(child1).is_some());
 }
 
-#[test]
+#[test_case]
 fn test_file_descriptors() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let pid = pm.create_process(Some(0), "test", Priority::Normal)
+    let pid = pm
+        .create_process(Some(0), "test", Priority::Normal)
         .expect("Failed to create process");
 
     // Check standard FDs exist
@@ -124,7 +126,8 @@ fn test_file_descriptors() {
     assert!(pm.get_fd(pid, 2).is_some()); // stderr
 
     // Allocate new FD
-    let fd = pm.allocate_fd(pid, FileDescriptorType::File { path: [0; 256] })
+    let fd = pm
+        .allocate_fd(pid, FileDescriptorType::File { path: [0; 256] })
         .expect("Failed to allocate FD");
     assert_eq!(fd, 3);
 
@@ -136,12 +139,13 @@ fn test_file_descriptors() {
     assert!(pm.close_fd(pid, 0).is_err());
 }
 
-#[test]
+#[test_case]
 fn test_process_states() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let pid = pm.create_process(Some(0), "test", Priority::Normal)
+    let pid = pm
+        .create_process(Some(0), "test", Priority::Normal)
         .expect("Failed to create process");
 
     // Initial state is Ready
@@ -161,12 +165,13 @@ fn test_process_states() {
     assert_eq!(pcb.state, ProcessState::Blocked);
 }
 
-#[test]
+#[test_case]
 fn test_process_hierarchy() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
 
-    let parent = pm.create_process(Some(0), "parent", Priority::Normal)
+    let parent = pm
+        .create_process(Some(0), "parent", Priority::Normal)
         .expect("Failed to create parent");
 
     let child1 = pm.fork(parent).expect("Failed to fork child1");
@@ -179,7 +184,7 @@ fn test_process_hierarchy() {
     assert_eq!(pm.get_parent_pid(grandchild), Some(child1));
 }
 
-#[test]
+#[test_case]
 fn test_max_processes() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
@@ -197,7 +202,7 @@ fn test_max_processes() {
     assert!(created <= 4096); // MAX_PROCESSES
 }
 
-#[test]
+#[test_case]
 fn test_process_table_stats() {
     let pm = ProcessManager::new();
     pm.init().expect("Failed to initialize");
@@ -208,9 +213,11 @@ fn test_process_table_stats() {
     assert_eq!(stats.total, 1); // Just init process
     drop(table);
 
-    let pid1 = pm.create_process(Some(0), "test1", Priority::Normal)
+    let pid1 = pm
+        .create_process(Some(0), "test1", Priority::Normal)
         .expect("Failed to create");
-    let pid2 = pm.create_process(Some(0), "test2", Priority::Normal)
+    let pid2 = pm
+        .create_process(Some(0), "test2", Priority::Normal)
         .expect("Failed to create");
 
     pm.set_process_state(pid1, ProcessState::Running)

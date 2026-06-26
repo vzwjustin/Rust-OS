@@ -3,11 +3,14 @@
 //! USB Mass Storage Class (MSC) driver for USB storage devices like
 //! USB flash drives, external hard drives, and USB card readers.
 
-use super::{StorageDriver, StorageDeviceType, StorageDeviceState, StorageCapabilities, StorageError, StorageStats};
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use super::{
+    StorageCapabilities, StorageDeviceState, StorageDeviceType, StorageDriver, StorageError,
+    StorageStats,
+};
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// USB Mass Storage Class codes
 pub const USB_CLASS_MASS_STORAGE: u8 = 0x08;
@@ -218,13 +221,7 @@ pub struct UsbMassStorageDriver {
 
 impl UsbMassStorageDriver {
     /// Create new USB Mass Storage driver
-    pub fn new(
-        name: String,
-        vendor_id: u16,
-        product_id: u16,
-        subclass: u8,
-        protocol: u8,
-    ) -> Self {
+    pub fn new(name: String, vendor_id: u16, product_id: u16, subclass: u8, protocol: u8) -> Self {
         Self {
             name,
             state: StorageDeviceState::Offline,
@@ -265,7 +262,8 @@ impl UsbMassStorageDriver {
 
         // Create Command Block Wrapper
         let tag = self.next_tag();
-        let cbw = CommandBlockWrapper::new(tag, data_length, direction_in, self.active_lun, command);
+        let cbw =
+            CommandBlockWrapper::new(tag, data_length, direction_in, self.active_lun, command);
 
         // In a real implementation, we would:
         // 1. Send CBW via bulk OUT endpoint
@@ -360,7 +358,12 @@ impl UsbMassStorageDriver {
     }
 
     /// Execute SCSI Read command
-    fn scsi_read(&mut self, lba: u64, block_count: u32, _buffer: &mut [u8]) -> Result<(), StorageError> {
+    fn scsi_read(
+        &mut self,
+        lba: u64,
+        block_count: u32,
+        _buffer: &mut [u8],
+    ) -> Result<(), StorageError> {
         if block_count > 65535 {
             return Err(StorageError::TransferTooLarge);
         }
@@ -409,7 +412,12 @@ impl UsbMassStorageDriver {
     }
 
     /// Execute SCSI Write command
-    fn scsi_write(&mut self, lba: u64, block_count: u32, _buffer: &[u8]) -> Result<(), StorageError> {
+    fn scsi_write(
+        &mut self,
+        lba: u64,
+        block_count: u32,
+        _buffer: &[u8],
+    ) -> Result<(), StorageError> {
         if block_count > 65535 {
             return Err(StorageError::TransferTooLarge);
         }
@@ -460,9 +468,15 @@ impl UsbMassStorageDriver {
     /// Get device information
     pub fn get_device_info(&self) -> Option<(String, String, String)> {
         if let Some(ref inquiry) = self.inquiry_data {
-            let vendor = String::from_utf8_lossy(&inquiry.vendor_id).trim().to_string();
-            let product = String::from_utf8_lossy(&inquiry.product_id).trim().to_string();
-            let revision = String::from_utf8_lossy(&inquiry.product_revision).trim().to_string();
+            let vendor = String::from_utf8_lossy(&inquiry.vendor_id)
+                .trim()
+                .to_string();
+            let product = String::from_utf8_lossy(&inquiry.product_id)
+                .trim()
+                .to_string();
+            let revision = String::from_utf8_lossy(&inquiry.product_revision)
+                .trim()
+                .to_string();
             Some((vendor, product, revision))
         } else {
             None
@@ -538,7 +552,11 @@ impl StorageDriver for UsbMassStorageDriver {
         Ok(())
     }
 
-    fn read_sectors(&mut self, start_sector: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+    fn read_sectors(
+        &mut self,
+        start_sector: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StorageError> {
         if self.state != StorageDeviceState::Ready {
             return Err(StorageError::DeviceBusy);
         }
@@ -580,7 +598,18 @@ impl StorageDriver for UsbMassStorageDriver {
         }
 
         // Execute SYNCHRONIZE CACHE command
-        let command = [ScsiCommand::SynchronizeCache as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let command = [
+            ScsiCommand::SynchronizeCache as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
         self.execute_scsi_command(&command, 0, false, None)?;
 
         Ok(())
@@ -657,9 +686,8 @@ pub fn create_usb_mass_storage_driver(
     protocol: u8,
     device_name: Option<String>,
 ) -> Box<dyn StorageDriver> {
-    let name = device_name.unwrap_or_else(|| {
-        format!("USB MSC {:04x}:{:04x}", vendor_id, product_id)
-    });
+    let name =
+        device_name.unwrap_or_else(|| format!("USB MSC {:04x}:{:04x}", vendor_id, product_id));
 
     let driver = UsbMassStorageDriver::new(name, vendor_id, product_id, subclass, protocol);
     Box::new(driver)

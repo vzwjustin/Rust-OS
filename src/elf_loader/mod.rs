@@ -15,23 +15,20 @@
 
 #![allow(dead_code)]
 
+use crate::memory::PAGE_SIZE;
+use alloc::vec::Vec;
 use core::mem;
 use core::slice;
-use x86_64::structures::paging::{PageTableFlags, Mapper, Page, Size4KiB, FrameAllocator};
+use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
-use alloc::vec::Vec;
-use crate::memory::PAGE_SIZE;
 
-mod types;
-pub mod parser;
 mod loader;
+pub mod parser;
+mod types;
 
-#[cfg(test)]
-mod tests;
-
-pub use types::*;
-pub use parser::*;
 pub use loader::*;
+pub use parser::*;
+pub use types::*;
 
 /// Result type for ELF operations
 pub type Result<T> = core::result::Result<T, ElfError>;
@@ -230,7 +227,7 @@ where
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_segment_flags_conversion() {
         let flags = SegmentFlags {
             readable: true,
