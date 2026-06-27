@@ -250,6 +250,72 @@ pub use glib_native::{
     stop_unused_threads,
     set_max_idle_time,
     get_max_idle_time,
+    // GType system
+    g_type_make_fundamental,
+    type_init,
+    type_get_type_registration_serial,
+    type_from_name,
+    type_name,
+    type_parent,
+    type_fundamental,
+    type_fundamental_next,
+    type_is_a,
+    type_depth,
+    type_children,
+    type_interfaces,
+    type_is_classed,
+    type_is_instantiatable,
+    type_is_abstract,
+    type_is_final,
+    type_register_fundamental,
+    type_register_static,
+    type_register_static_simple,
+    type_instance_size,
+    type_class_size,
+    type_value_table,
+    type_add_interface,
+    type_query,
+    type_get_all,
+    // GValue
+    default_value_table_for,
+    value_new_boolean,
+    value_new_int,
+    value_new_uint,
+    value_new_int64,
+    value_new_uint64,
+    value_new_float,
+    value_new_double,
+    value_new_string,
+    value_new_char,
+    value_new_enum,
+    value_new_flags,
+    value_new_pointer,
+    value_new_object,
+    value_new_boxed,
+    // GParamSpec
+    install_properties,
+    find_property,
+    find_property_by_id,
+    property_names,
+    // GSignal
+    signal_new,
+    signal_lookup,
+    signal_query,
+    signal_name,
+    signal_connect,
+    signal_connect_by_name,
+    signal_handler_disconnect,
+    signal_handler_is_connected,
+    signal_handler_block,
+    signal_handler_unblock,
+    signal_emit,
+    signal_emit_by_name,
+    signal_list_ids,
+    signal_n_handlers,
+    signal_handlers_disconnect_all,
+    // GObject
+    object_new,
+    object_new_with_params,
     // URI functions
     escape_string,
     is_valid,
@@ -657,6 +723,57 @@ pub use glib_native::{
     USEC_PER_SEC,
     NSEC_PER_SEC,
     ClockFn,
+    // GObject type system
+    GType,
+    GTypeFlags,
+    GTypeFundamentalFlags,
+    GTypeInfo,
+    GTypeValueTable,
+    GValueData,
+    TypeClassData,
+    TypeInstanceData,
+    TypeQuery,
+    G_TYPE_INVALID,
+    G_TYPE_NONE,
+    G_TYPE_INTERFACE,
+    G_TYPE_CHAR,
+    G_TYPE_UCHAR,
+    G_TYPE_BOOLEAN,
+    G_TYPE_INT,
+    G_TYPE_UINT,
+    G_TYPE_LONG,
+    G_TYPE_ULONG,
+    G_TYPE_INT64,
+    G_TYPE_UINT64,
+    G_TYPE_ENUM,
+    G_TYPE_FLAGS,
+    G_TYPE_FLOAT,
+    G_TYPE_DOUBLE,
+    G_TYPE_STRING,
+    G_TYPE_POINTER,
+    G_TYPE_BOXED,
+    G_TYPE_PARAM,
+    G_TYPE_OBJECT,
+    G_TYPE_VARIANT,
+    // GValue
+    GValue,
+    TransformFunc,
+    // GParamSpec
+    ParamSpec,
+    ParamID,
+    ParamFlags,
+    // GSignal
+    SignalID,
+    HandlerID,
+    SignalFlags,
+    ConnectFlags,
+    SignalCallback,
+    SignalQuery,
+    // GObject
+    GObject,
+    ObjectFlags,
+    WeakRefCallback,
+    PropertyBinding,
 };
 
 /// Initialize GLib logging to route through the kernel serial output.
@@ -1308,6 +1425,75 @@ pub fn smoke_check() -> Result<(), &'static str> {
     suite.add(TestCase::new("threadpool", glib_test_noop));
     if suite.count() != 2 {
         return Err("GTestSuite");
+    }
+
+    // GType system
+    type_init();
+    if type_from_name("gint") != G_TYPE_INT || type_from_name("GObject") != G_TYPE_OBJECT {
+        return Err("GType fundamental lookup");
+    }
+    let info = GTypeInfo {
+        class_size: 64,
+        instance_size: 32,
+        class_init: None,
+        instance_init: None,
+        value_table: None,
+    };
+    let custom_type = type_register_static(G_TYPE_OBJECT, "RustOSObject", &info, GTypeFlags::NONE);
+    if custom_type == G_TYPE_INVALID || type_name(custom_type) != Some("RustOSObject".to_owned()) {
+        return Err("GType register static");
+    }
+    if !type_is_a(custom_type, G_TYPE_OBJECT) || type_depth(custom_type) != 2 {
+        return Err("GType hierarchy");
+    }
+
+    // GValue
+    let mut int_val = GValue::for_type(G_TYPE_INT);
+    int_val.set_int(42);
+    if int_val.get_int() != 42 || !int_val.holds(G_TYPE_INT) {
+        return Err("GValue int");
+    }
+    let str_val = value_new_string("rustos");
+    if str_val.get_string() != Some("rustos") {
+        return Err("GValue string");
+    }
+
+    // GSignal
+    let sig_id = signal_new("test-changed", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
+    if sig_id == 0 || signal_lookup("test-changed", G_TYPE_OBJECT) != sig_id {
+        return Err("GSignal register");
+    }
+    let query = signal_query(sig_id);
+    if query.is_none() || query.unwrap().signal_name != "test-changed" {
+        return Err("GSignal query");
+    }
+
+    // GObject
+    let obj = object_new(G_TYPE_OBJECT);
+    if obj.ref_count() != 1 || obj.type_name() != "GObject" {
+        return Err("GObject basic");
+    }
+    obj.ref_();
+    if obj.ref_count() != 2 {
+        return Err("GObject ref");
+    }
+    obj.unref();
+    if obj.ref_count() != 1 {
+        return Err("GObject unref");
+    }
+
+    // GObject properties
+    obj.install_properties(vec![
+        ParamSpec::int("x", "x", "x coord", 0, 1000, 0, ParamFlags::READWRITE),
+        ParamSpec::string("name", "n", "name", "", ParamFlags::READWRITE),
+    ]);
+    obj.set_property("x", value_new_int(77));
+    if obj.get_property("x").map(|v| v.get_int()) != Some(77) {
+        return Err("GObject property set");
+    }
+    obj.set_property("name", value_new_string("test-obj"));
+    if obj.get_property("name").map(|v| v.get_string()) != Some(Some("test-obj".to_owned())) {
+        return Err("GObject property name");
     }
 
     Ok(())
