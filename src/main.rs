@@ -90,8 +90,8 @@ mod error;
 // Include system health monitoring
 mod health;
 // Include comprehensive logging and debugging
-mod logging;
 mod debug;
+mod logging;
 // Include comprehensive testing framework
 mod testing;
 // Include testing framework core (used by testing module)
@@ -124,6 +124,8 @@ mod syscall_fast;
 mod usermode;
 // Include usermode testing module
 mod usermode_test;
+// Include GLib compatibility layer
+mod glib;
 
 // VGA_WRITER is now used via macros in print module
 
@@ -216,7 +218,7 @@ unsafe fn inb(port: u16) -> u8 {
 
 /// Safety: Requires initialized COM1 and valid I/O access.
 /// See docs/SAFETY.md#io-port-access.
-unsafe fn early_serial_write_byte(byte: u8) {
+pub(crate) unsafe fn early_serial_write_byte(byte: u8) {
     let port = 0x3f8;
     // Wait for transmit to be ready
     while (inb(port + 5) & 0x20) == 0 {}
@@ -390,6 +392,22 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_str("RustOS: Heap allocator ready\r\n");
     }
 
+    // Initialize GLib logging to route through serial output
+    glib::init_glib_logging();
+    unsafe {
+        early_serial_write_str("RustOS: GLib logging initialized\r\n");
+    }
+    match glib::smoke_check() {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: GLib native smoke check passed\r\n");
+        },
+        Err(reason) => unsafe {
+            early_serial_write_str("RustOS: GLib native smoke check FAILED: ");
+            early_serial_write_str(reason);
+            early_serial_write_str("\r\n");
+        },
+    }
+
     #[cfg(test)]
     {
         test_main();
@@ -407,6 +425,42 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_str("RustOS: VGA physical memory offset configured\r\n");
     }
 
+    // ========================================================================
+    // EARLY GRAPHICS INIT: Initialize VBE framebuffer before boot splash
+    // so the entire boot sequence uses a graphical splash screen instead of
+    // text-mode VGA. Falls back to text mode if display init fails.
+    // ========================================================================
+    let mut early_graphics_result = boot_ui::GraphicsInitResult::new();
+    let mut early_display_ready = false;
+
+    {
+        let bc = boot_ui::boot_config();
+        if !bc.force_text_mode && !bc.safe_mode {
+            unsafe {
+                early_serial_write_str("RustOS: Early graphics init (VBE)\r\n");
+            }
+            match drivers::display::init(phys_mem_offset) {
+                Ok(mode) => {
+                    crate::serial_println!(
+                        "display: {}x{}x{} initialized (early)",
+                        mode.width,
+                        mode.height,
+                        mode.bpp
+                    );
+                    early_graphics_result.framebuffer_ready = true;
+                    early_graphics_result.width = mode.width;
+                    early_graphics_result.height = mode.height;
+                    early_graphics_result.bpp = mode.bpp as u16;
+                    early_graphics_result.output_verified = true;
+                    early_display_ready = true;
+                }
+                Err(e) => {
+                    crate::serial_println!("display: early init failed: {}", e);
+                }
+            }
+        }
+    }
+
     // Record boot start time (after basic init)
     let _boot_start_time = 0u64; // Will use time::uptime_ms() after time init
 
@@ -416,9 +470,13 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // ========================================================================
-    // PHASE 1: Boot Splash and Early Initialization
+    // PHASE 1: Boot Splash (graphical if framebuffer is ready, text fallback)
     // ========================================================================
-    boot_ui::show_boot_splash();
+    if early_display_ready {
+        boot_ui::show_graphical_splash();
+    } else {
+        boot_ui::show_boot_splash();
+    }
 
     // SAFETY: Debug output
     unsafe {
@@ -619,20 +677,27 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // ========================================================================
-    // Boot Menu - Show after interrupts are ready, before heavy init
+    // Boot Menu - Skip in graphical mode (auto-boot like native OS)
     // ========================================================================
-    unsafe {
-        early_serial_write_str("RustOS: Showing boot menu...\r\n");
-    }
-    let boot_selection = boot_ui::show_boot_menu();
+    let boot_selection = if early_display_ready {
+        boot_ui::BootMenuSelection::NormalBoot
+    } else {
+        unsafe {
+            early_serial_write_str("RustOS: Showing boot menu (text mode)...\r\n");
+        }
+        boot_ui::show_boot_menu()
+    };
     unsafe {
         early_serial_write_str("RustOS: Boot menu selection made\r\n");
     }
 
     // Clear screen for normal boot progress display
     if boot_selection == boot_ui::BootMenuSelection::NormalBoot {
-        // Re-show boot splash after menu
-        boot_ui::show_boot_splash();
+        if early_display_ready {
+            boot_ui::show_graphical_splash();
+        } else {
+            boot_ui::show_boot_splash();
+        }
     }
 
     // ========================================================================
@@ -766,19 +831,23 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // Initialize Linux integration layer
-    boot_display::show_subsystem_init(
-        "Linux Integration Layer",
-        boot_display::SubsystemStatus::Initializing,
-    );
+    if !early_display_ready {
+        boot_display::show_subsystem_init(
+            "Linux Integration Layer",
+            boot_display::SubsystemStatus::Initializing,
+        );
+    }
     match linux_integration::init() {
         Ok(_) => {
             unsafe {
                 early_serial_write_str("RustOS: Linux init OK, showing status...\r\n");
             }
-            boot_display::show_subsystem_init(
-                "Linux Integration Layer",
-                boot_display::SubsystemStatus::Ready,
-            );
+            if !early_display_ready {
+                boot_display::show_subsystem_init(
+                    "Linux Integration Layer",
+                    boot_display::SubsystemStatus::Ready,
+                );
+            }
             unsafe {
                 early_serial_write_str("RustOS: Linux status shown, skip state updates\r\n");
             }
@@ -788,10 +857,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             unsafe {
                 early_serial_write_str("RustOS: Linux init error\r\n");
             }
-            boot_display::show_subsystem_init(
-                "Linux Integration Layer",
-                boot_display::SubsystemStatus::Warning,
-            );
+            if !early_display_ready {
+                boot_display::show_subsystem_init(
+                    "Linux Integration Layer",
+                    boot_display::SubsystemStatus::Warning,
+                );
+            }
         }
     }
     unsafe {
@@ -799,65 +870,22 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // ========================================================================
-    // PHASE 9: Graphics Initialization
+    // PHASE 9: Graphics Initialization (already done early — mark complete)
     // ========================================================================
-    unsafe {
-        early_serial_write_str("RustOS: Starting Phase 9 - Graphics init\r\n");
-    }
+    let mut graphics_result = early_graphics_result;
+    let mut display_driver_ready = early_display_ready;
 
-    let mut graphics_result = boot_ui::GraphicsInitResult::new();
-    let mut display_driver_ready = false;
-
-    let boot_config = boot_ui::boot_config();
-    if !boot_config.force_text_mode && !boot_config.safe_mode {
-        boot_ui::begin_stage(boot_ui::BootStage::GraphicsInit, 3);
-        boot_ui::update_substage(1, "Detecting display controller...");
-
-        unsafe {
-            early_serial_write_str("RustOS: Initializing display driver\r\n");
-        }
-
-        match drivers::display::init(phys_mem_offset) {
-            Ok(mode) => {
-                crate::serial_println!(
-                    "display: {}x{}x{} initialized",
-                    mode.width,
-                    mode.height,
-                    mode.bpp
-                );
-                graphics_result.framebuffer_ready = true;
-                graphics_result.width = mode.width;
-                graphics_result.height = mode.height;
-                graphics_result.bpp = mode.bpp as u16;
-                graphics_result.output_verified = true;
-                display_driver_ready = true;
-
-                boot_ui::update_substage(2, "Loading font renderer...");
-                boot_ui::report_success("Bitmap font renderer ready");
-
-                boot_ui::update_substage(3, "Verifying display output...");
-                boot_ui::report_success("Display output verified");
-
-                boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
-                unsafe {
-                    early_serial_write_str("RustOS: Display driver init success\r\n");
-                }
-            }
-            Err(e) => {
-                crate::serial_println!("display: init failed: {}", e);
-                boot_ui::report_warning(
-                    "Graphics",
-                    "Display driver init failed, trying bootloader FB",
-                );
-                boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
-            }
-        }
-    }
-
-    if !graphics_result.framebuffer_ready {
+    if display_driver_ready {
+        boot_ui::begin_stage(boot_ui::BootStage::GraphicsInit, 1);
+        boot_ui::update_substage(1, "Display ready (early init)");
+        boot_ui::report_success("Display output verified");
+        boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
+    } else if !boot_ui::boot_config().force_text_mode && !boot_ui::boot_config().safe_mode {
         // Fall back to existing graphics init (checks bootloader framebuffer, then text mode)
         graphics_result = boot_ui::graphics_init_progress();
-    } else if display_driver_ready {
+    }
+
+    if display_driver_ready {
         crate::serial_println!(
             "display: driver ready {}x{}x{}",
             graphics_result.width,
@@ -946,8 +974,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     if !display_driver_ready {
         boot_ui::boot_complete_summary();
+        boot_display::show_boot_complete(boot_time);
     }
-    boot_display::show_boot_complete(boot_time);
 
     // Show first boot information (text mode only)
     if !graphics_result.framebuffer_ready {
@@ -959,8 +987,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         boot_ui::boot_delay_medium();
     }
 
-    // Render graphical boot complete screen (skip for VBE I/O)
-    if graphics_result.framebuffer_ready && !display_driver_ready {
+    // Render graphical boot complete screen
+    if graphics_result.framebuffer_ready {
         boot_ui::render_graphical_boot_complete();
     }
 
@@ -968,6 +996,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Transition to Desktop Environment
     // ========================================================================
     if !display_driver_ready {
+        boot_ui::transition_to_desktop();
+    } else if graphics_result.framebuffer_ready {
+        // GNOME-style smooth fade before desktop appears
         boot_ui::transition_to_desktop();
     }
 
@@ -993,27 +1024,21 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
     } else if boot_config.verbose {
         unsafe {
-            early_serial_write_str("RustOS: no userspace init (or disabled), using kernel desktop\r\n");
+            early_serial_write_str(
+                "RustOS: no userspace init (or disabled), using kernel desktop\r\n",
+            );
         }
     }
 
     // Launch appropriate desktop environment
     if use_graphics_desktop && desktop_result.window_manager_ready {
-        println!();
-        println!("Launching MODERN GRAPHICS DESKTOP");
-        println!(
-            "   Mode: {}x{}x{}",
-            graphics_result.width, graphics_result.height, graphics_result.bpp
+        crate::serial_println!(
+            "desktop: {}x{}x{} gpu={}",
+            graphics_result.width,
+            graphics_result.height,
+            graphics_result.bpp,
+            graphics_result.gpu_accelerated
         );
-        println!(
-            "   GPU Acceleration: {}",
-            if graphics_result.gpu_accelerated {
-                "Enabled"
-            } else {
-                "Software"
-            }
-        );
-        println!();
 
         // Enter modern desktop main loop
         modern_desktop_main_loop()

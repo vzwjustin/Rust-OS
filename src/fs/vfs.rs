@@ -50,15 +50,9 @@ impl PathUtils {
         }
     }
 
-    /// Join two paths
+    /// Join two paths.
     pub fn join(base: &str, path: &str) -> String {
-        if path.starts_with('/') {
-            path.to_string()
-        } else if base.ends_with('/') {
-            format!("{}{}", base, path)
-        } else {
-            format!("{}/{}", base, path)
-        }
+        crate::glib::build_filename(&[base, path])
     }
 
     /// Get the parent directory of a path
@@ -136,7 +130,7 @@ pub struct FileTypeUtils;
 impl FileTypeUtils {
     /// Detect file type from filename extension
     pub fn from_extension(extension: &str) -> FileType {
-        match extension.to_lowercase().as_str() {
+        match crate::glib::ascii_strdown(extension).as_str() {
             // Always return Regular for files with extensions
             // In a real implementation, this might distinguish between
             // different types of files, but for now we keep it simple
@@ -270,29 +264,9 @@ impl DirectoryUtils {
             .collect()
     }
 
-    /// Simple glob pattern matching
+    /// Simple glob pattern matching via glib-native.
     fn matches_pattern(name: &str, pattern: &str) -> bool {
-        if pattern.is_empty() {
-            return name.is_empty();
-        }
-
-        if pattern == "*" {
-            return true;
-        }
-
-        // Simple implementation - just check prefix and suffix
-        if pattern.starts_with('*') && pattern.ends_with('*') {
-            let middle = &pattern[1..pattern.len() - 1];
-            name.contains(middle)
-        } else if pattern.starts_with('*') {
-            let suffix = &pattern[1..];
-            name.ends_with(suffix)
-        } else if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
-            name.starts_with(prefix)
-        } else {
-            name == pattern
-        }
+        crate::glib::pattern_match_simple(pattern, name)
     }
 }
 
@@ -326,7 +300,7 @@ impl SizeUtils {
 
     /// Parse human-readable size to bytes
     pub fn parse_size(size_str: &str) -> FsResult<u64> {
-        let size_str = size_str.trim().to_uppercase();
+        let size_str = crate::glib::ascii_strup(size_str.trim());
 
         if size_str.is_empty() {
             return Err(FsError::InvalidArgument);

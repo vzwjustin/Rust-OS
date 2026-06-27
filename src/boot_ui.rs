@@ -346,10 +346,11 @@ pub fn begin_stage(stage: BootStage, substage_total: usize) {
 
     boot_log_set_stage(stage.number() as u8);
     boot_log(&format!("BEGIN: {}", stage.name()));
-    show_stage_header(stage);
 
     if is_graphical_boot() {
         render_graphical_boot_progress();
+    } else {
+        show_stage_header(stage);
     }
 }
 
@@ -407,30 +408,32 @@ pub fn update_substage(current: usize, message: &str) {
         "[{}/{}] {}",
         current, progress.substage_total, message
     ));
-    set_color(Color::Cyan, Color::Black);
-    print!("      ");
-    if progress.substage_total > 0 {
-        print!("[{}/{}] ", current, progress.substage_total);
-    }
-    set_color(Color::LightGray, Color::Black);
-    println!("{}", message);
-    set_color(Color::White, Color::Black);
 
     if is_graphical_boot() {
         render_graphical_boot_progress();
+    } else {
+        set_color(Color::Cyan, Color::Black);
+        print!("      ");
+        if progress.substage_total > 0 {
+            print!("[{}/{}] ", current, progress.substage_total);
+        }
+        set_color(Color::LightGray, Color::Black);
+        println!("{}", message);
+        set_color(Color::White, Color::Black);
     }
 }
 
 /// Report a success within current stage
 pub fn report_success(component: &str) {
     boot_log(&format!("OK: {}", component));
-    set_color(Color::LightGreen, Color::Black);
-    print!("      [OK] ");
-    set_color(Color::White, Color::Black);
-    println!("{}", component);
 
     if is_graphical_boot() {
         render_graphical_boot_progress();
+    } else {
+        set_color(Color::LightGreen, Color::Black);
+        print!("      [OK] ");
+        set_color(Color::White, Color::Black);
+        println!("{}", component);
     }
 }
 
@@ -440,16 +443,17 @@ pub fn report_warning(component: &str, reason: &str) {
     progress.warnings_encountered += 1;
 
     boot_log(&format!("WARN: {} - {}", component, reason));
-    set_color(Color::Yellow, Color::Black);
-    print!("      [WARN] ");
-    set_color(Color::White, Color::Black);
-    print!("{}", component);
-    set_color(Color::DarkGray, Color::Black);
-    println!(" - {}", reason);
-    set_color(Color::White, Color::Black);
 
     if is_graphical_boot() {
         render_graphical_boot_progress();
+    } else {
+        set_color(Color::Yellow, Color::Black);
+        print!("      [WARN] ");
+        set_color(Color::White, Color::Black);
+        print!("{}", component);
+        set_color(Color::DarkGray, Color::Black);
+        println!(" - {}", reason);
+        set_color(Color::White, Color::Black);
     }
 }
 
@@ -458,16 +462,18 @@ pub fn report_error(component: &str, error: &str) {
     let progress = boot_progress();
     progress.errors_encountered += 1;
 
-    set_color(Color::Red, Color::Black);
-    print!("      [FAIL] ");
-    set_color(Color::White, Color::Black);
-    print!("{}", component);
-    set_color(Color::Red, Color::Black);
-    println!(" - {}", error);
-    set_color(Color::White, Color::Black);
+    boot_log(&format!("FAIL: {} - {}", component, error));
 
     if is_graphical_boot() {
         render_graphical_boot_progress();
+    } else {
+        set_color(Color::Red, Color::Black);
+        print!("      [FAIL] ");
+        set_color(Color::White, Color::Black);
+        print!("{}", component);
+        set_color(Color::Red, Color::Black);
+        println!(" - {}", error);
+        set_color(Color::White, Color::Black);
     }
 }
 
@@ -483,12 +489,12 @@ pub fn complete_stage(stage: BootStage) {
         progress.completed_stages[idx] = true;
     }
 
-    set_color(Color::LightGreen, Color::Black);
-    println!("      [OK] Stage complete");
-    set_color(Color::White, Color::Black);
-
     if is_graphical_boot() {
         render_graphical_boot_progress();
+    } else {
+        set_color(Color::LightGreen, Color::Black);
+        println!("      [OK] Stage complete");
+        set_color(Color::White, Color::Black);
     }
 }
 
@@ -1546,13 +1552,13 @@ pub fn transition_to_desktop() {
 }
 
 fn fade_to_desktop() {
-    // Fade from boot background color to black (fade out effect)
-    let bg_r: u32 = 28;
-    let bg_g: u32 = 34;
-    let bg_b: u32 = 54;
-    let steps = 10;
+    // Fade from GNOME gradient midpoint to black (smooth transition)
+    let bg_r: u32 = 37;
+    let bg_g: u32 = 37;
+    let bg_b: u32 = 50;
+    let steps = 8;
     for i in 0..steps {
-        let factor = steps - 1 - i; // steps-1 down to 0
+        let factor = steps - 1 - i;
         let r = (bg_r * factor / (steps - 1)) as u8;
         let g = (bg_g * factor / (steps - 1)) as u8;
         let b = (bg_b * factor / (steps - 1)) as u8;
@@ -1560,7 +1566,6 @@ fn fade_to_desktop() {
         crate::graphics::framebuffer::present();
         boot_delay_short();
     }
-    // Final frame: pure black
     crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(0, 0, 0));
     crate::graphics::framebuffer::present();
 }
@@ -1716,7 +1721,7 @@ pub fn is_graphical_boot() -> bool {
     crate::graphics::is_graphics_initialized()
 }
 
-/// Render boot progress on the framebuffer
+/// Render boot progress on the framebuffer (GNOME-style)
 pub fn render_graphical_boot_progress() {
     if !is_graphical_boot() {
         return;
@@ -1729,152 +1734,79 @@ pub fn render_graphical_boot_progress() {
 
     let progress = boot_progress();
     let overall = progress.overall_progress();
-    let stage = progress.current_stage();
 
-    // Clear with dark background
-    crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(28, 34, 54));
+    // GNOME-style gradient background
+    let bg_top = crate::graphics::Color::rgb(29, 29, 40);
+    let bg_bottom = crate::graphics::Color::rgb(45, 45, 61);
+    for y in 0..screen_h {
+        let factor = y as u32 * 256 / screen_h as u32;
+        let r = (bg_top.r as u32 * (256 - factor) + bg_bottom.r as u32 * factor) / 256;
+        let g = (bg_top.g as u32 * (256 - factor) + bg_bottom.g as u32 * factor) / 256;
+        let b = (bg_top.b as u32 * (256 - factor) + bg_bottom.b as u32 * factor) / 256;
+        let color = crate::graphics::Color::rgb(r as u8, g as u8, b as u8);
+        crate::graphics::framebuffer::fill_rect(
+            crate::graphics::framebuffer::Rect::new(0, y, screen_w, 1),
+            color,
+        );
+    }
 
     let font = crate::graphics::get_default_font();
     let white = crate::graphics::Color::rgb(255, 255, 255);
-    let accent = crate::graphics::Color::rgb(100, 180, 255);
-    let green = crate::graphics::Color::rgb(100, 220, 120);
-    let gray = crate::graphics::Color::rgb(80, 80, 100);
-    let yellow = crate::graphics::Color::rgb(240, 200, 80);
-    let red = crate::graphics::Color::rgb(240, 80, 80);
+    let accent = crate::graphics::Color::rgb(98, 160, 234);
+    let dim = crate::graphics::Color::rgb(120, 120, 140);
 
-    // Draw "RustOS" title centered
+    // Draw "RustOS" wordmark centered
     let title = "RustOS";
     let title_width = title.len() * font.char_width;
     let title_x = (screen_w.saturating_sub(title_width)) / 2;
-    let title_y = screen_h / 6;
+    let title_y = screen_h * 2 / 5;
     crate::graphics::draw_text(title, title_x, title_y, white, font);
 
-    // Draw subtitle
-    let subtitle = "Booting...";
-    let sub_width = subtitle.len() * font.char_width;
-    let sub_x = (screen_w.saturating_sub(sub_width)) / 2;
-    let sub_y = title_y + font.char_height + 4;
-    crate::graphics::draw_text(subtitle, sub_x, sub_y, gray, font);
-
-    // Draw progress bar
-    let bar_width = screen_w * 2 / 3;
-    let bar_x = (screen_w.saturating_sub(bar_width)) / 2;
-    let bar_y = sub_y + font.char_height + 16;
-    let bar_height = 10;
-
-    // Bar background (rounded look: draw slightly larger dark rect)
+    // Accent line beneath wordmark
+    let line_width = title_width + 20;
+    let line_x = (screen_w.saturating_sub(line_width)) / 2;
+    let line_y = title_y + font.char_height + 6;
     crate::graphics::framebuffer::fill_rect(
-        crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
-        gray,
+        crate::graphics::framebuffer::Rect::new(line_x, line_y, line_width, 2),
+        accent,
     );
 
-    // Bar fill
+    // Current status message below the accent line
+    if let Some(ref msg) = progress.last_message {
+        let msg_width = msg.len() * font.char_width;
+        let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
+        let msg_y = line_y + 10;
+        crate::graphics::draw_text(msg, msg_x, msg_y, dim, font);
+    }
+
+    // Thin progress bar at bottom
+    let bar_width = screen_w * 3 / 5;
+    let bar_x = (screen_w.saturating_sub(bar_width)) / 2;
+    let bar_y = screen_h.saturating_sub(40);
+    let bar_height = 4;
+
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
+        crate::graphics::Color::rgb(50, 50, 65),
+    );
+
     let fill_width = (bar_width * overall) / 100;
     if fill_width > 0 {
         crate::graphics::framebuffer::fill_rect(
             crate::graphics::framebuffer::Rect::new(bar_x, bar_y, fill_width, bar_height),
-            green,
+            accent,
         );
     }
 
-    // Draw percentage (stack buffer, no heap allocation)
+    // Percentage text below bar
     let mut pct_buf = [0u8; 5];
     let pct_len = format_percent(overall, &mut pct_buf);
     let pct_str = core::str::from_utf8(&pct_buf[..pct_len]).unwrap_or("0%");
     let pct_width = pct_str.len() * font.char_width;
     let pct_x = (screen_w.saturating_sub(pct_width)) / 2;
-    let pct_y = bar_y + bar_height + 6;
-    crate::graphics::draw_text(pct_str, pct_x, pct_y, white, font);
+    let pct_y = bar_y + bar_height + 8;
+    crate::graphics::draw_text(pct_str, pct_x, pct_y, dim, font);
 
-    // Draw stage checklist on left side
-    let all_stages = [
-        BootStage::HardwareDetection,
-        BootStage::AcpiInit,
-        BootStage::PciInit,
-        BootStage::MemoryInit,
-        BootStage::InterruptInit,
-        BootStage::DriverLoading,
-        BootStage::FileSystemMount,
-        BootStage::GraphicsInit,
-        BootStage::DesktopInit,
-        BootStage::BootComplete,
-    ];
-
-    let checklist_x = bar_x;
-    let checklist_y = pct_y + font.char_height + 16;
-    let line_height = font.char_height + 4;
-
-    for (i, &s) in all_stages.iter().enumerate() {
-        let y = checklist_y + i * line_height;
-        if y + font.char_height >= screen_h {
-            break;
-        }
-
-        let completed = progress.is_stage_completed(s);
-        let is_current = s == stage;
-
-        let prefix = if completed {
-            "[x] "
-        } else if is_current {
-            "[>]"
-        } else {
-            "[ ] "
-        };
-        let prefix_color = if completed {
-            green
-        } else if is_current {
-            accent
-        } else {
-            gray
-        };
-
-        crate::graphics::draw_text(prefix, checklist_x, y, prefix_color, font);
-
-        let name = s.name();
-        let name_color = if completed {
-            green
-        } else if is_current {
-            white
-        } else {
-            gray
-        };
-        crate::graphics::draw_text(name, checklist_x + 4 * font.char_width, y, name_color, font);
-    }
-
-    // Draw last message if present (bottom area)
-    if let Some(ref msg) = progress.last_message {
-        let msg_width = msg.len() * font.char_width;
-        let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
-        let msg_y = screen_h.saturating_sub(font.char_height + 8);
-        crate::graphics::draw_text(msg, msg_x, msg_y, accent, font);
-    }
-
-    // Draw warnings/errors counter in top-right corner
-    if progress.warnings_encountered > 0 || progress.errors_encountered > 0 {
-        let mut warn_buf = [0u8; 16];
-        let wlen = format_count_label("WARN: ", progress.warnings_encountered, &mut warn_buf);
-        let wstr = core::str::from_utf8(&warn_buf[..wlen]).unwrap_or("");
-        crate::graphics::draw_text(
-            wstr,
-            screen_w.saturating_sub(wstr.len() * font.char_width + 8),
-            4,
-            yellow,
-            font,
-        );
-
-        let mut err_buf = [0u8; 16];
-        let elen = format_count_label("ERR:  ", progress.errors_encountered, &mut err_buf);
-        let estr = core::str::from_utf8(&err_buf[..elen]).unwrap_or("");
-        crate::graphics::draw_text(
-            estr,
-            screen_w.saturating_sub(estr.len() * font.char_width + 8),
-            4 + font.char_height + 2,
-            red,
-            font,
-        );
-    }
-
-    // Present the frame
     crate::graphics::framebuffer::present();
 }
 
@@ -1956,7 +1888,7 @@ pub fn render_graphical_boot_message(message: &str, color: crate::graphics::Colo
     crate::graphics::framebuffer::present();
 }
 
-/// Render a graphical boot complete screen
+/// Render a graphical boot complete screen (GNOME-style)
 pub fn render_graphical_boot_complete() {
     if !is_graphical_boot() {
         return;
@@ -1967,83 +1899,63 @@ pub fn render_graphical_boot_complete() {
         None => return,
     };
 
-    let progress = boot_progress();
-
-    crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(28, 34, 54));
+    // GNOME-style gradient background
+    let bg_top = crate::graphics::Color::rgb(29, 29, 40);
+    let bg_bottom = crate::graphics::Color::rgb(45, 45, 61);
+    for y in 0..screen_h {
+        let factor = y as u32 * 256 / screen_h as u32;
+        let r = (bg_top.r as u32 * (256 - factor) + bg_bottom.r as u32 * factor) / 256;
+        let g = (bg_top.g as u32 * (256 - factor) + bg_bottom.g as u32 * factor) / 256;
+        let b = (bg_top.b as u32 * (256 - factor) + bg_bottom.b as u32 * factor) / 256;
+        let color = crate::graphics::Color::rgb(r as u8, g as u8, b as u8);
+        crate::graphics::framebuffer::fill_rect(
+            crate::graphics::framebuffer::Rect::new(0, y, screen_w, 1),
+            color,
+        );
+    }
 
     let font = crate::graphics::get_default_font();
     let white = crate::graphics::Color::rgb(255, 255, 255);
-    let green = crate::graphics::Color::rgb(100, 220, 120);
-    let gray = crate::graphics::Color::rgb(80, 80, 100);
-    let accent = crate::graphics::Color::rgb(100, 180, 255);
+    let accent = crate::graphics::Color::rgb(98, 160, 234);
+    let dim = crate::graphics::Color::rgb(120, 120, 140);
 
-    // Draw "RustOS" title centered
+    // Draw "RustOS" wordmark centered
     let title = "RustOS";
     let title_width = title.len() * font.char_width;
     let title_x = (screen_w.saturating_sub(title_width)) / 2;
-    let title_y = screen_h / 6;
+    let title_y = screen_h * 2 / 5;
     crate::graphics::draw_text(title, title_x, title_y, white, font);
 
-    // Draw "Boot Complete!" message
-    let msg = "Boot Complete!";
-    let msg_width = msg.len() * font.char_width;
-    let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
-    let msg_y = title_y + font.char_height + 8;
-    crate::graphics::draw_text(msg, msg_x, msg_y, green, font);
-
-    // Draw stage checklist (all should be complete)
-    let all_stages = [
-        BootStage::HardwareDetection,
-        BootStage::AcpiInit,
-        BootStage::PciInit,
-        BootStage::MemoryInit,
-        BootStage::InterruptInit,
-        BootStage::DriverLoading,
-        BootStage::FileSystemMount,
-        BootStage::GraphicsInit,
-        BootStage::DesktopInit,
-        BootStage::BootComplete,
-    ];
-
-    let checklist_x = (screen_w.saturating_sub(30 * font.char_width)) / 2;
-    let checklist_y = msg_y + font.char_height + 20;
-    let line_height = font.char_height + 4;
-
-    for (i, &s) in all_stages.iter().enumerate() {
-        let y = checklist_y + i * line_height;
-        if y + font.char_height >= screen_h {
-            break;
-        }
-
-        let completed = progress.is_stage_completed(s);
-        let prefix = if completed { "[x] " } else { "[ ] " };
-        let prefix_color = if completed { green } else { gray };
-        crate::graphics::draw_text(prefix, checklist_x, y, prefix_color, font);
-
-        let name = s.name();
-        let name_color = if completed { green } else { gray };
-        crate::graphics::draw_text(name, checklist_x + 4 * font.char_width, y, name_color, font);
-    }
-
-    // Draw warnings/errors summary at bottom
-    let summary_y = screen_h.saturating_sub(font.char_height + 8);
-    let mut sum_buf = [0u8; 32];
-    let slen = format_boot_summary(
-        progress.warnings_encountered,
-        progress.errors_encountered,
-        &mut sum_buf,
+    // Accent line beneath wordmark
+    let line_width = title_width + 20;
+    let line_x = (screen_w.saturating_sub(line_width)) / 2;
+    let line_y = title_y + font.char_height + 6;
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(line_x, line_y, line_width, 2),
+        accent,
     );
-    let sstr = core::str::from_utf8(&sum_buf[..slen]).unwrap_or("");
-    let sum_width = sstr.len() * font.char_width;
-    let sum_x = (screen_w.saturating_sub(sum_width)) / 2;
-    let sum_color = if progress.errors_encountered > 0 {
-        crate::graphics::Color::rgb(240, 80, 80)
-    } else if progress.warnings_encountered > 0 {
-        crate::graphics::Color::rgb(240, 200, 80)
-    } else {
-        accent
-    };
-    crate::graphics::draw_text(sstr, sum_x, summary_y, sum_color, font);
+
+    // "Welcome" subtitle
+    let subtitle = "Welcome";
+    let sub_width = subtitle.len() * font.char_width;
+    let sub_x = (screen_w.saturating_sub(sub_width)) / 2;
+    let sub_y = line_y + 10;
+    crate::graphics::draw_text(subtitle, sub_x, sub_y, dim, font);
+
+    // Full progress bar at bottom (100%)
+    let bar_width = screen_w * 3 / 5;
+    let bar_x = (screen_w.saturating_sub(bar_width)) / 2;
+    let bar_y = screen_h.saturating_sub(40);
+    let bar_height = 4;
+
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
+        crate::graphics::Color::rgb(50, 50, 65),
+    );
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
+        accent,
+    );
 
     crate::graphics::framebuffer::present();
 }
@@ -2250,4 +2162,104 @@ pub fn show_boot_menu() -> BootMenuSelection {
     println!(">> Auto-continuing with Normal Boot         ");
     set_color(Color::White, Color::Black);
     BootMenuSelection::NormalBoot
+}
+
+// ============================================================================
+// GNOME-style Graphical Boot Splash
+// ============================================================================
+
+/// Show a GNOME-style graphical boot splash on the framebuffer.
+///
+/// Renders a clean, modern splash screen with:
+/// - Dark gradient-like background (#1d1d28 → #2d2d3d)
+/// - Centered "RustOS" wordmark in white
+/// - Subtle accent line beneath the wordmark
+/// - Thin progress bar at the bottom of the screen
+/// - No text logs or stage lists — just the logo and progress
+pub fn show_graphical_splash() {
+    if !is_graphical_boot() {
+        return;
+    }
+
+    let (screen_w, screen_h) = match crate::graphics::get_screen_dimensions() {
+        Some(dims) => dims,
+        None => return,
+    };
+
+    let font = crate::graphics::get_default_font();
+
+    // GNOME-style dark background
+    let bg_top = crate::graphics::Color::rgb(29, 29, 40);
+    let bg_bottom = crate::graphics::Color::rgb(45, 45, 61);
+
+    // Vertical gradient background
+    for y in 0..screen_h {
+        let factor = y as u32 * 256 / screen_h as u32;
+        let r = (bg_top.r as u32 * (256 - factor) + bg_bottom.r as u32 * factor) / 256;
+        let g = (bg_top.g as u32 * (256 - factor) + bg_bottom.g as u32 * factor) / 256;
+        let b = (bg_top.b as u32 * (256 - factor) + bg_bottom.b as u32 * factor) / 256;
+        let color = crate::graphics::Color::rgb(r as u8, g as u8, b as u8);
+        crate::graphics::framebuffer::fill_rect(
+            crate::graphics::framebuffer::Rect::new(0, y, screen_w, 1),
+            color,
+        );
+    }
+
+    // Colors
+    let white = crate::graphics::Color::rgb(255, 255, 255);
+    let accent = crate::graphics::Color::rgb(98, 160, 234); // GNOME blue
+    let dim = crate::graphics::Color::rgb(120, 120, 140);
+
+    // Draw "RustOS" wordmark centered, upper-middle area
+    let title = "RustOS";
+    let title_width = title.len() * font.char_width;
+    let title_x = (screen_w.saturating_sub(title_width)) / 2;
+    let title_y = screen_h * 2 / 5;
+    crate::graphics::draw_text(title, title_x, title_y, white, font);
+
+    // Subtle accent line beneath wordmark
+    let line_width = title_width + 20;
+    let line_x = (screen_w.saturating_sub(line_width)) / 2;
+    let line_y = title_y + font.char_height + 6;
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(line_x, line_y, line_width, 2),
+        accent,
+    );
+
+    // "Starting..." subtitle
+    let subtitle = "Starting";
+    let sub_width = subtitle.len() * font.char_width;
+    let sub_x = (screen_w.saturating_sub(sub_width)) / 2;
+    let sub_y = line_y + 10;
+    crate::graphics::draw_text(subtitle, sub_x, sub_y, dim, font);
+
+    // Thin progress bar at bottom (like GNOME's plymouth spinner area)
+    let bar_width = screen_w * 3 / 5;
+    let bar_x = (screen_w.saturating_sub(bar_width)) / 2;
+    let bar_y = screen_h.saturating_sub(40);
+    let bar_height = 4;
+
+    // Bar background
+    crate::graphics::framebuffer::fill_rect(
+        crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
+        crate::graphics::Color::rgb(50, 50, 65),
+    );
+
+    // Initial fill (0% — will be updated by render_graphical_boot_progress)
+    let progress = boot_progress();
+    let overall = progress.overall_progress();
+    let fill_width = (bar_width * overall) / 100;
+    if fill_width > 0 {
+        crate::graphics::framebuffer::fill_rect(
+            crate::graphics::framebuffer::Rect::new(bar_x, bar_y, fill_width, bar_height),
+            accent,
+        );
+    }
+
+    // Pulsing dot indicator below progress bar (simple static dot for splash)
+    let dot_y = bar_y + bar_height + 12;
+    let dot_cx = screen_w / 2;
+    crate::graphics::primitives::fill_circle(dot_cx, dot_y + 3, 3, accent);
+
+    crate::graphics::framebuffer::present();
 }

@@ -95,6 +95,15 @@ pub fn get_video_memory_bytes() -> u64 {
 }
 
 pub fn set_mode(width: u16, height: u16, bpp: u8) -> Result<VbeIoMode, &'static str> {
+    set_mode_with_fb(width, height, bpp, None)
+}
+
+pub fn set_mode_with_fb(
+    width: u16,
+    height: u16,
+    bpp: u8,
+    fb_override: Option<u64>,
+) -> Result<VbeIoMode, &'static str> {
     if width == 0 || height == 0 {
         return Err("Invalid resolution");
     }
@@ -178,7 +187,7 @@ pub fn set_mode(width: u16, height: u16, bpp: u8) -> Result<VbeIoMode, &'static 
         width,
         height,
         bpp,
-        framebuffer_phys: detect_framebuffer_phys(),
+        framebuffer_phys: fb_override.unwrap_or_else(detect_framebuffer_phys),
         pitch,
         pixel_format,
     })

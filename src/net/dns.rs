@@ -32,16 +32,7 @@ trait StringExt {
 
 impl StringExt for str {
     fn to_lowercase(&self) -> String {
-        let mut result = String::with_capacity(self.len());
-        for ch in self.chars() {
-            // Simple ASCII lowercase conversion
-            if ch >= 'A' && ch <= 'Z' {
-                result.push((ch as u8 + 32) as char);
-            } else {
-                result.push(ch);
-            }
-        }
-        result
+        crate::glib::ascii_strdown(self)
     }
 }
 

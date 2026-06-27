@@ -3,9 +3,11 @@
 //! This module provides a complete desktop environment for RustOS, including
 //! window management, graphics rendering, and user interface components.
 
+pub mod app_grid;
 pub mod window_manager;
 
 use crate::graphics::framebuffer::{self, Color, FramebufferInfo, Rect};
+use alloc::boxed::Box;
 use heapless::Vec;
 
 // Re-export commonly used types
@@ -54,7 +56,7 @@ pub struct Desktop {
     event_queue: Vec<DesktopEvent, 32>,
     framebuffer_info: Option<FramebufferInfo>,
     video_mode: Option<u16>,
-    window_manager: Option<WindowManager>,
+    window_manager: Option<Box<WindowManager>>,
 }
 
 impl Desktop {
@@ -92,7 +94,7 @@ impl Desktop {
         };
 
         // Initialize window manager with actual screen size
-        self.window_manager = Some(WindowManager::new(width, height));
+        self.window_manager = Some(Box::new(WindowManager::new(width, height)));
         unsafe { crate::early_serial_write_str("desktop:wm new\r\n") };
 
         if self.config.show_splash {
@@ -100,16 +102,9 @@ impl Desktop {
             unsafe { crate::early_serial_write_str("desktop:splash done\r\n") };
         }
 
-        // Create Linux-style default applications wired to kernel subsystems.
+        // Render the clean desktop (no windows pre-opened — user launches apps from the dock).
         if let Some(ref mut wm) = self.window_manager {
-            unsafe { crate::early_serial_write_str("desktop:create windows\r\n") };
-
-            wm.create_shell_window(112, 96, 440, 260);
-            wm.create_file_manager_window(180, 88, 420, 300);
-            wm.create_system_monitor_window(240, 140, 360, 240);
-
             wm.force_redraw();
-            unsafe { crate::early_serial_write_str("desktop:windows done\r\n") };
         }
 
         self.status = DesktopStatus::Running;
@@ -244,12 +239,12 @@ impl Desktop {
 
     /// Get mutable window manager reference
     pub fn window_manager_mut(&mut self) -> Option<&mut WindowManager> {
-        self.window_manager.as_mut()
+        self.window_manager.as_deref_mut()
     }
 
     /// Get window manager reference
     pub fn window_manager(&self) -> Option<&WindowManager> {
-        self.window_manager.as_ref()
+        self.window_manager.as_deref()
     }
 }
 

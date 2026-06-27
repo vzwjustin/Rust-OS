@@ -414,7 +414,7 @@ impl Fat32FileSystem {
             result.push_str(&ext);
         }
 
-        result.to_lowercase()
+        crate::glib::ascii_strdown(&result)
     }
 
     /// Read directory entries from cluster chain
@@ -560,7 +560,7 @@ impl Fat32FileSystem {
             let mut found = false;
 
             for entry in entries {
-                if entry.name.to_lowercase() == component.to_lowercase() {
+                if crate::glib::ascii_strcasecmp(&entry.name, component) == 0 {
                     if entry.file_type != FileType::Directory
                         && *component != *components.last().unwrap()
                     {
@@ -593,7 +593,7 @@ impl Fat32FileSystem {
         let basename = filename.split('/').last().unwrap_or(filename);
 
         for entry in entries {
-            if entry.name.to_lowercase() == basename.to_lowercase() {
+            if crate::glib::ascii_strcasecmp(&entry.name, basename) == 0 {
                 // Find the actual directory entry to get metadata
                 let cluster_chain = self.get_cluster_chain(parent_cluster)?;
 
@@ -625,7 +625,7 @@ impl Fat32FileSystem {
                         }
 
                         let entry_name = Self::parse_83_name(&dir_entry.name);
-                        if entry_name == basename.to_lowercase() {
+                        if crate::glib::ascii_strcasecmp(&entry_name, basename) == 0 {
                             let file_type = if dir_entry.attr & Fat32Attr::DIRECTORY.bits() != 0 {
                                 FileType::Directory
                             } else {

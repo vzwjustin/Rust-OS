@@ -206,8 +206,14 @@ impl DisplayDriver {
         bpp: u8,
         phys_mem_offset: u64,
     ) -> Result<DisplayMode, &'static str> {
-        // Set the VBE mode
-        let vbe_mode = vbe_io::set_mode(width, height, bpp)?;
+        // Set the VBE mode, passing the framebuffer phys address we already
+        // detected via PCI to avoid an unreliable second scan.
+        let fb_override = self
+            .controller
+            .as_ref()
+            .map(|c| c.framebuffer_phys)
+            .filter(|&a| a != 0);
+        let vbe_mode = vbe_io::set_mode_with_fb(width, height, bpp, fb_override)?;
 
         self.status = DisplayStatus::ModeSet;
 
@@ -228,9 +234,16 @@ impl DisplayDriver {
             fb_size_mapped
         );
 
-        if let Err(e) = crate::memory::map_mmio_region(fb_virt, fb_size_mapped) {
-            self.error_msg = Some(format!("framebuffer map failed: {}", e));
-            return Err("framebuffer MMIO map failed");
+        // Map the framebuffer as MMIO (write-combining, uncached).
+        // If the memory manager isn't initialized yet (early boot), the
+        // bootloader's physical memory offset mapping is sufficient.
+        if crate::memory::get_memory_manager().is_some() {
+            if let Err(e) = crate::memory::map_mmio_region_strict(fb_virt, fb_size_mapped) {
+                self.error_msg = Some(format!("framebuffer map failed: {}", e));
+                return Err("framebuffer MMIO map failed");
+            }
+        } else {
+            crate::serial_println!("display: memory manager not ready, using bootloader mapping");
         }
 
         self.status = DisplayStatus::FramebufferMapped;

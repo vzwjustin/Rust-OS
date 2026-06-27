@@ -419,6 +419,12 @@ impl NetworkStack {
         interfaces.values().cloned().collect()
     }
 
+    /// Return the number of registered network interfaces without iterating
+    /// or cloning entries.
+    pub fn interface_count(&self) -> usize {
+        self.interfaces.read().len()
+    }
+
     /// Set interface up/down
     pub fn set_interface_state(&self, name: &str, up: bool) -> NetworkResult<()> {
         let mut interfaces = self.interfaces.write();

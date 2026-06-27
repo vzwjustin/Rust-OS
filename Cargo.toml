@@ -26,6 +26,9 @@ x86_64 = "0.14.2"
 # Synchronization primitives
 spin = "0.9"
 
+# Native Rust GLib utilities (no_std) — see /home/justin/glib-rust
+glib-native = { path = "../glib-rust/glib/rust/glib-native" }
+
 # Serial and keyboard support
 uart_16550 = "0.2.0"
 pc-keyboard = "0.5.0"

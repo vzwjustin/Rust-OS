@@ -1406,10 +1406,10 @@ impl PageTableManager {
     /// Update page flags
     pub fn update_flags(&mut self, page: Page, flags: PageTableFlags) -> Result<(), &'static str> {
         unsafe {
-            let _ = self
-                .mapper
+            self.mapper
                 .update_flags(page, flags)
-                .map_err(|_| "Failed to update page flags")?;
+                .map_err(|_| "Failed to update page flags")?
+                .flush();
         }
         Ok(())
     }
@@ -3138,17 +3138,95 @@ pub fn map_mmio_region(phys: usize, size: usize) -> Result<usize, &'static str> 
         return Err("map_mmio_region: zero size");
     }
     let flags = MemoryFlags::PRESENT | MemoryFlags::WRITABLE | MemoryFlags::NO_CACHE;
+    let ptf = flags.to_page_table_flags();
     let (start, end) = mmio_page_span(phys, size);
     let mut addr = start;
     while addr < end {
-        // Skip pages already mapped — another driver may share this MMIO region
-        // (e.g. the framebuffer mapped by both the display and VBE paths). Being
-        // idempotent lets overlapping mappers coexist instead of erroring.
-        if translate_addr(VirtAddr::new(addr as u64)).is_none() {
+        if translate_addr(VirtAddr::new(addr as u64)).is_some() {
+            // Page is already mapped (e.g. bootloader identity mapping) but may
+            // lack WRITABLE/NO_CACHE flags. Walk the page table manually to
+            // update flags — this handles both 4KB and 2MB huge pages without
+            // going through OffsetPageTable, which can corrupt huge page entries.
+            if let Some(mm) = get_memory_manager() {
+                let pml4_addr =
+                    mm.physical_memory_offset.as_u64() + Cr3::read().0.start_address().as_u64();
+                let pml4 = unsafe { &mut *(pml4_addr as *mut PageTable) };
+                let p4_idx = (addr >> 39) & 0o777;
+                let p3_idx = (addr >> 30) & 0o777;
+                let p2_idx = (addr >> 21) & 0o777;
+                if pml4[p4_idx].flags().contains(PageTableFlags::PRESENT) {
+                    let p3_addr = mm.physical_memory_offset.as_u64() + pml4[p4_idx].addr().as_u64();
+                    let p3 = unsafe { &mut *(p3_addr as *mut PageTable) };
+                    if p3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
+                        let p2_addr =
+                            mm.physical_memory_offset.as_u64() + p3[p3_idx].addr().as_u64();
+                        let p2 = unsafe { &mut *(p2_addr as *mut PageTable) };
+                        if p2[p2_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
+                            // 2MB huge page — update L2 entry flags, preserve
+                            // the physical frame address and HUGE_PAGE bit.
+                            let frame = p2[p2_idx].addr();
+                            p2[p2_idx].set_addr(frame, ptf | PageTableFlags::HUGE_PAGE);
+                            x86_64::instructions::tlb::flush(VirtAddr::new(addr as u64));
+                            // Skip to next 2MB boundary — the entire huge page
+                            // is updated in one shot.
+                            addr = (addr + 0x20_0000) & !0x1F_FFFF;
+                            continue;
+                        } else if p2[p2_idx].flags().contains(PageTableFlags::PRESENT) {
+                            // 4KB page — update L1 entry
+                            let p1_addr =
+                                mm.physical_memory_offset.as_u64() + p2[p2_idx].addr().as_u64();
+                            let p1 = unsafe { &mut *(p1_addr as *mut PageTable) };
+                            let p1_idx = (addr >> 12) & 0o777;
+                            if p1[p1_idx].flags().contains(PageTableFlags::PRESENT) {
+                                let frame = p1[p1_idx].addr();
+                                p1[p1_idx].set_addr(frame, ptf);
+                                x86_64::instructions::tlb::flush(VirtAddr::new(addr as u64));
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
             map_physical_memory(addr, addr, flags)?;
         }
         addr += 4096;
     }
+    Ok(phys)
+}
+
+/// Map a physical MMIO span page-by-page, ensuring every page in the requested
+/// range is present before returning.
+///
+/// This is stricter than `map_mmio_region` and is intended for linear
+/// framebuffers, where a single unmapped page turns the initial clear into a
+/// boot-time page fault.
+pub fn map_mmio_region_strict(phys: usize, size: usize) -> Result<usize, &'static str> {
+    if size == 0 {
+        return Err("map_mmio_region_strict: zero size");
+    }
+
+    let mm = get_memory_manager().ok_or("Memory manager not initialized")?;
+    let flags = MemoryFlags::PRESENT | MemoryFlags::WRITABLE | MemoryFlags::NO_CACHE;
+    let page_flags = flags.to_page_table_flags();
+    let (start, end) = mmio_page_span(phys, size);
+
+    let mut page_table_manager = mm.page_table_manager.lock();
+    let mut frame_allocator = mm.frame_allocator.lock();
+    let mut addr = start;
+
+    while addr < end {
+        let virt_addr = VirtAddr::new(addr as u64);
+        if page_table_manager.translate_addr(virt_addr).is_none() {
+            let page = Page::containing_address(virt_addr);
+            let frame = PhysFrame::containing_address(PhysAddr::new(addr as u64));
+            page_table_manager
+                .map_page(page, frame, page_flags, &mut *frame_allocator)
+                .map_err(|_| "Failed to map MMIO page")?;
+        }
+
+        addr += PAGE_SIZE;
+    }
+
     Ok(phys)
 }
 

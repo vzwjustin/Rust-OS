@@ -3,6 +3,7 @@
 //! A comprehensive desktop environment with window management, UI components,
 //! and event handling for the RustOS kernel.
 
+use crate::desktop::app_grid;
 use crate::graphics::framebuffer::{Color, Rect};
 use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_readdir, InodeType, OpenFlags};
 use alloc::format;
@@ -403,6 +404,12 @@ pub struct WindowManager {
     net_status_lines: Vec<HString<96>, MAX_MONITOR_LINES>,
     /// Snapped side for the currently snapped window
     snapped_side: Option<SnapSide>,
+    /// App-grid overlay open?
+    app_grid_open: bool,
+    /// Live search query in the app grid
+    app_grid_query: HString<32>,
+    /// Current app-grid page
+    app_grid_page: usize,
 }
 
 impl WindowManager {
@@ -457,6 +464,9 @@ impl WindowManager {
             network_status_window: None,
             net_status_lines: Vec::new(),
             snapped_side: None,
+            app_grid_open: false,
+            app_grid_query: HString::new(),
+            app_grid_page: 0,
         }
     }
 
@@ -609,7 +619,9 @@ impl WindowManager {
     }
 
     fn refresh_system_monitor(&mut self) {
-        unsafe { crate::early_serial_write_str("MON:enter\n"); }
+        unsafe {
+            crate::early_serial_write_str("MON:enter\n");
+        }
         self.monitor_lines.clear();
 
         let uptime_s = crate::time::uptime_ms() / 1000;
@@ -620,7 +632,9 @@ impl WindowManager {
         let _ = self.push_monitor_line(&format!("Clock: {}", clock));
         let _ = self.push_monitor_line(&format!("Uptime: {}s", uptime_s));
 
-        unsafe { crate::early_serial_write_str("MON:mem\n"); }
+        unsafe {
+            crate::early_serial_write_str("MON:mem\n");
+        }
         if let Some(stats) = crate::memory::get_memory_stats() {
             let _ = self.push_monitor_line(&format!(
                 "Memory: {} / {} MiB",
@@ -637,23 +651,32 @@ impl WindowManager {
             let _ = self.push_monitor_line(&format!("Usable RAM: {} MiB", total_mib));
         }
 
-        unsafe { crate::early_serial_write_str("MON:cpu\n"); }
+        unsafe {
+            crate::early_serial_write_str("MON:cpu\n");
+        }
         let cpu = crate::performance_monitor::cpu_utilization();
         let _ = self.push_monitor_line(&format!("CPU load est: {}%", cpu));
 
-        unsafe { crate::early_serial_write_str("MON:procs\n"); }
+        unsafe {
+            crate::early_serial_write_str("MON:procs\n");
+        }
         let procs = crate::process::get_process_manager().list_processes().len();
         let _ = self.push_monitor_line(&format!("Processes: {}", procs));
 
-        unsafe { crate::early_serial_write_str("MON:ifaces\n"); }
-        let ifaces = crate::net::network_stack().list_interfaces();
-        let up = ifaces.iter().filter(|i| i.flags.up).count();
-        let _ = self.push_monitor_line(&format!("Network: {}/{} up", up, ifaces.len()));
+        unsafe {
+            crate::early_serial_write_str("MON:ifaces\n");
+        }
+        let ifaces = crate::net::network_stack().interface_count();
+        let _ = self.push_monitor_line(&format!("Network: {} interface(s)", ifaces));
 
-        unsafe { crate::early_serial_write_str("MON:mounts\n"); }
+        unsafe {
+            crate::early_serial_write_str("MON:mounts\n");
+        }
         let mounts = crate::fs::vfs().list_mounts().len();
         let _ = self.push_monitor_line(&format!("Mount points: {}", mounts));
-        unsafe { crate::early_serial_write_str("MON:done\n"); }
+        unsafe {
+            crate::early_serial_write_str("MON:done\n");
+        }
     }
 
     fn push_monitor_line(&mut self, text: &str) -> bool {
@@ -676,10 +699,9 @@ impl WindowManager {
     }
 
     fn network_tray_label() -> HString<16> {
-        let ifaces = crate::net::network_stack().list_interfaces();
-        let up = ifaces.iter().filter(|i| i.flags.up).count();
+        let count = crate::net::network_stack().interface_count();
         let mut out = HString::new();
-        let _ = out.push_str(&format!("NET {}/{}", up, ifaces.len()));
+        let _ = out.push_str(&format!("NET {}", count));
         out
     }
 
@@ -894,10 +916,10 @@ impl WindowManager {
                 self.push_shell_line(&line);
             }
             "net" | "ifaces" => {
-                let interfaces = crate::net::network_stack().list_interfaces().len();
-                let line = format!("network interfaces: {}", interfaces);
+                let interfaces = crate::net::network_stack().list_interfaces();
+                let line = format!("network interfaces: {}", interfaces.len());
                 self.push_shell_line(&line);
-                for iface in crate::net::network_stack().list_interfaces().iter().take(3) {
+                for iface in interfaces.iter().take(3) {
                     let state = if iface.flags.up { "up" } else { "down" };
                     let line = format!(
                         "{}: {} {} addr",
@@ -950,7 +972,13 @@ impl WindowManager {
     // ==================================================================
 
     /// Show a context menu at the given position with the given items.
-    fn show_context_menu(&mut self, x: usize, y: usize, items: Vec<ContextMenuItem, 16>, target: Option<WindowId>) {
+    fn show_context_menu(
+        &mut self,
+        x: usize,
+        y: usize,
+        items: Vec<ContextMenuItem, 16>,
+        target: Option<WindowId>,
+    ) {
         let font = crate::graphics::get_default_font();
         let mut menu_width = MENU_MIN_WIDTH;
         for item in &items {
@@ -1055,7 +1083,10 @@ impl WindowManager {
                     self.create_network_status_window(200, 120, 360, 240);
                 }
             }
-            MenuAction::NewFolder | MenuAction::Delete | MenuAction::Rename | MenuAction::Properties => {
+            MenuAction::NewFolder
+            | MenuAction::Delete
+            | MenuAction::Rename
+            | MenuAction::Properties => {
                 // File operations — would need VFS write support
             }
             MenuAction::NextWorkspace => {
@@ -1255,7 +1286,9 @@ impl WindowManager {
                 if self.te_cursor_row > 0 {
                     self.te_cursor_row -= 1;
                     if self.te_cursor_row < self.text_editor_lines.len() {
-                        self.te_cursor_col = self.te_cursor_col.min(self.text_editor_lines[self.te_cursor_row].len());
+                        self.te_cursor_col = self
+                            .te_cursor_col
+                            .min(self.text_editor_lines[self.te_cursor_row].len());
                     }
                     self.needs_redraw = true;
                 }
@@ -1265,7 +1298,9 @@ impl WindowManager {
                 // Down arrow
                 if self.te_cursor_row + 1 < self.text_editor_lines.len() {
                     self.te_cursor_row += 1;
-                    self.te_cursor_col = self.te_cursor_col.min(self.text_editor_lines[self.te_cursor_row].len());
+                    self.te_cursor_col = self
+                        .te_cursor_col
+                        .min(self.text_editor_lines[self.te_cursor_row].len());
                     self.needs_redraw = true;
                 }
                 true
@@ -1941,6 +1976,11 @@ impl WindowManager {
             self.hide_context_menu();
         }
 
+        // App grid is modal: it captures all keys while open.
+        if self.app_grid_open {
+            return self.handle_app_grid_key(key);
+        }
+
         if self.focused_window == self.file_manager_window {
             if self.handle_file_manager_key(key) {
                 return true;
@@ -1999,13 +2039,29 @@ impl WindowManager {
                 self.needs_redraw = true;
                 true
             }
+            b'g' | b'G' => {
+                self.open_app_grid();
+                true
+            }
             b'm' | b'M' => self
                 .focused_window
                 .map_or(false, |window_id| self.minimize_window(window_id)),
-            b'1' => { self.switch_workspace(0); true }
-            b'2' => { self.switch_workspace(1); true }
-            b'3' => { self.switch_workspace(2); true }
-            b'4' => { self.switch_workspace(3); true }
+            b'1' => {
+                self.switch_workspace(0);
+                true
+            }
+            b'2' => {
+                self.switch_workspace(1);
+                true
+            }
+            b'3' => {
+                self.switch_workspace(2);
+                true
+            }
+            b'4' => {
+                self.switch_workspace(3);
+                true
+            }
             _ => false,
         }
     }
@@ -2092,6 +2148,12 @@ impl WindowManager {
     pub fn handle_mouse_down(&mut self, x: usize, y: usize, button: MouseButton) -> bool {
         // Handle context menu clicks first
         if self.handle_context_menu_click(x, y) {
+            return true;
+        }
+
+        // App grid is modal: it absorbs all clicks while open.
+        if self.app_grid_open {
+            self.handle_app_grid_click(x, y);
             return true;
         }
 
@@ -2337,6 +2399,10 @@ impl WindowManager {
             self.render_quick_settings();
         }
 
+        if self.app_grid_open {
+            self.render_app_grid();
+        }
+
         // Render context menu on top
         if self.context_menu.visible {
             self.render_context_menu();
@@ -2462,7 +2528,8 @@ impl WindowManager {
             let thumb_height = (bar_height * visible_lines / total_lines).max(12);
             let max_scroll = total_lines.saturating_sub(visible_lines);
             let thumb_y = if max_scroll > 0 {
-                window.client_area.y + (bar_height.saturating_sub(thumb_height) * window.scroll_offset / max_scroll)
+                window.client_area.y
+                    + (bar_height.saturating_sub(thumb_height) * window.scroll_offset / max_scroll)
             } else {
                 window.client_area.y
             };
@@ -2636,24 +2703,12 @@ impl WindowManager {
             } else {
                 colors::TEXT_COLOR_MUTED
             };
-            crate::graphics::draw_text(
-                line.as_str(),
-                window.client_area.x + 8,
-                text_y,
-                fg,
-                font,
-            );
+            crate::graphics::draw_text(line.as_str(), window.client_area.x + 8, text_y, fg, font);
 
             // Draw cursor indicator
             if is_cursor_line {
-                let cursor_x = window.client_area.x + 8
-                    + self.te_cursor_col * font.char_width;
-                let cursor_rect = Rect::new(
-                    cursor_x,
-                    text_y,
-                    2,
-                    font.char_height,
-                );
+                let cursor_x = window.client_area.x + 8 + self.te_cursor_col * font.char_width;
+                let cursor_rect = Rect::new(cursor_x, text_y, 2, font.char_height);
                 crate::graphics::framebuffer::fill_rect(cursor_rect, colors::BORDER_ACTIVE);
             }
 
@@ -2794,9 +2849,24 @@ impl WindowManager {
 
         // Arrow outline (draw slightly larger for border effect)
         let arrow_outline: [(isize, isize); 18] = [
-            (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),
-            (0, 8), (0, 9), (0, 10), (0, 11), (0, 12), (0, 13), (0, 14),
-            (1, 14), (2, 13), (3, 12),
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (0, 4),
+            (0, 5),
+            (0, 6),
+            (0, 7),
+            (0, 8),
+            (0, 9),
+            (0, 10),
+            (0, 11),
+            (0, 12),
+            (0, 13),
+            (0, 14),
+            (1, 14),
+            (2, 13),
+            (3, 12),
         ];
 
         // Draw outline first (offset by 1 in each direction)
@@ -2896,21 +2966,9 @@ impl WindowManager {
     }
 
     fn render_desktop_icons(&self) {
-        let font = crate::graphics::get_default_font();
-        let x = self.dock_rect.width + 24;
-        let y = self.menu_bar_rect.height + 28;
-        let uptime = crate::time::uptime_ms() / 1000;
-        let windows = self
-            .windows
-            .iter()
-            .filter(|window| window.state != WindowState::Closed)
-            .count();
-        let line1 = format!("RustOS Desktop");
-        let line2 = format!("Open windows: {}", windows);
-        let line3 = format!("Uptime: {}s", uptime);
-        crate::graphics::draw_text(&line1, x, y, colors::TEXT_COLOR_WHITE, font);
-        crate::graphics::draw_text(&line2, x, y + 18, colors::TEXT_COLOR_WHITE, font);
-        crate::graphics::draw_text(&line3, x, y + 36, colors::TEXT_COLOR_WHITE, font);
+        // Clean desktop wallpaper — no diagnostic overlay text.
+        // Apps are launched from the dock; the desktop surface stays uncluttered.
+        let _ = self;
     }
 
     fn render_activities_overview(&self) {
@@ -2996,6 +3054,136 @@ impl WindowManager {
         );
     }
 
+    fn open_app_grid(&mut self) {
+        self.app_grid_open = true;
+        self.app_grid_query.clear();
+        self.app_grid_page = 0;
+        self.needs_redraw = true;
+    }
+
+    fn handle_app_grid_key(&mut self, key: u8) -> bool {
+        match key {
+            27 => {
+                self.app_grid_open = false;
+                self.needs_redraw = true;
+                true
+            }
+            13 => {
+                let apps = app_grid::filter(self.app_grid_query.as_str());
+                let page_items = app_grid::page_slice(&apps, self.app_grid_page);
+                if let Some(app) = page_items.first() {
+                    let slot = app.slot;
+                    self.app_grid_open = false;
+                    self.needs_redraw = true;
+                    self.launch_app_slot(slot);
+                }
+                true
+            }
+            8 => {
+                self.app_grid_query.pop();
+                self.app_grid_page = 0;
+                self.needs_redraw = true;
+                true
+            }
+            b'\t' => {
+                let apps = app_grid::filter(self.app_grid_query.as_str());
+                let pages = app_grid::page_count(apps.len());
+                self.app_grid_page = (self.app_grid_page + 1) % pages;
+                self.needs_redraw = true;
+                true
+            }
+            c if c.is_ascii_graphic() => {
+                let _ = self.app_grid_query.push(c as char);
+                self.app_grid_page = 0;
+                self.needs_redraw = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_app_grid_click(&mut self, x: usize, y: usize) {
+        let overlay = self.app_grid_rect();
+        if !overlay.contains(x, y) {
+            self.app_grid_open = false;
+            self.needs_redraw = true;
+            return;
+        }
+
+        let apps = app_grid::filter(self.app_grid_query.as_str());
+        let page_items = app_grid::page_slice(&apps, self.app_grid_page);
+        let font = crate::graphics::get_default_font();
+        let row_height = font.char_height + 12;
+        let list_y = overlay.y + 48;
+
+        if y < list_y {
+            return;
+        }
+
+        let row = (y - list_y) / row_height;
+        if row < page_items.len() {
+            let slot = page_items[row].slot;
+            self.app_grid_open = false;
+            self.needs_redraw = true;
+            self.launch_app_slot(slot);
+        }
+    }
+
+    fn render_app_grid(&self) {
+        let overlay = self.app_grid_rect();
+        crate::graphics::framebuffer::fill_rect(overlay, colors::WINDOW_BACKGROUND);
+        crate::graphics::framebuffer::draw_rect(overlay, colors::BORDER_ACTIVE, 2);
+
+        let font = crate::graphics::get_default_font();
+        let title = "Applications";
+        crate::graphics::draw_text(
+            title,
+            overlay.x + 12,
+            overlay.y + 8,
+            colors::TEXT_COLOR_WHITE,
+            font,
+        );
+
+        let query_label = format!("Search: {}", self.app_grid_query.as_str());
+        crate::graphics::draw_text(
+            &query_label,
+            overlay.x + 12,
+            overlay.y + 28,
+            colors::TEXT_COLOR_WHITE,
+            font,
+        );
+
+        let apps = app_grid::filter(self.app_grid_query.as_str());
+        let page_items = app_grid::page_slice(&apps, self.app_grid_page);
+        let row_height = font.char_height + 12;
+        let mut y = overlay.y + 48;
+        for app in page_items {
+            let label = format!("{} {}", app.icon, app.name);
+            crate::graphics::draw_text(&label, overlay.x + 16, y, colors::TEXT_COLOR_WHITE, font);
+            y += row_height;
+        }
+
+        let pages = app_grid::page_count(apps.len());
+        if pages > 1 {
+            let footer = format!("Page {}/{} (Tab to cycle)", self.app_grid_page + 1, pages);
+            crate::graphics::draw_text(
+                &footer,
+                overlay.x + 12,
+                overlay.y + overlay.height.saturating_sub(20),
+                colors::TEXT_COLOR_WHITE,
+                font,
+            );
+        }
+    }
+
+    fn app_grid_rect(&self) -> Rect {
+        let w = 320.min(self.desktop_rect.width - 40);
+        let h = 280.min(self.desktop_rect.height - 40);
+        let x = (self.desktop_rect.width - w) / 2;
+        let y = (self.desktop_rect.height - h) / 2;
+        Rect::new(x, y, w, h)
+    }
+
     fn render_quick_settings(&self) {
         let font = crate::graphics::get_default_font();
         let panel = Rect::new(
@@ -3019,7 +3207,7 @@ impl WindowManager {
         let focused_line = format!("Focused: {}", focused);
         let network_line = format!(
             "Network interfaces: {}",
-            crate::net::network_stack().list_interfaces().len()
+            crate::net::network_stack().interface_count()
         );
 
         self.fill_vertical_gradient(panel, colors::DOCK_GLASS, colors::MENU_BAR_BACKGROUND);

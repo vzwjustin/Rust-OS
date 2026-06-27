@@ -405,7 +405,7 @@ impl NetworkDriverManager {
 
     /// Get driver type from name
     fn get_driver_type_from_name(&self, name: &str) -> NetworkDriverType {
-        let name_lower = name.to_lowercase();
+        let name_lower = crate::glib::ascii_strdown(name);
         if name_lower.contains("intel") || name_lower.contains("e1000") {
             NetworkDriverType::IntelGigabit
         } else if name_lower.contains("realtek") || name_lower.contains("rtl") {
