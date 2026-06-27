@@ -51,7 +51,7 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **7** | Date/time & variants | `gdate.*`, `gdatetime.*`, `gtimezone.*`, `gvarianttype.*`, `gvariant.*`, `gunicode.*` | **Partial** (gdate pure math, datetime UTC arithmetic/format, timezone fixed offsets, varianttype parser, variant value container + builder + parser, unicode types/enums + combining class, basic utf8/unichar done, IANA tz DB/datetime tz integration planned) |
 | **8** | Main loop & threading | `gmain.*`, `gsource.*`, `gthread.*`, `gasyncqueue.*`, `gpoll.*`, `giochannel.*`, `gthreadpool.*` | **Partial** (async queue, thread primitives, poll types, I/O channel types, main loop types (MainContext/MainLoop/Source), timeout_add/idle_add, thread pool task queue done, actual thread creation/poll-based event loop needs OS support) |
 | **9** | GObject core | `gobject/*` (types, signals, properties, values) | **Partial** (GType registry with 21 fundamental types, type registration/lookup/query, GValue polymorphic container for all basic types, GParamSpec with typed constructors, GSignal with connect/emit/disconnect, GObject base class with ref counting, properties, weak refs, user data, property binding) |
-| **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | Planned |
+| **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | **Partial** (gmodule ported: `GModule` ref-counted handle, `ModulePlatform` trait for OS-specific dlopen/dlsym/dlclose, `NoModulePlatform` stub for bare metal, registry with name/handle dedup, `module_open_full`/`module_open`/`module_close`/`module_symbol`/`module_make_resident`/`module_build_path`/`module_error`/`module_error_quark`, 20 unit tests passing) |
 | **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | Planned |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | Planned |
 | **13** | Remove C implementations; expose stable C ABI from Rust via `extern "C"` | all | Planned |
@@ -114,6 +114,46 @@ re-export list for documentation and name resolution.
 - Full poll-based event loop (needs OS `poll`/`epoll` syscall).
 - Thread creation/joining (needs OS `clone`/`futex` or `pthread`).
 - Real thread pool worker threads.
+
+## Phase 10 detail (partial)
+
+### Modules
+
+- **`gmodule`** — `GModule` ref-counted handle mirroring `struct _GModule`
+  in `gmodule.c` (file_name, platform handle, ref_count, is_resident,
+  unload callback, next pointer). The `ModulePlatform` trait supplies the
+  OS-specific dynamic loader primitives (`open`, `self_handle`, `symbol`,
+  `close`, `build_path`, `supported`), mirroring the static `_g_module_*`
+  helpers in `gmodule.c`. `NoModulePlatform` is a no-op implementation for
+  bare-metal kernels (RustOS) so the GLib API surface is linkable even
+  when no dynamic linker is available — every operation returns the
+  upstream "dynamic modules are not supported by this system" error
+  string and `module_supported` returns `false`. The cross-platform
+  registry logic (global `MODULES` list + `MAIN_MODULE` singleton,
+  name/handle dedup, ref-count bump on re-open, `g_module_check_init` /
+  `g_module_unload` symbol lookup after open, resident marking) lives in
+  Rust and is platform-agnostic. Public API: `module_supported`,
+  `module_open`, `module_open_full`, `module_close`, `module_symbol`,
+  `module_make_resident`, `module_error`, `module_name`,
+  `module_build_path`, `module_error_quark`, plus the `GModule`,
+  `GModuleFlags`, `GModuleError`, `GModuleCheckInit`, `GModuleUnload`,
+  `ModuleHandle`, `ModulePlatform`, `NoModulePlatform` types. 20 unit
+  tests covering flags/error codes/quark/build_path/registry/error
+  paths/resident marking/ref_count/name resolution — all passing on the
+  host test target.
+
+### Deferred
+
+- Real `dlopen`/`dlsym`/`dlclose` platform implementation (needs OS
+  dynamic linker support — not applicable to bare-metal RustOS).
+- `parse_libtool_archive` (libtool `.la` file parser) — deferred until a
+  real platform implementation lands; the `.la` parsing path is
+  unreachable on `NoModulePlatform`.
+- `GModuleDebugFlags` (`resident-modules`, `bind-now-modules`) env-var
+  parsing — deferred until `g_getenv` is wired to a real environment.
+- Per-thread error storage (`GPrivate`/thread-local in upstream) —
+  currently a single global `Mutex<Option<String>>`, which matches
+  upstream behaviour in the single-threaded kernel boot environment.
 
 ## Phase 9 detail (partial)
 
@@ -299,7 +339,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**51 modules** ported across Phases 1–9, all wired into RustOS:
+**52 modules** ported across Phases 1–10, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -312,6 +352,7 @@ re-export list for documentation and name resolution.
 | 7 | date, datetime, timezone, varianttype, variant, unicode, utf8 | Partial (7) |
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
 | 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
+| 10 | gmodule | Partial (1) |
 
 ### RustOS smoke test coverage
 
@@ -336,6 +377,13 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
 - **GValue** — int and string value create/get
 - **GSignal** — register, lookup, query metadata
 - **GObject** — create, ref/unref, property install/set/get
+- **GModule** — `module_supported` / `module_error_quark` /
+  `module_build_path` (Linux-style `libNAME.so` decoration) /
+  `module_open_full` / `module_open` (None = main program) /
+  `module_symbol` / `module_close` all return the upstream
+  "not supported" error on `NoModulePlatform`; `GModule::new` +
+  `name`/`ref_count`/`is_resident`/`make_resident` struct behaviour
+  exercised directly
 
 ## Running Rust tests
 

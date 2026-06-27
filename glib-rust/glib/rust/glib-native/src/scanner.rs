@@ -55,7 +55,7 @@ pub enum TokenType {
 }
 
 /// Token value (`GTokenValue`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenValue {
     Symbol(usize),
     Identifier(String),

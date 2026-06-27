@@ -318,6 +318,25 @@ pub use glib_native::{
     // GObject
     object_new,
     object_new_with_params,
+    // GModule
+    GModule,
+    GModuleFlags,
+    GModuleError,
+    GModuleCheckInit,
+    GModuleUnload,
+    ModuleHandle,
+    ModulePlatform,
+    NoModulePlatform,
+    module_supported,
+    module_open,
+    module_open_full,
+    module_close,
+    module_make_resident,
+    module_error,
+    module_symbol,
+    module_name,
+    module_build_path,
+    module_error_quark,
     // URI functions
     escape_string,
     is_valid,
@@ -1496,6 +1515,75 @@ pub fn smoke_check() -> Result<(), &'static str> {
     obj.set_property("name", value_new_string("test-obj"));
     if obj.get_property("name").map(|v| v.get_string().map(ToOwned::to_owned)) != Some(Some("test-obj".to_owned())) {
         return Err("GObject property name");
+    }
+
+    // GModule — the kernel has no dynamic loader, so we exercise the
+    // unsupported-platform paths plus the path-building and error-quark
+    // helpers. The behavior matches upstream gmodule.c when
+    // G_MODULE_IMPL is undefined: every operation fails with the
+    // "dynamic modules are not supported by this system" string, but the
+    // API surface is linkable and the registry logic is exercised.
+    if module_supported::<NoModulePlatform>() {
+        return Err("GModule supported on no-platform");
+    }
+    if module_error_quark() == 0 {
+        return Err("GModule error quark");
+    }
+    let built = module_build_path::<NoModulePlatform>(Some("/lib"), "rustos");
+    if built != "/lib/librustos.so" {
+        return Err("GModule build_path");
+    }
+    let built_no_dir = module_build_path::<NoModulePlatform>(None, "rustos");
+    if built_no_dir != "librustos.so" {
+        return Err("GModule build_path no dir");
+    }
+    let built_lib_prefix = module_build_path::<NoModulePlatform>(Some("/lib"), "libfoo");
+    if built_lib_prefix != "/lib/libfoo" {
+        return Err("GModule build_path lib prefix");
+    }
+    let open_result = module_open_full::<NoModulePlatform>(Some("rustos.so"), GModuleFlags::NONE);
+    if open_result.is_ok() {
+        return Err("GModule open on no-platform should fail");
+    }
+    let (err_code, err_msg) = open_result.unwrap_err();
+    if err_code != GModuleError::Failed
+        || !err_msg.contains("not supported")
+        || module_error().as_deref().map(|s| !s.contains("not supported")).unwrap_or(true)
+    {
+        return Err("GModule open error path");
+    }
+    let main_open_result = module_open::<NoModulePlatform>(None, GModuleFlags::BIND_LAZY);
+    if main_open_result.is_ok() || main_open_result.unwrap_err().0 != GModuleError::Failed {
+        return Err("GModule main open error path");
+    }
+    // Construct a transient GModule directly to exercise name/ref_count/
+    // make_resident without going through the platform (which is
+    // unsupported). We don't add it to the registry; we just validate the
+    // GModule struct's own behavior.
+    let transient = glib_native::gmodule::GModule::new(
+        Some("/lib/librustos.so".to_owned()),
+        core::ptr::null_mut(),
+    );
+    if transient.name() != "/lib/librustos.so" || transient.ref_count() != 1 || transient.is_resident() {
+        return Err("GModule struct fields");
+    }
+    transient.make_resident();
+    if !transient.is_resident() {
+        return Err("GModule make_resident");
+    }
+    let transient_main = glib_native::gmodule::GModule::new(None, core::ptr::null_mut());
+    if transient_main.name() != "main" {
+        return Err("GModule main name");
+    }
+    // module_symbol on the unsupported platform should record an error.
+    let sym_result = module_symbol::<NoModulePlatform>(&transient, "rustos_init");
+    if sym_result.is_ok() || sym_result.unwrap_err().0 != GModuleError::Failed {
+        return Err("GModule symbol error path");
+    }
+    // module_close on the unsupported platform should also fail.
+    let close_result = module_close::<NoModulePlatform>(&transient);
+    if close_result.is_ok() || close_result.unwrap_err().0 != GModuleError::Failed {
+        return Err("GModule close error path");
     }
 
     Ok(())

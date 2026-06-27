@@ -55,6 +55,7 @@ pub mod environ;
 pub mod error;
 pub mod fileutils;
 pub mod gobject;
+pub mod gmodule;
 pub mod gparamspec;
 pub mod gsignal;
 pub mod gstring;
@@ -382,6 +383,13 @@ pub use gsignal::{
 pub use gobject::{
     GObject, ObjectFlags, WeakRefCallback,
     object_new, object_new_with_params, PropertyBinding,
+};
+pub use gmodule::{
+    GModule, GModuleFlags, GModuleError, GModuleCheckInit, GModuleUnload,
+    ModuleHandle, ModulePlatform, NoModulePlatform,
+    module_supported, module_open, module_open_full, module_close,
+    module_make_resident, module_error, module_symbol, module_name,
+    module_build_path, module_error_quark,
 };
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,

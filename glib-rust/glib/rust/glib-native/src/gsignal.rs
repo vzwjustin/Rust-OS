@@ -338,6 +338,7 @@ pub fn signal_handlers_disconnect_all(instance_type: GType, signal_id: SignalID)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value_new_int;
     use core::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
