@@ -62,6 +62,7 @@ pub mod gstring;
 pub mod gtype;
 pub mod gvalue;
 pub mod gfileattribute;
+pub mod gdbusintrospection;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -395,6 +396,13 @@ pub use gmodule::{
 pub use gfileattribute::{
     FileAttributeType, FileAttributeInfoFlags, FileAttributeInfo,
     FileAttributeInfoList,
+};
+pub use gdbusintrospection::{
+    DBusAnnotationInfo, DBusArgInfo, DBusMethodInfo, DBusSignalInfo,
+    DBusPropertyInfo, DBusPropertyInfoFlags, DBusInterfaceInfo, DBusNodeInfo,
+    dbus_annotation_info_lookup, dbus_interface_info_lookup_method,
+    dbus_interface_info_lookup_signal, dbus_interface_info_lookup_property,
+    dbus_node_info_lookup_interface,
 };
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,

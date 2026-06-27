@@ -342,6 +342,20 @@ pub use glib_native::{
     FileAttributeInfoFlags,
     FileAttributeInfo,
     FileAttributeInfoList,
+    // GIO D-Bus introspection info structs
+    DBusAnnotationInfo,
+    DBusArgInfo,
+    DBusMethodInfo,
+    DBusSignalInfo,
+    DBusPropertyInfo,
+    DBusPropertyInfoFlags,
+    DBusInterfaceInfo,
+    DBusNodeInfo,
+    dbus_annotation_info_lookup,
+    dbus_interface_info_lookup_method,
+    dbus_interface_info_lookup_signal,
+    dbus_interface_info_lookup_property,
+    dbus_node_info_lookup_interface,
     // URI functions
     escape_string,
     is_valid,
@@ -1662,6 +1676,114 @@ pub fn smoke_check() -> Result<(), &'static str> {
     drop(shared);
     if attr_list.ref_count() != 1 {
         return Err("GFileAttributeInfoList ref count drop");
+    }
+
+    // GIO D-Bus introspection info structs (Phase 11). Build a small
+    // interface hierarchy and exercise the lookup helpers + ref counting.
+    let rw = DBusPropertyInfoFlags::READABLE | DBusPropertyInfoFlags::WRITABLE;
+    if !rw.contains(DBusPropertyInfoFlags::READABLE)
+        || !rw.contains(DBusPropertyInfoFlags::WRITABLE)
+        || DBusPropertyInfoFlags::READABLE.0 != 1
+        || DBusPropertyInfoFlags::WRITABLE.0 != 2
+    {
+        return Err("GDBusPropertyInfoFlags");
+    }
+    let anno = alloc::sync::Arc::new(DBusAnnotationInfo {
+        key: "org.freedesktop.DBus.Deprecated".to_owned(),
+        value: "true".to_owned(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    if dbus_annotation_info_lookup(core::slice::from_ref(&anno), "org.freedesktop.DBus.Deprecated")
+        != Some("true")
+    {
+        return Err("GDBus annotation lookup");
+    }
+    if dbus_annotation_info_lookup(core::slice::from_ref(&anno), "missing").is_some() {
+        return Err("GDBus annotation lookup miss");
+    }
+    let echo_in = alloc::sync::Arc::new(DBusArgInfo {
+        name: "message".to_owned(),
+        signature: "s".to_owned(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    let echo_out = alloc::sync::Arc::new(DBusArgInfo {
+        name: "reply".to_owned(),
+        signature: "s".to_owned(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    let echo_method = alloc::sync::Arc::new(DBusMethodInfo {
+        name: "Echo".to_owned(),
+        in_args: alloc::vec![echo_in.clone()],
+        out_args: alloc::vec![echo_out.clone()],
+        annotations: alloc::vec::Vec::new(),
+    });
+    let on_echo_signal = alloc::sync::Arc::new(DBusSignalInfo {
+        name: "OnEcho".to_owned(),
+        args: alloc::vec![echo_in],
+        annotations: alloc::vec::Vec::new(),
+    });
+    let version_prop = alloc::sync::Arc::new(DBusPropertyInfo {
+        name: "Version".to_owned(),
+        signature: "s".to_owned(),
+        flags: DBusPropertyInfoFlags::READABLE,
+        annotations: alloc::vec::Vec::new(),
+    });
+    let echo_iface = alloc::sync::Arc::new(DBusInterfaceInfo {
+        name: "org.test.Echo".to_owned(),
+        methods: alloc::vec![echo_method],
+        signals: alloc::vec![on_echo_signal],
+        properties: alloc::vec![version_prop],
+        annotations: alloc::vec::Vec::new(),
+    });
+    let root_node = alloc::sync::Arc::new(DBusNodeInfo {
+        path: Some("/org/test".to_owned()),
+        interfaces: alloc::vec![echo_iface.clone()],
+        nodes: alloc::vec::Vec::new(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    let found_iface = dbus_node_info_lookup_interface(&root_node, "org.test.Echo")
+        .ok_or("GDBus node lookup interface")?;
+    if found_iface.name != "org.test.Echo" {
+        return Err("GDBus interface name");
+    }
+    if dbus_node_info_lookup_interface(&root_node, "org.test.Missing").is_some() {
+        return Err("GDBus node lookup miss");
+    }
+    let found_method = dbus_interface_info_lookup_method(&found_iface, "Echo")
+        .ok_or("GDBus method lookup")?;
+    if found_method.in_args.len() != 1
+        || found_method.in_args[0].name != "message"
+        || found_method.in_args[0].signature != "s"
+        || found_method.out_args[0].name != "reply"
+    {
+        return Err("GDBus method args");
+    }
+    if dbus_interface_info_lookup_method(&found_iface, "Missing").is_some() {
+        return Err("GDBus method lookup miss");
+    }
+    let found_signal = dbus_interface_info_lookup_signal(&found_iface, "OnEcho")
+        .ok_or("GDBus signal lookup")?;
+    if found_signal.args.len() != 1 || found_signal.args[0].name != "message" {
+        return Err("GDBus signal args");
+    }
+    let found_prop = dbus_interface_info_lookup_property(&found_iface, "Version")
+        .ok_or("GDBus property lookup")?;
+    if found_prop.signature != "s"
+        || !found_prop.flags.contains(DBusPropertyInfoFlags::READABLE)
+        || found_prop.flags.contains(DBusPropertyInfoFlags::WRITABLE)
+    {
+        return Err("GDBus property flags");
+    }
+    // Ref counting via Arc clone.
+    let iface_ref = echo_iface.ref_();
+    if !alloc::sync::Arc::ptr_eq(&iface_ref, &echo_iface) {
+        return Err("GDBus ref_ same pointer");
+    }
+    drop(iface_ref);
+    drop(root_node);
+    // echo_iface should still be alive (we hold one Arc).
+    if echo_iface.name != "org.test.Echo" {
+        return Err("GDBus iface alive after node drop");
     }
 
     Ok(())

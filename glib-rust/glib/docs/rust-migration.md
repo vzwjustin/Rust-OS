@@ -52,7 +52,7 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **8** | Main loop & threading | `gmain.*`, `gsource.*`, `gthread.*`, `gasyncqueue.*`, `gpoll.*`, `giochannel.*`, `gthreadpool.*` | **Partial** (async queue, thread primitives, poll types, I/O channel types, main loop types (MainContext/MainLoop/Source), timeout_add/idle_add, thread pool task queue done, actual thread creation/poll-based event loop needs OS support) |
 | **9** | GObject core | `gobject/*` (types, signals, properties, values) | **Partial** (GType registry with 21 fundamental types, type registration/lookup/query, GValue polymorphic container for all basic types, GParamSpec with typed constructors, GSignal with connect/emit/disconnect, GObject base class with ref counting, properties, weak refs, user data, property binding) |
 | **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | **Partial** (gmodule ported: `GModule` ref-counted handle, `ModulePlatform` trait for OS-specific dlopen/dlsym/dlclose, `NoModulePlatform` stub for bare metal, registry with name/handle dedup, `module_open_full`/`module_open`/`module_close`/`module_symbol`/`module_make_resident`/`module_build_path`/`module_error`/`module_error_quark`, 20 unit tests passing) |
-| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; remaining GIO submodules — streams, sockets, D-Bus, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned) |
+| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | Planned |
 | **13** | Remove C implementations; expose stable C ABI from Rust via `extern "C"` | all | Planned |
 
@@ -143,19 +143,47 @@ re-export list for documentation and name resolution.
     count, indexing, out-of-bounds panic, and binary-search
     correctness with 26 entries — all passing.
 
+- **`gdbusintrospection`** — GIO D-Bus introspection info structs.
+  Mirrors `gio/gdbusintrospection.h` / `gio/gdbusintrospection.c`:
+  - `DBusPropertyInfoFlags` (NONE / READABLE / WRITABLE) with
+    `BitOr` and `contains`.
+  - 7 ref-counted info structs (upstream uses atomic-int ref counting;
+    we use `Arc<T>`): `DBusAnnotationInfo` (key/value/nested
+    annotations), `DBusArgInfo` (name/signature/annotations),
+    `DBusMethodInfo` (name/in_args/out_args/annotations),
+    `DBusSignalInfo` (name/args/annotations), `DBusPropertyInfo`
+    (name/signature/flags/annotations), `DBusInterfaceInfo`
+    (name/methods/signals/properties/annotations), `DBusNodeInfo`
+    (path/interfaces/nodes/annotations). Each has a `ref_` method
+    for API parity with the upstream `_ref` functions.
+  - Lookup helpers with linear search (matching upstream's
+    uncached behaviour): `dbus_annotation_info_lookup`,
+    `dbus_interface_info_lookup_method` / `_signal` / `_property`,
+    `dbus_node_info_lookup_interface`.
+  - 12 unit tests covering flags, annotation lookup, method/signal/
+    property/interface lookup, nested annotations, ref count, and
+    full hierarchy construction + lookup — all passing.
+
 ### Deferred
 
 - Remaining GIO submodules: GInputStream / GOutputStream, GFile,
   GFileInfo, GCancellable, GAsyncResult, GIcon and implementations
   (GThemedIcon, GEmblem, GEmblemedIcon, GBytesIcon), GDataInput /
   GDataOutput streams, GBuffered streams, GMemory streams, sockets,
-  D-Bus, GSettings, GApplication, GAction, GVolume, GMount, GDrive,
-  GResolver, GNetworkAddress, GSocket, GDBus, etc.
+  D-Bus connection, GSettings, GApplication, GAction, GVolume, GMount,
+  GDrive, GResolver, GNetworkAddress, GSocket, GDBus, etc.
 - Most GIO types are GObject subclasses / interfaces, so this sub-
   phase requires the deferred GObject interface system (Phase 9
-  deferred: GInterface vtable init + dispatch). The current port
-  picks a leaf boxed type (`GFileAttributeInfoList` is a `G_DEFINE_BOXED_TYPE`)
-  that doesn't depend on the interface system.
+  deferred: GInterface vtable init + dispatch). The current ports
+  pick leaf boxed types (`GFileAttributeInfoList` and the
+  `GDBus*Info` structs are all `G_DEFINE_BOXED_TYPE`) that don't
+  depend on the interface system.
+- `g_dbus_node_info_new_for_xml` (XML parsing of introspection data)
+  and `g_dbus_interface_info_generate_xml` / `_node_info_generate_xml`
+  (XML generation) — deferred; need GMarkup parser integration and
+  the introspection parser state machine.
+- `g_dbus_interface_info_cache_build` / `_release` (per-interface
+  name→info lookup cache) — deferred; needs a global cache table.
 
 ## Phase 10 detail (partial)
 
@@ -381,7 +409,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**53 modules** ported across Phases 1–11, all wired into RustOS:
+**54 modules** ported across Phases 1–11, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -395,7 +423,7 @@ re-export list for documentation and name resolution.
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
 | 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
 | 10 | gmodule | Partial (1) |
-| 11 | gfileattribute | Partial (1) |
+| 11 | gfileattribute, gdbusintrospection | Partial (2) |
 
 ### RustOS smoke test coverage
 
@@ -433,6 +461,14 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
   `lookup` returns the right type+flags, re-adding an existing name
   updates in place, `dup` produces an independent copy, `ref_` bumps
   the ref count (and drop decrements)
+- **GDBusIntrospection** — `DBusPropertyInfoFlags` BitOr/contains,
+  `dbus_annotation_info_lookup` (hit + miss), full D-Bus interface
+  hierarchy construction (node → interface → method/signal/property
+  with args + annotations), `dbus_node_info_lookup_interface` /
+  `dbus_interface_info_lookup_method` / `_signal` / `_property`
+  (hit + miss), method in/out args preserved, property flags
+  preserved, `ref_` returns the same Arc handle, dropping the node
+  Arc leaves the interface Arc alive
 
 ## Running Rust tests
 
