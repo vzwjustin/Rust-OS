@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn dup() {
         let original = RcBox::new(99i32);
-        let copy = RcBox::dup(&original);
+        let copy = RcBox::dup(&*original);
         assert_eq!(*copy, 99);
     }
 

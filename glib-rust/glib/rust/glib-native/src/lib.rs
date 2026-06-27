@@ -55,11 +55,21 @@ pub mod environ;
 pub mod error;
 pub mod fileutils;
 pub mod gobject;
+pub mod gmodule;
 pub mod gparamspec;
 pub mod gsignal;
 pub mod gstring;
 pub mod gtype;
 pub mod gvalue;
+pub mod gfileattribute;
+pub mod gdbusintrospection;
+pub mod gdbuserror;
+pub mod gioerror;
+pub mod gnotification;
+pub mod gsrvtarget;
+pub mod ginetaddress;
+pub mod ginetaddressmask;
+pub mod gnetworkaddress;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -383,6 +393,42 @@ pub use gobject::{
     GObject, ObjectFlags, WeakRefCallback,
     object_new, object_new_with_params, PropertyBinding,
 };
+pub use gmodule::{
+    GModule, GModuleFlags, GModuleError, GModuleCheckInit, GModuleUnload,
+    ModuleHandle, ModulePlatform, NoModulePlatform,
+    module_supported, module_open, module_open_full, module_close,
+    module_make_resident, module_error, module_symbol, module_name,
+    module_build_path, module_error_quark,
+};
+pub use gfileattribute::{
+    FileAttributeType, FileAttributeInfoFlags, FileAttributeInfo,
+    FileAttributeInfoList,
+};
+pub use gdbusintrospection::{
+    DBusAnnotationInfo, DBusArgInfo, DBusMethodInfo, DBusSignalInfo,
+    DBusPropertyInfo, DBusPropertyInfoFlags, DBusInterfaceInfo, DBusNodeInfo,
+    dbus_annotation_info_lookup, dbus_interface_info_lookup_method,
+    dbus_interface_info_lookup_signal, dbus_interface_info_lookup_property,
+    dbus_node_info_lookup_interface,
+};
+pub use gdbuserror::{
+    DBusError, DBusErrorEntry,
+    dbus_error_quark, dbus_error_register_error, dbus_error_unregister_error,
+    dbus_error_register_error_domain, dbus_error_is_remote_error,
+    dbus_error_get_remote_error, dbus_error_strip_remote_error,
+    dbus_error_new_for_dbus_error, dbus_error_encode_gerror,
+};
+pub use gioerror::{
+    IOErrorEnum, io_error_quark, io_error_from_errno, io_error_from_file_error,
+};
+pub use fileutils::file_error_from_errno;
+pub use gnotification::{
+    Notification, NotificationPriority, NotificationButton, NotificationIcon,
+};
+pub use gsrvtarget::{SrvTarget, srv_target_list_sort};
+pub use ginetaddress::{InetAddress, InetAddrBytes, SocketFamily};
+pub use ginetaddressmask::{InetAddressMask, InetAddressMaskError};
+pub use gnetworkaddress::{NetworkAddress, NetworkAddressError};
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,

@@ -6,7 +6,9 @@
 
 #![allow(unused_imports)]
 
+use alloc::borrow::ToOwned;
 use alloc::string::ToString;
+use alloc::vec;
 
 pub use glib_native::*;
 
@@ -316,6 +318,80 @@ pub use glib_native::{
     // GObject
     object_new,
     object_new_with_params,
+    // GModule
+    GModule,
+    GModuleFlags,
+    GModuleError,
+    GModuleCheckInit,
+    GModuleUnload,
+    ModuleHandle,
+    ModulePlatform,
+    NoModulePlatform,
+    module_supported,
+    module_open,
+    module_open_full,
+    module_close,
+    module_make_resident,
+    module_error,
+    module_symbol,
+    module_name,
+    module_build_path,
+    module_error_quark,
+    // GIO file attribute info list
+    FileAttributeType,
+    FileAttributeInfoFlags,
+    FileAttributeInfo,
+    FileAttributeInfoList,
+    // GIO D-Bus introspection info structs
+    DBusAnnotationInfo,
+    DBusArgInfo,
+    DBusMethodInfo,
+    DBusSignalInfo,
+    DBusPropertyInfo,
+    DBusPropertyInfoFlags,
+    DBusInterfaceInfo,
+    DBusNodeInfo,
+    dbus_annotation_info_lookup,
+    dbus_interface_info_lookup_method,
+    dbus_interface_info_lookup_signal,
+    dbus_interface_info_lookup_property,
+    dbus_node_info_lookup_interface,
+    // GIO D-Bus error handling
+    DBusError,
+    DBusErrorEntry,
+    dbus_error_quark,
+    dbus_error_register_error,
+    dbus_error_unregister_error,
+    dbus_error_register_error_domain,
+    dbus_error_is_remote_error,
+    dbus_error_get_remote_error,
+    dbus_error_strip_remote_error,
+    dbus_error_new_for_dbus_error,
+    dbus_error_encode_gerror,
+    // GIO error codes (errno / FileError -> IOErrorEnum)
+    IOErrorEnum,
+    io_error_quark,
+    io_error_from_errno,
+    io_error_from_file_error,
+    file_error_from_errno,
+    // GIO desktop notification
+    Notification,
+    NotificationPriority,
+    NotificationButton,
+    NotificationIcon,
+    // GIO SRV record target
+    SrvTarget,
+    srv_target_list_sort,
+    // GIO IP address
+    InetAddress,
+    InetAddrBytes,
+    SocketFamily,
+    // GIO IP address mask (subnet)
+    InetAddressMask,
+    InetAddressMaskError,
+    // GIO network address (hostname + port + optional scheme)
+    NetworkAddress,
+    NetworkAddressError,
     // URI functions
     escape_string,
     is_valid,
@@ -1492,8 +1568,768 @@ pub fn smoke_check() -> Result<(), &'static str> {
         return Err("GObject property set");
     }
     obj.set_property("name", value_new_string("test-obj"));
-    if obj.get_property("name").map(|v| v.get_string()) != Some(Some("test-obj".to_owned())) {
+    if obj.get_property("name").map(|v| v.get_string().map(ToOwned::to_owned)) != Some(Some("test-obj".to_owned())) {
         return Err("GObject property name");
+    }
+
+    // GModule — the kernel has no dynamic loader, so we exercise the
+    // unsupported-platform paths plus the path-building and error-quark
+    // helpers. The behavior matches upstream gmodule.c when
+    // G_MODULE_IMPL is undefined: every operation fails with the
+    // "dynamic modules are not supported by this system" string, but the
+    // API surface is linkable and the registry logic is exercised.
+    if module_supported::<NoModulePlatform>() {
+        return Err("GModule supported on no-platform");
+    }
+    if module_error_quark() == 0 {
+        return Err("GModule error quark");
+    }
+    let built = module_build_path::<NoModulePlatform>(Some("/lib"), "rustos");
+    if built != "/lib/librustos.so" {
+        return Err("GModule build_path");
+    }
+    let built_no_dir = module_build_path::<NoModulePlatform>(None, "rustos");
+    if built_no_dir != "librustos.so" {
+        return Err("GModule build_path no dir");
+    }
+    let built_lib_prefix = module_build_path::<NoModulePlatform>(Some("/lib"), "libfoo");
+    if built_lib_prefix != "/lib/libfoo" {
+        return Err("GModule build_path lib prefix");
+    }
+    let open_result = module_open_full::<NoModulePlatform>(Some("rustos.so"), GModuleFlags::NONE);
+    if open_result.is_ok() {
+        return Err("GModule open on no-platform should fail");
+    }
+    let (err_code, err_msg) = open_result.unwrap_err();
+    if err_code != GModuleError::Failed
+        || !err_msg.contains("not supported")
+        || module_error().as_deref().map(|s| !s.contains("not supported")).unwrap_or(true)
+    {
+        return Err("GModule open error path");
+    }
+    let main_open_result = module_open::<NoModulePlatform>(None, GModuleFlags::BIND_LAZY);
+    if main_open_result.is_ok() || main_open_result.unwrap_err().0 != GModuleError::Failed {
+        return Err("GModule main open error path");
+    }
+    // Construct a transient GModule directly to exercise name/ref_count/
+    // make_resident without going through the platform (which is
+    // unsupported). We don't add it to the registry; we just validate the
+    // GModule struct's own behavior.
+    let transient = glib_native::gmodule::GModule::new(
+        Some("/lib/librustos.so".to_owned()),
+        core::ptr::null_mut(),
+    );
+    if transient.name() != "/lib/librustos.so" || transient.ref_count() != 1 || transient.is_resident() {
+        return Err("GModule struct fields");
+    }
+    transient.make_resident();
+    if !transient.is_resident() {
+        return Err("GModule make_resident");
+    }
+    let transient_main = glib_native::gmodule::GModule::new(None, core::ptr::null_mut());
+    if transient_main.name() != "main" {
+        return Err("GModule main name");
+    }
+    // module_symbol on the unsupported platform should record an error.
+    let sym_result = module_symbol::<NoModulePlatform>(&transient, "rustos_init");
+    if sym_result.is_ok() || sym_result.unwrap_err().0 != GModuleError::Failed {
+        return Err("GModule symbol error path");
+    }
+    // module_close on the unsupported platform should also fail.
+    let close_result = module_close::<NoModulePlatform>(&transient);
+    if close_result.is_ok() || close_result.unwrap_err().0 != GModuleError::Failed {
+        return Err("GModule close error path");
+    }
+
+    // GIO file attribute info list (Phase 11 entry point). Exercise the
+    // full surface: create, sorted insert, binary-search lookup, dup
+    // independence, ref count, and the type/flag enum values.
+    if FileAttributeType::Invalid as u32 != 0
+        || FileAttributeType::String as u32 != 1
+        || FileAttributeType::Object as u32 != 8
+        || FileAttributeType::Stringv as u32 != 9
+    {
+        return Err("GFileAttributeType values");
+    }
+    let rw = FileAttributeInfoFlags::COPY_WITH_FILE | FileAttributeInfoFlags::COPY_WHEN_MOVED;
+    if !rw.contains(FileAttributeInfoFlags::COPY_WITH_FILE)
+        || !rw.contains(FileAttributeInfoFlags::COPY_WHEN_MOVED)
+        || FileAttributeInfoFlags::COPY_WITH_FILE.0 != 1
+        || FileAttributeInfoFlags::COPY_WHEN_MOVED.0 != 2
+    {
+        return Err("GFileAttributeInfoFlags");
+    }
+    let mut attr_list = FileAttributeInfoList::new();
+    if attr_list.n_infos() != 0 || attr_list.lookup("standard::name").is_some() {
+        return Err("GFileAttributeInfoList empty");
+    }
+    attr_list
+        .add("standard::size", FileAttributeType::Uint64, FileAttributeInfoFlags::COPY_WITH_FILE)
+        .map_err(|_| "GFileAttributeInfoList add size")?;
+    attr_list
+        .add("standard::name", FileAttributeType::String, FileAttributeInfoFlags::COPY_WITH_FILE)
+        .map_err(|_| "GFileAttributeInfoList add name")?;
+    attr_list
+        .add("standard::is-hidden", FileAttributeType::Boolean, FileAttributeInfoFlags::NONE)
+        .map_err(|_| "GFileAttributeInfoList add hidden")?;
+    if attr_list.n_infos() != 3 {
+        return Err("GFileAttributeInfoList count");
+    }
+    // List should be sorted by name: name, is-hidden, size.
+    if attr_list.infos()[0].name != "standard::is-hidden"
+        || attr_list.infos()[1].name != "standard::name"
+        || attr_list.infos()[2].name != "standard::size"
+    {
+        return Err("GFileAttributeInfoList sorted order");
+    }
+    let size_info = attr_list.lookup("standard::size").ok_or("GFileAttributeInfoList lookup")?;
+    if size_info.r#type != FileAttributeType::Uint64
+        || !size_info.flags.contains(FileAttributeInfoFlags::COPY_WITH_FILE)
+    {
+        return Err("GFileAttributeInfoList lookup fields");
+    }
+    // Re-adding an existing name updates type in place.
+    attr_list
+        .add("standard::size", FileAttributeType::Int64, FileAttributeInfoFlags::NONE)
+        .map_err(|_| "GFileAttributeInfoList update")?;
+    if attr_list.n_infos() != 3
+        || attr_list.lookup("standard::size").unwrap().r#type != FileAttributeType::Int64
+    {
+        return Err("GFileAttributeInfoList update-in-place");
+    }
+    // dup produces an independent copy.
+    let mut dup = attr_list.dup();
+    dup.add("standard::extra", FileAttributeType::String, FileAttributeInfoFlags::NONE)
+        .map_err(|_| "GFileAttributeInfoList dup add")?;
+    if dup.n_infos() != 4 || attr_list.n_infos() != 3 || attr_list.lookup("standard::extra").is_some() {
+        return Err("GFileAttributeInfoList dup independence");
+    }
+    // ref count via clone.
+    let shared = attr_list.ref_();
+    if attr_list.ref_count() < 2 {
+        return Err("GFileAttributeInfoList ref count");
+    }
+    drop(shared);
+    if attr_list.ref_count() != 1 {
+        return Err("GFileAttributeInfoList ref count drop");
+    }
+
+    // GIO D-Bus introspection info structs (Phase 11). Build a small
+    // interface hierarchy and exercise the lookup helpers + ref counting.
+    let rw = DBusPropertyInfoFlags::READABLE | DBusPropertyInfoFlags::WRITABLE;
+    if !rw.contains(DBusPropertyInfoFlags::READABLE)
+        || !rw.contains(DBusPropertyInfoFlags::WRITABLE)
+        || DBusPropertyInfoFlags::READABLE.0 != 1
+        || DBusPropertyInfoFlags::WRITABLE.0 != 2
+    {
+        return Err("GDBusPropertyInfoFlags");
+    }
+    let anno = alloc::sync::Arc::new(DBusAnnotationInfo {
+        key: "org.freedesktop.DBus.Deprecated".to_owned(),
+        value: "true".to_owned(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    if dbus_annotation_info_lookup(core::slice::from_ref(&anno), "org.freedesktop.DBus.Deprecated")
+        != Some("true")
+    {
+        return Err("GDBus annotation lookup");
+    }
+    if dbus_annotation_info_lookup(core::slice::from_ref(&anno), "missing").is_some() {
+        return Err("GDBus annotation lookup miss");
+    }
+    let echo_in = alloc::sync::Arc::new(DBusArgInfo {
+        name: "message".to_owned(),
+        signature: "s".to_owned(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    let echo_out = alloc::sync::Arc::new(DBusArgInfo {
+        name: "reply".to_owned(),
+        signature: "s".to_owned(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    let echo_method = alloc::sync::Arc::new(DBusMethodInfo {
+        name: "Echo".to_owned(),
+        in_args: alloc::vec![echo_in.clone()],
+        out_args: alloc::vec![echo_out.clone()],
+        annotations: alloc::vec::Vec::new(),
+    });
+    let on_echo_signal = alloc::sync::Arc::new(DBusSignalInfo {
+        name: "OnEcho".to_owned(),
+        args: alloc::vec![echo_in],
+        annotations: alloc::vec::Vec::new(),
+    });
+    let version_prop = alloc::sync::Arc::new(DBusPropertyInfo {
+        name: "Version".to_owned(),
+        signature: "s".to_owned(),
+        flags: DBusPropertyInfoFlags::READABLE,
+        annotations: alloc::vec::Vec::new(),
+    });
+    let echo_iface = alloc::sync::Arc::new(DBusInterfaceInfo {
+        name: "org.test.Echo".to_owned(),
+        methods: alloc::vec![echo_method],
+        signals: alloc::vec![on_echo_signal],
+        properties: alloc::vec![version_prop],
+        annotations: alloc::vec::Vec::new(),
+    });
+    let root_node = alloc::sync::Arc::new(DBusNodeInfo {
+        path: Some("/org/test".to_owned()),
+        interfaces: alloc::vec![echo_iface.clone()],
+        nodes: alloc::vec::Vec::new(),
+        annotations: alloc::vec::Vec::new(),
+    });
+    let found_iface = dbus_node_info_lookup_interface(&root_node, "org.test.Echo")
+        .ok_or("GDBus node lookup interface")?;
+    if found_iface.name != "org.test.Echo" {
+        return Err("GDBus interface name");
+    }
+    if dbus_node_info_lookup_interface(&root_node, "org.test.Missing").is_some() {
+        return Err("GDBus node lookup miss");
+    }
+    let found_method = dbus_interface_info_lookup_method(&found_iface, "Echo")
+        .ok_or("GDBus method lookup")?;
+    if found_method.in_args.len() != 1
+        || found_method.in_args[0].name != "message"
+        || found_method.in_args[0].signature != "s"
+        || found_method.out_args[0].name != "reply"
+    {
+        return Err("GDBus method args");
+    }
+    if dbus_interface_info_lookup_method(&found_iface, "Missing").is_some() {
+        return Err("GDBus method lookup miss");
+    }
+    let found_signal = dbus_interface_info_lookup_signal(&found_iface, "OnEcho")
+        .ok_or("GDBus signal lookup")?;
+    if found_signal.args.len() != 1 || found_signal.args[0].name != "message" {
+        return Err("GDBus signal args");
+    }
+    let found_prop = dbus_interface_info_lookup_property(&found_iface, "Version")
+        .ok_or("GDBus property lookup")?;
+    if found_prop.signature != "s"
+        || !found_prop.flags.contains(DBusPropertyInfoFlags::READABLE)
+        || found_prop.flags.contains(DBusPropertyInfoFlags::WRITABLE)
+    {
+        return Err("GDBus property flags");
+    }
+    // Ref counting via Arc clone.
+    let iface_ref = echo_iface.ref_();
+    if !alloc::sync::Arc::ptr_eq(&iface_ref, &echo_iface) {
+        return Err("GDBus ref_ same pointer");
+    }
+    drop(iface_ref);
+    drop(root_node);
+    // echo_iface should still be alive (we hold one Arc).
+    if echo_iface.name != "org.test.Echo" {
+        return Err("GDBus iface alive after node drop");
+    }
+
+    // GIO D-Bus error handling (Phase 11). Exercise the enum, quark,
+    // registry, remote-error parsing/stripping, encode/decode round-trip.
+    if DBusError::Failed as i32 != 0
+        || DBusError::PropertyReadOnly as i32 != 44
+        || DBusError::Failed.to_dbus_name() != "org.freedesktop.DBus.Error.Failed"
+        || DBusError::SpawnExecFailed.to_dbus_name() != "org.freedesktop.DBus.Error.Spawn.ExecFailed"
+    {
+        return Err("GDBusError enum");
+    }
+    let dbus_q = dbus_error_quark();
+    if dbus_q == 0 {
+        return Err("GDBus error quark");
+    }
+    if dbus_error_quark() != dbus_q {
+        return Err("GDBus error quark stable");
+    }
+    // The well-known G_DBUS_ERROR entries should be registered after
+    // the quark call. Failed (code 0) -> org.freedesktop.DBus.Error.Failed.
+    let failed_err = glib_native::Error::new(dbus_q, 0, "GDBus.Error:org.freedesktop.DBus.Error.Failed: boom");
+    if !dbus_error_is_remote_error(&failed_err) {
+        return Err("GDBus is_remote_error");
+    }
+    if dbus_error_get_remote_error(&failed_err).as_deref() != Some("org.freedesktop.DBus.Error.Failed") {
+        return Err("GDBus get_remote_error registered");
+    }
+    // Strip the prefix.
+    let mut stripped = failed_err.clone();
+    if !dbus_error_strip_remote_error(&mut stripped) || stripped.message() != "boom" {
+        return Err("GDBus strip_remote_error");
+    }
+    // A non-remote error should not be strippable.
+    let local_err = glib_native::Error::new(dbus_q, 0, "just a local error");
+    let mut local_stripped = local_err.clone();
+    if dbus_error_strip_remote_error(&mut local_stripped) {
+        return Err("GDBus strip on local");
+    }
+    // new_for_dbus_error with a registered name uses the registered
+    // (domain, code).
+    let new_err = dbus_error_new_for_dbus_error(
+        "org.freedesktop.DBus.Error.NoMemory",
+        "out of memory",
+    );
+    if new_err.domain() != dbus_q || new_err.code() != DBusError::NoMemory as i32 {
+        return Err("GDBus new_for_dbus_error registered");
+    }
+    if !new_err.message().contains("org.freedesktop.DBus.Error.NoMemory")
+        || !new_err.message().ends_with("out of memory")
+    {
+        return Err("GDBus new_for_dbus_error message");
+    }
+    // encode_gerror on a registered (domain, code) returns the
+    // registered D-Bus name.
+    let encoded = dbus_error_encode_gerror(&new_err);
+    if encoded != "org.freedesktop.DBus.Error.NoMemory" {
+        return Err("GDBus encode_gerror registered");
+    }
+    // encode_gerror on an unregistered (domain, code) produces the
+    // org.gtk.GDBus.UnmappedGError.Quark._* form, and new_for_dbus_error
+    // can decode it back.
+    let unmapped_domain = glib_native::quark_from_string(Some("rustos-test-unmapped"));
+    let unmapped_err = glib_native::Error::new(unmapped_domain, 99, "mystery");
+    let unmapped_encoded = dbus_error_encode_gerror(&unmapped_err);
+    if !unmapped_encoded.starts_with("org.gtk.GDBus.UnmappedGError.Quark._") {
+        return Err("GDBus encode unmapped prefix");
+    }
+    if !unmapped_encoded.contains("rustos_2dtest_2dunmapped") {
+        return Err("GDBus encode unmapped escapes hyphens");
+    }
+    if !unmapped_encoded.ends_with(".Code99") {
+        return Err("GDBus encode unmapped code suffix");
+    }
+    let roundtripped = dbus_error_new_for_dbus_error(&unmapped_encoded, "the message");
+    if roundtripped.domain() != unmapped_domain || roundtripped.code() != 99 {
+        return Err("GDBus unmapped round-trip");
+    }
+    // Register a custom error and verify register/unregister semantics.
+    let custom_domain = glib_native::quark_from_static_string(Some("rustos-custom-dbus"));
+    // Clean slate in case a previous run registered it.
+    let _ = dbus_error_unregister_error(custom_domain, 7, "org.rustos.Custom");
+    if !dbus_error_register_error(custom_domain, 7, "org.rustos.Custom") {
+        return Err("GDBus register custom");
+    }
+    if dbus_error_register_error(custom_domain, 7, "org.rustos.Custom") {
+        return Err("GDBus re-register should fail");
+    }
+    if !dbus_error_unregister_error(custom_domain, 7, "org.rustos.Custom") {
+        return Err("GDBus unregister custom");
+    }
+    // Parse a remote-error prefix with colons in the message body.
+    let msg_with_colons = "GDBus.Error:org.test.X: error: with: colons";
+    let (name, rest) = glib_native::gdbuserror::parse_remote_prefix(msg_with_colons)
+        .ok_or("GDBus parse_remote_prefix")?;
+    if name != "org.test.X" || rest != "error: with: colons" {
+        return Err("GDBus parse_remote_prefix content");
+    }
+
+    // GIO error codes (Phase 11). Exercise the enum, quark, and the
+    // errno / FileError -> IOErrorEnum conversions.
+    if IOErrorEnum::Failed as i32 != 0
+        || IOErrorEnum::NotFound as i32 != 1
+        || IOErrorEnum::BrokenPipe as i32 != 44
+        || IOErrorEnum::NoSuchDevice as i32 != 47
+        || IOErrorEnum::DestinationUnset as i32 != 48
+    {
+        return Err("GIOErrorEnum values");
+    }
+    if IOErrorEnum::CONNECTION_CLOSED != IOErrorEnum::BrokenPipe {
+        return Err("GIOErrorEnum CONNECTION_CLOSED alias");
+    }
+    if io_error_quark() == 0 {
+        return Err("GIO error quark");
+    }
+    // io_error_from_file_error mappings.
+    if io_error_from_file_error(glib_native::FileError::Exist) != IOErrorEnum::Exists
+        || io_error_from_file_error(glib_native::FileError::NoEnt) != IOErrorEnum::NotFound
+        || io_error_from_file_error(glib_native::FileError::Acces) != IOErrorEnum::PermissionDenied
+        || io_error_from_file_error(glib_native::FileError::NoSpc) != IOErrorEnum::NoSpace
+        || io_error_from_file_error(glib_native::FileError::Pipe) != IOErrorEnum::BrokenPipe
+        || io_error_from_file_error(glib_native::FileError::Failed) != IOErrorEnum::Failed
+    {
+        return Err("GIO from_file_error");
+    }
+    // io_error_from_errno: via FileError + additional codes.
+    if io_error_from_errno(2) != IOErrorEnum::NotFound
+        || io_error_from_errno(17) != IOErrorEnum::Exists
+        || io_error_from_errno(13) != IOErrorEnum::PermissionDenied
+        || io_error_from_errno(28) != IOErrorEnum::NoSpace
+        || io_error_from_errno(125) != IOErrorEnum::Cancelled
+        || io_error_from_errno(110) != IOErrorEnum::TimedOut
+        || io_error_from_errno(98) != IOErrorEnum::AddressInUse
+        || io_error_from_errno(111) != IOErrorEnum::ConnectionRefused
+        || io_error_from_errno(104) != IOErrorEnum::CONNECTION_CLOSED
+        || io_error_from_errno(107) != IOErrorEnum::NotConnected
+        || io_error_from_errno(9999) != IOErrorEnum::Failed
+    {
+        return Err("GIO from_errno");
+    }
+    // file_error_from_errno (added to fileutils for gioerror).
+    if file_error_from_errno(2) != glib_native::FileError::NoEnt
+        || file_error_from_errno(17) != glib_native::FileError::Exist
+        || file_error_from_errno(9999) != glib_native::FileError::Failed
+    {
+        return Err("GFileError from_errno");
+    }
+
+    // GIO desktop notification (Phase 11). Exercise the full surface:
+    // construction, setters, buttons with targets, default action with
+    // target, priority, urgent mapping, category, opaque icon.
+    if NotificationPriority::Normal as i32 != 0
+        || NotificationPriority::Low as i32 != 1
+        || NotificationPriority::High as i32 != 2
+        || NotificationPriority::Urgent as i32 != 3
+    {
+        return Err("GNotificationPriority values");
+    }
+    let mut notif = Notification::new("RustOS boot complete");
+    if notif.title() != "RustOS boot complete"
+        || notif.body() != ""
+        || notif.priority() != NotificationPriority::Normal
+        || notif.n_buttons() != 0
+        || notif.default_action().is_some()
+        || notif.default_action_target().is_some()
+        || notif.icon().is_some()
+    {
+        return Err("GNotification defaults");
+    }
+    notif.set_body("All systems nominal");
+    notif.set_priority(NotificationPriority::High);
+    notif.set_category("system.boot");
+    if notif.body() != "All systems nominal"
+        || notif.priority() != NotificationPriority::High
+        || notif.category() != Some("system.boot")
+    {
+        return Err("GNotification setters");
+    }
+    // set_urgent maps true -> Urgent, false -> Normal.
+    notif.set_urgent(true);
+    if notif.priority() != NotificationPriority::Urgent {
+        return Err("GNotification set_urgent true");
+    }
+    notif.set_urgent(false);
+    if notif.priority() != NotificationPriority::Normal {
+        return Err("GNotification set_urgent false");
+    }
+    // Buttons with and without targets.
+    notif.add_button("Dismiss", "app.dismiss");
+    notif.add_button_with_target_value(
+        "Open",
+        "app.open",
+        glib_native::Variant::new_string("/etc/hostname"),
+    );
+    if notif.n_buttons() != 2 {
+        return Err("GNotification button count");
+    }
+    let buttons = notif.buttons();
+    if buttons[0].label != "Dismiss"
+        || buttons[0].action_name != "app.dismiss"
+        || buttons[0].target.is_some()
+    {
+        return Err("GNotification button 0");
+    }
+    if buttons[1].label != "Open"
+        || buttons[1].action_name != "app.open"
+        || buttons[1].target.is_none()
+        || buttons[1].target.as_ref().unwrap().get_string() != "/etc/hostname"
+    {
+        return Err("GNotification button 1");
+    }
+    // Default action with target.
+    notif.set_default_action_with_target_value("app.activate", glib_native::Variant::new_int32(42));
+    if notif.default_action() != Some("app.activate") {
+        return Err("GNotification default action");
+    }
+    if notif.default_action_target().is_none()
+        || notif.default_action_target().unwrap().get_int32() != 42
+    {
+        return Err("GNotification default action target");
+    }
+    // set_default_action (without target) clears the target.
+    notif.set_default_action("app.activate");
+    if notif.default_action_target().is_some() {
+        return Err("GNotification default action clears target");
+    }
+    // Opaque icon storage.
+    let icon: NotificationIcon = alloc::sync::Arc::new(0xDEADBEEFu32);
+    notif.set_icon(icon);
+    if notif.icon().is_none() {
+        return Err("GNotification icon set");
+    }
+    let stored_icon = notif.icon().unwrap();
+    let downcasted = stored_icon.downcast_ref::<u32>();
+    if downcasted != Some(&0xDEADBEEF) {
+        return Err("GNotification icon downcast");
+    }
+
+    // GIO SRV record target (Phase 11). Exercise construction,
+    // accessors, and RFC 2782 list sorting.
+    let srv = SrvTarget::new("xmpp.example.com", 5222, 10, 60);
+    if srv.hostname() != "xmpp.example.com"
+        || srv.port() != 5222
+        || srv.priority() != 10
+        || srv.weight() != 60
+    {
+        return Err("GSrvTarget accessors");
+    }
+    // Empty list sorts to empty.
+    let empty_sorted = srv_target_list_sort(alloc::vec::Vec::new());
+    if !empty_sorted.is_empty() {
+        return Err("GSrvTarget sort empty");
+    }
+    // Single "." hostname means service not available -> empty.
+    let dot_sorted = srv_target_list_sort(alloc::vec![SrvTarget::new(".", 0, 0, 0)]);
+    if !dot_sorted.is_empty() {
+        return Err("GSrvTarget sort dot hostname");
+    }
+    // Sort by priority ascending.
+    let prio_sorted = srv_target_list_sort(alloc::vec![
+        SrvTarget::new("c.example.com", 80, 30, 0),
+        SrvTarget::new("a.example.com", 80, 10, 0),
+        SrvTarget::new("b.example.com", 80, 20, 0),
+    ]);
+    if prio_sorted.len() != 3
+        || prio_sorted[0].priority() != 10
+        || prio_sorted[1].priority() != 20
+        || prio_sorted[2].priority() != 30
+    {
+        return Err("GSrvTarget sort by priority");
+    }
+    // All targets survive weighted-random selection within a group.
+    let group_sorted = srv_target_list_sort(alloc::vec![
+        SrvTarget::new("h1.example.com", 80, 10, 100),
+        SrvTarget::new("h2.example.com", 80, 10, 50),
+        SrvTarget::new("h3.example.com", 80, 10, 0),
+    ]);
+    if group_sorted.len() != 3 {
+        return Err("GSrvTarget sort preserves all");
+    }
+    for t in &group_sorted {
+        if t.priority() != 10 {
+            return Err("GSrvTarget sort same priority");
+        }
+    }
+
+    // GIO IP address (Phase 11). Exercise IPv4 and IPv6 parsing,
+    // formatting, classification, and special addresses.
+    if SocketFamily::Invalid as i32 != 0
+        || SocketFamily::Ipv4 as i32 != 2
+        || SocketFamily::Ipv6 as i32 != 10
+    {
+        return Err("GSocketFamily values");
+    }
+    // IPv4 parse + roundtrip.
+    let v4 = InetAddress::new_from_string("192.168.1.1").ok_or("GInet v4 parse")?;
+    if v4.family() != SocketFamily::Ipv4 || v4.native_size() != 4
+        || v4.to_bytes() != [192, 168, 1, 1] || v4.to_string() != "192.168.1.1"
+    {
+        return Err("GInet v4 roundtrip");
+    }
+    // IPv4 loopback + any.
+    let v4_lo = InetAddress::new_loopback(SocketFamily::Ipv4).ok_or("GInet v4 loopback")?;
+    if !v4_lo.is_loopback() || v4_lo.to_string() != "127.0.0.1" {
+        return Err("GInet v4 loopback classification");
+    }
+    let v4_any = InetAddress::new_any(SocketFamily::Ipv4).ok_or("GInet v4 any")?;
+    if !v4_any.is_any() || v4_any.to_string() != "0.0.0.0" {
+        return Err("GInet v4 any classification");
+    }
+    // IPv4 site-local classification.
+    if !InetAddress::new_from_string("10.1.2.3").unwrap().is_site_local()
+        || !InetAddress::new_from_string("172.16.0.1").unwrap().is_site_local()
+        || !InetAddress::new_from_string("192.168.1.1").unwrap().is_site_local()
+        || InetAddress::new_from_string("11.0.0.0").unwrap().is_site_local()
+    {
+        return Err("GInet v4 site-local");
+    }
+    // IPv4 link-local.
+    if !InetAddress::new_from_string("169.254.1.1").unwrap().is_link_local() {
+        return Err("GInet v4 link-local");
+    }
+    // IPv4 multicast + scopes.
+    if !InetAddress::new_from_string("224.0.0.1").unwrap().is_multicast()
+        || !InetAddress::new_from_string("224.0.0.1").unwrap().is_mc_link_local()
+        || !InetAddress::new_from_string("239.255.0.1").unwrap().is_mc_site_local()
+    {
+        return Err("GInet v4 multicast");
+    }
+    // IPv4 invalid.
+    if InetAddress::new_from_string("192.168.1").is_some()
+        || InetAddress::new_from_string("192.168.1.256").is_some()
+        || InetAddress::new_from_string("not-an-ip").is_some()
+    {
+        return Err("GInet v4 invalid rejected");
+    }
+    // IPv6 parse + compression.
+    let v6 = InetAddress::new_from_string("2001:db8::1").ok_or("GInet v6 parse")?;
+    if v6.family() != SocketFamily::Ipv6 || v6.native_size() != 16
+        || v6.to_string() != "2001:db8::1"
+    {
+        return Err("GInet v6 roundtrip");
+    }
+    // IPv6 loopback + any.
+    let v6_lo = InetAddress::new_loopback(SocketFamily::Ipv6).ok_or("GInet v6 loopback")?;
+    if !v6_lo.is_loopback() || v6_lo.to_string() != "::1" {
+        return Err("GInet v6 loopback");
+    }
+    let v6_any = InetAddress::new_any(SocketFamily::Ipv6).ok_or("GInet v6 any")?;
+    if !v6_any.is_any() || v6_any.to_string() != "::" {
+        return Err("GInet v6 any");
+    }
+    // IPv6 embedded IPv4.
+    let v6_v4 = InetAddress::new_from_string("::ffff:192.168.1.1").ok_or("GInet v6+v4")?;
+    if v6_v4.family() != SocketFamily::Ipv6
+        || v6_v4.to_bytes()[12..] != [192, 168, 1, 1]
+    {
+        return Err("GInet v6 embedded v4");
+    }
+    // IPv6 link-local + multicast + scopes.
+    if !InetAddress::new_from_string("fe80::1").unwrap().is_link_local() {
+        return Err("GInet v6 link-local");
+    }
+    if !InetAddress::new_from_string("ff02::1").unwrap().is_mc_link_local()
+        || !InetAddress::new_from_string("ff0e::1").unwrap().is_mc_global()
+    {
+        return Err("GInet v6 multicast scopes");
+    }
+    // equal().
+    let a = InetAddress::new_from_string("192.168.1.1").unwrap();
+    let b = InetAddress::new_from_string("192.168.1.1").unwrap();
+    if !a.equal(&b) {
+        return Err("GInet equal");
+    }
+    // new_from_bytes with wrong size fails.
+    if InetAddress::new_from_bytes(&[1, 2, 3], SocketFamily::Ipv4).is_some() {
+        return Err("GInet wrong byte count");
+    }
+
+    // GIO IP address mask (Phase 11). Exercise construction, parsing,
+    // to_string, matching, and equality.
+    // IPv4 /24 mask.
+    let mask_v4 = InetAddressMask::new_from_string("192.168.1.0/24")
+        .map_err(|_| "GInetMask v4 parse")?;
+    if mask_v4.family() != SocketFamily::Ipv4 || mask_v4.length() != 24
+        || mask_v4.address().to_string() != "192.168.1.0"
+        || mask_v4.to_string() != "192.168.1.0/24"
+    {
+        return Err("GInetMask v4 fields");
+    }
+    // Matches within /24.
+    if !mask_v4.matches(&InetAddress::new_from_string("192.168.1.1").unwrap())
+        || !mask_v4.matches(&InetAddress::new_from_string("192.168.1.255").unwrap())
+        || mask_v4.matches(&InetAddress::new_from_string("192.168.2.1").unwrap())
+    {
+        return Err("GInetMask v4 matches");
+    }
+    // Different family doesn't match.
+    if mask_v4.matches(&InetAddress::new_from_string("::1").unwrap()) {
+        return Err("GInetMask v4 vs v6");
+    }
+    // Full-length mask (no /prefix) → 32 for IPv4.
+    let full_v4 = InetAddressMask::new_from_string("192.168.1.1")
+        .map_err(|_| "GInetMask v4 full parse")?;
+    if full_v4.length() != 32 || full_v4.to_string() != "192.168.1.1" {
+        return Err("GInetMask v4 full");
+    }
+    // IPv6 /32 mask.
+    let mask_v6 = InetAddressMask::new_from_string("2001:db8::/32")
+        .map_err(|_| "GInetMask v6 parse")?;
+    if mask_v6.family() != SocketFamily::Ipv6 || mask_v6.length() != 32 {
+        return Err("GInetMask v6 fields");
+    }
+    if !mask_v6.matches(&InetAddress::new_from_string("2001:db8::1").unwrap())
+        || !mask_v6.matches(&InetAddress::new_from_string("2001:db8:abcd::1").unwrap())
+        || mask_v6.matches(&InetAddress::new_from_string("2001:db9::1").unwrap())
+    {
+        return Err("GInetMask v6 matches");
+    }
+    // Error cases.
+    if InetAddressMask::new_from_string("not-an-ip").is_ok() {
+        return Err("GInetMask parse error");
+    }
+    if InetAddressMask::new_from_string("192.168.1.0/33").is_ok() {
+        return Err("GInetMask length too long");
+    }
+    if InetAddressMask::new_from_string("192.168.1.1/24").is_ok() {
+        return Err("GInetMask bits beyond prefix");
+    }
+    // Constructor with BitsBeyondPrefix.
+    let addr_with_bits = InetAddress::new_from_string("192.168.1.1").unwrap();
+    if let Ok(_) = InetAddressMask::new(addr_with_bits, 24) {
+        return Err("GInetMask new bits beyond prefix");
+    }
+    // Equal masks.
+    let m1 = InetAddressMask::new_from_string("192.168.1.0/24").unwrap();
+    let m2 = InetAddressMask::new_from_string("192.168.1.0/24").unwrap();
+    let m3 = InetAddressMask::new_from_string("192.168.1.0/25").unwrap();
+    if !m1.equal(&m2) || m1.equal(&m3) {
+        return Err("GInetMask equal");
+    }
+
+    // GIO network address (Phase 11). Exercise construction, parse,
+    // parse_uri, accessors.
+    let addr = NetworkAddress::new("example.com", 80);
+    if addr.hostname() != "example.com" || addr.port() != 80 || addr.scheme().is_some() {
+        return Err("GNetworkAddress new");
+    }
+    let lo = NetworkAddress::new_loopback(8080);
+    if lo.hostname() != "localhost" || lo.port() != 8080 {
+        return Err("GNetworkAddress loopback");
+    }
+    // parse: plain hostname → default port.
+    let parsed = NetworkAddress::parse("example.com", 443)
+        .map_err(|_| "GNetworkAddress parse plain")?;
+    if parsed.hostname() != "example.com" || parsed.port() != 443 {
+        return Err("GNetworkAddress parse plain fields");
+    }
+    // parse: host:port.
+    let parsed = NetworkAddress::parse("example.com:8080", 443)
+        .map_err(|_| "GNetworkAddress parse host:port")?;
+    if parsed.hostname() != "example.com" || parsed.port() != 8080 {
+        return Err("GNetworkAddress parse host:port fields");
+    }
+    // parse: bracketed IPv6 with port.
+    let parsed = NetworkAddress::parse("[2001:db8::1]:888", 443)
+        .map_err(|_| "GNetworkAddress parse ipv6")?;
+    if parsed.hostname() != "2001:db8::1" || parsed.port() != 888 {
+        return Err("GNetworkAddress parse ipv6 fields");
+    }
+    // parse: unescaped IPv6 (multiple ':') → no port.
+    let parsed = NetworkAddress::parse("2001:db8::1", 443)
+        .map_err(|_| "GNetworkAddress parse ipv6 unescaped")?;
+    if parsed.hostname() != "2001:db8::1" || parsed.port() != 443 {
+        return Err("GNetworkAddress parse ipv6 unescaped fields");
+    }
+    // parse error cases.
+    if NetworkAddress::parse("example.com:", 443).is_ok() {
+        return Err("GNetworkAddress parse empty port");
+    }
+    if NetworkAddress::parse("example.com:99999", 443).is_ok() {
+        return Err("GNetworkAddress parse invalid port");
+    }
+    if NetworkAddress::parse("[2001:db8::1", 443).is_ok() {
+        return Err("GNetworkAddress parse unclosed bracket");
+    }
+    // parse_uri.
+    let parsed_uri = NetworkAddress::parse_uri("http://example.com:8080/path", 443)
+        .map_err(|_| "GNetworkAddress parse_uri")?;
+    if parsed_uri.scheme() != Some("http")
+        || parsed_uri.hostname() != "example.com"
+        || parsed_uri.port() != 8080
+    {
+        return Err("GNetworkAddress parse_uri fields");
+    }
+    // parse_uri with no port → default.
+    let parsed_uri = NetworkAddress::parse_uri("https://example.com/path", 443)
+        .map_err(|_| "GNetworkAddress parse_uri no port")?;
+    if parsed_uri.scheme() != Some("https") || parsed_uri.port() != 443 {
+        return Err("GNetworkAddress parse_uri default port");
+    }
+    // parse_uri invalid.
+    if NetworkAddress::parse_uri("not a uri", 443).is_ok() {
+        return Err("GNetworkAddress parse_uri invalid");
+    }
+    // equal.
+    let a = NetworkAddress::new("example.com", 80);
+    let b = NetworkAddress::new("example.com", 80);
+    let c = NetworkAddress::new("example.com", 81);
+    if !a.equal(&b) || a.equal(&c) {
+        return Err("GNetworkAddress equal");
     }
 
     Ok(())

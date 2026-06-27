@@ -65,7 +65,7 @@ impl Rand {
         let k = if N > seeds.len() { N } else { seeds.len() };
         for _ in 0..k {
             self.mt[i] = (self.mt[i]
-                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)) * 1664525))
+                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1664525)))
             .wrapping_add(seeds[j]);
             i += 1;
             j += 1;
@@ -79,7 +79,7 @@ impl Rand {
         }
         for _ in 1..N {
             self.mt[i] = self.mt[i]
-                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)) * 1566083941)
+                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1566083941))
                 .wrapping_sub(i as u32);
             i += 1;
             if i >= N {

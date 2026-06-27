@@ -219,7 +219,11 @@ enum Node {
     EndAnchor,
     WordBoundary,
     NonWordBoundary,
-    Group { capture: bool, child: Box<Node> },
+    /// `(...)` / `(?:...)` group. `cap_idx` is the 1-indexed capture slot
+    /// assigned at parse time (`None` for non-capturing `(?:...)` groups).
+    /// Slot 0 is reserved for the whole-match span, set by `Matcher::find`
+    /// after a successful match.
+    Group { capture: bool, cap_idx: Option<usize>, child: Box<Node> },
     Alternation(Vec<Node>),
     Sequence(Vec<Node>),
     Quantifier { child: Box<Node>, min: u32, max: Option<u32>, greedy: bool },
@@ -325,13 +329,17 @@ impl<'a> Parser<'a> {
                 _ => return Err(RegexError::Compile),
             }
         } else { true };
-        if capture { self.capture_count += 1; }
+        let cap_idx = if capture {
+            self.capture_count += 1;
+            // 1-indexed: slot 0 is reserved for the whole-match span.
+            Some(self.capture_count as usize)
+        } else { None };
         let child = self.parse_alternation()?;
         match self.next() {
             Some(')') => {}
             _ => return Err(RegexError::UnmatchedParenthesis),
         }
-        Ok(Node::Group { capture, child: Box::new(child) })
+        Ok(Node::Group { capture, cap_idx, child: Box::new(child) })
     }
 
     fn parse_class(&mut self) -> Result<Node, RegexError> {
@@ -503,11 +511,30 @@ impl<'a> Matcher<'a> {
                 let after = pos < self.input.len() && Self::is_word_char(self.input[pos]);
                 if before == after { vec![pos] } else { vec![] }
             }
-            Node::Group { capture, child } => {
-                let cap_idx = if *capture { let idx = captures.len(); captures.push(None); Some(idx) } else { None };
+            Node::Group { capture: _, cap_idx, child } => {
+                // Backtracking model: try_match returns every possible end
+                // for `child`, but the captures vector can only hold one
+                // span per slot. We set captures[idx] to the FIRST (best)
+                // end's span — for greedy quantifiers that is the longest
+                // match, for lazy the shortest — which is the end the
+                // caller tries first. If that path succeeds the caller
+                // commits via `*captures = caps_copy` and the correct
+                // span is preserved. If backtracking is needed (the
+                // first end fails) the span is stale, matching the
+                // existing limitation of this engine's all-ends-returned
+                // design. A full fix would thread per-end captures
+                // snapshots through try_match.
                 let mut results = Vec::new();
+                let mut first = true;
                 for end in self.try_match(child, pos, captures) {
-                    if let Some(idx) = cap_idx { captures[idx] = Some((pos, end)); }
+                    if first {
+                        if let Some(idx) = cap_idx {
+                            if *idx < captures.len() {
+                                captures[*idx] = Some((pos, end));
+                            }
+                        }
+                        first = false;
+                    }
                     results.push(end);
                 }
                 results
@@ -538,19 +565,37 @@ impl<'a> Matcher<'a> {
     }
 
     fn match_quant_rec(&mut self, child: &Node, min: u32, max: Option<u32>, greedy: bool, pos: usize, count: u32, captures: &mut Vec<Option<(usize, usize)>>) -> Vec<usize> {
+        // Returns ends in priority order: greedy → longest first, lazy →
+        // shortest first. The recursive results from a deeper call already
+        // come back in the correct order (longest-first for greedy,
+        // shortest-first for lazy), so we just splice them in on the
+        // appropriate side of the "stop here" (`pos`) end.
+        //
+        // The previous implementation did `results.reverse()` at every
+        // recursion level for lazy, which scrambled the order: the reverse
+        // at the deeper level undid the ordering intended by the shallower
+        // level.
         let mut results = Vec::new();
         let can_more = max.map_or(true, |m| count < m);
         let min_ok = count >= min;
+        let mut rec_ends = Vec::new();
         if can_more {
             for end in self.try_match(child, pos, captures) {
                 if end == pos && count >= min { continue; }
                 let mut caps_copy = captures.clone();
                 let rest = self.match_quant_rec(child, min, max, greedy, end, count + 1, &mut caps_copy);
-                if !rest.is_empty() { *captures = caps_copy; results.extend(rest); }
+                if !rest.is_empty() { *captures = caps_copy; rec_ends.extend(rest); }
             }
         }
-        if min_ok { results.push(pos); }
-        if !greedy { results.reverse(); }
+        if greedy {
+            // Try longer (recursive) matches first, then stop at `pos`.
+            results.extend(rec_ends);
+            if min_ok { results.push(pos); }
+        } else {
+            // Lazy: stop at `pos` first (shortest), then try longer matches.
+            if min_ok { results.push(pos); }
+            results.extend(rec_ends);
+        }
         results
     }
 
@@ -558,6 +603,9 @@ impl<'a> Matcher<'a> {
         for pos in start_pos..=self.input.len() {
             let mut captures = vec![None; self.num_captures + 1];
             if let Some(&end) = self.try_match(node, pos, &mut captures).first() {
+                // Slot 0 is the whole-match span, matching PCRE/Perl
+                // semantics so `fetch(0)` returns the entire match.
+                captures[0] = Some((pos, end));
                 self.captures = captures;
                 return Some((pos, end));
             }

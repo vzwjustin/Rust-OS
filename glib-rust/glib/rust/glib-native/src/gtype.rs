@@ -85,7 +85,7 @@ pub struct GValueData {
     pub v_ulong: u64,
     pub v_float: f32,
     pub v_double: f64,
-    pub v_pointer: Option<Arc<core::any::Any>>,
+    pub v_pointer: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 /// Function table for GValue handling (`GTypeValueTable`).
@@ -684,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn type_children() {
+    fn type_children_test() {
         type_init();
         let info = GTypeInfo::default();
         let id1 = type_register_static(G_TYPE_OBJECT, "ChildA", &info, GTypeFlags::NONE);
@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn type_fundamental() {
+    fn type_fundamental_test() {
         type_init();
         assert_eq!(type_fundamental(G_TYPE_INT), G_TYPE_INT);
         let info = GTypeInfo::default();

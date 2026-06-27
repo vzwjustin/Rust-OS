@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn mutex_lock_unlock() {
-        let m = GMutex::new();
+        let m = GMutex::new(0u32);
         {
             let _guard = m.lock();
             // locked
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn mutex_try_lock() {
-        let m = GMutex::new();
+        let m = GMutex::new(0u32);
         let guard = m.try_lock();
         assert!(guard.is_some());
         drop(guard);

@@ -8,6 +8,10 @@ use crate::gtype::*;
 use crate::gvalue::GValue;
 use crate::prelude::*;
 
+// Re-export ParamFlags from gtype so callers of `gparamspec` can use it
+// without having to import gtype separately.
+pub use crate::gtype::ParamFlags;
+
 /// Parameter type identifier.
 pub type ParamID = u32;
 
@@ -297,12 +301,12 @@ pub fn install_properties(specs: &mut [ParamSpec]) {
 }
 
 /// Look up a property by name.
-pub fn find_property(specs: &[ParamSpec], name: &str) -> Option<&ParamSpec> {
+pub fn find_property<'a>(specs: &'a [ParamSpec], name: &str) -> Option<&'a ParamSpec> {
     specs.iter().find(|s| s.name == name)
 }
 
 /// Look up a property by ID.
-pub fn find_property_by_id(specs: &[ParamSpec], id: ParamID) -> Option<&ParamSpec> {
+pub fn find_property_by_id<'a>(specs: &'a [ParamSpec], id: ParamID) -> Option<&'a ParamSpec> {
     specs.iter().find(|s| s.id == id)
 }
 

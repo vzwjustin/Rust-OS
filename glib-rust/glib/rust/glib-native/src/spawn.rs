@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_error_quark() {
+    fn spawn_error_quark_test() {
         let q = spawn_error_quark();
         assert!(q > 0);
     }
