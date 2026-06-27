@@ -52,7 +52,7 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **8** | Main loop & threading | `gmain.*`, `gsource.*`, `gthread.*`, `gasyncqueue.*`, `gpoll.*`, `giochannel.*`, `gthreadpool.*` | **Partial** (async queue, thread primitives, poll types, I/O channel types, main loop types (MainContext/MainLoop/Source), timeout_add/idle_add, thread pool task queue done, actual thread creation/poll-based event loop needs OS support) |
 | **9** | GObject core | `gobject/*` (types, signals, properties, values) | **Partial** (GType registry with 21 fundamental types, type registration/lookup/query, GValue polymorphic container for all basic types, GParamSpec with typed constructors, GSignal with connect/emit/disconnect, GObject base class with ref counting, properties, weak refs, user data, property binding) |
 | **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | **Partial** (gmodule ported: `GModule` ref-counted handle, `ModulePlatform` trait for OS-specific dlopen/dlsym/dlclose, `NoModulePlatform` stub for bare metal, registry with name/handle dedup, `module_open_full`/`module_open`/`module_close`/`module_symbol`/`module_make_resident`/`module_build_path`/`module_error`/`module_error_quark`, 20 unit tests passing) |
-| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; gdbuserror ported: `DBusError` enum (44 well-known `org.freedesktop.DBus.Error.*` codes), `DBusErrorEntry` struct, `dbus_error_quark` (lazily registers all 44 well-known entries), `dbus_error_register_error`/`_unregister_error`/`_register_error_domain` global registry (BTreeMap-backed), `dbus_error_is_remote_error`/`_get_remote_error`/`_strip_remote_error` remote-error prefix parsing, `dbus_error_new_for_dbus_error` (registered + `org.gtk.GDBus.UnmappedGError.Quark._*` fallback), `dbus_error_encode_gerror` (with hex-escaped `_XX` unmapped form), 23 unit tests passing; gioerror ported: `IOErrorEnum` enum (49 codes; `CONNECTION_CLOSED` const-aliased to `BrokenPipe` since Rust forbids duplicate discriminants), `io_error_quark`, `io_error_from_errno` (errno→IOErrorEnum via file_error_from_errno + additional socket/network codes), `io_error_from_file_error` (FileError→IOErrorEnum), 8 unit tests passing; gnotification ported: `Notification` struct (plain Rust port of upstream GObject subclass — fields title/body/icon/priority/category/buttons/default_action/default_action_target), `NotificationPriority` enum (Normal/Low/High/Urgent), `NotificationButton` struct (label/action_name/target: Option<Variant>), `NotificationIcon` opaque type (`Arc<dyn Any + Send + Sync>`) for deferred GIcon support, full setter API (`set_title`/`set_body`/`set_priority`/`set_urgent`/`set_category`/`add_button`/`add_button_with_target_value`/`set_default_action`/`set_default_action_with_target_value`/`set_icon`) + accessors, 16 unit tests passing; gsrvtarget ported: `SrvTarget` boxed struct (hostname/port/priority/weight) with `Clone`/`PartialEq`/`Eq`/`Hash`, `new`/`hostname`/`port`/`priority`/`weight` accessors, `srv_target_list_sort` implementing RFC 2782 priority+weight sorting (single-"."-hostname special case, priority-ascending sort, weighted-random selection within priority groups using `random_int_range`), 12 unit tests passing; ginetaddress ported: `SocketFamily` enum (Invalid/Unix/Ipv4/Ipv6 with Linux `AF_*` values 0/1/2/10), `InetAddress` plain-struct port of upstream GObject subclass with `InetAddrBytes` enum (Ipv4 [u8;4] / Ipv6 [u8;16]), `new_from_string` (hand-written IPv4 dotted-quad + IPv6 text parser with `::` compression and embedded IPv4), `new_from_bytes`/`new_loopback`/`new_any`/`equal`/`to_string`/`to_bytes`/`native_size`/`family`, full classification suite (`is_any`/`is_loopback`/`is_link_local`/`is_site_local`/`is_multicast`/`is_mc_global`/`is_mc_link_local`/`is_mc_node_local`/`is_mc_org_local`/`is_mc_site_local`), RFC 5952 `::` compression in `to_string`, 18 unit tests passing; ginetaddressmask ported: `InetAddressMaskError` enum (NoAddress/LengthTooLong/BitsBeyondPrefix/ParseFailed), `InetAddressMask` plain-struct port of upstream GObject+GInitable subclass with `new` (validates bits beyond `length` are 0, returns `Result`), `new_from_string` (parses `"addr/length"` or `"addr"` for full-length), `to_string` (omits `/length` when full), `family`/`address`/`length`/`matches` (bitwise prefix compare with partial-byte handling, family mismatch → false, length 0 → true)/`equal`, 22 unit tests passing; fileutils gained `file_error_from_errno` (errno→FileError, needed by gioerror); remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
+| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; gdbuserror ported: `DBusError` enum (44 well-known `org.freedesktop.DBus.Error.*` codes), `DBusErrorEntry` struct, `dbus_error_quark` (lazily registers all 44 well-known entries), `dbus_error_register_error`/`_unregister_error`/`_register_error_domain` global registry (BTreeMap-backed), `dbus_error_is_remote_error`/`_get_remote_error`/`_strip_remote_error` remote-error prefix parsing, `dbus_error_new_for_dbus_error` (registered + `org.gtk.GDBus.UnmappedGError.Quark._*` fallback), `dbus_error_encode_gerror` (with hex-escaped `_XX` unmapped form), 23 unit tests passing; gioerror ported: `IOErrorEnum` enum (49 codes; `CONNECTION_CLOSED` const-aliased to `BrokenPipe` since Rust forbids duplicate discriminants), `io_error_quark`, `io_error_from_errno` (errno→IOErrorEnum via file_error_from_errno + additional socket/network codes), `io_error_from_file_error` (FileError→IOErrorEnum), 8 unit tests passing; gnotification ported: `Notification` struct (plain Rust port of upstream GObject subclass — fields title/body/icon/priority/category/buttons/default_action/default_action_target), `NotificationPriority` enum (Normal/Low/High/Urgent), `NotificationButton` struct (label/action_name/target: Option<Variant>), `NotificationIcon` opaque type (`Arc<dyn Any + Send + Sync>`) for deferred GIcon support, full setter API (`set_title`/`set_body`/`set_priority`/`set_urgent`/`set_category`/`add_button`/`add_button_with_target_value`/`set_default_action`/`set_default_action_with_target_value`/`set_icon`) + accessors, 16 unit tests passing; gsrvtarget ported: `SrvTarget` boxed struct (hostname/port/priority/weight) with `Clone`/`PartialEq`/`Eq`/`Hash`, `new`/`hostname`/`port`/`priority`/`weight` accessors, `srv_target_list_sort` implementing RFC 2782 priority+weight sorting (single-"."-hostname special case, priority-ascending sort, weighted-random selection within priority groups using `random_int_range`), 12 unit tests passing; ginetaddress ported: `SocketFamily` enum (Invalid/Unix/Ipv4/Ipv6 with Linux `AF_*` values 0/1/2/10), `InetAddress` plain-struct port of upstream GObject subclass with `InetAddrBytes` enum (Ipv4 [u8;4] / Ipv6 [u8;16]), `new_from_string` (hand-written IPv4 dotted-quad + IPv6 text parser with `::` compression and embedded IPv4), `new_from_bytes`/`new_loopback`/`new_any`/`equal`/`to_string`/`to_bytes`/`native_size`/`family`, full classification suite (`is_any`/`is_loopback`/`is_link_local`/`is_site_local`/`is_multicast`/`is_mc_global`/`is_mc_link_local`/`is_mc_node_local`/`is_mc_org_local`/`is_mc_site_local`), RFC 5952 `::` compression in `to_string`, 18 unit tests passing; ginetaddressmask ported: `InetAddressMaskError` enum (NoAddress/LengthTooLong/BitsBeyondPrefix/ParseFailed), `InetAddressMask` plain-struct port of upstream GObject+GInitable subclass with `new` (validates bits beyond `length` are 0, returns `Result`), `new_from_string` (parses `"addr/length"` or `"addr"` for full-length), `to_string` (omits `/length` when full), `family`/`address`/`length`/`matches` (bitwise prefix compare with partial-byte handling, family mismatch → false, length 0 → true)/`equal`, 22 unit tests passing; gnetworkaddress ported: `NetworkAddressError` enum (UnclosedBracket/BadBracket/EmptyPort/InvalidPort/UnknownService/InvalidUri), `NetworkAddress` plain-struct port of upstream GObject+GSocketConnectable subclass (hostname/port/scheme), `new`/`new_loopback`/`parse` (host:port + bracketed IPv6 `[addr]:port` + unescaped IPv6 with multiple `:` + service-name rejection since no `getservbyname` in no_std)/`parse_uri` (via ported `Uri::parse` to extract scheme/host/port)/`hostname`/`port`/`scheme`/`equal`, 20 unit tests passing; fileutils gained `file_error_from_errno` (errno→FileError, needed by gioerror); remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | Planned |
 | **13** | Remove C implementations; expose stable C ABI from Rust via `extern "C"` | all | Planned |
 
@@ -374,6 +374,35 @@ re-export list for documentation and name resolution.
     IPv6), equal (same/different-length/different-address), clone —
     all passing.
 
+- **`gnetworkaddress`** — GIO network address. Mirrors
+  `gio/gnetworkaddress.h` / `gio/gnetworkaddress.c`:
+  - `NetworkAddressError` enum (UnclosedBracket / BadBracket /
+    EmptyPort / InvalidPort / UnknownService / InvalidUri) matching
+    the upstream `G_IO_ERROR_INVALID_ARGUMENT` cases.
+  - `NetworkAddress` plain-struct port of the upstream `GObject` +
+    `GSocketConnectable` subclass. Holds hostname, port, and optional
+    scheme (set by `parse_uri`). Upstream also caches resolved
+    `GSocketAddress`s; we skip that (needs DNS resolution + the
+    `GSocketConnectable` interface).
+  - `new(hostname, port)` / `new_loopback(port)` matching
+    `g_network_address_new` / `_new_loopback` (loopback uses
+    `"localhost"`).
+  - `parse(host_and_port, default_port)` — the full upstream parsing
+    algorithm: bracketed IPv6 (`[addr]` or `[addr]:port`), `host:port`
+    with numeric port, unescaped IPv6 (multiple `:` → no port), plain
+    hostname (uses `default_port`). Service names (e.g. `"http"`)
+    return `UnknownService` since `no_std` has no `getservbyname`.
+  - `parse_uri(uri, default_port)` — uses the ported `Uri::parse` to
+    extract scheme/host/port, then applies `default_port` if the URI
+    has no port.
+  - `hostname` / `port` / `scheme` accessors + `equal`.
+  - 20 unit tests covering `new`/`new_loopback`/`parse` (plain
+    hostname, host:port, bracketed IPv6 with/without port, unescaped
+    IPv6, empty port, invalid numeric port, service name, unclosed
+    bracket, bad bracket, max port, port zero)/`parse_uri` (with
+    port, no port → default, invalid)/`equal` (same/different-port/
+    different-hostname/with-scheme-vs-without)/`clone` — all passing.
+
 - **`fileutils` (addition)** — added `file_error_from_errno(err_no)`
   matching upstream `g_file_error_from_errno`. Maps 25 well-known
   errno values (EEXIST, EISDIR, EACCES, ENAMETOOLONG, ENOENT, ENOTDIR,
@@ -633,7 +662,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**60 modules** ported across Phases 1–11, all wired into RustOS:
+**61 modules** ported across Phases 1–11, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -647,7 +676,7 @@ re-export list for documentation and name resolution.
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
 | 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
 | 10 | gmodule | Partial (1) |
-| 11 | gfileattribute, gdbusintrospection, gdbuserror, gioerror, gnotification, gsrvtarget, ginetaddress, ginetaddressmask | Partial (8) |
+| 11 | gfileattribute, gdbusintrospection, gdbuserror, gioerror, gnotification, gsrvtarget, ginetaddress, ginetaddressmask, gnetworkaddress | Partial (9) |
 
 ### RustOS smoke test coverage
 
@@ -745,6 +774,12 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
   `/32` mask + matches, error cases (non-ip parse, length too long,
   bits beyond prefix), constructor bits-beyond-prefix check, `equal`
   (same/different-length)
+- **GNetworkAddress** — `new` + accessors, `new_loopback` (localhost),
+  `parse` (plain hostname → default port, host:port, bracketed IPv6
+  with port, unescaped IPv6, error cases: empty port, invalid port,
+  unclosed bracket), `parse_uri` (http://example.com:8080/path →
+  scheme/host/port, no-port → default, invalid URI rejected), `equal`
+  (same/different-port)
 
 ## Running Rust tests
 

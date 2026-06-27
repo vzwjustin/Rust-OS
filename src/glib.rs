@@ -389,6 +389,9 @@ pub use glib_native::{
     // GIO IP address mask (subnet)
     InetAddressMask,
     InetAddressMaskError,
+    // GIO network address (hostname + port + optional scheme)
+    NetworkAddress,
+    NetworkAddressError,
     // URI functions
     escape_string,
     is_valid,
@@ -2256,6 +2259,77 @@ pub fn smoke_check() -> Result<(), &'static str> {
     let m3 = InetAddressMask::new_from_string("192.168.1.0/25").unwrap();
     if !m1.equal(&m2) || m1.equal(&m3) {
         return Err("GInetMask equal");
+    }
+
+    // GIO network address (Phase 11). Exercise construction, parse,
+    // parse_uri, accessors.
+    let addr = NetworkAddress::new("example.com", 80);
+    if addr.hostname() != "example.com" || addr.port() != 80 || addr.scheme().is_some() {
+        return Err("GNetworkAddress new");
+    }
+    let lo = NetworkAddress::new_loopback(8080);
+    if lo.hostname() != "localhost" || lo.port() != 8080 {
+        return Err("GNetworkAddress loopback");
+    }
+    // parse: plain hostname → default port.
+    let parsed = NetworkAddress::parse("example.com", 443)
+        .map_err(|_| "GNetworkAddress parse plain")?;
+    if parsed.hostname() != "example.com" || parsed.port() != 443 {
+        return Err("GNetworkAddress parse plain fields");
+    }
+    // parse: host:port.
+    let parsed = NetworkAddress::parse("example.com:8080", 443)
+        .map_err(|_| "GNetworkAddress parse host:port")?;
+    if parsed.hostname() != "example.com" || parsed.port() != 8080 {
+        return Err("GNetworkAddress parse host:port fields");
+    }
+    // parse: bracketed IPv6 with port.
+    let parsed = NetworkAddress::parse("[2001:db8::1]:888", 443)
+        .map_err(|_| "GNetworkAddress parse ipv6")?;
+    if parsed.hostname() != "2001:db8::1" || parsed.port() != 888 {
+        return Err("GNetworkAddress parse ipv6 fields");
+    }
+    // parse: unescaped IPv6 (multiple ':') → no port.
+    let parsed = NetworkAddress::parse("2001:db8::1", 443)
+        .map_err(|_| "GNetworkAddress parse ipv6 unescaped")?;
+    if parsed.hostname() != "2001:db8::1" || parsed.port() != 443 {
+        return Err("GNetworkAddress parse ipv6 unescaped fields");
+    }
+    // parse error cases.
+    if NetworkAddress::parse("example.com:", 443).is_ok() {
+        return Err("GNetworkAddress parse empty port");
+    }
+    if NetworkAddress::parse("example.com:99999", 443).is_ok() {
+        return Err("GNetworkAddress parse invalid port");
+    }
+    if NetworkAddress::parse("[2001:db8::1", 443).is_ok() {
+        return Err("GNetworkAddress parse unclosed bracket");
+    }
+    // parse_uri.
+    let parsed_uri = NetworkAddress::parse_uri("http://example.com:8080/path", 443)
+        .map_err(|_| "GNetworkAddress parse_uri")?;
+    if parsed_uri.scheme() != Some("http")
+        || parsed_uri.hostname() != "example.com"
+        || parsed_uri.port() != 8080
+    {
+        return Err("GNetworkAddress parse_uri fields");
+    }
+    // parse_uri with no port → default.
+    let parsed_uri = NetworkAddress::parse_uri("https://example.com/path", 443)
+        .map_err(|_| "GNetworkAddress parse_uri no port")?;
+    if parsed_uri.scheme() != Some("https") || parsed_uri.port() != 443 {
+        return Err("GNetworkAddress parse_uri default port");
+    }
+    // parse_uri invalid.
+    if NetworkAddress::parse_uri("not a uri", 443).is_ok() {
+        return Err("GNetworkAddress parse_uri invalid");
+    }
+    // equal.
+    let a = NetworkAddress::new("example.com", 80);
+    let b = NetworkAddress::new("example.com", 80);
+    let c = NetworkAddress::new("example.com", 81);
+    if !a.equal(&b) || a.equal(&c) {
+        return Err("GNetworkAddress equal");
     }
 
     Ok(())
