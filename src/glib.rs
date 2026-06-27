@@ -382,6 +382,10 @@ pub use glib_native::{
     // GIO SRV record target
     SrvTarget,
     srv_target_list_sort,
+    // GIO IP address
+    InetAddress,
+    InetAddrBytes,
+    SocketFamily,
     // URI functions
     escape_string,
     is_valid,
@@ -2093,6 +2097,99 @@ pub fn smoke_check() -> Result<(), &'static str> {
         if t.priority() != 10 {
             return Err("GSrvTarget sort same priority");
         }
+    }
+
+    // GIO IP address (Phase 11). Exercise IPv4 and IPv6 parsing,
+    // formatting, classification, and special addresses.
+    if SocketFamily::Invalid as i32 != 0
+        || SocketFamily::Ipv4 as i32 != 2
+        || SocketFamily::Ipv6 as i32 != 10
+    {
+        return Err("GSocketFamily values");
+    }
+    // IPv4 parse + roundtrip.
+    let v4 = InetAddress::new_from_string("192.168.1.1").ok_or("GInet v4 parse")?;
+    if v4.family() != SocketFamily::Ipv4 || v4.native_size() != 4
+        || v4.to_bytes() != [192, 168, 1, 1] || v4.to_string() != "192.168.1.1"
+    {
+        return Err("GInet v4 roundtrip");
+    }
+    // IPv4 loopback + any.
+    let v4_lo = InetAddress::new_loopback(SocketFamily::Ipv4).ok_or("GInet v4 loopback")?;
+    if !v4_lo.is_loopback() || v4_lo.to_string() != "127.0.0.1" {
+        return Err("GInet v4 loopback classification");
+    }
+    let v4_any = InetAddress::new_any(SocketFamily::Ipv4).ok_or("GInet v4 any")?;
+    if !v4_any.is_any() || v4_any.to_string() != "0.0.0.0" {
+        return Err("GInet v4 any classification");
+    }
+    // IPv4 site-local classification.
+    if !InetAddress::new_from_string("10.1.2.3").unwrap().is_site_local()
+        || !InetAddress::new_from_string("172.16.0.1").unwrap().is_site_local()
+        || !InetAddress::new_from_string("192.168.1.1").unwrap().is_site_local()
+        || InetAddress::new_from_string("11.0.0.0").unwrap().is_site_local()
+    {
+        return Err("GInet v4 site-local");
+    }
+    // IPv4 link-local.
+    if !InetAddress::new_from_string("169.254.1.1").unwrap().is_link_local() {
+        return Err("GInet v4 link-local");
+    }
+    // IPv4 multicast + scopes.
+    if !InetAddress::new_from_string("224.0.0.1").unwrap().is_multicast()
+        || !InetAddress::new_from_string("224.0.0.1").unwrap().is_mc_link_local()
+        || !InetAddress::new_from_string("239.255.0.1").unwrap().is_mc_site_local()
+    {
+        return Err("GInet v4 multicast");
+    }
+    // IPv4 invalid.
+    if InetAddress::new_from_string("192.168.1").is_some()
+        || InetAddress::new_from_string("192.168.1.256").is_some()
+        || InetAddress::new_from_string("not-an-ip").is_some()
+    {
+        return Err("GInet v4 invalid rejected");
+    }
+    // IPv6 parse + compression.
+    let v6 = InetAddress::new_from_string("2001:db8::1").ok_or("GInet v6 parse")?;
+    if v6.family() != SocketFamily::Ipv6 || v6.native_size() != 16
+        || v6.to_string() != "2001:db8::1"
+    {
+        return Err("GInet v6 roundtrip");
+    }
+    // IPv6 loopback + any.
+    let v6_lo = InetAddress::new_loopback(SocketFamily::Ipv6).ok_or("GInet v6 loopback")?;
+    if !v6_lo.is_loopback() || v6_lo.to_string() != "::1" {
+        return Err("GInet v6 loopback");
+    }
+    let v6_any = InetAddress::new_any(SocketFamily::Ipv6).ok_or("GInet v6 any")?;
+    if !v6_any.is_any() || v6_any.to_string() != "::" {
+        return Err("GInet v6 any");
+    }
+    // IPv6 embedded IPv4.
+    let v6_v4 = InetAddress::new_from_string("::ffff:192.168.1.1").ok_or("GInet v6+v4")?;
+    if v6_v4.family() != SocketFamily::Ipv6
+        || v6_v4.to_bytes()[12..] != [192, 168, 1, 1]
+    {
+        return Err("GInet v6 embedded v4");
+    }
+    // IPv6 link-local + multicast + scopes.
+    if !InetAddress::new_from_string("fe80::1").unwrap().is_link_local() {
+        return Err("GInet v6 link-local");
+    }
+    if !InetAddress::new_from_string("ff02::1").unwrap().is_mc_link_local()
+        || !InetAddress::new_from_string("ff0e::1").unwrap().is_mc_global()
+    {
+        return Err("GInet v6 multicast scopes");
+    }
+    // equal().
+    let a = InetAddress::new_from_string("192.168.1.1").unwrap();
+    let b = InetAddress::new_from_string("192.168.1.1").unwrap();
+    if !a.equal(&b) {
+        return Err("GInet equal");
+    }
+    // new_from_bytes with wrong size fails.
+    if InetAddress::new_from_bytes(&[1, 2, 3], SocketFamily::Ipv4).is_some() {
+        return Err("GInet wrong byte count");
     }
 
     Ok(())

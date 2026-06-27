@@ -67,6 +67,7 @@ pub mod gdbuserror;
 pub mod gioerror;
 pub mod gnotification;
 pub mod gsrvtarget;
+pub mod ginetaddress;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -423,6 +424,7 @@ pub use gnotification::{
     Notification, NotificationPriority, NotificationButton, NotificationIcon,
 };
 pub use gsrvtarget::{SrvTarget, srv_target_list_sort};
+pub use ginetaddress::{InetAddress, InetAddrBytes, SocketFamily};
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,
