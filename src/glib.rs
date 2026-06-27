@@ -6,7 +6,9 @@
 
 #![allow(unused_imports)]
 
+use alloc::borrow::ToOwned;
 use alloc::string::ToString;
+use alloc::vec;
 
 pub use glib_native::*;
 
@@ -1492,7 +1494,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
         return Err("GObject property set");
     }
     obj.set_property("name", value_new_string("test-obj"));
-    if obj.get_property("name").map(|v| v.get_string()) != Some(Some("test-obj".to_owned())) {
+    if obj.get_property("name").map(|v| v.get_string().map(ToOwned::to_owned)) != Some(Some("test-obj".to_owned())) {
         return Err("GObject property name");
     }
 

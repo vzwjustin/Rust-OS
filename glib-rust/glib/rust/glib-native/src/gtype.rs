@@ -85,7 +85,7 @@ pub struct GValueData {
     pub v_ulong: u64,
     pub v_float: f32,
     pub v_double: f64,
-    pub v_pointer: Option<Arc<core::any::Any>>,
+    pub v_pointer: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 /// Function table for GValue handling (`GTypeValueTable`).

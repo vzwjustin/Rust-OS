@@ -185,10 +185,10 @@ impl GValue {
 
     // ── Pointer ───────────────────────────────────────────────────
 
-    pub fn set_pointer(&mut self, v: Arc<core::any::Any>) {
+    pub fn set_pointer(&mut self, v: Arc<dyn core::any::Any + Send + Sync>) {
         self.data.v_pointer = Some(v);
     }
-    pub fn get_pointer(&self) -> Option<&Arc<core::any::Any>> {
+    pub fn get_pointer(&self) -> Option<&Arc<dyn core::any::Any + Send + Sync>> {
         self.data.v_pointer.as_ref()
     }
 
@@ -210,10 +210,10 @@ impl GValue {
 
     // ── Object ────────────────────────────────────────────────────
 
-    pub fn set_object(&mut self, v: Arc<core::any::Any>) {
+    pub fn set_object(&mut self, v: Arc<dyn core::any::Any + Send + Sync>) {
         self.data.v_pointer = Some(v);
     }
-    pub fn get_object<T: 'static>(&self) -> Option<Arc<T>> {
+    pub fn get_object<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
         self.data.v_pointer.as_ref().and_then(|p| {
             p.clone().downcast::<T>().ok()
         })
@@ -221,10 +221,10 @@ impl GValue {
 
     // ── Boxed ─────────────────────────────────────────────────────
 
-    pub fn set_boxed(&mut self, v: Arc<core::any::Any>) {
+    pub fn set_boxed(&mut self, v: Arc<dyn core::any::Any + Send + Sync>) {
         self.data.v_pointer = Some(v);
     }
-    pub fn get_boxed<T: 'static>(&self) -> Option<Arc<T>> {
+    pub fn get_boxed<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
         self.data.v_pointer.as_ref().and_then(|p| {
             p.clone().downcast::<T>().ok()
         })
@@ -309,21 +309,21 @@ pub fn value_new_flags(v: u32) -> GValue {
 }
 
 /// Create a GValue holding a pointer.
-pub fn value_new_pointer(v: Arc<core::any::Any>) -> GValue {
+pub fn value_new_pointer(v: Arc<dyn core::any::Any + Send + Sync>) -> GValue {
     let mut val = GValue::for_type(G_TYPE_POINTER);
     val.set_pointer(v);
     val
 }
 
 /// Create a GValue holding an object.
-pub fn value_new_object(v: Arc<core::any::Any>) -> GValue {
+pub fn value_new_object(v: Arc<dyn core::any::Any + Send + Sync>) -> GValue {
     let mut val = GValue::for_type(G_TYPE_OBJECT);
     val.set_object(v);
     val
 }
 
 /// Create a GValue holding a boxed type.
-pub fn value_new_boxed(v: Arc<core::any::Any>) -> GValue {
+pub fn value_new_boxed(v: Arc<dyn core::any::Any + Send + Sync>) -> GValue {
     let mut val = GValue::for_type(G_TYPE_BOXED);
     val.set_boxed(v);
     val
