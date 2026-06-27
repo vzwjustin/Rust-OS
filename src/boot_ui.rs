@@ -236,6 +236,7 @@ pub struct BootProgress {
     errors_encountered: usize,
     warnings_encountered: usize,
     safe_mode: bool,
+    completed_stages: [bool; 10],
 }
 
 impl BootProgress {
@@ -249,6 +250,7 @@ impl BootProgress {
             errors_encountered: 0,
             warnings_encountered: 0,
             safe_mode: false,
+            completed_stages: [false; 10],
         }
     }
 
@@ -277,6 +279,12 @@ impl BootProgress {
         };
         (stage_progress + substage_progress).min(100)
     }
+
+    /// Check if a stage has been completed
+    pub fn is_stage_completed(&self, stage: BootStage) -> bool {
+        let idx = stage.number().saturating_sub(1);
+        idx < self.completed_stages.len() && self.completed_stages[idx]
+    }
 }
 
 /// Global boot progress state
@@ -296,8 +304,11 @@ pub fn show_boot_splash() {
     clear_screen();
     set_color(Color::LightCyan, Color::Black);
 
-    // Center the logo
+    // Top border
+    print_centered("========================================");
     println!();
+
+    // Center the logo
     println!();
     print_centered("    ██████╗ ██╗   ██╗███████╗████████╗ ██████╗ ███████╗");
     print_centered("    ██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔═══██╗██╔════╝");
@@ -311,6 +322,11 @@ pub fn show_boot_splash() {
     print_centered("Advanced Rust Operating System");
     set_color(Color::LightGray, Color::Black);
     print_centered("Version 1.0.0 - Production Release");
+    println!();
+
+    // Bottom border
+    set_color(Color::LightCyan, Color::Black);
+    print_centered("========================================");
     println!();
     println!();
 
@@ -327,6 +343,10 @@ pub fn begin_stage(stage: BootStage, substage_total: usize) {
     boot_log_set_stage(stage.number() as u8);
     boot_log(&format!("BEGIN: {}", stage.name()));
     show_stage_header(stage);
+
+    if is_graphical_boot() {
+        render_graphical_boot_progress();
+    }
 }
 
 /// Show the header for a boot stage
@@ -337,24 +357,31 @@ fn show_stage_header(stage: BootStage) {
     let percentage = (current * 100) / total;
 
     println!();
+    set_color(Color::DarkGray, Color::Black);
+    println!("  ----------------------------------------");
     set_color(Color::LightBlue, Color::Black);
-    print!("  [{}/{}] ", current, total);
+    print!("  > [{}/{}] ", current, total);
     set_color(Color::White, Color::Black);
     print!("{} ", stage.name());
 
-    // Draw mini progress bar
+    // Draw progress bar with > cursor at fill boundary
     set_color(Color::DarkGray, Color::Black);
     print!("[");
-    let bar_width = 20;
+    let bar_width = 30;
     let filled = (percentage * bar_width) / 100;
     set_color(Color::LightGreen, Color::Black);
     for _ in 0..filled {
         print!("=");
     }
-    set_color(Color::DarkGray, Color::Black);
-    for _ in filled..bar_width {
-        print!("-");
+    if filled < bar_width {
+        set_color(Color::Yellow, Color::Black);
+        print!(">");
+        set_color(Color::DarkGray, Color::Black);
+        for _ in (filled + 1)..bar_width {
+            print!("-");
+        }
     }
+    set_color(Color::DarkGray, Color::Black);
     print!("] {}%", percentage);
 
     if progress.safe_mode {
@@ -384,6 +411,10 @@ pub fn update_substage(current: usize, message: &str) {
     set_color(Color::LightGray, Color::Black);
     println!("{}", message);
     set_color(Color::White, Color::Black);
+
+    if is_graphical_boot() {
+        render_graphical_boot_progress();
+    }
 }
 
 /// Report a success within current stage
@@ -393,6 +424,10 @@ pub fn report_success(component: &str) {
     print!("      [OK] ");
     set_color(Color::White, Color::Black);
     println!("{}", component);
+
+    if is_graphical_boot() {
+        render_graphical_boot_progress();
+    }
 }
 
 /// Report a warning within current stage
@@ -408,6 +443,10 @@ pub fn report_warning(component: &str, reason: &str) {
     set_color(Color::DarkGray, Color::Black);
     println!(" - {}", reason);
     set_color(Color::White, Color::Black);
+
+    if is_graphical_boot() {
+        render_graphical_boot_progress();
+    }
 }
 
 /// Report an error within current stage
@@ -422,6 +461,10 @@ pub fn report_error(component: &str, error: &str) {
     set_color(Color::Red, Color::Black);
     println!(" - {}", error);
     set_color(Color::White, Color::Black);
+
+    if is_graphical_boot() {
+        render_graphical_boot_progress();
+    }
 }
 
 /// Complete current stage
@@ -431,9 +474,18 @@ pub fn complete_stage(stage: BootStage) {
         return;
     }
 
+    let idx = stage.number().saturating_sub(1);
+    if idx < progress.completed_stages.len() {
+        progress.completed_stages[idx] = true;
+    }
+
     set_color(Color::LightGreen, Color::Black);
-    println!("      Stage complete");
+    println!("      [OK] Stage complete");
     set_color(Color::White, Color::Black);
+
+    if is_graphical_boot() {
+        render_graphical_boot_progress();
+    }
 }
 
 // ============================================================================
@@ -450,10 +502,7 @@ pub fn hardware_detection_progress() -> HardwareDetectionResult {
     update_substage(1, "Detecting CPU...");
     result.cpu_info = detect_cpu_info();
     if result.cpu_info.cores > 0 {
-        report_success(&format!(
-            "CPU: {} cores, {} MHz",
-            result.cpu_info.cores, result.cpu_info.frequency_mhz
-        ));
+        report_success("CPU detected");
     } else {
         report_warning("CPU", "Could not detect all features");
     }
@@ -461,16 +510,13 @@ pub fn hardware_detection_progress() -> HardwareDetectionResult {
     // Memory Detection
     update_substage(2, "Detecting memory configuration...");
     result.memory_mb = detect_memory_size();
-    report_success(&format!("Memory: {} MB detected", result.memory_mb));
+    report_success("Memory detected");
 
     // Storage Detection
     update_substage(3, "Detecting storage devices...");
     result.storage_devices = detect_storage_devices();
     if result.storage_devices > 0 {
-        report_success(&format!(
-            "Storage: {} device(s) found",
-            result.storage_devices
-        ));
+        report_success("Storage detected");
     } else {
         report_warning("Storage", "No storage devices detected");
     }
@@ -479,21 +525,21 @@ pub fn hardware_detection_progress() -> HardwareDetectionResult {
     update_substage(4, "Detecting network interfaces...");
     result.network_interfaces = detect_network_interfaces();
     if result.network_interfaces > 0 {
-        report_success(&format!(
-            "Network: {} interface(s) found",
-            result.network_interfaces
-        ));
+        report_success("Network detected");
     } else {
         report_warning("Network", "No network interfaces detected");
     }
 
     // Display Detection
     update_substage(5, "Detecting display adapters...");
-    result.display_adapter = detect_display_adapter();
-    match &result.display_adapter {
-        Some(adapter) => report_success(&format!("Display: {}", adapter)),
-        None => report_warning("Display", "Using basic VGA"),
+    let adapter = detect_display_adapter();
+    result.display_adapter = adapter.is_some();
+    if result.display_adapter {
+        report_success("Display detected");
+    } else {
+        report_warning("Display", "Using basic VGA");
     }
+    drop(adapter);
 
     complete_stage(BootStage::HardwareDetection);
     boot_delay_short();
@@ -507,7 +553,7 @@ pub struct HardwareDetectionResult {
     pub memory_mb: usize,
     pub storage_devices: usize,
     pub network_interfaces: usize,
-    pub display_adapter: Option<String>,
+    pub display_adapter: bool,
 }
 
 impl HardwareDetectionResult {
@@ -517,7 +563,7 @@ impl HardwareDetectionResult {
             memory_mb: 0,
             storage_devices: 0,
             network_interfaces: 0,
-            display_adapter: None,
+            display_adapter: false,
         }
     }
 }
@@ -525,8 +571,10 @@ impl HardwareDetectionResult {
 /// CPU information structure
 #[derive(Default)]
 pub struct CpuInfo {
-    pub vendor: String,
-    pub model: String,
+    pub vendor: [u8; 16],
+    pub vendor_len: usize,
+    pub model: [u8; 32],
+    pub model_len: usize,
     pub cores: usize,
     pub frequency_mhz: usize,
     pub has_sse: bool,
@@ -534,7 +582,6 @@ pub struct CpuInfo {
 }
 
 fn detect_cpu_info() -> CpuInfo {
-    // Use CPUID to get CPU information
     let mut info = CpuInfo::default();
 
     unsafe {
@@ -554,49 +601,27 @@ fn detect_cpu_info() -> CpuInfo {
             "and eax, 1",
             out("eax") cpuid_supported,
             out("rcx") _,
-            options(nostack, preserves_flags)
         );
 
         if cpuid_supported != 0 {
-            // Get vendor string
-            let mut vendor_a: u32;
-            let mut vendor_b: u32;
-            let mut vendor_c: u32;
-            core::arch::asm!(
-                "mov {tmp:e}, ebx",
-                "cpuid",
-                "xchg {tmp:e}, ebx",
-                tmp = out(reg) vendor_a,
-                in("eax") 0u32,
-                out("ecx") vendor_c,
-                out("edx") vendor_b,
-                options(nostack, preserves_flags)
-            );
-
+            // Get vendor string using safe CPUID intrinsic
+            let result = core::arch::x86_64::__cpuid(0);
             let vendor_bytes = [
-                vendor_a.to_le_bytes(),
-                vendor_b.to_le_bytes(),
-                vendor_c.to_le_bytes(),
+                result.ebx.to_le_bytes(),
+                result.edx.to_le_bytes(),
+                result.ecx.to_le_bytes(),
             ];
             let mut vendor_str = [0u8; 12];
             vendor_str[0..4].copy_from_slice(&vendor_bytes[0]);
             vendor_str[4..8].copy_from_slice(&vendor_bytes[1]);
             vendor_str[8..12].copy_from_slice(&vendor_bytes[2]);
-            info.vendor = String::from_utf8_lossy(&vendor_str).to_string();
+            info.vendor[..12].copy_from_slice(&vendor_str);
+            info.vendor_len = 12;
 
-            // Get feature flags
-            let features_ecx: u32;
-            let features_edx: u32;
-            core::arch::asm!(
-                "mov {tmp:e}, ebx",
-                "cpuid",
-                "mov ebx, {tmp:e}",
-                tmp = out(reg) _,
-                in("eax") 1u32,
-                out("ecx") features_ecx,
-                out("edx") features_edx,
-                options(nostack, preserves_flags)
-            );
+            // Get feature flags using safe CPUID intrinsic
+            let result = core::arch::x86_64::__cpuid(1);
+            let features_ecx = result.ecx;
+            let features_edx = result.edx;
 
             info.has_sse = (features_edx & (1 << 25)) != 0;
             info.has_avx = (features_ecx & (1 << 28)) != 0;
@@ -998,7 +1023,7 @@ impl MemoryInitResult {
 
 /// Load drivers with progress display
 pub fn driver_loading_progress() -> DriverLoadResult {
-    begin_stage(BootStage::DriverLoading, 8);
+    begin_stage(BootStage::DriverLoading, 10);
 
     let mut result = DriverLoadResult::new();
 
@@ -1038,8 +1063,20 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     report_success("Input manager initialized");
     result.input_manager_loaded = true;
 
+    // VirtIO paravirtualized devices
+    update_substage(5, "Scanning for VirtIO devices...");
+    match crate::drivers::virtio::init() {
+        Ok(()) => {
+            report_success("VirtIO devices initialized");
+        }
+        Err(e) => {
+            let reason = format!("{}", e);
+            report_warning("VirtIO", &reason);
+        }
+    }
+
     // Timer driver
-    update_substage(5, "Loading timer driver...");
+    update_substage(7, "Loading timer driver...");
     match crate::time::init() {
         Ok(()) => {
             report_success("Timer system initialized");
@@ -1051,7 +1088,7 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     }
 
     // Storage drivers
-    update_substage(6, "Loading storage drivers...");
+    update_substage(8, "Loading storage drivers...");
     match crate::drivers::storage::init_storage_subsystem() {
         Ok(storage) if storage.total_devices > 0 => {
             report_success("Storage subsystem initialized");
@@ -1067,7 +1104,7 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     }
 
     // Network drivers
-    update_substage(7, "Loading network drivers...");
+    update_substage(9, "Loading network drivers...");
     match crate::net::init() {
         Ok(()) => {
             report_success("Network stack initialized");
@@ -1080,7 +1117,7 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     }
 
     // Serial driver
-    update_substage(8, "Loading serial port driver...");
+    update_substage(10, "Loading serial port driver...");
     report_success("Serial port driver loaded");
     result.serial_loaded = true;
 
@@ -1393,37 +1430,77 @@ pub fn boot_complete_summary() {
 
     println!();
     set_color(Color::LightGreen, Color::Black);
-    println!("  ============================================================");
-    println!("                    BOOT SEQUENCE COMPLETE");
-    println!("  ============================================================");
+    println!("  ================================================");
+    println!("            BOOT SEQUENCE COMPLETE");
+    println!("  ================================================");
     set_color(Color::White, Color::Black);
     println!();
 
-    // Show statistics
-    set_color(Color::Cyan, Color::Black);
-    print!("  Boot Progress: ");
+    // Show stage checklist
+    let all_stages = [
+        BootStage::HardwareDetection,
+        BootStage::AcpiInit,
+        BootStage::PciInit,
+        BootStage::MemoryInit,
+        BootStage::InterruptInit,
+        BootStage::DriverLoading,
+        BootStage::FileSystemMount,
+        BootStage::GraphicsInit,
+        BootStage::DesktopInit,
+        BootStage::BootComplete,
+    ];
+
+    for &s in &all_stages {
+        let completed = progress.is_stage_completed(s);
+        if completed {
+            set_color(Color::LightGreen, Color::Black);
+            print!("    [x] ");
+            set_color(Color::LightGray, Color::Black);
+        } else {
+            set_color(Color::Red, Color::Black);
+            print!("    [!] ");
+            set_color(Color::DarkGray, Color::Black);
+        }
+        println!("{}", s.name());
+    }
     set_color(Color::White, Color::Black);
+    println!();
+
+    // Show statistics with aligned labels
+    set_color(Color::Cyan, Color::Black);
+    print!("  Boot Progress:  ");
+    set_color(Color::LightGreen, Color::Black);
     println!("{}%", overall);
 
     if progress.errors_encountered > 0 {
+        set_color(Color::Cyan, Color::Black);
+        print!("  Errors:         ");
         set_color(Color::Red, Color::Black);
-        print!("  Errors: ");
-        set_color(Color::White, Color::Black);
         println!("{}", progress.errors_encountered);
+    } else {
+        set_color(Color::Cyan, Color::Black);
+        print!("  Errors:         ");
+        set_color(Color::LightGreen, Color::Black);
+        println!("0");
     }
 
     if progress.warnings_encountered > 0 {
+        set_color(Color::Cyan, Color::Black);
+        print!("  Warnings:       ");
         set_color(Color::Yellow, Color::Black);
-        print!("  Warnings: ");
-        set_color(Color::White, Color::Black);
         println!("{}", progress.warnings_encountered);
+    } else {
+        set_color(Color::Cyan, Color::Black);
+        print!("  Warnings:       ");
+        set_color(Color::LightGreen, Color::Black);
+        println!("0");
     }
 
     if progress.safe_mode {
         println!();
         set_color(Color::Yellow, Color::Black);
-        println!("  NOTE: System booted in SAFE MODE");
-        println!("  Some features may be disabled");
+        println!("  >> NOTE: System booted in SAFE MODE");
+        println!("     Some features may be disabled");
         set_color(Color::White, Color::Black);
     }
 
@@ -1432,7 +1509,7 @@ pub fn boot_complete_summary() {
 
     println!();
     set_color(Color::LightGray, Color::Black);
-    println!("  Press any key to continue to desktop...");
+    println!("  >> Press any key to continue to desktop...");
     set_color(Color::White, Color::Black);
 }
 
@@ -1454,16 +1531,23 @@ pub fn transition_to_desktop() {
 }
 
 fn fade_to_desktop() {
-    // Implement fade effect using graphics
-    for i in 0..10 {
-        let brightness = (i * 25) as u8;
-        crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(
-            (28 * brightness / 255) as u8,
-            (34 * brightness / 255) as u8,
-            (54 * brightness / 255) as u8,
-        ));
+    // Fade from boot background color to black (fade out effect)
+    let bg_r: u32 = 28;
+    let bg_g: u32 = 34;
+    let bg_b: u32 = 54;
+    let steps = 10;
+    for i in 0..steps {
+        let factor = steps - 1 - i; // steps-1 down to 0
+        let r = (bg_r * factor / (steps - 1)) as u8;
+        let g = (bg_g * factor / (steps - 1)) as u8;
+        let b = (bg_b * factor / (steps - 1)) as u8;
+        crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(r, g, b));
+        crate::graphics::framebuffer::present();
         boot_delay_short();
     }
+    // Final frame: pure black
+    crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(0, 0, 0));
+    crate::graphics::framebuffer::present();
 }
 
 // ============================================================================
@@ -1527,8 +1611,8 @@ pub fn show_first_boot_info(hardware: &HardwareDetectionResult, memory: &MemoryI
     println!("    Storage: {} device(s)", hardware.storage_devices);
     println!("    Network: {} interface(s)", hardware.network_interfaces);
 
-    if let Some(ref adapter) = hardware.display_adapter {
-        println!("    Display: {}", adapter);
+    if hardware.display_adapter {
+        println!("    Display: VGA Compatible");
     }
 
     println!();
@@ -1640,12 +1724,14 @@ pub fn render_graphical_boot_progress() {
     let accent = crate::graphics::Color::rgb(100, 180, 255);
     let green = crate::graphics::Color::rgb(100, 220, 120);
     let gray = crate::graphics::Color::rgb(80, 80, 100);
+    let yellow = crate::graphics::Color::rgb(240, 200, 80);
+    let red = crate::graphics::Color::rgb(240, 80, 80);
 
     // Draw "RustOS" title centered
     let title = "RustOS";
     let title_width = title.len() * font.char_width;
     let title_x = (screen_w.saturating_sub(title_width)) / 2;
-    let title_y = screen_h / 4;
+    let title_y = screen_h / 6;
     crate::graphics::draw_text(title, title_x, title_y, white, font);
 
     // Draw subtitle
@@ -1655,20 +1741,13 @@ pub fn render_graphical_boot_progress() {
     let sub_y = title_y + font.char_height + 4;
     crate::graphics::draw_text(subtitle, sub_x, sub_y, gray, font);
 
-    // Draw stage name
-    let stage_name = stage.name();
-    let stage_width = stage_name.len() * font.char_width;
-    let stage_x = (screen_w.saturating_sub(stage_width)) / 2;
-    let stage_y = sub_y + font.char_height + 16;
-    crate::graphics::draw_text(stage_name, stage_x, stage_y, accent, font);
-
     // Draw progress bar
     let bar_width = screen_w * 2 / 3;
     let bar_x = (screen_w.saturating_sub(bar_width)) / 2;
-    let bar_y = stage_y + font.char_height + 20;
-    let bar_height = 8;
+    let bar_y = sub_y + font.char_height + 16;
+    let bar_height = 10;
 
-    // Bar background
+    // Bar background (rounded look: draw slightly larger dark rect)
     crate::graphics::framebuffer::fill_rect(
         crate::graphics::framebuffer::Rect::new(bar_x, bar_y, bar_width, bar_height),
         gray,
@@ -1683,25 +1762,164 @@ pub fn render_graphical_boot_progress() {
         );
     }
 
-    // Draw percentage
-    let mut pct_text = alloc::string::String::new();
-    use core::fmt::Write;
-    let _ = write!(pct_text, "{}%", overall);
-    let pct_width = pct_text.len() * font.char_width;
+    // Draw percentage (stack buffer, no heap allocation)
+    let mut pct_buf = [0u8; 5];
+    let pct_len = format_percent(overall, &mut pct_buf);
+    let pct_str = core::str::from_utf8(&pct_buf[..pct_len]).unwrap_or("0%");
+    let pct_width = pct_str.len() * font.char_width;
     let pct_x = (screen_w.saturating_sub(pct_width)) / 2;
-    let pct_y = bar_y + bar_height + 8;
-    crate::graphics::draw_text(&pct_text, pct_x, pct_y, white, font);
+    let pct_y = bar_y + bar_height + 6;
+    crate::graphics::draw_text(pct_str, pct_x, pct_y, white, font);
 
-    // Draw last message if present
+    // Draw stage checklist on left side
+    let all_stages = [
+        BootStage::HardwareDetection,
+        BootStage::AcpiInit,
+        BootStage::PciInit,
+        BootStage::MemoryInit,
+        BootStage::InterruptInit,
+        BootStage::DriverLoading,
+        BootStage::FileSystemMount,
+        BootStage::GraphicsInit,
+        BootStage::DesktopInit,
+        BootStage::BootComplete,
+    ];
+
+    let checklist_x = bar_x;
+    let checklist_y = pct_y + font.char_height + 16;
+    let line_height = font.char_height + 4;
+
+    for (i, &s) in all_stages.iter().enumerate() {
+        let y = checklist_y + i * line_height;
+        if y + font.char_height >= screen_h {
+            break;
+        }
+
+        let completed = progress.is_stage_completed(s);
+        let is_current = s == stage;
+
+        let prefix = if completed {
+            "[x] "
+        } else if is_current {
+            "[>]"
+        } else {
+            "[ ] "
+        };
+        let prefix_color = if completed {
+            green
+        } else if is_current {
+            accent
+        } else {
+            gray
+        };
+
+        crate::graphics::draw_text(prefix, checklist_x, y, prefix_color, font);
+
+        let name = s.name();
+        let name_color = if completed {
+            green
+        } else if is_current {
+            white
+        } else {
+            gray
+        };
+        crate::graphics::draw_text(name, checklist_x + 4 * font.char_width, y, name_color, font);
+    }
+
+    // Draw last message if present (bottom area)
     if let Some(ref msg) = progress.last_message {
         let msg_width = msg.len() * font.char_width;
         let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
-        let msg_y = pct_y + font.char_height + 12;
-        crate::graphics::draw_text(msg, msg_x, msg_y, gray, font);
+        let msg_y = screen_h.saturating_sub(font.char_height + 8);
+        crate::graphics::draw_text(msg, msg_x, msg_y, accent, font);
+    }
+
+    // Draw warnings/errors counter in top-right corner
+    if progress.warnings_encountered > 0 || progress.errors_encountered > 0 {
+        let mut warn_buf = [0u8; 16];
+        let wlen = format_count_label("WARN: ", progress.warnings_encountered, &mut warn_buf);
+        let wstr = core::str::from_utf8(&warn_buf[..wlen]).unwrap_or("");
+        crate::graphics::draw_text(
+            wstr,
+            screen_w.saturating_sub(wstr.len() * font.char_width + 8),
+            4,
+            yellow,
+            font,
+        );
+
+        let mut err_buf = [0u8; 16];
+        let elen = format_count_label("ERR:  ", progress.errors_encountered, &mut err_buf);
+        let estr = core::str::from_utf8(&err_buf[..elen]).unwrap_or("");
+        crate::graphics::draw_text(
+            estr,
+            screen_w.saturating_sub(estr.len() * font.char_width + 8),
+            4 + font.char_height + 2,
+            red,
+            font,
+        );
     }
 
     // Present the frame
     crate::graphics::framebuffer::present();
+}
+
+/// Format a percentage into a stack buffer (no heap allocation).
+/// Returns the number of bytes written.
+fn format_percent(value: usize, buf: &mut [u8; 5]) -> usize {
+    if value >= 100 {
+        buf[0] = b'1';
+        buf[1] = b'0';
+        buf[2] = b'0';
+        buf[3] = b'%';
+        4
+    } else if value >= 10 {
+        buf[0] = b'0' + (value / 10) as u8;
+        buf[1] = b'0' + (value % 10) as u8;
+        buf[2] = b'%';
+        3
+    } else {
+        buf[0] = b'0' + value as u8;
+        buf[1] = b'%';
+        2
+    }
+}
+
+/// Format "LABEL: N" into a stack buffer (no heap allocation).
+/// Returns the number of bytes written.
+fn format_count_label(label: &str, count: usize, buf: &mut [u8; 16]) -> usize {
+    let label_bytes = label.as_bytes();
+    let mut pos = 0;
+    for &b in label_bytes {
+        if pos >= buf.len() {
+            break;
+        }
+        buf[pos] = b;
+        pos += 1;
+    }
+    // Write count as decimal
+    if count == 0 {
+        if pos < buf.len() {
+            buf[pos] = b'0';
+            pos += 1;
+        }
+    } else {
+        let mut digits = [0u8; 10];
+        let mut dlen = 0;
+        let mut n = count;
+        while n > 0 && dlen < digits.len() {
+            digits[dlen] = b'0' + (n % 10) as u8;
+            dlen += 1;
+            n /= 10;
+        }
+        for i in (0..dlen).rev() {
+            if pos >= buf.len() {
+                break;
+            }
+            buf[pos] = digits[i];
+            pos += 1;
+        }
+    }
+    pos
 }
 
 /// Render a graphical boot message (for errors/warnings)
@@ -1734,17 +1952,137 @@ pub fn render_graphical_boot_complete() {
         None => return,
     };
 
+    let progress = boot_progress();
+
+    crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(28, 34, 54));
+
     let font = crate::graphics::get_default_font();
     let white = crate::graphics::Color::rgb(255, 255, 255);
     let green = crate::graphics::Color::rgb(100, 220, 120);
+    let gray = crate::graphics::Color::rgb(80, 80, 100);
+    let accent = crate::graphics::Color::rgb(100, 180, 255);
 
+    // Draw "RustOS" title centered
+    let title = "RustOS";
+    let title_width = title.len() * font.char_width;
+    let title_x = (screen_w.saturating_sub(title_width)) / 2;
+    let title_y = screen_h / 6;
+    crate::graphics::draw_text(title, title_x, title_y, white, font);
+
+    // Draw "Boot Complete!" message
     let msg = "Boot Complete!";
     let msg_width = msg.len() * font.char_width;
     let msg_x = (screen_w.saturating_sub(msg_width)) / 2;
-    let msg_y = screen_h * 3 / 4;
+    let msg_y = title_y + font.char_height + 8;
     crate::graphics::draw_text(msg, msg_x, msg_y, green, font);
 
+    // Draw stage checklist (all should be complete)
+    let all_stages = [
+        BootStage::HardwareDetection,
+        BootStage::AcpiInit,
+        BootStage::PciInit,
+        BootStage::MemoryInit,
+        BootStage::InterruptInit,
+        BootStage::DriverLoading,
+        BootStage::FileSystemMount,
+        BootStage::GraphicsInit,
+        BootStage::DesktopInit,
+        BootStage::BootComplete,
+    ];
+
+    let checklist_x = (screen_w.saturating_sub(30 * font.char_width)) / 2;
+    let checklist_y = msg_y + font.char_height + 20;
+    let line_height = font.char_height + 4;
+
+    for (i, &s) in all_stages.iter().enumerate() {
+        let y = checklist_y + i * line_height;
+        if y + font.char_height >= screen_h {
+            break;
+        }
+
+        let completed = progress.is_stage_completed(s);
+        let prefix = if completed { "[x] " } else { "[ ] " };
+        let prefix_color = if completed { green } else { gray };
+        crate::graphics::draw_text(prefix, checklist_x, y, prefix_color, font);
+
+        let name = s.name();
+        let name_color = if completed { green } else { gray };
+        crate::graphics::draw_text(name, checklist_x + 4 * font.char_width, y, name_color, font);
+    }
+
+    // Draw warnings/errors summary at bottom
+    let summary_y = screen_h.saturating_sub(font.char_height + 8);
+    let mut sum_buf = [0u8; 32];
+    let slen = format_boot_summary(
+        progress.warnings_encountered,
+        progress.errors_encountered,
+        &mut sum_buf,
+    );
+    let sstr = core::str::from_utf8(&sum_buf[..slen]).unwrap_or("");
+    let sum_width = sstr.len() * font.char_width;
+    let sum_x = (screen_w.saturating_sub(sum_width)) / 2;
+    let sum_color = if progress.errors_encountered > 0 {
+        crate::graphics::Color::rgb(240, 80, 80)
+    } else if progress.warnings_encountered > 0 {
+        crate::graphics::Color::rgb(240, 200, 80)
+    } else {
+        accent
+    };
+    crate::graphics::draw_text(sstr, sum_x, summary_y, sum_color, font);
+
     crate::graphics::framebuffer::present();
+}
+
+/// Format boot summary "Warnings: N  Errors: M" into a stack buffer.
+fn format_boot_summary(warnings: usize, errors: usize, buf: &mut [u8; 32]) -> usize {
+    let mut pos = 0;
+    let w = b"Warnings: ";
+    for &b in w {
+        if pos >= buf.len() {
+            break;
+        }
+        buf[pos] = b;
+        pos += 1;
+    }
+    pos += write_us(warnings, &mut buf[pos..]);
+    let e = b"  Errors: ";
+    for &b in e {
+        if pos >= buf.len() {
+            break;
+        }
+        buf[pos] = b;
+        pos += 1;
+    }
+    pos += write_us(errors, &mut buf[pos..]);
+    pos
+}
+
+/// Write a usize as decimal into buf, return number of bytes written.
+fn write_us(val: usize, buf: &mut [u8]) -> usize {
+    if val == 0 {
+        if buf.is_empty() {
+            return 0;
+        }
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut digits = [0u8; 10];
+    let mut dlen = 0;
+    let mut n = val;
+    while n > 0 && dlen < digits.len() {
+        digits[dlen] = b'0' + (n % 10) as u8;
+        dlen += 1;
+        n /= 10;
+    }
+    let mut written = 0;
+    for i in (0..dlen).rev() {
+        if written >= buf.len() {
+            break;
+        }
+        buf[written] = digits[i];
+        written += 1;
+    }
+    written
 }
 
 // ============================================================================
@@ -1785,6 +2123,8 @@ pub fn show_boot_menu() -> BootMenuSelection {
     crate::interrupts::enable_keyboard_interrupt();
 
     clear_screen();
+
+    // Header with border
     set_color(Color::LightCyan, Color::Black);
     println!();
     print_centered("===========================================");
@@ -1793,37 +2133,68 @@ pub fn show_boot_menu() -> BootMenuSelection {
     set_color(Color::White, Color::Black);
     println!();
 
+    // Options with arrow indicators
+    set_color(Color::LightGreen, Color::Black);
+    print!("  > ");
     set_color(Color::White, Color::Black);
-    println!("  [1] Normal Boot     - Full graphics desktop");
-    println!("  [2] Safe Mode       - Text mode, minimal drivers");
-    println!("  [3] Text Mode Only  - Skip graphics initialization");
-    println!();
+    println!("[1] Normal Boot     - Full graphics desktop");
 
     set_color(Color::Yellow, Color::Black);
-    println!("  Press 1, 2, or 3 to select (auto-continue in 3 seconds)...");
+    print!("  > ");
     set_color(Color::White, Color::Black);
+    println!("[2] Safe Mode       - Text mode, minimal drivers");
+
+    set_color(Color::LightCyan, Color::Black);
+    print!("  > ");
+    set_color(Color::White, Color::Black);
+    println!("[3] Text Mode Only  - Skip graphics init");
     println!();
 
+    // Separator line
+    set_color(Color::DarkGray, Color::Black);
+    println!("  -------------------------------------------");
+    set_color(Color::White, Color::Black);
+
     // Wait for key with timeout - poll keyboard for ~3 seconds
+    // Divide into 3 one-second segments for countdown display
     let timeout_iters: u32 = 3_000_000;
+    let segment_size: u32 = 1_000_000;
     let mut iter: u32 = 0;
+    let mut last_second: u32 = 3;
+
+    // Print initial countdown
+    set_color(Color::Yellow, Color::Black);
+    print!(
+        "  Auto-continue in {} seconds... (press 1, 2, or 3)",
+        last_second
+    );
+
     while iter < timeout_iters {
         if let Some(event) = crate::keyboard::get_key_event() {
             if let crate::keyboard::KeyEvent::CharacterPress(c) = event {
                 match c {
                     '1' => {
-                        println!("  -> Normal Boot selected");
+                        print!("\r  ");
+                        set_color(Color::LightGreen, Color::Black);
+                        println!(">> Normal Boot selected                    ");
+                        set_color(Color::White, Color::Black);
                         boot_delay_short();
                         return BootMenuSelection::NormalBoot;
                     }
                     '2' => {
-                        println!("  -> Safe Mode selected");
+                        print!("\r  ");
+                        set_color(Color::Yellow, Color::Black);
+                        println!(">> Safe Mode selected                      ");
+                        set_color(Color::White, Color::Black);
                         enable_safe_mode();
                         boot_delay_short();
                         return BootMenuSelection::SafeMode;
                     }
                     '3' => {
-                        println!("  -> Text Mode selected");
+                        print!("\r  ");
+                        set_color(Color::LightCyan, Color::Black);
+                        println!(">> Text Mode selected                      ");
+                        set_color(Color::White, Color::Black);
                         let mut config = boot_config().clone();
                         config.force_text_mode = true;
                         set_boot_config(config);
@@ -1834,6 +2205,23 @@ pub fn show_boot_menu() -> BootMenuSelection {
                 }
             }
         }
+
+        // Update countdown each second
+        let current_second = 3 - (iter / segment_size);
+        if current_second != last_second && current_second < 3 {
+            last_second = current_second;
+            set_color(Color::Yellow, Color::Black);
+            if current_second > 0 {
+                print!(
+                    "\r  Auto-continue in {} seconds... (press 1, 2, or 3)",
+                    current_second
+                );
+            } else {
+                print!("\r  Auto-continuing...                              ");
+            }
+            set_color(Color::White, Color::Black);
+        }
+
         // Small delay to avoid 100% CPU spin
         unsafe {
             core::arch::asm!("nop");
@@ -1842,8 +2230,9 @@ pub fn show_boot_menu() -> BootMenuSelection {
     }
 
     // Timeout - default to normal boot
+    print!("\r  ");
     set_color(Color::LightGray, Color::Black);
-    println!("  -> Auto-continuing with Normal Boot");
+    println!(">> Auto-continuing with Normal Boot         ");
     set_color(Color::White, Color::Black);
     BootMenuSelection::NormalBoot
 }

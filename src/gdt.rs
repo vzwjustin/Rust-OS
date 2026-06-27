@@ -15,12 +15,28 @@ use x86_64::VirtAddr;
 
 /// Double fault stack index in the IST
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+/// Page fault stack index — its own aligned stack so the handler never runs on
+/// a corrupt/misaligned faulting stack (which would #GP on `movaps`).
+pub const PAGE_FAULT_IST_INDEX: u16 = 1;
+/// General-protection fault stack index — same rationale.
+pub const GENERAL_PROTECTION_IST_INDEX: u16 = 2;
 
 /// Stack size for interrupt stacks
 const STACK_SIZE: usize = 4096 * 5; // 20KB stack
 
+/// 16-byte-aligned stack storage. A bare `[u8; N]` has alignment 1, so its top
+/// can land on an 8-byte boundary — and the x86-64 ABI requires 16-byte stack
+/// alignment. A misaligned exception stack makes the compiler's `movaps`
+/// instructions #GP, turning any fault into a fatal cascade.
+#[repr(align(16))]
+struct AlignedStack([u8; STACK_SIZE]);
+
 /// Interrupt stack for double fault handler
-static mut DOUBLE_FAULT_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
+static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
+/// Dedicated stack for the page fault handler.
+static mut PAGE_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
+/// Dedicated stack for the general-protection fault handler.
+static mut GP_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 
 /// Task State Segment (mutable for stack updates)
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -77,6 +93,14 @@ pub fn init() {
             let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
             let stack_end = stack_start + STACK_SIZE;
             stack_end
+        };
+        TSS.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = {
+            let stack_start = VirtAddr::from_ptr(&raw const PAGE_FAULT_STACK);
+            stack_start + STACK_SIZE
+        };
+        TSS.interrupt_stack_table[GENERAL_PROTECTION_IST_INDEX as usize] = {
+            let stack_start = VirtAddr::from_ptr(&raw const GP_FAULT_STACK);
+            stack_start + STACK_SIZE
         };
     }
 

@@ -14,99 +14,10 @@ use alloc::{vec, vec::Vec};
 use core::arch::asm;
 use x86_64::structures::idt::InterruptStackFrame;
 
-/// System call numbers
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum SyscallNumber {
-    // Process management
-    Exit = 0,
-    Fork = 1,
-    Exec = 2,
-    Wait = 3,
-    GetPid = 4,
-    GetPpid = 5,
-    Kill = 6,
+mod linux;
 
-    // File operations
-    Open = 10,
-    Close = 11,
-    Read = 12,
-    Write = 13,
-    Seek = 14,
-    Stat = 15,
-
-    // Memory management
-    Mmap = 20,
-    Munmap = 21,
-    Brk = 22,
-    Mprotect = 23,
-
-    // Inter-process communication
-    Pipe = 30,
-    Socket = 31,
-    Bind = 32,
-    Listen = 33,
-    Accept = 34,
-    Connect = 35,
-    Send = 36,
-    Recv = 37,
-
-    // Time and scheduling
-    Sleep = 40,
-    GetTime = 41,
-    SetPriority = 42,
-    GetPriority = 43,
-    Yield = 44,
-
-    // System information
-    Uname = 50,
-    GetCwd = 51,
-    Chdir = 52,
-
-    // Invalid system call
-    Invalid = u64::MAX,
-}
-
-impl From<u64> for SyscallNumber {
-    fn from(value: u64) -> Self {
-        match value {
-            0 => SyscallNumber::Exit,
-            1 => SyscallNumber::Fork,
-            2 => SyscallNumber::Exec,
-            3 => SyscallNumber::Wait,
-            4 => SyscallNumber::GetPid,
-            5 => SyscallNumber::GetPpid,
-            6 => SyscallNumber::Kill,
-            10 => SyscallNumber::Open,
-            11 => SyscallNumber::Close,
-            12 => SyscallNumber::Read,
-            13 => SyscallNumber::Write,
-            14 => SyscallNumber::Seek,
-            15 => SyscallNumber::Stat,
-            20 => SyscallNumber::Mmap,
-            21 => SyscallNumber::Munmap,
-            22 => SyscallNumber::Brk,
-            23 => SyscallNumber::Mprotect,
-            30 => SyscallNumber::Pipe,
-            31 => SyscallNumber::Socket,
-            32 => SyscallNumber::Bind,
-            33 => SyscallNumber::Listen,
-            34 => SyscallNumber::Accept,
-            35 => SyscallNumber::Connect,
-            36 => SyscallNumber::Send,
-            37 => SyscallNumber::Recv,
-            40 => SyscallNumber::Sleep,
-            41 => SyscallNumber::GetTime,
-            42 => SyscallNumber::SetPriority,
-            43 => SyscallNumber::GetPriority,
-            44 => SyscallNumber::Yield,
-            50 => SyscallNumber::Uname,
-            51 => SyscallNumber::GetCwd,
-            52 => SyscallNumber::Chdir,
-            _ => SyscallNumber::Invalid,
-        }
-    }
-}
+/// Linux x86_64 syscall numbers (see `syscall/linux.rs`).
+pub use linux::SyscallNumber;
 
 /// System call result type
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -392,20 +303,26 @@ pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
     }
 
     match context.syscall_num {
-        // Process management
-        SyscallNumber::Exit => sys_exit(context.args[0] as i32),
+        // Process management (Linux x86_64)
+        SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit(context.args[0] as i32),
         SyscallNumber::Fork => sys_fork(),
-        SyscallNumber::Exec => sys_exec(context.args[0], context.args[1]),
+        SyscallNumber::Execve => sys_exec(context.args[0], context.args[1]),
+        SyscallNumber::Wait4 => sys_wait4(context.args[0] as i32, context.args[1]),
         SyscallNumber::GetPid => sys_getpid(),
         SyscallNumber::GetPpid => sys_getppid(),
         SyscallNumber::Kill => sys_kill(context.args[0] as Pid, context.args[1] as i32),
-        SyscallNumber::Yield => sys_yield(),
+        SyscallNumber::SchedYield => sys_yield(),
 
         // File operations
         SyscallNumber::Open => sys_open(context.args[0], context.args[1] as u32),
         SyscallNumber::Close => sys_close(context.args[0] as i32),
         SyscallNumber::Read => sys_read(context.args[0] as i32, context.args[1], context.args[2]),
         SyscallNumber::Write => sys_write(context.args[0] as i32, context.args[1], context.args[2]),
+        SyscallNumber::Lseek => sys_lseek(
+            context.args[0] as i32,
+            context.args[1] as i64,
+            context.args[2] as i32,
+        ),
 
         // Memory management
         SyscallNumber::Brk => sys_brk(context.args[0]),
@@ -418,17 +335,23 @@ pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
             context.args[5],
         ),
         SyscallNumber::Munmap => sys_munmap(context.args[0], context.args[1]),
+        SyscallNumber::Mprotect => {
+            sys_mprotect(context.args[0], context.args[1], context.args[2] as i32)
+        }
 
         // Time and scheduling
-        SyscallNumber::Sleep => sys_sleep(context.args[0]),
-        SyscallNumber::GetTime => sys_gettime(),
-        SyscallNumber::SetPriority => sys_setpriority(context.args[0] as i32),
-        SyscallNumber::GetPriority => sys_getpriority(),
+        SyscallNumber::Nanosleep => sys_nanosleep(context.args[0]),
+        SyscallNumber::Gettimeofday | SyscallNumber::ClockGettime => sys_gettime(),
+        SyscallNumber::Setpriority => sys_setpriority(context.args[0] as i32),
+        SyscallNumber::Getpriority => sys_getpriority(),
 
         // System information
         SyscallNumber::Uname => sys_uname(context.args[0]),
+        SyscallNumber::Getcwd => sys_getcwd(context.args[0], context.args[1]),
+        SyscallNumber::Chdir => sys_chdir(context.args[0]),
 
         // Unimplemented or invalid system calls
+        SyscallNumber::Invalid => Err(SyscallError::InvalidSyscall),
         _ => Err(SyscallError::NotSupported),
     }
 }
@@ -1334,9 +1257,175 @@ fn sys_mmap(
     }
 }
 
-/// Sleep for specified microseconds
+/// Sleep for specified timespec (nanosleep ABI: pointer to {sec, nsec})
+fn sys_nanosleep(req_ptr: u64) -> SyscallResult {
+    if req_ptr == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let req = SecurityValidator::copy_from_user(req_ptr, 16)?;
+    let sec = u64::from_le_bytes([
+        req[0], req[1], req[2], req[3], req[4], req[5], req[6], req[7],
+    ]);
+    let nsec = u64::from_le_bytes([
+        req[8], req[9], req[10], req[11], req[12], req[13], req[14], req[15],
+    ]);
+    let total_us = sec.saturating_mul(1_000_000).saturating_add(nsec / 1_000);
+    if total_us > 0 {
+        crate::time::sleep_us(total_us);
+    }
+    Ok(0)
+}
+
+/// wait4(pid, status*, options, rusage*) — minimal waitpid wrapper
+fn sys_wait4(pid: i32, status_ptr: u64) -> SyscallResult {
+    let process_manager = crate::process::get_process_manager();
+    let current_pid = process_manager.current_process();
+
+    let target = if pid == -1 {
+        None
+    } else if pid <= 0 {
+        return Err(SyscallError::InvalidArgument);
+    } else {
+        Some(pid as Pid)
+    };
+
+    let children: alloc::vec::Vec<Pid> = process_manager
+        .list_processes()
+        .into_iter()
+        .filter(|(child_pid, _, state, _)| {
+            if *state != crate::process::ProcessState::Zombie {
+                return false;
+            }
+            let parent = process_manager
+                .get_process(*child_pid)
+                .and_then(|p| p.parent_pid);
+            parent == Some(current_pid) && target.map_or(true, |t| t == *child_pid)
+        })
+        .map(|(child_pid, _, _, _)| child_pid)
+        .collect();
+
+    let child_pid = children.first().copied().ok_or(SyscallError::NoChild)?;
+
+    let exit_status = process_manager
+        .get_process(child_pid)
+        .and_then(|p| p.exit_code)
+        .unwrap_or(0);
+
+    if status_ptr != 0 {
+        let status = (exit_status & 0xFF) as u32;
+        SecurityValidator::copy_to_user(status_ptr, &status.to_le_bytes())?;
+    }
+
+    Ok(child_pid as u64)
+}
+
+/// lseek(fd, offset, whence)
+fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
+    SecurityValidator::validate_fd(fd)?;
+
+    if whence == 2 {
+        return Err(SyscallError::NotSupported);
+    }
+    if whence != 0 && whence != 1 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let process_manager = crate::process::get_process_manager();
+    let current_pid = process_manager.current_process();
+
+    let current = process_manager
+        .get_process(current_pid)
+        .and_then(|p| p.file_offsets.get(&(fd as u32)).copied())
+        .ok_or(SyscallError::BadFileDescriptor)? as i64;
+
+    let new_offset = match whence {
+        0 => offset,
+        1 => current + offset,
+        _ => unreachable!(),
+    };
+
+    if new_offset < 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    process_manager.with_process_mut(current_pid, |p| {
+        p.file_offsets.insert(fd as u32, new_offset as usize);
+    });
+
+    Ok(new_offset as u64)
+}
+
+/// mprotect(addr, len, prot)
+fn sys_mprotect(addr: u64, length: u64, prot: i32) -> SyscallResult {
+    if length == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let readable = (prot & 0x1) != 0;
+    let writable = (prot & 0x2) != 0;
+    let executable = (prot & 0x4) != 0;
+
+    let protection = crate::memory::MemoryProtection {
+        readable,
+        writable,
+        executable,
+        user_accessible: true,
+        cache_disabled: false,
+        write_through: false,
+        copy_on_write: false,
+        guard_page: false,
+    };
+
+    match crate::memory::protect_memory(x86_64::VirtAddr::new(addr), length as usize, protection) {
+        Ok(()) => Ok(0),
+        Err(_) => Err(SyscallError::InvalidArgument),
+    }
+}
+
+/// getcwd(buf, size)
+fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
+    if buf == 0 || size == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let process_manager = crate::process::get_process_manager();
+    let current_pid = process_manager.current_process();
+    let cwd = process_manager
+        .get_process(current_pid)
+        .map(|p| p.cwd)
+        .unwrap_or_else(|| String::from("/"));
+
+    let bytes = cwd.as_bytes();
+    if (bytes.len() + 1) as u64 > size {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let mut out = vec![0u8; bytes.len() + 1];
+    out[..bytes.len()].copy_from_slice(bytes);
+    SecurityValidator::copy_to_user(buf, &out)?;
+    Ok(buf)
+}
+
+/// chdir(path)
+fn sys_chdir(path_ptr: u64) -> SyscallResult {
+    let path = SecurityValidator::copy_string_from_user(path_ptr, 4096)?;
+
+    if crate::fs::vfs().stat(&path).is_err() {
+        return Err(SyscallError::NotFound);
+    }
+
+    let process_manager = crate::process::get_process_manager();
+    let current_pid = process_manager.current_process();
+    process_manager.with_process_mut(current_pid, |p| {
+        p.cwd = path;
+    });
+
+    Ok(0)
+}
+
+/// Sleep for specified microseconds (legacy helper)
 fn sys_sleep(microseconds: u64) -> SyscallResult {
-    // Use production sleep implementation
     let milliseconds = microseconds / 1000;
     if milliseconds > 0 {
         crate::time::sleep_ms(milliseconds);
@@ -1662,13 +1751,13 @@ pub mod userspace {
         result as isize
     }
 
-    /// Sleep for specified microseconds
+    /// Sleep for specified microseconds (via nanosleep)
     pub fn sleep(microseconds: u64) {
-        syscall!(SyscallNumber::Sleep as u64, microseconds);
+        syscall!(SyscallNumber::Nanosleep as u64, microseconds);
     }
 
     /// Yield CPU to other processes
     pub fn yield_cpu() {
-        syscall!(SyscallNumber::Yield as u64);
+        syscall!(SyscallNumber::SchedYield as u64);
     }
 }

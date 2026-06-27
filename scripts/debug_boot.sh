@@ -27,7 +27,7 @@ qemu-system-x86_64 \
     -serial stdio \
     -display cocoa \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -machine q35 \
+    -machine pc \
     -cpu Nehalem \
     -d cpu_reset -D qemu.log \
     2>&1 | tee boot_output.log

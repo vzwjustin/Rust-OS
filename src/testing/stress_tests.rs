@@ -234,8 +234,8 @@ fn test_syscall_stress() -> TestResult {
             // Make various system calls
             let syscall_types = [
                 crate::syscall::SyscallNumber::GetPid,
-                crate::syscall::SyscallNumber::GetTime,
-                crate::syscall::SyscallNumber::Yield,
+                crate::syscall::SyscallNumber::ClockGettime,
+                crate::syscall::SyscallNumber::SchedYield,
             ];
 
             let syscall_num = syscall_types[iterations % syscall_types.len()];

@@ -178,10 +178,39 @@ pub fn set_mode(width: u16, height: u16, bpp: u8) -> Result<VbeIoMode, &'static 
         width,
         height,
         bpp,
-        framebuffer_phys: QEMU_VBE_FRAMEBUFFER_PHYS,
+        framebuffer_phys: detect_framebuffer_phys(),
         pitch,
         pixel_format,
     })
+}
+
+/// Read the linear-framebuffer physical address from the display controller's
+/// BAR0. The LFB base is config-dependent (e.g. 0xFD000000 on the i440fx `pc`
+/// machine, not the legacy 0xE0000000), so hardcoding it paints into a void and
+/// the screen stays black. Falls back to the constant if PCI finds no display.
+fn detect_framebuffer_phys() -> u64 {
+    // Read config space directly — the enumerated device list isn't populated
+    // this early. Scan bus 0 for a display controller (class 0x03) and take its
+    // BAR0. ponytail: bus 0, function 0 only — covers QEMU/typical VGA.
+    let scanner = crate::pci::get_pci_scanner().lock();
+    for dev in 0u8..32 {
+        let vendor = scanner.read_config_dword(0, dev, 0, 0x00) & 0xFFFF;
+        if vendor == 0xFFFF {
+            continue;
+        }
+        let class = scanner.read_config_dword(0, dev, 0, 0x08);
+        if (class >> 24) & 0xFF == 0x03 {
+            let bar0 = scanner.read_config_dword(0, dev, 0, 0x10);
+            // Memory BAR (bit 0 clear); mask the low 4 flag bits for the address.
+            if bar0 & 0x1 == 0 {
+                let addr = (bar0 & 0xFFFF_FFF0) as u64;
+                if addr != 0 {
+                    return addr;
+                }
+            }
+        }
+    }
+    QEMU_VBE_FRAMEBUFFER_PHYS
 }
 
 pub fn disable_display() {
@@ -219,9 +248,21 @@ pub fn init_32bit_desktop(phys_mem_offset: u64) -> Result<VbeIoMode, &'static st
         raw_serial_hex(fb_size as u64);
     }
 
-    // The bootloader's map_physical_memory feature maps the entire physical
-    // address space at phys_mem_offset, so 0xE0000000 is already mapped.
-    // Test with a single write to verify.
+    // The bootloader maps RAM, not device MMIO holes, so the framebuffer at
+    // framebuffer_phys is NOT mapped — writing it faults. Map it uncached first.
+    // ponytail: identity map assumes phys_mem_offset == 0 (true for this
+    // bootloader config, where fb_virt == framebuffer_phys); revisit if the
+    // bootloader ever uses a nonzero physical-memory offset.
+    if let Err(e) = crate::memory::map_mmio_region(fb_virt as usize, fb_size) {
+        unsafe {
+            raw_serial_str("vbe_io: framebuffer map failed: ");
+            raw_serial_str(e);
+            raw_serial_str("\n");
+        }
+        return Err("framebuffer MMIO map failed");
+    }
+
+    // Verify with a single write now that the region is mapped.
     let test_ptr = fb_virt as *mut u32;
     unsafe {
         raw_serial_str("vbe_io: testing fb write...\n");

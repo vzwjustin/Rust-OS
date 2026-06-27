@@ -39,7 +39,7 @@ cmd = [
     "-serial", "stdio",
     "-display", "none",
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-machine", "q35,accel=tcg",
+    "-machine", "pc,accel=tcg",
     "-cpu", "qemu64,+apic",
     "-no-reboot",
     "-no-shutdown",

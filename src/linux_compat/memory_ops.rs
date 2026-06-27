@@ -44,6 +44,7 @@ use x86_64::{PhysAddr, VirtAddr};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::vfs;
 
 // Import memory management components
 use crate::memory_manager::{
@@ -1198,6 +1199,70 @@ pub fn move_pages(
     }
 
     Ok(0)
+}
+
+/// Helper to convert null-terminated C string to Rust string
+unsafe fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, LinuxError> {
+    if ptr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut len = 0;
+    while len < 4096 && *ptr.add(len) != 0 {
+        len += 1;
+    }
+
+    if len >= 4096 {
+        return Err(LinuxError::ENAMETOOLONG);
+    }
+
+    let slice = core::slice::from_raw_parts(ptr, len);
+    alloc::string::String::from_utf8(slice.to_vec()).map_err(|_| LinuxError::EINVAL)
+}
+
+fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
+    match err {
+        crate::vfs::VfsError::NotFound => LinuxError::ENOENT,
+        crate::vfs::VfsError::PermissionDenied => LinuxError::EACCES,
+        crate::vfs::VfsError::AlreadyExists => LinuxError::EEXIST,
+        crate::vfs::VfsError::NotDirectory => LinuxError::ENOTDIR,
+        crate::vfs::VfsError::IsDirectory => LinuxError::EISDIR,
+        crate::vfs::VfsError::InvalidArgument => LinuxError::EINVAL,
+        crate::vfs::VfsError::IoError => LinuxError::EIO,
+        crate::vfs::VfsError::NoSpace => LinuxError::ENOSPC,
+        crate::vfs::VfsError::TooManyFiles => LinuxError::EMFILE,
+        crate::vfs::VfsError::BadFileDescriptor => LinuxError::EBADF,
+        crate::vfs::VfsError::InvalidSeek => LinuxError::EINVAL,
+        crate::vfs::VfsError::NameTooLong => LinuxError::ENAMETOOLONG,
+        crate::vfs::VfsError::CrossDevice => LinuxError::EXDEV,
+        crate::vfs::VfsError::ReadOnly => LinuxError::EROFS,
+        crate::vfs::VfsError::NotSupported => LinuxError::ENOSYS,
+    }
+}
+
+/// memfd_create - create an anonymous file
+pub fn memfd_create(name: *const u8, flags: u32) -> LinuxResult<Fd> {
+    inc_ops();
+
+    let name_str = unsafe { c_str_to_string(name)? };
+    
+    // Generate a unique filename using an atomic counter
+    static MEMFD_COUNTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    let id = MEMFD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    
+    let path = alloc::format!("/tmp/memfd_{}_{}", name_str, id);
+    
+    // Open the file with CREAT and RDWR flags
+    let vfs_flags = vfs::OpenFlags::CREAT | vfs::OpenFlags::RDWR;
+    
+    match vfs::vfs_open(&path, vfs_flags, 0o600) {
+        Ok(fd) => {
+            // Optionally unlink so it's anonymous
+            let _ = vfs::vfs_unlink(&path);
+            Ok(fd)
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
 }
 
 #[cfg(any())]

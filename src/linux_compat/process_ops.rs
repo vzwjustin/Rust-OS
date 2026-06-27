@@ -5,6 +5,8 @@
 //!
 //! Integrated with RustOS process manager, scheduler, and ELF loader.
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
@@ -154,16 +156,343 @@ pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
     }
 }
 
+/// Linux auxiliary vector types (uapi/linux/auxvec.h)
+mod auxv {
+    pub const AT_NULL: u64 = 0;
+    pub const AT_PHDR: u64 = 3;
+    pub const AT_PHENT: u64 = 4;
+    pub const AT_PHNUM: u64 = 5;
+    pub const AT_PAGESZ: u64 = 6;
+    pub const AT_BASE: u64 = 7;
+    pub const AT_ENTRY: u64 = 9;
+    pub const AT_RANDOM: u64 = 25;
+}
+
+const MAX_USER_STRING: usize = 4096;
+const MAX_PTR_ARRAY: usize = 256;
+const MAX_EXEC_SIZE: usize = 16 * 1024 * 1024;
+
+/// Convert null-terminated C string from user space to Rust `String`.
+///
+/// Same validation pattern as `file_ops::c_str_to_string`.
+unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
+    if ptr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut len = 0;
+    while len < MAX_USER_STRING && *ptr.add(len) != 0 {
+        len += 1;
+    }
+
+    if len >= MAX_USER_STRING {
+        return Err(LinuxError::ENAMETOOLONG);
+    }
+
+    let slice = core::slice::from_raw_parts(ptr, len);
+    String::from_utf8(slice.to_vec()).map_err(|_| LinuxError::EINVAL)
+}
+
+/// Read a NULL-terminated array of C string pointers from user space.
+unsafe fn read_string_array(arr_ptr: *const *const u8) -> Result<Vec<String>, LinuxError> {
+    if arr_ptr.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let mut strings = Vec::new();
+    for i in 0..MAX_PTR_ARRAY {
+        let str_ptr = *arr_ptr.add(i);
+        if str_ptr.is_null() {
+            break;
+        }
+        strings.push(c_str_to_string(str_ptr)?);
+    }
+    Ok(strings)
+}
+
+fn elf_error_to_linux(err: crate::process::elf_loader::ElfLoaderError) -> LinuxError {
+    use crate::process::elf_loader::ElfLoaderError;
+    match err {
+        ElfLoaderError::MemoryAllocationFailed | ElfLoaderError::MappingFailed => {
+            LinuxError::ENOMEM
+        }
+        _ => LinuxError::ENOEXEC,
+    }
+}
+
+fn fs_error_to_linux(err: crate::fs::FsError) -> LinuxError {
+    use crate::fs::FsError;
+    match err {
+        FsError::NotFound => LinuxError::ENOENT,
+        FsError::PermissionDenied => LinuxError::EACCES,
+        FsError::NoSpaceLeft => LinuxError::ENOMEM,
+        _ => LinuxError::EIO,
+    }
+}
+
+/// Write a u64 onto the descending stack and return the new stack pointer.
+unsafe fn push_u64(sp: &mut u64, value: u64) {
+    *sp = sp.wrapping_sub(8);
+    (*sp as *mut u64).write(value);
+}
+
+/// Write a null-terminated string onto the descending stack; return its address.
+unsafe fn push_cstring(sp: &mut u64, s: &str) -> u64 {
+    let bytes = s.as_bytes();
+    *sp = sp.wrapping_sub((bytes.len() + 1) as u64);
+    let addr = *sp;
+    core::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+    (addr as *mut u8).add(bytes.len()).write(0);
+    addr
+}
+
+/// Fill 16 random bytes for AT_RANDOM (security RNG with TSC fallback).
+fn fill_random_16(buf: &mut [u8; 16]) {
+    if crate::security::get_random_bytes(buf).is_err() {
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        buf[..8].copy_from_slice(&tsc.to_le_bytes());
+        let tsc2 = unsafe { core::arch::x86_64::_rdtsc() };
+        buf[8..].copy_from_slice(&tsc2.to_le_bytes());
+    }
+}
+
+/// Compute virtual address of the program header table for auxv AT_PHDR.
+fn compute_phdr_addr(
+    loaded: &crate::process::elf_loader::LoadedBinary,
+    header: &crate::process::elf_loader::Elf64Header,
+) -> u64 {
+    use crate::process::elf_loader::elf_constants;
+    if let Some(ph) = loaded
+        .program_headers
+        .iter()
+        .find(|p| p.p_type == elf_constants::PT_PHDR)
+    {
+        loaded.base_address.as_u64() + ph.p_vaddr
+    } else {
+        loaded.base_address.as_u64() + header.e_phoff
+    }
+}
+
+/// Build the Linux x86_64 initial stack (argc/argv/envp/auxv) on `stack_top`.
+fn build_linux_initial_stack(
+    stack_top: u64,
+    argv: &[String],
+    envp: &[String],
+    loaded: &crate::process::elf_loader::LoadedBinary,
+    header: &crate::process::elf_loader::Elf64Header,
+) -> Result<u64, LinuxError> {
+    let mut sp = stack_top & !0xF;
+
+    let mut arg_addrs = Vec::with_capacity(argv.len());
+    for arg in argv.iter().rev() {
+        arg_addrs.push(unsafe { push_cstring(&mut sp, arg) });
+    }
+    arg_addrs.reverse();
+
+    let mut env_addrs = Vec::with_capacity(envp.len());
+    for env in envp.iter().rev() {
+        env_addrs.push(unsafe { push_cstring(&mut sp, env) });
+    }
+    env_addrs.reverse();
+
+    sp &= !0xF;
+
+    let mut random = [0u8; 16];
+    fill_random_16(&mut random);
+    sp = sp.wrapping_sub(16);
+    let random_addr = sp;
+    unsafe {
+        core::ptr::copy_nonoverlapping(random.as_ptr(), sp as *mut u8, 16);
+    }
+
+    let phdr_addr = compute_phdr_addr(loaded, header);
+    let auxv_entries: [(u64, u64); 8] = [
+        (auxv::AT_PAGESZ, 4096),
+        (auxv::AT_PHDR, phdr_addr),
+        (
+            auxv::AT_PHENT,
+            core::mem::size_of::<crate::process::elf_loader::Elf64ProgramHeader>() as u64,
+        ),
+        (auxv::AT_PHNUM, header.e_phnum as u64),
+        (auxv::AT_ENTRY, loaded.entry_point.as_u64()),
+        (auxv::AT_BASE, loaded.base_address.as_u64()),
+        (auxv::AT_RANDOM, random_addr),
+        (auxv::AT_NULL, 0),
+    ];
+
+    for &(tag, val) in auxv_entries.iter().rev() {
+        unsafe {
+            push_u64(&mut sp, val);
+            push_u64(&mut sp, tag);
+        }
+    }
+
+    unsafe {
+        push_u64(&mut sp, 0);
+        for &addr in env_addrs.iter().rev() {
+            push_u64(&mut sp, addr);
+        }
+
+        push_u64(&mut sp, 0);
+        for &addr in arg_addrs.iter().rev() {
+            push_u64(&mut sp, addr);
+        }
+
+        push_u64(&mut sp, argv.len() as u64);
+    }
+
+    if sp % 16 != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    Ok(sp)
+}
+
+/// Load an executable from the VFS and parse it with the ELF loader.
+fn load_executable_from_vfs(
+    path: &str,
+    pid: KernelPid,
+) -> Result<(Vec<u8>, crate::process::elf_loader::LoadedBinary), LinuxError> {
+    use crate::fs::OpenFlags;
+    use crate::process::elf_loader::ElfLoader;
+
+    let vfs = crate::fs::vfs();
+    let fd = vfs
+        .open(
+            path,
+            OpenFlags {
+                read: true,
+                write: false,
+                create: false,
+                append: false,
+                truncate: false,
+                exclusive: false,
+            },
+        )
+        .map_err(fs_error_to_linux)?;
+
+    let file_size = vfs.stat(path).map_err(fs_error_to_linux)?.size as usize;
+
+    if file_size == 0 || file_size > MAX_EXEC_SIZE {
+        let _ = vfs.close(fd);
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let mut binary_data = Vec::with_capacity(file_size);
+    binary_data.resize(file_size, 0);
+
+    match vfs.read(fd, &mut binary_data) {
+        Ok(n) if n == file_size => {}
+        _ => {
+            let _ = vfs.close(fd);
+            return Err(LinuxError::EIO);
+        }
+    }
+    let _ = vfs.close(fd);
+
+    let elf_loader = ElfLoader::new(true, true);
+    let loaded = elf_loader
+        .load_elf_binary(&binary_data, pid)
+        .map_err(elf_error_to_linux)?;
+
+    Ok((binary_data, loaded))
+}
+
+/// Apply a loaded ELF image and initial stack to the process PCB.
+fn apply_loaded_binary(
+    pid: KernelPid,
+    loaded: &crate::process::elf_loader::LoadedBinary,
+    rsp: u64,
+    program_name: &str,
+) -> Result<(), LinuxError> {
+    use crate::process::ProcessState;
+
+    let process_manager = process::get_process_manager();
+    process_manager
+        .with_process_mut(pid, |pcb| {
+            pcb.memory.code_start = loaded.base_address.as_u64();
+            pcb.memory.code_size = loaded.code_regions.iter().map(|r| r.size as u64).sum();
+            pcb.memory.data_start = loaded
+                .data_regions
+                .first()
+                .map(|r| r.start.as_u64())
+                .unwrap_or(0);
+            pcb.memory.data_size = loaded.data_regions.iter().map(|r| r.size as u64).sum();
+            pcb.memory.heap_start = loaded.heap_start.as_u64();
+            pcb.memory.heap_size = 8 * 1024;
+            pcb.memory.stack_start = loaded.stack_top.as_u64().saturating_sub(8 * 1024 * 1024);
+            pcb.memory.stack_size = 8 * 1024 * 1024;
+
+            pcb.entry_point = loaded.entry_point.as_u64();
+            pcb.context.rip = loaded.entry_point.as_u64();
+            pcb.context.rsp = rsp;
+            pcb.context.rax = 0;
+            pcb.context.rbx = 0;
+            pcb.context.rcx = 0;
+            pcb.context.rdx = 0;
+            pcb.context.rsi = 0;
+            pcb.context.rdi = 0;
+            pcb.context.rbp = rsp;
+
+            pcb.state = ProcessState::Ready;
+            pcb.cpu_time = 0;
+
+            pcb.file_descriptors.retain(|&fd, _| fd <= 2);
+            pcb.file_offsets.retain(|&fd, _| fd <= 2);
+            pcb.signal_handlers.clear();
+
+            let name_bytes = program_name.as_bytes();
+            let copy_len = core::cmp::min(name_bytes.len(), pcb.name.len().saturating_sub(1));
+            pcb.name = [0u8; 32];
+            pcb.name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+        })
+        .ok_or(LinuxError::ESRCH)
+}
+
 /// execve - execute program (Linux-compatible syscall interface)
 pub fn execve(
-    _filename: *const u8,
-    _argv: *const *const u8,
-    _envp: *const *const u8,
+    filename: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
-    // TODO: Parse filename, argv, envp and call exec()
-    // For now, return ENOSYS
-    Err(LinuxError::ENOSYS)
+
+    use crate::process::elf_loader::Elf64Header;
+
+    let path = unsafe { c_str_to_string(filename)? };
+    if path.is_empty() {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let argv_strings = unsafe { read_string_array(argv)? };
+    let envp_strings = unsafe { read_string_array(envp)? };
+
+    let pid = process::current_pid();
+
+    let (binary_data, loaded) = load_executable_from_vfs(&path, pid)?;
+
+    if binary_data.len() < core::mem::size_of::<Elf64Header>() {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let header = unsafe { core::ptr::read(binary_data.as_ptr() as *const Elf64Header) };
+
+    let rsp = build_linux_initial_stack(
+        loaded.stack_top.as_u64(),
+        &argv_strings,
+        &envp_strings,
+        &loaded,
+        &header,
+    )?;
+
+    let prog_name = argv_strings
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or(path.as_str());
+
+    apply_loaded_binary(pid, &loaded, rsp, prog_name)?;
+
+    Ok(0)
 }
 
 /// wait4 - wait for process to change state (Linux-compatible syscall interface)
@@ -769,6 +1098,60 @@ pub fn times(buf: *mut u8) -> LinuxResult<i64> {
     let uptime_ms = process::get_system_time();
     let clock_ticks = uptime_ms / 10; // Assume 100Hz clock
     Ok(clock_ticks as i64)
+}
+
+/// execveat - execute program relative to a directory fd
+pub fn execveat(
+    dirfd: Fd,
+    pathname: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+    flags: i32,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    let path_str = unsafe { c_str_to_string(pathname)? };
+    if path_str.is_empty() {
+        return Err(LinuxError::EINVAL);
+    }
+
+    // If pathname is absolute or dirfd is AT_FDCWD, delegate to execve
+    if path_str.starts_with('/') || dirfd == -100 { // AT_FDCWD is -100
+        return execve(pathname, argv, envp);
+    }
+
+    // Otherwise, verify dirfd is a directory
+    match crate::vfs::vfs_fstat(dirfd) {
+        Ok(stat) => {
+            if stat.inode_type != crate::vfs::InodeType::Directory {
+                return Err(LinuxError::ENOTDIR);
+            }
+        }
+        Err(_) => return Err(LinuxError::EBADF),
+    }
+
+    // Construct full path relative to CWD (as done in openat)
+    let pid = process::current_pid();
+    let cwd = process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| pcb.cwd.clone())
+        .ok_or(LinuxError::ESRCH)?;
+
+    let full_path = if cwd.ends_with('/') {
+        alloc::format!("{}{}", cwd, path_str)
+    } else {
+        alloc::format!("{}/{}", cwd, path_str)
+    };
+
+    // Allocate c-string for full_path
+    let full_path_raw = alloc::format!("{}\0", full_path);
+    execve(full_path_raw.as_ptr(), argv, envp)
+}
+
+/// vfork - create child process and block parent
+pub fn vfork() -> LinuxResult<Pid> {
+    inc_ops();
+    fork()
 }
 
 #[cfg(any())]

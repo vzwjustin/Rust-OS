@@ -952,6 +952,21 @@ pub fn init() -> NetworkResult<()> {
     };
     NETWORK_STACK.add_route(loopback_route)?;
 
+    // Load hardware NIC drivers via PCI scanning
+    match crate::drivers::network::init_global_network_drivers() {
+        Ok(()) => {
+            if let Some(mgr) = crate::drivers::network::get_network_driver_manager() {
+                let drivers = mgr.list_drivers();
+                for (id, name, dtype) in drivers.iter() {
+                    crate::serial_println!("net: driver #{} '{}' ({:?})", id, name, dtype);
+                }
+            }
+        }
+        Err(e) => {
+            crate::serial_println!("net: hardware driver load failed: {:?}", e);
+        }
+    }
+
     Ok(())
 }
 

@@ -300,6 +300,26 @@ fn boot_info_summary(boot_info: &BootInfo) -> (u64, u64, usize) {
 }
 
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    // Enable SSE before ANY other kernel code. rustc emits SSE (`xorps`/`movaps`)
+    // to zero stack buffers even in plain integer functions, so the first such
+    // function (early_serial_write_u64) executes an SSE op. The bootloader hands
+    // off with SSE disabled, so without this the first SSE instruction raises #UD
+    // and — with no IDT yet — escalates to a triple fault. Raw asm only (no SSE).
+    // SAFETY: writing CR0/CR4 to enable SSE per the x86_64 spec.
+    unsafe {
+        core::arch::asm!(
+            "mov rax, cr0",
+            "and ax, 0xFFFB",       // clear CR0.EM (no FPU emulation)
+            "or ax, 0x2",           // set CR0.MP (monitor coprocessor)
+            "mov cr0, rax",
+            "mov rax, cr4",
+            "or ax, 0x600",         // set CR4.OSFXSR | CR4.OSXMMEXCPT
+            "mov cr4, rax",
+            out("rax") _,
+            options(nostack, preserves_flags),
+        );
+    }
+
     // Initialize early serial output for debugging
     // SAFETY: Raw I/O to COM1 for early logging. See docs/SAFETY.md#io-port-access.
     unsafe {
@@ -418,7 +438,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_str("RustOS: Starting hardware detection...\r\n");
     }
     let hardware_result = boot_ui::hardware_detection_progress();
-    // SAFETY: Debug output
     unsafe {
         early_serial_write_str("RustOS: Hardware detection done\r\n");
     }
@@ -483,6 +502,58 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // SAFETY: Debug output
     unsafe {
         early_serial_write_str("RustOS: Memory management done\r\n");
+    }
+
+    // Initialize the full paging-based memory manager (frame allocator + page table manager).
+    // boot_ui::memory_init_progress only analyzes the memory map; this sets up the actual
+    // paging infrastructure needed by map_user_page, protect_user_page, mmap, brk, etc.
+    unsafe {
+        early_serial_write_str("RustOS: Initializing paging memory manager...\r\n");
+    }
+    match memory::init_memory_management(
+        boot_info.memory_map.iter().as_slice(),
+        Some(phys_mem_offset),
+    ) {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
+        },
+        Err(e) => unsafe {
+            let msg = match e {
+                memory::MemoryError::OutOfMemory => "Out of physical memory",
+                memory::MemoryError::MappingFailed => "Failed to map virtual memory",
+                memory::MemoryError::HeapInitFailed => "Heap initialization failed",
+                memory::MemoryError::InvalidAddress => "Invalid address",
+                _ => "Other memory error",
+            };
+            early_serial_write_str("RustOS: Paging memory manager init FAILED: ");
+            early_serial_write_str(msg);
+            early_serial_write_str("\r\n");
+        },
+    }
+
+    // Initialize the virtual memory manager (mmap/brk/mprotect support).
+    unsafe {
+        early_serial_write_str("RustOS: Initializing virtual memory manager...\r\n");
+    }
+    match memory_manager::init_virtual_memory(physical_memory_offset) {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: Virtual memory manager initialized\r\n");
+        },
+        Err(_) => unsafe {
+            early_serial_write_str("RustOS: Virtual memory manager init FAILED\r\n");
+        },
+    }
+
+    // Runtime proof that user-page mapping actually backs frames (brk/mmap path).
+    match memory::selftest_user_paging() {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: user-paging self-test PASSED\r\n");
+        },
+        Err(e) => unsafe {
+            early_serial_write_str("RustOS: user-paging self-test FAILED: ");
+            early_serial_write_str(e);
+            early_serial_write_str("\r\n");
+        },
     }
 
     // ========================================================================
@@ -625,6 +696,47 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // ========================================================================
     // PHASE 8: File System Mount
     // ========================================================================
+    // Initialize process management and scheduler before filesystem/Linux init.
+    unsafe {
+        early_serial_write_str("RustOS: Initializing process manager...\r\n");
+    }
+    match process::init() {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: Process manager initialized\r\n");
+        },
+        Err(e) => unsafe {
+            early_serial_write_str("RustOS: Process manager init FAILED: ");
+            early_serial_write_str(e);
+            early_serial_write_str("\r\n");
+        },
+    }
+    unsafe {
+        early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+    }
+    match scheduler::init() {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: Scheduler initialized\r\n");
+        },
+        Err(e) => unsafe {
+            early_serial_write_str("RustOS: Scheduler init FAILED: ");
+            early_serial_write_str(e);
+            early_serial_write_str("\r\n");
+        },
+    }
+    unsafe {
+        early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
+    }
+    match security::init() {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: Security subsystem initialized\r\n");
+        },
+        Err(e) => unsafe {
+            early_serial_write_str("RustOS: Security init FAILED: ");
+            early_serial_write_str(e);
+            early_serial_write_str("\r\n");
+        },
+    }
+
     unsafe {
         early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n");
     }
@@ -640,6 +752,15 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     interrupts::enable_timer_interrupt();
     unsafe {
         early_serial_write_str("RustOS: Timer interrupt enabled\r\n");
+    }
+
+    // Initialize Linux compatibility layer (file_ops, process_ops, etc.)
+    unsafe {
+        early_serial_write_str("RustOS: Initializing Linux compatibility layer...\r\n");
+    }
+    linux_compat::init_linux_compat();
+    unsafe {
+        early_serial_write_str("RustOS: Linux compatibility layer initialized\r\n");
     }
 
     // Initialize Linux integration layer
@@ -682,74 +803,50 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_str("RustOS: Starting Phase 9 - Graphics init\r\n");
     }
 
-    // Try VBE I/O port mode setting for native 32-bit framebuffer
     let mut graphics_result = boot_ui::GraphicsInitResult::new();
-    let mut vbe_io_mode: Option<drivers::vbe_io::VbeIoMode> = None;
+    let mut display_driver_ready = false;
 
     let boot_config = boot_ui::boot_config();
     if !boot_config.force_text_mode && !boot_config.safe_mode {
         boot_ui::begin_stage(boot_ui::BootStage::GraphicsInit, 3);
-        boot_ui::update_substage(1, "Detecting VBE display...");
+        boot_ui::update_substage(1, "Detecting display controller...");
 
         unsafe {
-            early_serial_write_str("RustOS: Trying VBE I/O port mode...\r\n");
+            early_serial_write_str("RustOS: Initializing display driver\r\n");
         }
-        match drivers::vbe_io::init_32bit_desktop(phys_mem_offset) {
+
+        match drivers::display::init(phys_mem_offset) {
             Ok(mode) => {
-                let fb_virt = (phys_mem_offset + mode.framebuffer_phys) as *mut u8;
                 crate::serial_println!(
-                    "VBE I/O: {}x{}x{} fb_virt=0x{:016X}",
+                    "display: {}x{}x{} initialized",
                     mode.width,
                     mode.height,
-                    mode.bpp,
-                    fb_virt as usize
+                    mode.bpp
                 );
+                graphics_result.framebuffer_ready = true;
+                graphics_result.width = mode.width;
+                graphics_result.height = mode.height;
+                graphics_result.bpp = mode.bpp as u16;
+                graphics_result.output_verified = true;
+                display_driver_ready = true;
 
+                boot_ui::update_substage(2, "Loading font renderer...");
+                boot_ui::report_success("Bitmap font renderer ready");
+
+                boot_ui::update_substage(3, "Verifying display output...");
+                boot_ui::report_success("Display output verified");
+
+                boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
                 unsafe {
-                    early_serial_write_str("RustOS: VBE ok, calling init_graphics_from_raw\r\n");
-                }
-                match crate::graphics::init_graphics_from_raw(
-                    fb_virt,
-                    mode.width as usize,
-                    mode.height as usize,
-                    mode.pixel_format,
-                ) {
-                    Ok(()) => {
-                        unsafe {
-                            early_serial_write_str(
-                                "RustOS: init_graphics_from_raw ok, clearing screen\r\n",
-                            );
-                        }
-                        graphics_result.framebuffer_ready = true;
-                        graphics_result.width = mode.width as usize;
-                        graphics_result.height = mode.height as usize;
-                        graphics_result.bpp = mode.bpp as u16;
-                        graphics_result.output_verified = true;
-                        vbe_io_mode = Some(mode);
-
-                        // Clear screen with dark background
-                        crate::graphics::framebuffer::clear_screen(crate::graphics::Color::rgb(
-                            28, 34, 54,
-                        ));
-                        unsafe {
-                            early_serial_write_str("RustOS: clear_screen done\r\n");
-                        }
-
-                        boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
-                        unsafe {
-                            early_serial_write_str("RustOS: VBE I/O graphics init success\r\n");
-                        }
-                    }
-                    Err(e) => {
-                        crate::serial_println!("VBE I/O: framebuffer init failed: {}", e);
-                        boot_ui::report_warning("Graphics", "VBE framebuffer init failed");
-                        boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
-                    }
+                    early_serial_write_str("RustOS: Display driver init success\r\n");
                 }
             }
             Err(e) => {
-                crate::serial_println!("VBE I/O: init failed: {}", e);
-                boot_ui::report_warning("Graphics", "VBE I/O not available");
+                crate::serial_println!("display: init failed: {}", e);
+                boot_ui::report_warning(
+                    "Graphics",
+                    "Display driver init failed, trying bootloader FB",
+                );
                 boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
             }
         }
@@ -758,20 +855,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     if !graphics_result.framebuffer_ready {
         // Fall back to existing graphics init (checks bootloader framebuffer, then text mode)
         graphics_result = boot_ui::graphics_init_progress();
-    } else if let Some(ref mode) = vbe_io_mode {
+    } else if display_driver_ready {
         crate::serial_println!(
-            "VBE I/O: Desktop mode active {}x{}x{}",
-            mode.width,
-            mode.height,
-            mode.bpp
+            "display: driver ready {}x{}x{}",
+            graphics_result.width,
+            graphics_result.height,
+            graphics_result.bpp
         );
     }
     unsafe {
         early_serial_write_str("RustOS: Phase 9 complete\r\n");
     }
 
-    // Render graphical boot progress if framebuffer is ready (skip for VBE I/O to avoid heap issues)
-    if graphics_result.framebuffer_ready && vbe_io_mode.is_none() {
+    // Render graphical boot progress if framebuffer is ready
+    if graphics_result.framebuffer_ready {
         boot_ui::render_graphical_boot_progress();
     }
 
@@ -784,8 +881,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // PHASE 10: Desktop Environment Initialization
     // ========================================================================
     let desktop_result = if use_graphics_desktop {
-        if vbe_io_mode.is_some() {
-            // VBE I/O path: init desktop directly without boot_ui overhead
+        if display_driver_ready {
+            // Display driver path: init desktop directly without boot_ui overhead
             unsafe {
                 early_serial_write_str("RustOS: Setting up desktop (VBE path)\r\n");
             }
@@ -845,7 +942,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_u64(boot_time);
         early_serial_write_str("ms\r\n");
     }
-    if vbe_io_mode.is_none() {
+    if !display_driver_ready {
         boot_ui::boot_complete_summary();
     }
     boot_display::show_boot_complete(boot_time);
@@ -856,19 +953,19 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // Brief pause before transitioning to desktop
-    if vbe_io_mode.is_none() {
+    if !display_driver_ready {
         boot_ui::boot_delay_medium();
     }
 
     // Render graphical boot complete screen (skip for VBE I/O)
-    if graphics_result.framebuffer_ready && vbe_io_mode.is_none() {
+    if graphics_result.framebuffer_ready && !display_driver_ready {
         boot_ui::render_graphical_boot_complete();
     }
 
     // ========================================================================
     // Transition to Desktop Environment
     // ========================================================================
-    if vbe_io_mode.is_none() {
+    if !display_driver_ready {
         boot_ui::transition_to_desktop();
     }
 
@@ -1456,8 +1553,8 @@ fn modern_desktop_main_loop() -> ! {
             desktop::process_desktop_events();
         }
 
-        // Update desktop state periodically
-        if update_counter.is_multiple_of(10_000) {
+        // Update desktop state periodically (clock, stats, file listings)
+        if update_counter.is_multiple_of(500) {
             desktop::update_desktop();
         }
 
@@ -1762,44 +1859,56 @@ pub extern "C" fn rust_main() -> ! {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    use crate::error::{ErrorContext, ErrorSeverity, KernelError, SystemError, ERROR_MANAGER};
-
-    // Create error context for panic
-    let location = if let Some(loc) = info.location() {
-        alloc::format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
-    } else {
-        "unknown location".to_string()
-    };
-
-    let message = alloc::format!("{}", info.message());
-
-    let error_context = ErrorContext::new(
-        KernelError::System(SystemError::InternalError),
-        ErrorSeverity::Fatal,
-        "panic_handler",
-        alloc::format!("KERNEL PANIC: {} at {}", message, location),
-    );
-
-    // Try to handle the fatal error gracefully
-    if let Some(mut manager) = ERROR_MANAGER.try_lock() {
-        let _ = manager.handle_error(error_context);
-    } else {
-        // Fallback if error manager is not available
-        println!();
-        println!("🚨 KERNEL PANIC!");
-        println!("Message: {}", message);
-        println!("Location: {}", location);
-        println!("System halted.");
-
-        loop {
-            // SAFETY: Halt loop in a fatal path. See docs/SAFETY.md#halt-loop.
-            unsafe {
-                core::arch::asm!("hlt");
+    // Write to serial first — this works without heap or any initialization.
+    // SAFETY: Raw I/O to COM1 for panic diagnostics. See docs/SAFETY.md#io-port-access.
+    unsafe {
+        init_early_serial();
+        early_serial_write_str("\r\nRustOS: KERNEL PANIC!\r\n");
+        if let Some(loc) = info.location() {
+            early_serial_write_str("  at ");
+            early_serial_write_str(loc.file());
+            early_serial_write_bytes(b":");
+            early_serial_write_u64(loc.line() as u64);
+            early_serial_write_bytes(b":");
+            early_serial_write_u64(loc.column() as u64);
+            early_serial_write_bytes(b"\r\n");
+        }
+        early_serial_write_str("  msg: ");
+        use core::fmt::Write as _;
+        struct SerialWriter;
+        impl core::fmt::Write for SerialWriter {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                for byte in s.bytes() {
+                    unsafe {
+                        early_serial_write_byte(byte);
+                    }
+                }
+                Ok(())
             }
         }
+        let _ = write!(SerialWriter, "{}", info.message());
+        early_serial_write_bytes(b"\r\n");
+        early_serial_write_str("RustOS: System halted.\r\n");
     }
 
-    // This should never be reached due to handle_error for Fatal errors
+    // If heap is available, try the full error handler path.
+    if let Some(mut manager) = crate::error::ERROR_MANAGER.try_lock() {
+        use crate::error::{ErrorContext, ErrorSeverity, KernelError, SystemError};
+        let location = if let Some(loc) = info.location() {
+            alloc::format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+        } else {
+            "unknown location".to_string()
+        };
+        let message = alloc::format!("{}", info.message());
+        let error_context = ErrorContext::new(
+            KernelError::System(SystemError::InternalError),
+            ErrorSeverity::Fatal,
+            "panic_handler",
+            alloc::format!("KERNEL PANIC: {} at {}", message, location),
+        );
+        let _ = manager.handle_error(error_context);
+    }
+
     loop {
         // SAFETY: Halt loop in a fatal path. See docs/SAFETY.md#halt-loop.
         unsafe {

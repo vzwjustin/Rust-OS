@@ -703,6 +703,14 @@ fn configure_display_controller(
     info: &FramebufferInfo,
     double_buffered: bool,
 ) -> Result<(), &'static str> {
+    // No-op: these routines program fake "Intel graphics" registers at
+    // 0xFED00000 — which is actually the HPET timer, not a GPU — so they write
+    // garbage to unmapped MMIO and triple-fault. The real framebuffer is set up
+    // by the VBE/std-VGA path; there is no discrete GPU to program here.
+    // ponytail: re-enable per-vendor only behind a real detected GPU + its BAR.
+    let _ = (info, double_buffered);
+    return Ok(());
+    #[allow(unreachable_code)]
     // Configure display timing and resolution
     configure_display_timing(info.width, info.height)?;
 
@@ -875,37 +883,15 @@ fn enable_hardware_acceleration(info: &FramebufferInfo) -> Result<(), &'static s
     Ok(())
 }
 
-/// Initialize 2D acceleration engine
+/// Initialize the 2D engine.
+///
+/// On a linear-framebuffer device (QEMU std-VGA, and most simple framebuffers)
+/// there is no separate blitter to program — the "2D engine" is this module's
+/// own software fill/blit/copy operating directly on the mapped framebuffer.
+/// The previous version programmed registers at 0xFED00000, which is the HPET
+/// timer, not a GPU, and triple-faulted. Real per-vendor blitters belong behind
+/// a detected GPU and its actual BAR; until then, software 2D is the engine.
 fn initialize_2d_engine() -> Result<(), &'static str> {
-    unsafe {
-        let gfx_base = 0xFED00000u64 as *mut u32;
-        if !gfx_base.is_null() {
-            // Reset 2D engine
-            core::ptr::write_volatile(gfx_base.add(0x08), 0x01);
-
-            // Wait for reset completion
-            let mut timeout = 1000;
-            while timeout > 0 {
-                let status = core::ptr::read_volatile(gfx_base.add(0x0C));
-                if (status & 0x01) == 0 {
-                    break;
-                }
-                timeout -= 1;
-                for _ in 0..100 {
-                    core::hint::spin_loop();
-                }
-            }
-
-            if timeout == 0 {
-                return Err("2D engine reset timeout");
-            }
-
-            // Configure 2D engine settings
-            core::ptr::write_volatile(gfx_base.add(0x10), 0x00000001); // Enable 2D engine
-            core::ptr::write_volatile(gfx_base.add(0x14), 0x00000000); // Clear interrupt status
-        }
-    }
-
     Ok(())
 }
 
@@ -1114,22 +1100,15 @@ fn update_display_start_address(framebuffer_addr: u64) {
     }
 }
 
-/// Submit present command to GPU
-fn submit_present_command(framebuffer_addr: u64) {
-    // This would interface with the GPU driver to submit a present command
-    // For now, we'll update a hypothetical GPU register
-
-    unsafe {
-        // Write to GPU present register (hardware-specific address)
-        let gpu_present_reg = 0xFED00000u64 as *mut u64; // Example GPU register address
-        if !gpu_present_reg.is_null() {
-            // Validate the address is in a reasonable range for GPU registers
-            if (gpu_present_reg as u64) >= 0xFE000000 && (gpu_present_reg as u64) < 0xFF000000 {
-                core::ptr::write_volatile(gpu_present_reg, framebuffer_addr);
-            }
-        }
-    }
-}
+/// Submit a present command.
+///
+/// A linear framebuffer (std-VGA and friends) is scanned out continuously by
+/// the display engine — pixels written to the mapped framebuffer are visible
+/// immediately, so there is no "present" register to poke. The old code wrote
+/// the framebuffer address to 0xFED00000 (the HPET timer, not a GPU) every
+/// frame and page-faulted. Real ring-buffer presents belong behind a detected
+/// GPU; here, present is a no-op.
+fn submit_present_command(_framebuffer_addr: u64) {}
 
 #[cfg(test)]
 mod tests {
@@ -1706,18 +1685,9 @@ pub struct HardwareCapabilities {
 }
 
 fn detect_2d_acceleration() -> bool {
-    // Check for 2D acceleration hardware
-    unsafe {
-        let gfx_base = 0xFED00000u64 as *mut u32;
-        if !gfx_base.is_null() {
-            // Try to read a known register
-            let device_id = core::ptr::read_volatile(gfx_base.add(0x02));
-            // Check if it's a known graphics device ID
-            matches!(device_id & 0xFFFF, 0x8086 | 0x10DE | 0x1002) // Intel, NVIDIA, AMD
-        } else {
-            false
-        }
-    }
+    // Software-rendered linear framebuffer: no hardware blitter to probe.
+    // (The old code read a "device id" at 0xFED00000 — the HPET, not a GPU.)
+    false
 }
 
 fn detect_3d_acceleration() -> bool {
@@ -1730,72 +1700,24 @@ fn detect_3d_acceleration() -> bool {
 }
 
 fn detect_hardware_cursor() -> bool {
-    // Check for hardware cursor support
-    unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            // Check cursor control register
-            let cursor_control = core::ptr::read_volatile(display_base.add(0x70080 / 4));
-            (cursor_control & 0x80000000) != 0 // Cursor available bit
-        } else {
-            false
-        }
-    }
+    // No hardware cursor plane on a plain framebuffer — the desktop draws a
+    // software cursor. (Old code probed 0xFED00000, the HPET.)
+    false
 }
 
 fn detect_max_resolution() -> (usize, usize) {
-    // Detect maximum supported resolution
-    unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            // Read maximum resolution from hardware registers
-            let max_h = core::ptr::read_volatile(display_base.add(0x70100 / 4)) & 0xFFFF;
-            let max_v = core::ptr::read_volatile(display_base.add(0x70104 / 4)) & 0xFFFF;
-
-            if max_h > 0 && max_v > 0 {
-                (max_h as usize, max_v as usize)
-            } else {
-                (3840, 2160) // Default to 4K if detection fails
-            }
-        } else {
-            (1920, 1080) // Default to Full HD
-        }
-    }
+    // Bochs/std-VGA VBE comfortably supports Full HD; report it as the ceiling
+    // without probing phantom GPU registers.
+    (1920, 1080)
 }
 
 fn detect_supported_formats() -> Vec<PixelFormat> {
+    // The framebuffer is a software surface; we render these formats directly.
     let mut formats = Vec::new();
-
-    // Check which pixel formats are supported by hardware
-    unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            let format_support = core::ptr::read_volatile(display_base.add(0x70108 / 4));
-
-            if (format_support & 0x01) != 0 {
-                formats.push(PixelFormat::RGB555);
-            }
-            if (format_support & 0x02) != 0 {
-                formats.push(PixelFormat::RGB565);
-            }
-            if (format_support & 0x04) != 0 {
-                formats.push(PixelFormat::RGB888);
-            }
-            if (format_support & 0x08) != 0 {
-                formats.push(PixelFormat::RGBA8888);
-            }
-            if (format_support & 0x10) != 0 {
-                formats.push(PixelFormat::BGRA8888);
-            }
-        }
-    }
-
-    // Ensure we always support at least basic formats
-    if formats.is_empty() {
-        formats.push(PixelFormat::RGB565);
-        formats.push(PixelFormat::RGBA8888);
-    }
-
+    formats.push(PixelFormat::RGB565);
+    formats.push(PixelFormat::RGB888);
+    formats.push(PixelFormat::RGBA8888);
+    formats.push(PixelFormat::BGRA8888);
     formats
 }
 

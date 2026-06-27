@@ -4,6 +4,7 @@
 //! and event handling for the RustOS kernel.
 
 use crate::graphics::framebuffer::{Color, Rect};
+use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_readdir, InodeType, OpenFlags};
 use alloc::format;
 use core::cmp::{max, min};
 use heapless::{String as HString, Vec};
@@ -11,6 +12,8 @@ use heapless::{String as HString, Vec};
 /// Maximum lines of text content per window
 pub const MAX_CONTENT_LINES: usize = 32;
 pub const MAX_SHELL_LINES: usize = 12;
+pub const MAX_FM_ENTRIES: usize = 24;
+pub const MAX_MONITOR_LINES: usize = 16;
 /// Size of the resize handle in the bottom-right corner
 pub const RESIZE_HANDLE_SIZE: usize = 12;
 
@@ -18,56 +21,84 @@ pub const RESIZE_HANDLE_SIZE: usize = 12;
 pub const MAX_WINDOWS: usize = 64;
 
 /// Default window title bar height
-pub const TITLE_BAR_HEIGHT: usize = 24;
+pub const TITLE_BAR_HEIGHT: usize = 28;
 
 /// Default window border width
-pub const BORDER_WIDTH: usize = 2;
+pub const BORDER_WIDTH: usize = 1;
 
-/// Linux-style shell chrome dimensions.
+/// Linux-style shell chrome dimensions (GNOME-like top panel + left launcher).
 pub const MENU_BAR_HEIGHT: usize = 30;
 pub const DOCK_HEIGHT: usize = 64;
 pub const DOCK_ICON_SIZE: usize = 42;
 pub const DOCK_ICON_GAP: usize = 10;
 pub const DOCK_ICON_COUNT: usize = 6;
 pub const WINDOW_SHADOW_MARGIN: usize = 6;
-pub const TRAFFIC_LIGHT_RADIUS: usize = 6;
-pub const TRAFFIC_LIGHT_SPACING: usize = 14;
+pub const FM_ROW_HEIGHT: usize = 18;
 
 /// Minimum window size
 pub const MIN_WINDOW_WIDTH: usize = 200;
 pub const MIN_WINDOW_HEIGHT: usize = 150;
 
+/// Context menu constants
+pub const MENU_ITEM_HEIGHT: usize = 22;
+pub const MENU_ITEM_PADDING: usize = 12;
+pub const MENU_MIN_WIDTH: usize = 140;
+pub const MENU_BORDER_WIDTH: usize = 1;
+
+/// Snap zone size — how close to an edge before snapping engages
+pub const SNAP_ZONE: usize = 8;
+
+/// Number of virtual workspaces
+pub const WORKSPACE_COUNT: usize = 4;
+
 /// Desktop colors
 pub mod colors {
     use crate::graphics::framebuffer::Color;
 
-    pub const DESKTOP_BACKGROUND_TOP: Color = Color::rgb(46, 29, 48);
-    pub const DESKTOP_BACKGROUND_BOTTOM: Color = Color::rgb(82, 42, 36);
-    pub const DESKTOP_GLOW: Color = Color::rgb(184, 85, 44);
-    pub const MENU_BAR_BACKGROUND: Color = Color::rgb(31, 31, 36);
-    pub const MENU_BAR_HIGHLIGHT: Color = Color::rgb(68, 68, 76);
-    pub const MENU_BAR_ACCENT: Color = Color::rgb(18, 18, 22);
-    pub const MENU_BAR_ICON: Color = Color::rgb(238, 238, 238);
+    // Modern system-desktop theme: blue true-color wallpaper, graphite chrome,
+    // and a Windows/macOS/Linux-style active blue accent instead of flat gray.
+    pub const DESKTOP_BACKGROUND_TOP: Color = Color::rgb(28, 113, 191);
+    pub const DESKTOP_BACKGROUND_BOTTOM: Color = Color::rgb(14, 22, 38);
+    pub const DESKTOP_GLOW: Color = Color::rgb(95, 197, 255);
+    pub const MENU_BAR_BACKGROUND: Color = Color::rgb(24, 27, 34);
+    pub const MENU_BAR_TOP: Color = Color::rgb(48, 55, 68);
+    pub const MENU_BAR_BOTTOM: Color = Color::rgb(22, 25, 32);
+    pub const DOCK_TOP: Color = Color::rgb(50, 57, 70);
+    pub const DOCK_BOTTOM: Color = Color::rgb(18, 22, 30);
+    pub const TITLE_ACTIVE_TOP: Color = Color::rgb(33, 150, 243);
+    pub const TITLE_ACTIVE_BOTTOM: Color = Color::rgb(0, 103, 184);
+    pub const MENU_BAR_HIGHLIGHT: Color = Color::rgb(64, 72, 88);
+    pub const MENU_BAR_ACCENT: Color = Color::rgb(12, 15, 22);
+    pub const MENU_BAR_ICON: Color = Color::rgb(244, 247, 252);
     pub const DESKTOP_BACKGROUND: Color = DESKTOP_BACKGROUND_TOP;
-    pub const WINDOW_BACKGROUND: Color = Color::rgb(248, 250, 255);
-    pub const WINDOW_SHADOW: Color = Color::rgb(12, 15, 24);
-    pub const TITLE_BAR_ACTIVE: Color = Color::rgb(48, 48, 54);
-    pub const TITLE_BAR_INACTIVE: Color = Color::rgb(62, 62, 68);
-    pub const BORDER_ACTIVE: Color = Color::rgb(230, 99, 41);
-    pub const BORDER_INACTIVE: Color = Color::rgb(94, 94, 102);
-    pub const TEXT_COLOR: Color = Color::rgb(0, 0, 0);
-    pub const TEXT_COLOR_WHITE: Color = Color::rgb(255, 255, 255);
-    pub const BUTTON_BACKGROUND: Color = Color::rgb(235, 236, 240);
-    pub const BUTTON_HOVER: Color = Color::rgb(210, 212, 218);
-    pub const BUTTON_PRESSED: Color = Color::rgb(188, 190, 198);
-    pub const DOCK_BACKGROUND: Color = Color::rgb(34, 34, 40);
-    pub const DOCK_GLASS: Color = Color::rgb(42, 42, 48);
-    pub const DOCK_HIGHLIGHT: Color = Color::rgb(76, 76, 84);
-    pub const DOCK_ICON_ACCENT: Color = Color::rgb(230, 99, 41);
-    pub const DOCK_INDICATOR: Color = Color::rgb(245, 245, 245);
-    pub const TRAFFIC_LIGHT_RED: Color = Color::rgb(218, 76, 50);
-    pub const TRAFFIC_LIGHT_YELLOW: Color = Color::rgb(120, 120, 128);
-    pub const TRAFFIC_LIGHT_GREEN: Color = Color::rgb(120, 120, 128);
+    pub const WINDOW_BACKGROUND: Color = Color::rgb(247, 249, 253);
+    pub const WINDOW_SURFACE_TOP: Color = Color::rgb(255, 255, 255);
+    pub const WINDOW_SURFACE_BOTTOM: Color = Color::rgb(233, 238, 247);
+    pub const WINDOW_SURFACE_ALT: Color = Color::rgb(242, 246, 252);
+    pub const WINDOW_SHADOW: Color = Color::rgb(4, 8, 18);
+    pub const TITLE_BAR_ACTIVE: Color = Color::rgb(0, 120, 212);
+    pub const TITLE_BAR_INACTIVE: Color = Color::rgb(74, 82, 96);
+    pub const BORDER_ACTIVE: Color = Color::rgb(35, 150, 255);
+    pub const BORDER_INACTIVE: Color = Color::rgb(102, 112, 128);
+    pub const TEXT_COLOR: Color = Color::rgb(22, 26, 34);
+    pub const TEXT_COLOR_WHITE: Color = Color::rgb(252, 253, 255);
+    pub const TEXT_COLOR_MUTED: Color = Color::rgb(97, 109, 126);
+    pub const SHELL_BACKGROUND_TOP: Color = Color::rgb(18, 24, 34);
+    pub const SHELL_BACKGROUND_BOTTOM: Color = Color::rgb(8, 12, 20);
+    pub const SHELL_TEXT: Color = Color::rgb(210, 238, 223);
+    pub const SHELL_PROMPT: Color = Color::rgb(95, 197, 255);
+    pub const BUTTON_BACKGROUND: Color = Color::rgb(239, 243, 248);
+    pub const BUTTON_HOVER: Color = Color::rgb(218, 231, 247);
+    pub const BUTTON_PRESSED: Color = Color::rgb(185, 211, 239);
+    pub const DOCK_BACKGROUND: Color = Color::rgb(24, 27, 34);
+    pub const DOCK_GLASS: Color = Color::rgb(46, 54, 68);
+    pub const DOCK_HIGHLIGHT: Color = Color::rgb(78, 91, 111);
+    pub const DOCK_ICON_ACCENT: Color = Color::rgb(0, 120, 212);
+    pub const DOCK_INDICATOR: Color = Color::rgb(255, 255, 255);
+    pub const WINDOW_BTN_MIN: Color = Color::rgb(255, 189, 68);
+    pub const WINDOW_BTN_MAX: Color = Color::rgb(40, 200, 64);
+    pub const WINDOW_BTN_CLOSE: Color = Color::rgb(255, 95, 87);
+    pub const FM_SELECTION: Color = Color::rgb(0, 120, 212);
 }
 
 /// Window state enumeration
@@ -77,6 +108,59 @@ pub enum WindowState {
     Maximized,
     Minimized,
     Closed,
+    Snapped,
+}
+
+/// Which side a window is snapped to
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Context menu item
+#[derive(Debug, Clone)]
+pub struct ContextMenuItem {
+    pub label: &'static str,
+    pub action: MenuAction,
+    pub enabled: bool,
+    pub separator: bool,
+}
+
+/// Action triggered by a context menu item
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    None,
+    CloseWindow,
+    MinimizeWindow,
+    MaximizeWindow,
+    RestoreWindow,
+    BringToFront,
+    Refresh,
+    OpenShell,
+    OpenFileManager,
+    OpenSystemMonitor,
+    OpenTextEditor,
+    OpenNetworkStatus,
+    NewFolder,
+    Delete,
+    Rename,
+    Properties,
+    NextWorkspace,
+    PrevWorkspace,
+    GoToWorkspace(u8),
+}
+
+/// Context menu state
+#[derive(Debug, Clone)]
+pub struct ContextMenu {
+    pub items: Vec<ContextMenuItem, 16>,
+    pub rect: Rect,
+    pub visible: bool,
+    pub selected: usize,
+    pub target_window: Option<WindowId>,
 }
 
 /// Mouse button enumeration
@@ -263,6 +347,14 @@ impl Cursor {
     }
 }
 
+/// Directory entry shown in the file manager window.
+#[derive(Debug, Clone)]
+struct FileManagerEntry {
+    name: HString<64>,
+    is_directory: bool,
+    size: u64,
+}
+
 /// Main desktop window manager
 pub struct WindowManager {
     windows: Vec<Window, MAX_WINDOWS>,
@@ -285,6 +377,32 @@ pub struct WindowManager {
     shell_window: Option<WindowId>,
     shell_input: HString<64>,
     shell_lines: Vec<HString<96>, MAX_SHELL_LINES>,
+    file_manager_window: Option<WindowId>,
+    fm_path: HString<128>,
+    fm_selected: usize,
+    fm_scroll: usize,
+    fm_entries: Vec<FileManagerEntry, MAX_FM_ENTRIES>,
+    system_monitor_window: Option<WindowId>,
+    monitor_lines: Vec<HString<96>, MAX_MONITOR_LINES>,
+    last_tick_second: u64,
+    /// Context menu state
+    context_menu: ContextMenu,
+    /// Active workspace (0-indexed)
+    current_workspace: u8,
+    /// Text editor window
+    text_editor_window: Option<WindowId>,
+    /// Text editor content
+    text_editor_lines: Vec<HString<96>, MAX_CONTENT_LINES>,
+    /// Text editor cursor row
+    te_cursor_row: usize,
+    /// Text editor cursor col
+    te_cursor_col: usize,
+    /// Network status window
+    network_status_window: Option<WindowId>,
+    /// Network status lines
+    net_status_lines: Vec<HString<96>, MAX_MONITOR_LINES>,
+    /// Snapped side for the currently snapped window
+    snapped_side: Option<SnapSide>,
 }
 
 impl WindowManager {
@@ -316,6 +434,29 @@ impl WindowManager {
             shell_window: None,
             shell_input: HString::new(),
             shell_lines: Vec::new(),
+            file_manager_window: None,
+            fm_path: HString::new(),
+            fm_selected: 0,
+            fm_scroll: 0,
+            fm_entries: Vec::new(),
+            system_monitor_window: None,
+            monitor_lines: Vec::new(),
+            last_tick_second: 0,
+            context_menu: ContextMenu {
+                items: Vec::new(),
+                rect: Rect::new(0, 0, 0, 0),
+                visible: false,
+                selected: 0,
+                target_window: None,
+            },
+            current_workspace: 0,
+            text_editor_window: None,
+            text_editor_lines: Vec::new(),
+            te_cursor_row: 0,
+            te_cursor_col: 0,
+            network_status_window: None,
+            net_status_lines: Vec::new(),
+            snapped_side: None,
         }
     }
 
@@ -369,6 +510,257 @@ impl WindowManager {
         window_id
     }
 
+    /// Create a file manager window backed by the kernel VFS.
+    pub fn create_file_manager_window(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> WindowId {
+        let window_id = self.create_window("Files", x, y, width, height);
+        self.file_manager_window = Some(window_id);
+        self.fm_path.clear();
+        let _ = self.fm_path.push_str("/");
+        self.fm_selected = 0;
+        self.fm_scroll = 0;
+        self.refresh_file_manager();
+        self.needs_redraw = true;
+        window_id
+    }
+
+    /// Create a system monitor window with live kernel statistics.
+    pub fn create_system_monitor_window(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> WindowId {
+        let window_id = self.create_window("System Monitor", x, y, width, height);
+        self.system_monitor_window = Some(window_id);
+        self.refresh_system_monitor();
+        self.needs_redraw = true;
+        window_id
+    }
+
+    /// Refresh dynamic desktop state (clock, stats, file listings).
+    pub fn tick(&mut self) {
+        let second = crate::time::uptime_ms() / 1000;
+        if second == self.last_tick_second {
+            return;
+        }
+        self.last_tick_second = second;
+        self.refresh_system_monitor();
+        if self.file_manager_window.is_some() {
+            self.refresh_file_manager();
+        }
+        if self.network_status_window.is_some() {
+            self.refresh_network_status();
+        }
+        self.needs_redraw = true;
+    }
+
+    fn refresh_file_manager(&mut self) {
+        self.fm_entries.clear();
+        let base = self.fm_path.as_str();
+        match vfs_readdir(base) {
+            Ok(entries) => {
+                for entry in entries {
+                    if self.fm_entries.len() >= MAX_FM_ENTRIES {
+                        break;
+                    }
+                    let mut name = HString::new();
+                    let _ = name.push_str(entry.name.as_str());
+                    let is_directory = entry.inode_type == InodeType::Directory;
+                    let full_path = if base == "/" {
+                        format!("/{}", entry.name)
+                    } else {
+                        format!("{}/{}", base, entry.name)
+                    };
+                    let size = if is_directory {
+                        0
+                    } else {
+                        crate::vfs::vfs_stat(&full_path)
+                            .map(|stat| stat.size)
+                            .unwrap_or(0)
+                    };
+                    let _ = self.fm_entries.push(FileManagerEntry {
+                        name,
+                        is_directory,
+                        size,
+                    });
+                }
+            }
+            Err(_) => {
+                let mut name = HString::new();
+                let _ = name.push_str("(unreadable)");
+                let _ = self.fm_entries.push(FileManagerEntry {
+                    name,
+                    is_directory: false,
+                    size: 0,
+                });
+            }
+        }
+
+        if self.fm_selected >= self.fm_entries.len() {
+            self.fm_selected = self.fm_entries.len().saturating_sub(1);
+        }
+    }
+
+    fn refresh_system_monitor(&mut self) {
+        unsafe { crate::early_serial_write_str("MON:enter\n"); }
+        self.monitor_lines.clear();
+
+        let uptime_s = crate::time::uptime_ms() / 1000;
+        let clock = Self::format_clock();
+
+        let _ = self.push_monitor_line(&format!("RustOS x86_64 kernel"));
+        let _ = self.push_monitor_line("");
+        let _ = self.push_monitor_line(&format!("Clock: {}", clock));
+        let _ = self.push_monitor_line(&format!("Uptime: {}s", uptime_s));
+
+        unsafe { crate::early_serial_write_str("MON:mem\n"); }
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            let _ = self.push_monitor_line(&format!(
+                "Memory: {} / {} MiB",
+                stats.allocated_memory_mb(),
+                stats.total_memory_mb()
+            ));
+            let _ = self.push_monitor_line(&format!(
+                "Free: {} MiB ({}%)",
+                stats.free_memory_mb(),
+                stats.memory_usage_percent() as u32
+            ));
+        } else if let Ok(basic) = crate::memory_basic::get_memory_stats() {
+            let total_mib = basic.usable_memory / (1024 * 1024);
+            let _ = self.push_monitor_line(&format!("Usable RAM: {} MiB", total_mib));
+        }
+
+        unsafe { crate::early_serial_write_str("MON:cpu\n"); }
+        let cpu = crate::performance_monitor::cpu_utilization();
+        let _ = self.push_monitor_line(&format!("CPU load est: {}%", cpu));
+
+        unsafe { crate::early_serial_write_str("MON:procs\n"); }
+        let procs = crate::process::get_process_manager().list_processes().len();
+        let _ = self.push_monitor_line(&format!("Processes: {}", procs));
+
+        unsafe { crate::early_serial_write_str("MON:ifaces\n"); }
+        let ifaces = crate::net::network_stack().list_interfaces();
+        let up = ifaces.iter().filter(|i| i.flags.up).count();
+        let _ = self.push_monitor_line(&format!("Network: {}/{} up", up, ifaces.len()));
+
+        unsafe { crate::early_serial_write_str("MON:mounts\n"); }
+        let mounts = crate::fs::vfs().list_mounts().len();
+        let _ = self.push_monitor_line(&format!("Mount points: {}", mounts));
+        unsafe { crate::early_serial_write_str("MON:done\n"); }
+    }
+
+    fn push_monitor_line(&mut self, text: &str) -> bool {
+        if self.monitor_lines.len() >= MAX_MONITOR_LINES {
+            return false;
+        }
+        let mut line = HString::new();
+        let _ = line.push_str(text);
+        self.monitor_lines.push(line).is_ok()
+    }
+
+    fn format_clock() -> HString<16> {
+        let ts = crate::time::system_time();
+        let secs = ts % 86400;
+        let hours = (secs / 3600) % 24;
+        let minutes = (secs / 60) % 60;
+        let mut out = HString::new();
+        let _ = out.push_str(&format!("{:02}:{:02}", hours, minutes));
+        out
+    }
+
+    fn network_tray_label() -> HString<16> {
+        let ifaces = crate::net::network_stack().list_interfaces();
+        let up = ifaces.iter().filter(|i| i.flags.up).count();
+        let mut out = HString::new();
+        let _ = out.push_str(&format!("NET {}/{}", up, ifaces.len()));
+        out
+    }
+
+    fn fm_enter_selected(&mut self) {
+        if self.fm_entries.is_empty() {
+            return;
+        }
+        let entry = &self.fm_entries[self.fm_selected];
+        if !entry.is_directory {
+            return;
+        }
+
+        let name = entry.name.as_str();
+        if name == ".." {
+            self.fm_go_up();
+            return;
+        }
+
+        if self.fm_path.as_str() == "/" {
+            let _ = self.fm_path.push_str(name);
+        } else {
+            let _ = self.fm_path.push_str("/");
+            let _ = self.fm_path.push_str(name);
+        }
+        self.fm_selected = 0;
+        self.fm_scroll = 0;
+        self.refresh_file_manager();
+        self.needs_redraw = true;
+    }
+
+    fn fm_go_up(&mut self) {
+        let path = self.fm_path.as_str();
+        if path == "/" {
+            return;
+        }
+        if let Some(pos) = path.rfind('/') {
+            self.fm_path.truncate(pos);
+            if self.fm_path.is_empty() {
+                let _ = self.fm_path.push_str("/");
+            }
+        } else {
+            self.fm_path.clear();
+            let _ = self.fm_path.push_str("/");
+        }
+        self.fm_selected = 0;
+        self.fm_scroll = 0;
+        self.refresh_file_manager();
+        self.needs_redraw = true;
+    }
+
+    fn handle_file_manager_key(&mut self, key: u8) -> bool {
+        match key {
+            38 => {
+                if self.fm_selected > 0 {
+                    self.fm_selected -= 1;
+                    if self.fm_selected < self.fm_scroll {
+                        self.fm_scroll = self.fm_selected;
+                    }
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            40 => {
+                if self.fm_selected + 1 < self.fm_entries.len() {
+                    self.fm_selected += 1;
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            13 => {
+                self.fm_enter_selected();
+                true
+            }
+            8 => {
+                self.fm_go_up();
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn push_shell_line(&mut self, text: &str) {
         if self.shell_lines.len() == MAX_SHELL_LINES {
             let _ = self.shell_lines.remove(0);
@@ -407,11 +799,90 @@ impl WindowManager {
             "" => {}
             "help" => {
                 self.push_shell_line("commands: help uptime windows");
-                self.push_shell_line(" mounts ifaces storage clear");
+                self.push_shell_line(" ls cat mem date ps mounts");
+                self.push_shell_line(" ifaces storage net clear");
             }
             "uptime" => {
                 let line = format!("uptime: {}s", crate::time::uptime_ms() / 1000);
                 self.push_shell_line(&line);
+            }
+            "date" => {
+                let line = format!("time: {}", Self::format_clock());
+                self.push_shell_line(&line);
+            }
+            "mem" => {
+                if let Some(stats) = crate::memory::get_memory_stats() {
+                    let line = format!(
+                        "mem: {} / {} MiB ({}% used)",
+                        stats.allocated_memory_mb(),
+                        stats.total_memory_mb(),
+                        stats.memory_usage_percent() as u32
+                    );
+                    self.push_shell_line(&line);
+                } else if let Ok(basic) = crate::memory_basic::get_memory_stats() {
+                    let mib = basic.usable_memory / (1024 * 1024);
+                    let line = format!("usable ram: {} MiB", mib);
+                    self.push_shell_line(&line);
+                } else {
+                    self.push_shell_line("memory stats unavailable");
+                }
+            }
+            "ps" => {
+                let processes = crate::process::get_process_manager().list_processes();
+                let line = format!("processes: {}", processes.len());
+                self.push_shell_line(&line);
+                for (pid, name, state, _) in processes.iter().take(6) {
+                    let line = format!("  pid {} {:?} {}", pid, state, name.as_str());
+                    self.push_shell_line(&line);
+                }
+            }
+            cmd if cmd.starts_with("ls") => {
+                let path = cmd.strip_prefix("ls").unwrap_or("").trim();
+                let path = if path.is_empty() { "/" } else { path };
+                match vfs_readdir(path) {
+                    Ok(entries) => {
+                        let line = format!("{}:", path);
+                        self.push_shell_line(&line);
+                        for entry in entries.iter().take(12) {
+                            let kind = if entry.inode_type == InodeType::Directory {
+                                "d"
+                            } else {
+                                "f"
+                            };
+                            let line = format!("  [{}] {}", kind, entry.name.as_str());
+                            self.push_shell_line(&line);
+                        }
+                    }
+                    Err(_) => self.push_shell_line("ls: cannot read directory"),
+                }
+            }
+            cmd if cmd.starts_with("cat ") => {
+                let path = cmd.strip_prefix("cat ").unwrap_or("").trim();
+                if path.is_empty() {
+                    self.push_shell_line("cat: missing path");
+                    return;
+                }
+                match vfs_open(path, OpenFlags::RDONLY, 0) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 128];
+                        match vfs_read(fd, &mut buf) {
+                            Ok(n) if n > 0 => {
+                                if let Ok(text) = core::str::from_utf8(&buf[..n]) {
+                                    for line in text.lines().take(8) {
+                                        self.push_shell_line(line);
+                                    }
+                                } else {
+                                    let line = format!("{} bytes (binary)", n);
+                                    self.push_shell_line(&line);
+                                }
+                            }
+                            Ok(_) => self.push_shell_line("(empty file)"),
+                            Err(_) => self.push_shell_line("cat: read error"),
+                        }
+                        let _ = vfs_close(fd);
+                    }
+                    Err(_) => self.push_shell_line("cat: not found"),
+                }
             }
             "windows" => {
                 let open = self
@@ -472,6 +943,518 @@ impl WindowManager {
                 self.push_shell_line("unknown command");
             }
         }
+    }
+
+    // ==================================================================
+    // Context Menu
+    // ==================================================================
+
+    /// Show a context menu at the given position with the given items.
+    fn show_context_menu(&mut self, x: usize, y: usize, items: Vec<ContextMenuItem, 16>, target: Option<WindowId>) {
+        let font = crate::graphics::get_default_font();
+        let mut menu_width = MENU_MIN_WIDTH;
+        for item in &items {
+            if !item.separator {
+                let w = item.label.len() * font.char_width + MENU_ITEM_PADDING * 2;
+                if w > menu_width {
+                    menu_width = w;
+                }
+            }
+        }
+        let menu_height = items.len() * MENU_ITEM_HEIGHT;
+        let mx = x.min(self.desktop_rect.width.saturating_sub(menu_width));
+        let my = y.min(self.desktop_rect.height.saturating_sub(menu_height));
+
+        self.context_menu = ContextMenu {
+            items,
+            rect: Rect::new(mx, my, menu_width, menu_height),
+            visible: true,
+            selected: 0,
+            target_window: target,
+        };
+        self.needs_redraw = true;
+    }
+
+    /// Hide the context menu.
+    fn hide_context_menu(&mut self) {
+        if self.context_menu.visible {
+            self.context_menu.visible = false;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Execute the selected context menu action.
+    fn execute_menu_action(&mut self, action: MenuAction) {
+        let target = self.context_menu.target_window;
+        self.hide_context_menu();
+        match action {
+            MenuAction::None => {}
+            MenuAction::CloseWindow => {
+                if let Some(id) = target {
+                    self.close_window(id);
+                }
+            }
+            MenuAction::MinimizeWindow => {
+                if let Some(id) = target {
+                    self.minimize_window(id);
+                }
+            }
+            MenuAction::MaximizeWindow => {
+                if let Some(id) = target {
+                    self.maximize_window(id);
+                }
+            }
+            MenuAction::RestoreWindow => {
+                if let Some(id) = target {
+                    self.restore_window(id);
+                }
+            }
+            MenuAction::BringToFront => {
+                if let Some(id) = target {
+                    self.bring_to_front(id);
+                }
+            }
+            MenuAction::Refresh => {
+                self.refresh_file_manager();
+                self.refresh_system_monitor();
+                self.refresh_network_status();
+                self.needs_redraw = true;
+            }
+            MenuAction::OpenShell => {
+                if let Some(id) = self.shell_window {
+                    self.bring_to_front(id);
+                } else {
+                    self.create_shell_window(120, 80, 440, 260);
+                }
+            }
+            MenuAction::OpenFileManager => {
+                if let Some(id) = self.file_manager_window {
+                    self.bring_to_front(id);
+                } else {
+                    self.create_file_manager_window(160, 96, 420, 300);
+                }
+            }
+            MenuAction::OpenSystemMonitor => {
+                if let Some(id) = self.system_monitor_window {
+                    self.bring_to_front(id);
+                } else {
+                    self.create_system_monitor_window(200, 120, 360, 240);
+                }
+            }
+            MenuAction::OpenTextEditor => {
+                if let Some(id) = self.text_editor_window {
+                    self.bring_to_front(id);
+                } else {
+                    self.create_text_editor_window(180, 100, 420, 300);
+                }
+            }
+            MenuAction::OpenNetworkStatus => {
+                if let Some(id) = self.network_status_window {
+                    self.bring_to_front(id);
+                } else {
+                    self.create_network_status_window(200, 120, 360, 240);
+                }
+            }
+            MenuAction::NewFolder | MenuAction::Delete | MenuAction::Rename | MenuAction::Properties => {
+                // File operations — would need VFS write support
+            }
+            MenuAction::NextWorkspace => {
+                self.switch_workspace((self.current_workspace + 1) % WORKSPACE_COUNT as u8);
+            }
+            MenuAction::PrevWorkspace => {
+                self.switch_workspace(if self.current_workspace == 0 {
+                    WORKSPACE_COUNT as u8 - 1
+                } else {
+                    self.current_workspace - 1
+                });
+            }
+            MenuAction::GoToWorkspace(ws) => {
+                self.switch_workspace(ws);
+            }
+        }
+    }
+
+    /// Handle a click inside the context menu. Returns true if consumed.
+    fn handle_context_menu_click(&mut self, x: usize, y: usize) -> bool {
+        if !self.context_menu.visible {
+            return false;
+        }
+        if !self.context_menu.rect.contains(x, y) {
+            self.hide_context_menu();
+            return true;
+        }
+        let rel_y = y.saturating_sub(self.context_menu.rect.y);
+        let item_index = rel_y / MENU_ITEM_HEIGHT;
+        if item_index < self.context_menu.items.len() {
+            let item = &self.context_menu.items[item_index];
+            if item.enabled && !item.separator {
+                let action = item.action;
+                self.execute_menu_action(action);
+                return true;
+            }
+        }
+        true
+    }
+
+    /// Build the desktop right-click context menu items.
+    fn desktop_context_menu_items(&self) -> Vec<ContextMenuItem, 16> {
+        let mut items = Vec::new();
+        let _ = items.push(ContextMenuItem {
+            label: "Open Shell",
+            action: MenuAction::OpenShell,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Open Files",
+            action: MenuAction::OpenFileManager,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "System Monitor",
+            action: MenuAction::OpenSystemMonitor,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Text Editor",
+            action: MenuAction::OpenTextEditor,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Network Status",
+            action: MenuAction::OpenNetworkStatus,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "",
+            action: MenuAction::None,
+            enabled: false,
+            separator: true,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Refresh",
+            action: MenuAction::Refresh,
+            enabled: true,
+            separator: false,
+        });
+        items
+    }
+
+    /// Build the window title bar right-click context menu items.
+    fn window_context_menu_items(&self) -> Vec<ContextMenuItem, 16> {
+        let mut items = Vec::new();
+        let _ = items.push(ContextMenuItem {
+            label: "Minimize",
+            action: MenuAction::MinimizeWindow,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Maximize",
+            action: MenuAction::MaximizeWindow,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Restore",
+            action: MenuAction::RestoreWindow,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "",
+            action: MenuAction::None,
+            enabled: false,
+            separator: true,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Close",
+            action: MenuAction::CloseWindow,
+            enabled: true,
+            separator: false,
+        });
+        items
+    }
+
+    // ==================================================================
+    // Text Editor
+    // ==================================================================
+
+    /// Create a text editor window.
+    pub fn create_text_editor_window(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> WindowId {
+        let window_id = self.create_window("Text Editor", x, y, width, height);
+        self.text_editor_window = Some(window_id);
+        self.text_editor_lines.clear();
+        let mut line = HString::new();
+        let _ = line.push_str("# RustOS Text Editor");
+        let _ = self.text_editor_lines.push(line);
+        let mut line = HString::new();
+        let _ = line.push_str("# Type to edit, Enter for new line");
+        let _ = self.text_editor_lines.push(line);
+        self.te_cursor_row = 2;
+        self.te_cursor_col = 0;
+        self.needs_redraw = true;
+        window_id
+    }
+
+    /// Handle text editor keyboard input.
+    fn handle_text_editor_key(&mut self, key: u8) -> bool {
+        match key {
+            13 => {
+                // Enter — start a new line
+                if self.text_editor_lines.len() < MAX_CONTENT_LINES {
+                    let mut line = HString::new();
+                    let _ = line.push_str("");
+                    let _ = self.text_editor_lines.push(line);
+                    self.te_cursor_row = self.text_editor_lines.len() - 1;
+                    self.te_cursor_col = 0;
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            8 => {
+                // Backspace
+                if self.te_cursor_col > 0 {
+                    self.te_cursor_col -= 1;
+                    if self.te_cursor_row < self.text_editor_lines.len() {
+                        let line = &mut self.text_editor_lines[self.te_cursor_row];
+                        let col = self.te_cursor_col;
+                        if col < line.len() {
+                            let before = &line.as_str()[..col];
+                            let after = &line.as_str()[col + 1..];
+                            let mut new_line = HString::new();
+                            let _ = new_line.push_str(before);
+                            let _ = new_line.push_str(after);
+                            *line = new_line;
+                        }
+                    }
+                } else if self.te_cursor_row > 0 {
+                    // Merge with previous line
+                    self.te_cursor_row -= 1;
+                    if self.te_cursor_row < self.text_editor_lines.len() {
+                        self.te_cursor_col = self.text_editor_lines[self.te_cursor_row].len();
+                        // Remove current line and append to previous
+                        // (simplified: just move cursor)
+                    }
+                }
+                self.needs_redraw = true;
+                true
+            }
+            32..=126 => {
+                // Printable character
+                if self.te_cursor_row < self.text_editor_lines.len() {
+                    let line = &mut self.text_editor_lines[self.te_cursor_row];
+                    if line.len() < 95 {
+                        let col = self.te_cursor_col.min(line.len());
+                        let before = &line.as_str()[..col];
+                        let after = &line.as_str()[col..];
+                        let mut new_line = HString::new();
+                        let _ = new_line.push_str(before);
+                        let _ = new_line.push(key as char);
+                        let _ = new_line.push_str(after);
+                        *line = new_line;
+                        self.te_cursor_col += 1;
+                    }
+                } else {
+                    // Create new line
+                    let mut new_line = HString::new();
+                    let _ = new_line.push(key as char);
+                    let _ = self.text_editor_lines.push(new_line);
+                    self.te_cursor_row = self.text_editor_lines.len() - 1;
+                    self.te_cursor_col = 1;
+                }
+                self.needs_redraw = true;
+                true
+            }
+            38 => {
+                // Up arrow
+                if self.te_cursor_row > 0 {
+                    self.te_cursor_row -= 1;
+                    if self.te_cursor_row < self.text_editor_lines.len() {
+                        self.te_cursor_col = self.te_cursor_col.min(self.text_editor_lines[self.te_cursor_row].len());
+                    }
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            40 => {
+                // Down arrow
+                if self.te_cursor_row + 1 < self.text_editor_lines.len() {
+                    self.te_cursor_row += 1;
+                    self.te_cursor_col = self.te_cursor_col.min(self.text_editor_lines[self.te_cursor_row].len());
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            37 => {
+                // Left arrow
+                if self.te_cursor_col > 0 {
+                    self.te_cursor_col -= 1;
+                } else if self.te_cursor_row > 0 {
+                    self.te_cursor_row -= 1;
+                    if self.te_cursor_row < self.text_editor_lines.len() {
+                        self.te_cursor_col = self.text_editor_lines[self.te_cursor_row].len();
+                    }
+                }
+                self.needs_redraw = true;
+                true
+            }
+            39 => {
+                // Right arrow
+                if self.te_cursor_row < self.text_editor_lines.len() {
+                    if self.te_cursor_col < self.text_editor_lines[self.te_cursor_row].len() {
+                        self.te_cursor_col += 1;
+                    } else if self.te_cursor_row + 1 < self.text_editor_lines.len() {
+                        self.te_cursor_row += 1;
+                        self.te_cursor_col = 0;
+                    }
+                }
+                self.needs_redraw = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    // ==================================================================
+    // Network Status
+    // ==================================================================
+
+    /// Create a network status window.
+    pub fn create_network_status_window(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> WindowId {
+        let window_id = self.create_window("Network Status", x, y, width, height);
+        self.network_status_window = Some(window_id);
+        self.refresh_network_status();
+        self.needs_redraw = true;
+        window_id
+    }
+
+    /// Refresh network status display data.
+    fn refresh_network_status(&mut self) {
+        self.net_status_lines.clear();
+        let ifaces = crate::net::network_stack().list_interfaces();
+        let _ = self.push_net_status_line(&format!("Network Interfaces: {}", ifaces.len()));
+        let _ = self.push_net_status_line("");
+
+        for iface in ifaces.iter().take(6) {
+            let state = if iface.flags.up { "UP" } else { "DOWN" };
+            let _ = self.push_net_status_line(&format!("{}: {}", iface.name, state));
+            if let Some(addr) = iface.ip_addresses.first() {
+                let _ = self.push_net_status_line(&format!("  addr: {}", addr));
+            }
+            if let crate::net::NetworkAddress::Mac(mac) = iface.mac_address {
+                let _ = self.push_net_status_line(&format!(
+                    "  mac: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                ));
+            }
+            let _ = self.push_net_status_line("");
+        }
+    }
+
+    fn push_net_status_line(&mut self, text: &str) -> bool {
+        if self.net_status_lines.len() >= MAX_MONITOR_LINES {
+            return false;
+        }
+        let mut line = HString::new();
+        let _ = line.push_str(text);
+        self.net_status_lines.push(line).is_ok()
+    }
+
+    // ==================================================================
+    // Window Snapping
+    // ==================================================================
+
+    /// Snap a window to a screen edge.
+    pub fn snap_window(&mut self, window_id: WindowId, side: SnapSide) -> bool {
+        let avail_x = DOCK_HEIGHT;
+        let avail_y = MENU_BAR_HEIGHT;
+        let avail_w = self.desktop_rect.width.saturating_sub(DOCK_HEIGHT);
+        let avail_h = self.desktop_rect.height.saturating_sub(MENU_BAR_HEIGHT);
+
+        let (x, y, w, h) = match side {
+            SnapSide::Left => (avail_x, avail_y, avail_w / 2, avail_h),
+            SnapSide::Right => (avail_x + avail_w / 2, avail_y, avail_w / 2, avail_h),
+            SnapSide::Top => (avail_x, avail_y, avail_w, avail_h / 2),
+            SnapSide::Bottom => (avail_x, avail_y + avail_h / 2, avail_w, avail_h / 2),
+        };
+
+        if let Some(window) = self.get_window_mut(window_id) {
+            window.state = WindowState::Snapped;
+            window.visible = true;
+            window.rect = Rect::new(x, y, max(w, MIN_WINDOW_WIDTH), max(h, MIN_WINDOW_HEIGHT));
+            window.client_area = Rect::new(
+                x + BORDER_WIDTH,
+                y + TITLE_BAR_HEIGHT + BORDER_WIDTH,
+                w.saturating_sub(2 * BORDER_WIDTH),
+                h.saturating_sub(TITLE_BAR_HEIGHT + 2 * BORDER_WIDTH),
+            );
+            self.snapped_side = Some(side);
+            self.needs_redraw = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a dragged window should snap to an edge.
+    fn check_snap_drag(&mut self, x: usize, y: usize) {
+        if self.dragging_window.is_none() {
+            return;
+        }
+        let avail_x = DOCK_HEIGHT;
+        let avail_y = MENU_BAR_HEIGHT;
+
+        if x <= avail_x + SNAP_ZONE {
+            if let Some(id) = self.dragging_window {
+                self.snap_window(id, SnapSide::Left);
+                self.dragging_window = None;
+            }
+        } else if x >= self.desktop_rect.width.saturating_sub(SNAP_ZONE) {
+            if let Some(id) = self.dragging_window {
+                self.snap_window(id, SnapSide::Right);
+                self.dragging_window = None;
+            }
+        } else if y <= avail_y + SNAP_ZONE {
+            if let Some(id) = self.dragging_window {
+                self.maximize_window(id);
+                self.dragging_window = None;
+            }
+        }
+    }
+
+    // ==================================================================
+    // Workspaces
+    // ==================================================================
+
+    /// Switch to a different workspace.
+    pub fn switch_workspace(&mut self, workspace: u8) {
+        if workspace == self.current_workspace {
+            return;
+        }
+        self.current_workspace = workspace % WORKSPACE_COUNT as u8;
+        self.needs_redraw = true;
+    }
+
+    /// Get the current workspace index.
+    pub fn current_workspace(&self) -> u8 {
+        self.current_workspace
     }
 
     /// Set text content lines for a window
@@ -584,21 +1567,112 @@ impl WindowManager {
 
         let icon_x = self.dock_rect.x + (self.dock_rect.width.saturating_sub(DOCK_ICON_SIZE)) / 2;
         let mut icon_y = self.dock_rect.y + 16;
-        for window in self
-            .windows
-            .iter()
-            .filter(|window| window.state != WindowState::Closed)
-        {
+        for slot in 0..DOCK_ICON_COUNT {
             let icon_rect = Rect::new(icon_x, icon_y, DOCK_ICON_SIZE, DOCK_ICON_SIZE);
             if icon_rect.contains(x, y) {
-                return Some(window.id);
+                return match slot {
+                    0 => self.shell_window,
+                    1 => self.file_manager_window,
+                    2 => self.system_monitor_window,
+                    3 => None, // Activities
+                    4 => self.text_editor_window,
+                    5 => self.network_status_window,
+                    _ => None,
+                };
             }
             icon_y += DOCK_ICON_SIZE + DOCK_ICON_GAP;
-            if icon_y + DOCK_ICON_SIZE > self.dock_rect.y + self.dock_rect.height {
-                break;
-            }
         }
         None
+    }
+
+    fn launcher_slot_at_point(&self, x: usize, y: usize) -> Option<usize> {
+        if !self.dock_rect.contains(x, y) {
+            return None;
+        }
+
+        let icon_x = self.dock_rect.x + (self.dock_rect.width.saturating_sub(DOCK_ICON_SIZE)) / 2;
+        let mut icon_y = self.dock_rect.y + 16;
+        for slot in 0..DOCK_ICON_COUNT {
+            let icon_rect = Rect::new(icon_x, icon_y, DOCK_ICON_SIZE, DOCK_ICON_SIZE);
+            if icon_rect.contains(x, y) {
+                return Some(slot);
+            }
+            icon_y += DOCK_ICON_SIZE + DOCK_ICON_GAP;
+        }
+        None
+    }
+
+    fn launch_app_slot(&mut self, slot: usize) -> bool {
+        match slot {
+            0 => {
+                if let Some(id) = self.shell_window {
+                    self.bring_to_front(id)
+                } else {
+                    self.create_shell_window(120, 80, 440, 260);
+                    true
+                }
+            }
+            1 => {
+                if let Some(id) = self.file_manager_window {
+                    self.bring_to_front(id)
+                } else {
+                    self.create_file_manager_window(160, 96, 420, 300);
+                    true
+                }
+            }
+            2 => {
+                if let Some(id) = self.system_monitor_window {
+                    self.bring_to_front(id)
+                } else {
+                    self.create_system_monitor_window(200, 120, 360, 240);
+                    true
+                }
+            }
+            3 => {
+                self.activities_open = !self.activities_open;
+                self.quick_settings_open = false;
+                self.needs_redraw = true;
+                true
+            }
+            4 => {
+                if let Some(id) = self.text_editor_window {
+                    self.bring_to_front(id)
+                } else {
+                    self.create_text_editor_window(180, 100, 420, 300);
+                    true
+                }
+            }
+            5 => {
+                if let Some(id) = self.network_status_window {
+                    self.bring_to_front(id)
+                } else {
+                    self.create_network_status_window(200, 120, 360, 240);
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn file_manager_row_at_point(&self, x: usize, y: usize) -> Option<usize> {
+        let window_id = self.file_manager_window?;
+        let window = self.get_window(window_id)?;
+        if !window.client_area.contains(x, y) {
+            return None;
+        }
+
+        let header_rows = 2;
+        let first_row_y = window.client_area.y + 8 + FM_ROW_HEIGHT + 4 + FM_ROW_HEIGHT;
+        if y < first_row_y {
+            return None;
+        }
+
+        let row = (y - first_row_y) / FM_ROW_HEIGHT + self.fm_scroll;
+        if row < self.fm_entries.len() {
+            Some(row)
+        } else {
+            None
+        }
     }
 
     fn activities_window_at_point(&self, px: usize, py: usize) -> Option<WindowId> {
@@ -641,6 +1715,22 @@ impl WindowManager {
     /// Close a window
     pub fn close_window(&mut self, window_id: WindowId) -> bool {
         if let Some(pos) = self.windows.iter().position(|w| w.id == window_id) {
+            if self.shell_window == Some(window_id) {
+                self.shell_window = None;
+            }
+            if self.file_manager_window == Some(window_id) {
+                self.file_manager_window = None;
+            }
+            if self.system_monitor_window == Some(window_id) {
+                self.system_monitor_window = None;
+            }
+            if self.text_editor_window == Some(window_id) {
+                self.text_editor_window = None;
+            }
+            if self.network_status_window == Some(window_id) {
+                self.network_status_window = None;
+            }
+
             self.windows.swap_remove(pos);
             self.window_count = self.window_count.saturating_sub(1);
 
@@ -846,8 +1936,23 @@ impl WindowManager {
 
     /// Handle desktop keyboard shortcuts.
     pub fn handle_key_down(&mut self, key: u8) -> bool {
+        // Close context menu on any key
+        if self.context_menu.visible {
+            self.hide_context_menu();
+        }
+
+        if self.focused_window == self.file_manager_window {
+            if self.handle_file_manager_key(key) {
+                return true;
+            }
+        }
+
         if self.focused_window == self.shell_window && key != 27 && key != b'\t' {
             return self.handle_shell_key(key);
+        }
+
+        if self.focused_window == self.text_editor_window && key != 27 {
+            return self.handle_text_editor_key(key);
         }
 
         match key {
@@ -897,6 +2002,10 @@ impl WindowManager {
             b'm' | b'M' => self
                 .focused_window
                 .map_or(false, |window_id| self.minimize_window(window_id)),
+            b'1' => { self.switch_workspace(0); true }
+            b'2' => { self.switch_workspace(1); true }
+            b'3' => { self.switch_workspace(2); true }
+            b'4' => { self.switch_workspace(3); true }
             _ => false,
         }
     }
@@ -980,7 +2089,40 @@ impl WindowManager {
     }
 
     /// Handle mouse down
-    pub fn handle_mouse_down(&mut self, x: usize, y: usize, _button: MouseButton) -> bool {
+    pub fn handle_mouse_down(&mut self, x: usize, y: usize, button: MouseButton) -> bool {
+        // Handle context menu clicks first
+        if self.handle_context_menu_click(x, y) {
+            return true;
+        }
+
+        // Right-click: show context menu
+        if button == MouseButton::Right {
+            // Check if right-clicking on a window title bar
+            if let Some(window_id) = self.window_at_point(x, y) {
+                if let Some(window) = self.get_window(window_id) {
+                    let title_rect = Rect::new(
+                        window.rect.x,
+                        window.rect.y,
+                        window.rect.width,
+                        TITLE_BAR_HEIGHT,
+                    );
+                    if title_rect.contains(x, y) {
+                        let items = self.window_context_menu_items();
+                        self.show_context_menu(x, y, items, Some(window_id));
+                        return true;
+                    }
+                }
+            }
+
+            // Desktop right-click
+            if !self.menu_bar_rect.contains(x, y) && !self.dock_rect.contains(x, y) {
+                let items = self.desktop_context_menu_items();
+                self.show_context_menu(x, y, items, None);
+                return true;
+            }
+            return false;
+        }
+
         let activities_button =
             Rect::new(self.menu_bar_rect.x + 10, self.menu_bar_rect.y + 5, 72, 20);
         if activities_button.contains(x, y) {
@@ -1003,6 +2145,17 @@ impl WindowManager {
             return true;
         }
 
+        // Workspace switcher clicks
+        let switcher_x = self.menu_bar_rect.width.saturating_sub(260);
+        let switcher_y = self.menu_bar_rect.y + 7;
+        for i in 0..WORKSPACE_COUNT {
+            let ws_rect = Rect::new(switcher_x + i * 22, switcher_y, 16, 16);
+            if ws_rect.contains(x, y) {
+                self.switch_workspace(i as u8);
+                return true;
+            }
+        }
+
         if self.activities_open {
             if let Some(window_id) = self.activities_window_at_point(x, y) {
                 self.activities_open = false;
@@ -1016,6 +2169,10 @@ impl WindowManager {
 
         if let Some(window_id) = self.launcher_window_at_point(x, y) {
             return self.bring_to_front(window_id);
+        }
+
+        if let Some(slot) = self.launcher_slot_at_point(x, y) {
+            return self.launch_app_slot(slot);
         }
 
         if let Some(window_id) = self.window_at_point(x, y) {
@@ -1094,6 +2251,14 @@ impl WindowManager {
                     self.drag_offset = (x.saturating_sub(win_x), y.saturating_sub(win_y));
                     return true;
                 }
+
+                if self.file_manager_window == Some(window_id) {
+                    if let Some(row) = self.file_manager_row_at_point(x, y) {
+                        self.fm_selected = row;
+                        self.needs_redraw = true;
+                        return true;
+                    }
+                }
             }
         }
 
@@ -1110,7 +2275,9 @@ impl WindowManager {
     }
 
     /// Handle mouse up
-    pub fn handle_mouse_up(&mut self, _x: usize, _y: usize, _button: MouseButton) {
+    pub fn handle_mouse_up(&mut self, x: usize, y: usize, _button: MouseButton) {
+        // Check if window should snap to edge
+        self.check_snap_drag(x, y);
         self.dragging_window = None;
         self.resizing_window = None;
 
@@ -1170,6 +2337,11 @@ impl WindowManager {
             self.render_quick_settings();
         }
 
+        // Render context menu on top
+        if self.context_menu.visible {
+            self.render_context_menu();
+        }
+
         // Render cursor
         if self.cursor.visible {
             self.render_cursor();
@@ -1195,12 +2367,17 @@ impl WindowManager {
                 window.rect.width.saturating_sub(2 * BORDER_WIDTH),
                 TITLE_BAR_HEIGHT,
             );
-            let title_end_color = if window.focused {
-                Self::shade_color(window.title_bar_color, -40)
+            // Vertical gloss: lighter top, darker bottom — reads as a real
+            // shaded title bar rather than a flat VGA-style block.
+            let (title_top, title_bottom) = if window.focused {
+                (colors::TITLE_ACTIVE_TOP, colors::TITLE_ACTIVE_BOTTOM)
             } else {
-                Self::shade_color(window.title_bar_color, -20)
+                (
+                    Self::shade_color(window.title_bar_color, 12),
+                    Self::shade_color(window.title_bar_color, -22),
+                )
             };
-            self.fill_horizontal_gradient(title_rect, window.title_bar_color, title_end_color);
+            self.fill_vertical_gradient(title_rect, title_top, title_bottom);
             self.render_window_controls(window);
 
             // Render title text
@@ -1217,10 +2394,41 @@ impl WindowManager {
         }
 
         // Render window content area
-        crate::graphics::framebuffer::fill_rect(window.client_area, window.background_color);
+        self.fill_vertical_gradient(
+            window.client_area,
+            colors::WINDOW_SURFACE_TOP,
+            colors::WINDOW_SURFACE_BOTTOM,
+        );
+        let client_highlight = Rect::new(
+            window.client_area.x,
+            window.client_area.y,
+            window.client_area.width,
+            1,
+        );
+        crate::graphics::framebuffer::fill_rect(client_highlight, colors::WINDOW_BACKGROUND);
 
         if self.shell_window == Some(window.id) {
             self.render_shell_content(window);
+            return;
+        }
+
+        if self.file_manager_window == Some(window.id) {
+            self.render_file_manager_content(window);
+            return;
+        }
+
+        if self.system_monitor_window == Some(window.id) {
+            self.render_monitor_content(window);
+            return;
+        }
+
+        if self.text_editor_window == Some(window.id) {
+            self.render_text_editor_content(window);
+            return;
+        }
+
+        if self.network_status_window == Some(window.id) {
+            self.render_network_status_content(window);
             return;
         }
 
@@ -1240,6 +2448,26 @@ impl WindowManager {
             if text_y + font.char_height > window.client_area.y + window.client_area.height {
                 break;
             }
+        }
+
+        // Render scroll bar if content overflows
+        let total_lines = window.content_lines.len();
+        let visible_lines = window.client_area.height / line_height;
+        if total_lines > visible_lines {
+            let bar_x = window.client_area.x + window.client_area.width.saturating_sub(8);
+            let bar_height = window.client_area.height;
+            let bar_bg = Rect::new(bar_x, window.client_area.y, 4, bar_height);
+            crate::graphics::framebuffer::fill_rect(bar_bg, colors::TITLE_BAR_INACTIVE);
+
+            let thumb_height = (bar_height * visible_lines / total_lines).max(12);
+            let max_scroll = total_lines.saturating_sub(visible_lines);
+            let thumb_y = if max_scroll > 0 {
+                window.client_area.y + (bar_height.saturating_sub(thumb_height) * window.scroll_offset / max_scroll)
+            } else {
+                window.client_area.y
+            };
+            let thumb = Rect::new(bar_x, thumb_y, 4, thumb_height);
+            crate::graphics::framebuffer::fill_rect(thumb, colors::BORDER_INACTIVE);
         }
 
         // Render resize handle indicator (bottom-right corner)
@@ -1262,6 +2490,19 @@ impl WindowManager {
     fn render_shell_content(&self, window: &Window) {
         let font = crate::graphics::get_default_font();
         let line_height = font.char_height + 2;
+        self.fill_vertical_gradient(
+            window.client_area,
+            colors::SHELL_BACKGROUND_TOP,
+            colors::SHELL_BACKGROUND_BOTTOM,
+        );
+        let prompt_bar = Rect::new(
+            window.client_area.x,
+            window.client_area.y,
+            window.client_area.width,
+            1,
+        );
+        crate::graphics::framebuffer::fill_rect(prompt_bar, colors::DOCK_HIGHLIGHT);
+
         let mut text_y = window.client_area.y + 8;
 
         for line in &self.shell_lines {
@@ -1269,7 +2510,7 @@ impl WindowManager {
                 line.as_str(),
                 window.client_area.x + 8,
                 text_y,
-                colors::TEXT_COLOR,
+                colors::SHELL_TEXT,
                 font,
             );
             text_y += line_height;
@@ -1283,9 +2524,164 @@ impl WindowManager {
             &prompt,
             window.client_area.x + 8,
             text_y,
+            colors::SHELL_PROMPT,
+            font,
+        );
+    }
+
+    fn render_file_manager_content(&self, window: &Window) {
+        let font = crate::graphics::get_default_font();
+        let line_height = FM_ROW_HEIGHT;
+        let mut text_y = window.client_area.y + 8;
+        let header = Rect::new(
+            window.client_area.x,
+            window.client_area.y,
+            window.client_area.width,
+            line_height + 8,
+        );
+        self.fill_vertical_gradient(
+            header,
+            colors::WINDOW_SURFACE_TOP,
+            colors::WINDOW_SURFACE_ALT,
+        );
+
+        let path_line = format!("Path: {}", self.fm_path.as_str());
+        crate::graphics::draw_text(
+            &path_line,
+            window.client_area.x + 8,
+            text_y,
             colors::TEXT_COLOR,
             font,
         );
+        text_y += line_height + 4;
+
+        crate::graphics::draw_text(
+            "Name              Type    Size",
+            window.client_area.x + 8,
+            text_y,
+            colors::TEXT_COLOR_MUTED,
+            font,
+        );
+        text_y += line_height;
+
+        for (index, entry) in self.fm_entries.iter().enumerate().skip(self.fm_scroll) {
+            if text_y + font.char_height > window.client_area.y + window.client_area.height {
+                break;
+            }
+
+            let kind = if entry.is_directory { "dir" } else { "file" };
+            let size_str = if entry.is_directory {
+                format!("<DIR>")
+            } else if entry.size < 1024 {
+                format!("{} B", entry.size)
+            } else {
+                format!("{} KiB", entry.size / 1024)
+            };
+            let line = format!("{:<16}  {:<4}  {}", entry.name.as_str(), kind, size_str);
+
+            let fg = if index == self.fm_selected {
+                colors::TEXT_COLOR_WHITE
+            } else {
+                colors::TEXT_COLOR
+            };
+            let bg = if index == self.fm_selected {
+                colors::FM_SELECTION
+            } else if index % 2 == 0 {
+                colors::WINDOW_SURFACE_TOP
+            } else {
+                colors::WINDOW_SURFACE_ALT
+            };
+
+            let row_rect = Rect::new(
+                window.client_area.x + 4,
+                text_y.saturating_sub(2),
+                window.client_area.width.saturating_sub(8),
+                line_height,
+            );
+            crate::graphics::framebuffer::fill_rect(row_rect, bg);
+            crate::graphics::draw_text(&line, window.client_area.x + 8, text_y, fg, font);
+            text_y += line_height;
+        }
+    }
+
+    fn render_monitor_content(&self, window: &Window) {
+        let font = crate::graphics::get_default_font();
+        let line_height = font.char_height + 2;
+        let mut text_y = window.client_area.y + 8;
+
+        for line in &self.monitor_lines {
+            crate::graphics::draw_text(
+                line.as_str(),
+                window.client_area.x + 8,
+                text_y,
+                colors::TEXT_COLOR,
+                font,
+            );
+            text_y += line_height;
+            if text_y + font.char_height > window.client_area.y + window.client_area.height {
+                return;
+            }
+        }
+    }
+
+    fn render_text_editor_content(&self, window: &Window) {
+        let font = crate::graphics::get_default_font();
+        let line_height = font.char_height + 2;
+        let mut text_y = window.client_area.y + 8;
+
+        for (i, line) in self.text_editor_lines.iter().enumerate() {
+            let is_cursor_line = i == self.te_cursor_row;
+            let fg = if is_cursor_line {
+                colors::TEXT_COLOR
+            } else {
+                colors::TEXT_COLOR_MUTED
+            };
+            crate::graphics::draw_text(
+                line.as_str(),
+                window.client_area.x + 8,
+                text_y,
+                fg,
+                font,
+            );
+
+            // Draw cursor indicator
+            if is_cursor_line {
+                let cursor_x = window.client_area.x + 8
+                    + self.te_cursor_col * font.char_width;
+                let cursor_rect = Rect::new(
+                    cursor_x,
+                    text_y,
+                    2,
+                    font.char_height,
+                );
+                crate::graphics::framebuffer::fill_rect(cursor_rect, colors::BORDER_ACTIVE);
+            }
+
+            text_y += line_height;
+            if text_y + font.char_height > window.client_area.y + window.client_area.height {
+                return;
+            }
+        }
+    }
+
+    fn render_network_status_content(&self, window: &Window) {
+        let font = crate::graphics::get_default_font();
+        let line_height = font.char_height + 2;
+        let mut text_y = window.client_area.y + 8;
+
+        for line in &self.net_status_lines {
+            crate::graphics::draw_text(
+                line.as_str(),
+                window.client_area.x + 8,
+                text_y,
+                colors::TEXT_COLOR,
+                font,
+            );
+            text_y += line_height;
+            if text_y + font.char_height > window.client_area.y + window.client_area.height {
+                return;
+            }
+        }
     }
 
     /// Render a button
@@ -1298,24 +2694,142 @@ impl WindowManager {
             button.background_color
         };
 
-        crate::graphics::framebuffer::fill_rect(button.rect, bg_color);
+        self.fill_vertical_gradient(
+            button.rect,
+            Self::shade_color(bg_color, 18),
+            Self::shade_color(bg_color, -10),
+        );
         crate::graphics::framebuffer::draw_rect(button.rect, colors::BORDER_INACTIVE, 1);
     }
 
-    /// Render cursor
+    /// Render the context menu
+    fn render_context_menu(&self) {
+        let menu = &self.context_menu;
+        if !menu.visible || menu.items.is_empty() {
+            return;
+        }
+
+        // Shadow
+        let shadow = Rect::new(
+            menu.rect.x + 2,
+            menu.rect.y + 2,
+            menu.rect.width,
+            menu.rect.height,
+        );
+        crate::graphics::framebuffer::fill_rect(shadow, colors::WINDOW_SHADOW);
+
+        // Background
+        crate::graphics::framebuffer::fill_rect(menu.rect, colors::WINDOW_BACKGROUND);
+        crate::graphics::framebuffer::draw_rect(menu.rect, colors::BORDER_ACTIVE, 1);
+
+        let font = crate::graphics::get_default_font();
+        let text_y_offset = (MENU_ITEM_HEIGHT.saturating_sub(font.char_height)) / 2;
+
+        for (i, item) in menu.items.iter().enumerate() {
+            let item_rect = Rect::new(
+                menu.rect.x,
+                menu.rect.y + i * MENU_ITEM_HEIGHT,
+                menu.rect.width,
+                MENU_ITEM_HEIGHT,
+            );
+
+            if item.separator {
+                let sep = Rect::new(
+                    item_rect.x + 4,
+                    item_rect.y + MENU_ITEM_HEIGHT / 2,
+                    item_rect.width.saturating_sub(8),
+                    1,
+                );
+                crate::graphics::framebuffer::fill_rect(sep, colors::BORDER_INACTIVE);
+                continue;
+            }
+
+            // Hover/selected highlight
+            if i == menu.selected {
+                crate::graphics::framebuffer::fill_rect(item_rect, colors::FM_SELECTION);
+            }
+
+            let text_color = if item.enabled {
+                colors::TEXT_COLOR
+            } else {
+                colors::TEXT_COLOR_MUTED
+            };
+
+            crate::graphics::draw_text(
+                item.label,
+                item_rect.x + MENU_ITEM_PADDING,
+                item_rect.y + text_y_offset,
+                text_color,
+                font,
+            );
+        }
+    }
+
+    /// Render cursor — arrow shape with outline
     fn render_cursor(&self) {
-        // Simple cursor - just a few pixels
-        for dy in 0..10 {
-            for dx in 0..2 {
-                if self.cursor.x + dx < self.desktop_rect.width
-                    && self.cursor.y + dy < self.desktop_rect.height
-                {
-                    crate::graphics::framebuffer::set_pixel(
-                        self.cursor.x + dx,
-                        self.cursor.y + dy,
-                        self.cursor.color,
-                    );
+        let cx = self.cursor.x;
+        let cy = self.cursor.y;
+        let w = self.desktop_rect.width;
+        let h = self.desktop_rect.height;
+
+        // Arrow cursor shape (11x16):
+        //  X
+        //  XX
+        //  X X
+        //  X  X
+        //  X   X
+        //  X    X
+        //  X     X
+        //  X      X
+        //  X       X
+        //  X    XXXXX
+        //  X    X
+        //  X   X
+        //  X  X
+        //  X X
+        //  XX
+        //  X
+        let outline = Color::rgb(0, 0, 0);
+        let fill = Color::rgb(255, 255, 255);
+
+        // Arrow outline (draw slightly larger for border effect)
+        let arrow_outline: [(isize, isize); 18] = [
+            (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),
+            (0, 8), (0, 9), (0, 10), (0, 11), (0, 12), (0, 13), (0, 14),
+            (1, 14), (2, 13), (3, 12),
+        ];
+
+        // Draw outline first (offset by 1 in each direction)
+        for &(dx, dy) in &arrow_outline {
+            for &(ox, oy) in &[(0isize, 0isize), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let px = cx as isize + dx + ox;
+                let py = cy as isize + dy + oy;
+                if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                    crate::graphics::framebuffer::set_pixel(px as usize, py as usize, outline);
                 }
+            }
+        }
+
+        // Fill the arrow body
+        for dy in 0..15isize {
+            for dx in 0..=dy.min(8) {
+                let px = cx as isize + dx;
+                let py = cy as isize + dy;
+                if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                    // Skip the tail area (below the arrowhead)
+                    if dy <= 8 || dx <= 3 {
+                        crate::graphics::framebuffer::set_pixel(px as usize, py as usize, fill);
+                    }
+                }
+            }
+        }
+
+        // Draw the arrowhead base line (horizontal bar at row 9)
+        for dx in 4..=9 {
+            let px = cx as isize + dx;
+            let py = cy as isize + 9;
+            if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                crate::graphics::framebuffer::set_pixel(px as usize, py as usize, fill);
             }
         }
     }
@@ -1442,7 +2956,11 @@ impl WindowManager {
             } else {
                 colors::MENU_BAR_HIGHLIGHT
             };
-            crate::graphics::framebuffer::fill_rect(tile, tile_color);
+            self.fill_vertical_gradient(
+                tile,
+                Self::shade_color(tile_color, 18),
+                Self::shade_color(tile_color, -20),
+            );
             crate::graphics::framebuffer::draw_rect(tile, colors::BORDER_INACTIVE, 1);
             crate::graphics::draw_text(
                 window.title,
@@ -1463,8 +2981,14 @@ impl WindowManager {
         }
 
         let app_y = overlay.y + overlay.height.saturating_sub(56);
+        let open_count = self
+            .windows
+            .iter()
+            .filter(|window| window.state != WindowState::Closed)
+            .count();
+        let apps_line = format!("{} open windows", open_count);
         crate::graphics::draw_text(
-            "Application registry unavailable",
+            &apps_line,
             overlay.x + 18,
             app_y,
             colors::MENU_BAR_ICON,
@@ -1498,7 +3022,7 @@ impl WindowManager {
             crate::net::network_stack().list_interfaces().len()
         );
 
-        crate::graphics::framebuffer::fill_rect(panel, Color::rgb(32, 32, 38));
+        self.fill_vertical_gradient(panel, colors::DOCK_GLASS, colors::MENU_BAR_BACKGROUND);
         crate::graphics::framebuffer::draw_rect(panel, colors::DOCK_ICON_ACCENT, 2);
         crate::graphics::draw_text(
             "System",
@@ -1535,17 +3059,29 @@ impl WindowManager {
             colors::MENU_BAR_ICON,
             font,
         );
-        crate::graphics::draw_text(
-            "Audio: unavailable",
-            panel.x + 14,
-            panel.y + 116,
-            colors::MENU_BAR_ICON,
-            font,
-        );
+
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            let mem_line = format!(
+                "Memory: {} / {} MiB",
+                stats.allocated_memory_mb(),
+                stats.total_memory_mb()
+            );
+            crate::graphics::draw_text(
+                &mem_line,
+                panel.x + 14,
+                panel.y + 116,
+                colors::MENU_BAR_ICON,
+                font,
+            );
+        }
     }
 
     fn render_menu_bar(&self) {
-        crate::graphics::framebuffer::fill_rect(self.menu_bar_rect, colors::MENU_BAR_BACKGROUND);
+        self.fill_vertical_gradient(
+            self.menu_bar_rect,
+            colors::MENU_BAR_TOP,
+            colors::MENU_BAR_BOTTOM,
+        );
 
         let bottom = Rect::new(
             self.menu_bar_rect.x,
@@ -1556,7 +3092,11 @@ impl WindowManager {
         crate::graphics::framebuffer::fill_rect(bottom, colors::MENU_BAR_ACCENT);
 
         let app_button = Rect::new(self.menu_bar_rect.x + 10, self.menu_bar_rect.y + 5, 72, 20);
-        crate::graphics::framebuffer::fill_rect(app_button, colors::MENU_BAR_HIGHLIGHT);
+        self.fill_vertical_gradient(
+            app_button,
+            Self::shade_color(colors::MENU_BAR_HIGHLIGHT, 18),
+            colors::MENU_BAR_HIGHLIGHT,
+        );
         crate::graphics::framebuffer::draw_rect(app_button, colors::BORDER_INACTIVE, 1);
 
         let font = crate::graphics::get_default_font();
@@ -1588,12 +3128,15 @@ impl WindowManager {
                 break;
             }
             let task_rect = Rect::new(task_x, self.menu_bar_rect.y + 5, task_width, 20);
-            let task_color = if window.focused {
-                colors::DOCK_ICON_ACCENT
+            let (task_top, task_bottom) = if window.focused {
+                (colors::TITLE_ACTIVE_TOP, colors::TITLE_ACTIVE_BOTTOM)
             } else {
-                colors::MENU_BAR_HIGHLIGHT
+                (
+                    Self::shade_color(colors::MENU_BAR_HIGHLIGHT, 12),
+                    colors::MENU_BAR_HIGHLIGHT,
+                )
             };
-            crate::graphics::framebuffer::fill_rect(task_rect, task_color);
+            self.fill_vertical_gradient(task_rect, task_top, task_bottom);
             crate::graphics::framebuffer::draw_rect(task_rect, colors::BORDER_INACTIVE, 1);
             crate::graphics::draw_text(
                 window.title,
@@ -1608,7 +3151,8 @@ impl WindowManager {
         self.render_workspace_switcher();
         self.render_system_tray(text_y);
 
-        let right_text = format!("UP {}s", crate::time::uptime_ms() / 1000);
+        let clock = Self::format_clock();
+        let right_text = format!("{}", clock.as_str());
         let right_width = right_text.len() * font.char_width;
         let right_x =
             self.menu_bar_rect.x + self.menu_bar_rect.width.saturating_sub(right_width + 12);
@@ -1616,7 +3160,7 @@ impl WindowManager {
     }
 
     fn render_dock(&self) {
-        crate::graphics::framebuffer::fill_rect(self.dock_rect, colors::DOCK_BACKGROUND);
+        self.fill_vertical_gradient(self.dock_rect, colors::DOCK_TOP, colors::DOCK_BOTTOM);
 
         let edge = Rect::new(
             self.dock_rect.x + self.dock_rect.width.saturating_sub(1),
@@ -1633,26 +3177,37 @@ impl WindowManager {
         let switcher_x = self.menu_bar_rect.width.saturating_sub(260);
         let switcher_y = self.menu_bar_rect.y + 7;
 
-        for i in 0..4 {
+        for i in 0..WORKSPACE_COUNT {
             let rect = Rect::new(switcher_x + i * 22, switcher_y, 16, 16);
-            let color = if i == 0 {
+            let color = if i == self.current_workspace as usize {
                 colors::DOCK_ICON_ACCENT
             } else {
                 colors::MENU_BAR_HIGHLIGHT
             };
-            crate::graphics::framebuffer::fill_rect(rect, color);
+            self.fill_vertical_gradient(rect, Self::shade_color(color, 12), color);
             crate::graphics::framebuffer::draw_rect(rect, colors::BORDER_INACTIVE, 1);
         }
     }
 
     fn render_system_tray(&self, text_y: usize) {
         let font = crate::graphics::get_default_font();
-        let tray_x = self.menu_bar_rect.width.saturating_sub(152);
-        let tray_rect = Rect::new(tray_x.saturating_sub(8), self.menu_bar_rect.y + 5, 86, 20);
-        crate::graphics::framebuffer::fill_rect(tray_rect, colors::MENU_BAR_ACCENT);
+        let label = Self::network_tray_label();
+        let tray_w = label.len() * font.char_width + 16;
+        let tray_x = self.menu_bar_rect.width.saturating_sub(tray_w + 90);
+        let tray_rect = Rect::new(
+            tray_x.saturating_sub(8),
+            self.menu_bar_rect.y + 5,
+            tray_w,
+            20,
+        );
+        self.fill_vertical_gradient(
+            tray_rect,
+            Self::shade_color(colors::MENU_BAR_ACCENT, 22),
+            colors::MENU_BAR_ACCENT,
+        );
         crate::graphics::framebuffer::draw_rect(tray_rect, colors::BORDER_INACTIVE, 1);
         crate::graphics::draw_text(
-            "NET n/a",
+            label.as_str(),
             tray_rect.x + 8,
             text_y,
             colors::MENU_BAR_ICON,
@@ -1672,25 +3227,35 @@ impl WindowManager {
             Color::rgb(160, 100, 220),
             Color::rgb(218, 76, 50),
         ];
-        let icon_labels = ["H", "F", "T", "W", "S", "A"];
+        let icon_labels = ["Sh", "Fi", "Mo", "Ac", "Te", "Nw"];
 
         for i in 0..DOCK_ICON_COUNT {
             if icon_y + DOCK_ICON_SIZE > launcher_rect.y + launcher_rect.height {
                 break;
             }
 
-            let window_for_slot = self
-                .windows
-                .iter()
-                .filter(|window| window.state != WindowState::Closed)
-                .nth(i);
+            let window_for_slot = match i {
+                0 => self.shell_window,
+                1 => self.file_manager_window,
+                2 => self.system_monitor_window,
+                4 => self.text_editor_window,
+                5 => self.network_status_window,
+                _ => None,
+            };
             let icon_rect = Rect::new(icon_x, icon_y, DOCK_ICON_SIZE, DOCK_ICON_SIZE);
-            let border = if window_for_slot.map_or(false, |window| window.focused) {
+            let border = if self
+                .focused_window
+                .is_some_and(|id| window_for_slot == Some(id))
+            {
                 colors::DOCK_ICON_ACCENT
             } else {
                 colors::DOCK_HIGHLIGHT
             };
-            crate::graphics::framebuffer::fill_rect(icon_rect, colors::DOCK_GLASS);
+            self.fill_vertical_gradient(
+                icon_rect,
+                Self::shade_color(colors::DOCK_GLASS, 22),
+                colors::DOCK_GLASS,
+            );
             crate::graphics::framebuffer::draw_rect(icon_rect, border, 1);
 
             let inner = Rect::new(
@@ -1699,7 +3264,12 @@ impl WindowManager {
                 DOCK_ICON_SIZE - 14,
                 DOCK_ICON_SIZE - 14,
             );
-            crate::graphics::framebuffer::fill_rect(inner, icon_colors[i % icon_colors.len()]);
+            let icon_color = icon_colors[i % icon_colors.len()];
+            self.fill_vertical_gradient(
+                inner,
+                Self::shade_color(icon_color, 24),
+                Self::shade_color(icon_color, -14),
+            );
 
             let label = icon_labels[i % icon_labels.len()];
             let label_x =
@@ -1726,25 +3296,32 @@ impl WindowManager {
         let max_x = close_x.saturating_sub(26);
         let min_x = max_x.saturating_sub(26);
         let button_h = TITLE_BAR_HEIGHT.saturating_sub(8);
-
         let buttons = [
             (
                 Rect::new(min_x, button_y, 22, button_h),
-                colors::TRAFFIC_LIGHT_YELLOW,
+                colors::WINDOW_BTN_MIN,
             ),
             (
                 Rect::new(max_x, button_y, 22, button_h),
-                colors::TRAFFIC_LIGHT_GREEN,
+                colors::WINDOW_BTN_MAX,
             ),
             (
                 Rect::new(close_x, button_y, 22, button_h),
-                colors::TRAFFIC_LIGHT_RED,
+                colors::WINDOW_BTN_CLOSE,
             ),
         ];
 
         for (rect, color) in buttons.iter() {
-            crate::graphics::framebuffer::fill_rect(*rect, *color);
-            crate::graphics::framebuffer::draw_rect(*rect, colors::BORDER_INACTIVE, 1);
+            let center_x = rect.x + rect.width / 2;
+            let center_y = rect.y + rect.height / 2;
+            self.draw_circle(center_x, center_y, 7, Self::shade_color(*color, -20));
+            self.draw_circle(center_x, center_y, 6, *color);
+            self.draw_circle(
+                center_x.saturating_sub(2),
+                center_y.saturating_sub(2),
+                2,
+                Self::shade_color(*color, 34),
+            );
         }
     }
 
@@ -1761,6 +3338,16 @@ impl WindowManager {
         );
 
         crate::graphics::framebuffer::fill_rect(shadow_rect, colors::WINDOW_SHADOW);
+        let soft_shadow = Rect::new(
+            window.rect.x.saturating_sub(WINDOW_SHADOW_MARGIN / 2),
+            window.rect.y.saturating_sub(WINDOW_SHADOW_MARGIN / 2),
+            window.rect.width + WINDOW_SHADOW_MARGIN,
+            window.rect.height + WINDOW_SHADOW_MARGIN,
+        );
+        crate::graphics::framebuffer::fill_rect(
+            soft_shadow,
+            Self::shade_color(colors::WINDOW_SHADOW, 16),
+        );
     }
 
     fn render_glow(&self, rect: Rect) {
@@ -1811,6 +3398,19 @@ impl WindowManager {
         for column in 0..rect.width {
             let color = Self::lerp_color(start, end, column, rect.width - 1);
             let line = Rect::new(rect.x + column, rect.y, 1, rect.height);
+            crate::graphics::framebuffer::fill_rect(line, color);
+        }
+    }
+
+    /// Top-to-bottom gradient — gives flat chrome (panels, title bars, dock)
+    /// the shaded depth of a real true-color desktop instead of a VGA flat fill.
+    fn fill_vertical_gradient(&self, rect: Rect, top: Color, bottom: Color) {
+        if rect.height == 0 {
+            return;
+        }
+        for row in 0..rect.height {
+            let color = Self::lerp_color(top, bottom, row, rect.height - 1);
+            let line = Rect::new(rect.x, rect.y + row, rect.width, 1);
             crate::graphics::framebuffer::fill_rect(line, color);
         }
     }

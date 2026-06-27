@@ -728,6 +728,15 @@ pub fn get_default_font() -> &'static BitmapFont {
 
 /// Draw text using bitmap font
 pub fn draw_text(text: &str, x: usize, y: usize, color: Color, font: &BitmapFont) {
+    // Defensive: a dangling/corrupt &str (stale pointer or length) would walk
+    // UTF-8 decoding off the end into unmapped memory and fault the kernel
+    // mid-render. Reject anything implausibly long or not fully mapped — reading
+    // the str's ptr/len metadata is safe; dereferencing the bad buffer is not.
+    let bytes = text.as_bytes();
+    if bytes.len() > 8192 || !crate::memory::range_is_mapped(bytes.as_ptr() as usize, bytes.len()) {
+        return;
+    }
+
     let mut char_x = x;
     let char_y = y;
 

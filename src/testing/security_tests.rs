@@ -127,7 +127,7 @@ fn test_privilege_escalation_prevention() -> TestResult {
     // Test 2: User process trying to execute privileged syscall
     let privileged_context = SyscallContext {
         pid: 1000,
-        syscall_num: SyscallNumber::SetPriority,
+        syscall_num: SyscallNumber::Setpriority,
         args: [0, 0, 0, 0, 0, 0], // Try to set priority to real-time
         user_sp: 0x7fff_0000,
         user_ip: 0x4000_0000,
@@ -500,7 +500,7 @@ fn test_access_control() -> TestResult {
     // Test 4: Capability-based access control
     let capability_context = SyscallContext {
         pid: 1000,
-        syscall_num: SyscallNumber::SetPriority,
+        syscall_num: SyscallNumber::Setpriority,
         args: [0, 0, 0, 0, 0, 0], // Try to change priority without capability
         user_sp: 0x7fff_0000,
         user_ip: 0x4000_0000,

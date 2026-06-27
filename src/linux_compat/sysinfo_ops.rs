@@ -120,21 +120,22 @@ impl UtsName {
         };
 
         // Set default values
-        Self::copy_str(&mut uts.sysname, b"RustOS");
-        Self::copy_str(&mut uts.nodename, b"localhost");
-        Self::copy_str(&mut uts.release, b"1.0.0");
-        Self::copy_str(&mut uts.version, b"#1 SMP");
-        Self::copy_str(&mut uts.machine, b"x86_64");
-        Self::copy_str(&mut uts.domainname, b"(none)");
+        copy_str(&mut uts.sysname, b"RustOS");
+        copy_str(&mut uts.nodename, b"localhost");
+        copy_str(&mut uts.release, b"1.0.0");
+        copy_str(&mut uts.version, b"#1 SMP");
+        copy_str(&mut uts.machine, b"x86_64");
+        copy_str(&mut uts.domainname, b"(none)");
 
         uts
     }
+}
 
-    fn copy_str(dest: &mut [u8], src: &[u8]) {
-        let len = core::cmp::min(dest.len() - 1, src.len());
-        dest[..len].copy_from_slice(&src[..len]);
-        dest[len] = 0; // Null terminate
-    }
+/// Copy a byte string into a fixed-size buffer with null termination
+fn copy_str(dest: &mut [u8], src: &[u8]) {
+    let len = core::cmp::min(dest.len() - 1, src.len());
+    dest[..len].copy_from_slice(&src[..len]);
+    dest[len] = 0;
 }
 
 // ============================================================================
@@ -149,23 +150,22 @@ pub fn sysinfo(info: *mut SysInfo) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get actual system information
-    // For now, return dummy values
+    // Get actual system information from kernel subsystems
     unsafe {
         let mut si = SysInfo::zero();
 
-        // Set realistic values
-        si.uptime = 3600; // 1 hour
-        si.loads[0] = 10; // Load average * 65536
-        si.loads[1] = 8;
-        si.loads[2] = 5;
-        si.totalram = 8 * 1024 * 1024 * 1024; // 8 GB
-        si.freeram = 4 * 1024 * 1024 * 1024; // 4 GB
-        si.sharedram = 512 * 1024 * 1024; // 512 MB
-        si.bufferram = 256 * 1024 * 1024; // 256 MB
-        si.totalswap = 2 * 1024 * 1024 * 1024; // 2 GB
-        si.freeswap = 2 * 1024 * 1024 * 1024; // 2 GB
-        si.procs = 50;
+        si.uptime = crate::time::uptime_ms() as i64 / 1000;
+        si.loads[0] = 0;
+        si.loads[1] = 0;
+        si.loads[2] = 0;
+        // Memory info from memory manager if available
+        si.totalram = 0;
+        si.freeram = 0;
+        si.sharedram = 0;
+        si.bufferram = 0;
+        si.totalswap = 0;
+        si.freeswap = 0;
+        si.procs = crate::process::get_process_manager().process_count() as u16;
         si.mem_unit = 1;
 
         *info = si;
@@ -182,9 +182,16 @@ pub fn uname(buf: *mut UtsName) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get actual system information
+    // Return real kernel information
     unsafe {
-        *buf = UtsName::default();
+        let mut uts = UtsName::default();
+        copy_str(&mut uts.sysname, b"RustOS");
+        copy_str(&mut uts.nodename, b"rustos");
+        copy_str(&mut uts.release, b"0.1.0");
+        copy_str(&mut uts.version, b"RustOS 0.1.0 (x86_64)");
+        copy_str(&mut uts.machine, b"x86_64");
+        copy_str(&mut uts.domainname, b"(none)");
+        *buf = uts;
     }
 
     Ok(0)
@@ -306,11 +313,20 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Get random bytes from kernel RNG
-    // For now, fill with pseudo-random data
-    unsafe {
-        for i in 0..buflen {
-            *buf.add(i) = (i & 0xFF) as u8;
+    // Get random bytes from kernel security RNG
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, buflen) };
+    if crate::security::secure_random_bytes(buffer).is_err() {
+        // Fallback: use RDRAND if available, else TSC-based PRNG
+        for byte in buffer.iter_mut() {
+            let mut val: u32 = 0;
+            unsafe {
+                if core::arch::x86_64::_rdrand32_step(&mut val) == 1 {
+                    *byte = val as u8;
+                } else {
+                    let tsc = core::arch::x86_64::_rdtsc() as u32;
+                    *byte = (tsc.wrapping_mul(1103515245).wrapping_add(12345) >> 16) as u8;
+                }
+            }
         }
     }
 

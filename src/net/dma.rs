@@ -273,6 +273,16 @@ impl DmaRing {
         self.tail = (self.tail + 1) % self.size;
     }
 
+    /// Get current tail position
+    pub fn tail(&self) -> usize {
+        self.tail
+    }
+
+    /// Get current head position
+    pub fn head(&self) -> usize {
+        self.head
+    }
+
     /// Get next completed descriptor for reception
     pub fn get_rx_descriptor(&mut self) -> Option<(&mut DmaDescriptor, &mut DmaBuffer)> {
         let descriptor = &mut self.descriptors[self.head];
@@ -289,6 +299,24 @@ impl DmaRing {
     /// Advance head pointer after processing descriptor
     pub fn advance_head(&mut self) {
         self.head = (self.head + 1) % self.size;
+    }
+
+    /// Clean up completed TX descriptors (call from TX interrupt handler)
+    /// Returns the number of descriptors cleaned up
+    pub fn cleanup_completed_tx(&mut self) -> usize {
+        let mut count = 0;
+        loop {
+            let descriptor = &self.descriptors[self.head];
+            if !descriptor.is_done() {
+                break;
+            }
+            // Reset descriptor for reuse
+            self.descriptors[self.head].status = 0;
+            self.descriptors[self.head].flags = 0;
+            self.head = (self.head + 1) % self.size;
+            count += 1;
+        }
+        count
     }
 
     /// Get physical address of descriptor ring

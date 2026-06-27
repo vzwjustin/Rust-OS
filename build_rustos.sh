@@ -327,7 +327,7 @@ run_qemu() {
     qemu_args="$qemu_args -display $display_mode"
     qemu_args="$qemu_args -m 512M"  # Increased memory for ACPI/PCI testing
     qemu_args="$qemu_args -cpu qemu64,+apic"  # Enable APIC for ACPI testing
-    qemu_args="$qemu_args -machine q35,accel=tcg"  # Q35 chipset with ACPI support
+    qemu_args="$qemu_args -machine pc,accel=tcg"  # PC chipset (q35 causes SMI triple fault with bootloader)
 
     if [[ "$TARGET" == *"x86_64"* ]]; then
         qemu-system-x86_64 $qemu_args

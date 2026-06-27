@@ -3,10 +3,39 @@
 //! This module implements Linux-compatible signal operations including
 //! sigaction, sigprocmask, sigpending, and real-time signal support.
 
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use lazy_static::lazy_static;
+use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::process;
+
+lazy_static! {
+    static ref SIGNAL_MASKS: Mutex<BTreeMap<u32, AtomicU64>> = Mutex::new(BTreeMap::new());
+}
+
+fn signal_mask_for(pid: u32) -> u64 {
+    let masks = SIGNAL_MASKS.lock();
+    masks
+        .get(&pid)
+        .map(|m| m.load(Ordering::SeqCst))
+        .unwrap_or(0)
+}
+
+fn update_signal_mask<F>(pid: u32, f: F)
+where
+    F: FnOnce(u64) -> u64,
+{
+    let mut masks = SIGNAL_MASKS.lock();
+    let entry = masks.entry(pid).or_insert_with(|| AtomicU64::new(0));
+    let current = entry.load(Ordering::SeqCst);
+    entry.store(f(current), Ordering::SeqCst);
+}
 
 /// Operation counter for statistics
 static SIGNAL_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -89,33 +118,69 @@ pub fn rt_sigaction(
         return Err(LinuxError::EINVAL);
     }
 
-    sigaction(signum, act, oldact)
+    if signum < 1 || signum > 64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if signum == signal::SIGKILL || signum == signal::SIGSTOP {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let pid = process::current_pid();
+    let process_manager = process::get_process_manager();
+
+    if !oldact.is_null() {
+        let old_handler = process_manager
+            .get_process(pid)
+            .and_then(|pcb| pcb.signal_handlers.get(&(signum as u32)).copied())
+            .unwrap_or(sig_action::SIG_DFL as u64);
+        unsafe {
+            (*oldact).sa_handler = old_handler as usize;
+            (*oldact).sa_flags = 0;
+            (*oldact).sa_restorer = 0;
+            (*oldact).sa_mask = signal_mask_for(pid);
+        }
+    }
+
+    if !act.is_null() {
+        unsafe {
+            let handler = (*act).sa_handler as u64;
+            process_manager.with_process_mut(pid, |pcb| {
+                pcb.signal_handlers.insert(signum as u32, handler);
+            });
+        }
+    }
+
+    Ok(0)
 }
 
 /// sigprocmask - examine and change blocked signals
 pub fn sigprocmask(how: i32, set: *const SigSet, oldset: *mut SigSet) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Save old mask if requested
+    let pid = process::current_pid();
+
     if !oldset.is_null() {
         unsafe {
-            *oldset = 0; // No signals blocked by default
+            *oldset = signal_mask_for(pid);
         }
     }
 
-    // Update signal mask if new set provided
     if !set.is_null() {
-        match how {
-            sig_how::SIG_BLOCK => {
-                // TODO: Add signals from set to blocked mask
+        unsafe {
+            let mask = *set;
+            match how {
+                sig_how::SIG_BLOCK => {
+                    update_signal_mask(pid, |current| current | mask);
+                }
+                sig_how::SIG_UNBLOCK => {
+                    update_signal_mask(pid, |current| current & !mask);
+                }
+                sig_how::SIG_SETMASK => {
+                    update_signal_mask(pid, |_| mask);
+                }
+                _ => return Err(LinuxError::EINVAL),
             }
-            sig_how::SIG_UNBLOCK => {
-                // TODO: Remove signals from set from blocked mask
-            }
-            sig_how::SIG_SETMASK => {
-                // TODO: Set blocked mask to set
-            }
-            _ => return Err(LinuxError::EINVAL),
         }
     }
 
@@ -330,6 +395,40 @@ pub fn sigismember(set: *const SigSet, signum: i32) -> LinuxResult<i32> {
         let is_member = (*set & (1u64 << (signum - 1))) != 0;
         Ok(if is_member { 1 } else { 0 })
     }
+}
+
+/// kill - send signal to a process
+pub fn kill(pid: Pid, sig: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    // Validate signal number (0 is valid - means just check permissions)
+    if sig < 0 || sig > 64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    // pid > 0: send to process `pid`
+    // pid == 0: send to all processes in same process group
+    // pid == -1: send to all processes we can send to
+    // pid < -1: send to process group -pid
+
+    if pid > 0 {
+        // Verify process exists
+        let process_manager = process::get_process_manager();
+        if process_manager.get_process(pid as u32).is_none() {
+            return Err(LinuxError::ESRCH);
+        }
+
+        // TODO: Actually deliver the signal
+        // For now, just succeed
+    } else if pid == 0 {
+        // TODO: Send to process group
+    } else if pid == -1 {
+        // TODO: Send to all processes
+    } else {
+        // TODO: Send to process group -pid
+    }
+
+    Ok(0)
 }
 
 #[cfg(any())]

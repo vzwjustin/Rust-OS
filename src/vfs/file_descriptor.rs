@@ -4,7 +4,30 @@
 
 use super::{InodeOps, OpenFlags, VfsError, VfsResult};
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
+
+/// Non-regular file descriptor kinds tracked alongside VFS inodes.
+#[derive(Debug, Clone)]
+pub enum FdKind {
+    Regular,
+    Directory {
+        path: String,
+    },
+    PipeRead(u32),
+    PipeWrite(u32),
+    EventFd(u32),
+    TimerFd(u32),
+    Epoll(u32),
+    Signalfd(u32),
+    Socket(u32),
+}
+
+impl FdKind {
+    pub const fn regular() -> Self {
+        Self::Regular
+    }
+}
 
 /// Open file descriptor
 pub struct FileDescriptor {
@@ -12,8 +35,10 @@ pub struct FileDescriptor {
     pub inode: Arc<dyn InodeOps>,
     /// Open flags
     pub flags: OpenFlags,
-    /// Current file offset
+    /// Current file offset (also used as directory read cookie)
     pub offset: u64,
+    /// Special fd kind for poll/read/write dispatch
+    pub kind: FdKind,
 }
 
 impl FileDescriptor {
@@ -23,6 +48,17 @@ impl FileDescriptor {
             inode,
             flags,
             offset: 0,
+            kind: FdKind::regular(),
+        }
+    }
+
+    /// Create a file descriptor with an explicit kind
+    pub fn with_kind(inode: Arc<dyn InodeOps>, flags: OpenFlags, kind: FdKind) -> Self {
+        Self {
+            inode,
+            flags,
+            offset: 0,
+            kind,
         }
     }
 }
@@ -84,6 +120,11 @@ impl OpenFileTable {
         self.files.get_mut(&fd).ok_or(VfsError::BadFileDescriptor)
     }
 
+    /// Get the fd kind if the fd is open
+    pub fn kind(&self, fd: i32) -> VfsResult<FdKind> {
+        Ok(self.get(fd)?.kind.clone())
+    }
+
     /// Remove a file descriptor
     pub fn remove(&mut self, fd: i32) -> VfsResult<()> {
         self.files.remove(&fd).ok_or(VfsError::BadFileDescriptor)?;
@@ -97,6 +138,7 @@ impl OpenFileTable {
             inode: Arc::clone(&file.inode),
             flags: file.flags,
             offset: file.offset,
+            kind: file.kind.clone(),
         };
 
         self.insert(new_file)
@@ -115,6 +157,7 @@ impl OpenFileTable {
             inode: Arc::clone(&file.inode),
             flags: file.flags,
             offset: file.offset,
+            kind: file.kind.clone(),
         };
 
         // Close newfd if it exists

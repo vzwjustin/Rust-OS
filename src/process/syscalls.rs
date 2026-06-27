@@ -4,141 +4,11 @@
 //! a standardized way for processes to request kernel services.
 
 use super::{Pid, Priority, ProcessManager, ProcessState};
+pub use crate::syscall::SyscallNumber;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-
-/// System call numbers
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum SyscallNumber {
-    // Process management
-    Exit = 0,
-    Fork = 1,
-    Exec = 2,
-    Wait = 3,
-    GetPid = 4,
-    GetPpid = 5,
-    Sleep = 6,
-    Clone = 7,  // Create thread/process (flexible fork)
-    Execve = 8, // Execute program (enhanced)
-    WaitId = 9, // Wait for process state change
-
-    // File I/O
-    Open = 10,
-    Close = 11,
-    Read = 12,
-    Write = 13,
-    Seek = 14,
-    Stat = 15,
-    OpenAt = 16,   // Open file relative to directory fd
-    MkdirAt = 17,  // Create directory
-    UnlinkAt = 18, // Delete file/directory
-    Fchmod = 19,   // Change file permissions
-
-    // Memory management
-    Mmap = 20,
-    Munmap = 21,
-    Brk = 22,
-    Sbrk = 23,
-    MProtect = 24, // Change memory protection
-    Madvise = 25,  // Give advice about memory usage
-
-    // Process communication
-    Pipe = 30,
-    Signal = 31,
-    Kill = 32,
-    Futex = 33, // Fast userspace mutex
-
-    // Networking (for dynamic linker supporting network libraries)
-    Socket = 35,
-    Bind = 36,
-    Connect = 37,
-    Listen = 38,
-    Accept = 39,
-
-    // System information
-    Uname = 40,
-    GetTime = 41,
-    SetTime = 42,
-
-    // Process control
-    SetPriority = 50,
-    GetPriority = 51,
-    SetTidAddress = 52, // Set thread ID address
-
-    // I/O control
-    Ioctl = 60, // Device-specific operations
-    Fcntl = 61, // File control operations
-
-    // Package management (experimental)
-    PkgInstall = 200, // Install package
-    PkgRemove = 201,  // Remove package
-    PkgSearch = 202,  // Search packages
-    PkgInfo = 203,    // Get package info
-    PkgList = 204,    // List installed packages
-    PkgUpdate = 205,  // Update package database
-    PkgUpgrade = 206, // Upgrade package
-}
-
-impl From<u64> for SyscallNumber {
-    fn from(value: u64) -> Self {
-        match value {
-            0 => SyscallNumber::Exit,
-            1 => SyscallNumber::Fork,
-            2 => SyscallNumber::Exec,
-            3 => SyscallNumber::Wait,
-            4 => SyscallNumber::GetPid,
-            5 => SyscallNumber::GetPpid,
-            6 => SyscallNumber::Sleep,
-            7 => SyscallNumber::Clone,
-            8 => SyscallNumber::Execve,
-            9 => SyscallNumber::WaitId,
-            10 => SyscallNumber::Open,
-            11 => SyscallNumber::Close,
-            12 => SyscallNumber::Read,
-            13 => SyscallNumber::Write,
-            14 => SyscallNumber::Seek,
-            15 => SyscallNumber::Stat,
-            16 => SyscallNumber::OpenAt,
-            17 => SyscallNumber::MkdirAt,
-            18 => SyscallNumber::UnlinkAt,
-            19 => SyscallNumber::Fchmod,
-            20 => SyscallNumber::Mmap,
-            21 => SyscallNumber::Munmap,
-            22 => SyscallNumber::Brk,
-            23 => SyscallNumber::Sbrk,
-            24 => SyscallNumber::MProtect,
-            25 => SyscallNumber::Madvise,
-            30 => SyscallNumber::Pipe,
-            31 => SyscallNumber::Signal,
-            32 => SyscallNumber::Kill,
-            33 => SyscallNumber::Futex,
-            35 => SyscallNumber::Socket,
-            36 => SyscallNumber::Bind,
-            37 => SyscallNumber::Connect,
-            38 => SyscallNumber::Listen,
-            39 => SyscallNumber::Accept,
-            40 => SyscallNumber::Uname,
-            41 => SyscallNumber::GetTime,
-            42 => SyscallNumber::SetTime,
-            50 => SyscallNumber::SetPriority,
-            51 => SyscallNumber::GetPriority,
-            52 => SyscallNumber::SetTidAddress,
-            60 => SyscallNumber::Ioctl,
-            61 => SyscallNumber::Fcntl,
-            200 => SyscallNumber::PkgInstall,
-            201 => SyscallNumber::PkgRemove,
-            202 => SyscallNumber::PkgSearch,
-            203 => SyscallNumber::PkgInfo,
-            204 => SyscallNumber::PkgList,
-            205 => SyscallNumber::PkgUpdate,
-            206 => SyscallNumber::PkgUpgrade,
-            _ => SyscallNumber::Exit, // Default to exit for unknown syscalls
-        }
-    }
-}
 
 /// System call return values
 #[derive(Debug, Clone, Copy)]
@@ -237,34 +107,36 @@ impl SyscallDispatcher {
         let current_pid = process_manager.current_process();
 
         let result = match syscall {
-            SyscallNumber::Exit => self.sys_exit(args, process_manager, current_pid),
+            SyscallNumber::Exit | SyscallNumber::ExitGroup => {
+                self.sys_exit(args, process_manager, current_pid)
+            }
             SyscallNumber::Fork => self.sys_fork(args, process_manager, current_pid),
-            SyscallNumber::Exec => self.sys_exec(args, process_manager, current_pid),
-            SyscallNumber::Wait => self.sys_wait(args, process_manager, current_pid),
+            SyscallNumber::Execve => self.sys_exec(args, process_manager, current_pid),
+            SyscallNumber::Wait4 => self.sys_wait(args, process_manager, current_pid),
             SyscallNumber::GetPid => self.sys_getpid(process_manager, current_pid),
             SyscallNumber::GetPpid => self.sys_getppid(process_manager, current_pid),
-            SyscallNumber::Sleep => self.sys_sleep(args, process_manager, current_pid),
+            SyscallNumber::Nanosleep => self.sys_sleep(args, process_manager, current_pid),
             SyscallNumber::Clone => self.sys_clone(args, process_manager, current_pid),
-            SyscallNumber::Execve => self.sys_execve(args, process_manager, current_pid),
-            SyscallNumber::WaitId => self.sys_waitid(args, process_manager, current_pid),
+            SyscallNumber::Waitid => self.sys_waitid(args, process_manager, current_pid),
             SyscallNumber::Open => self.sys_open(args, process_manager, current_pid),
             SyscallNumber::Close => self.sys_close(args, process_manager, current_pid),
             SyscallNumber::Read => self.sys_read(args, process_manager, current_pid),
             SyscallNumber::Write => self.sys_write(args, process_manager, current_pid),
-            SyscallNumber::Seek => self.sys_seek(args, process_manager, current_pid),
-            SyscallNumber::Stat => self.sys_stat(args, process_manager, current_pid),
-            SyscallNumber::OpenAt => self.sys_openat(args, process_manager, current_pid),
-            SyscallNumber::MkdirAt => self.sys_mkdirat(args, process_manager, current_pid),
-            SyscallNumber::UnlinkAt => self.sys_unlinkat(args, process_manager, current_pid),
+            SyscallNumber::Lseek => self.sys_seek(args, process_manager, current_pid),
+            SyscallNumber::Stat | SyscallNumber::Fstat | SyscallNumber::Lstat => {
+                self.sys_stat(args, process_manager, current_pid)
+            }
+            SyscallNumber::Openat => self.sys_openat(args, process_manager, current_pid),
+            SyscallNumber::Mkdirat => self.sys_mkdirat(args, process_manager, current_pid),
+            SyscallNumber::Unlinkat => self.sys_unlinkat(args, process_manager, current_pid),
             SyscallNumber::Fchmod => self.sys_fchmod(args, process_manager, current_pid),
             SyscallNumber::Mmap => self.sys_mmap(args, process_manager, current_pid),
             SyscallNumber::Munmap => self.sys_munmap(args, process_manager, current_pid),
             SyscallNumber::Brk => self.sys_brk(args, process_manager, current_pid),
-            SyscallNumber::Sbrk => self.sys_sbrk(args, process_manager, current_pid),
-            SyscallNumber::MProtect => self.sys_mprotect(args, process_manager, current_pid),
+            SyscallNumber::Mprotect => self.sys_mprotect(args, process_manager, current_pid),
             SyscallNumber::Madvise => self.sys_madvise(args, process_manager, current_pid),
             SyscallNumber::Pipe => self.sys_pipe(args, process_manager, current_pid),
-            SyscallNumber::Signal => self.sys_signal(args, process_manager, current_pid),
+            SyscallNumber::RtSigaction => self.sys_signal(args, process_manager, current_pid),
             SyscallNumber::Kill => self.sys_kill(args, process_manager, current_pid),
             SyscallNumber::Futex => self.sys_futex(args, process_manager, current_pid),
             SyscallNumber::Socket => self.sys_socket(args, process_manager, current_pid),
@@ -273,10 +145,14 @@ impl SyscallDispatcher {
             SyscallNumber::Listen => self.sys_listen(args, process_manager, current_pid),
             SyscallNumber::Accept => self.sys_accept(args, process_manager, current_pid),
             SyscallNumber::Uname => self.sys_uname(args, process_manager, current_pid),
-            SyscallNumber::GetTime => self.sys_gettime(process_manager),
-            SyscallNumber::SetTime => self.sys_settime(args, process_manager, current_pid),
-            SyscallNumber::SetPriority => self.sys_setpriority(args, process_manager, current_pid),
-            SyscallNumber::GetPriority => self.sys_getpriority(args, process_manager, current_pid),
+            SyscallNumber::Gettimeofday | SyscallNumber::ClockGettime => {
+                self.sys_gettime(process_manager)
+            }
+            SyscallNumber::Settimeofday | SyscallNumber::ClockSettime => {
+                self.sys_settime(args, process_manager, current_pid)
+            }
+            SyscallNumber::Setpriority => self.sys_setpriority(args, process_manager, current_pid),
+            SyscallNumber::Getpriority => self.sys_getpriority(args, process_manager, current_pid),
             SyscallNumber::SetTidAddress => {
                 self.sys_set_tid_address(args, process_manager, current_pid)
             }
@@ -289,6 +165,8 @@ impl SyscallDispatcher {
             SyscallNumber::PkgList => self.sys_pkg_list(args),
             SyscallNumber::PkgUpdate => self.sys_pkg_update(args),
             SyscallNumber::PkgUpgrade => self.sys_pkg_upgrade(args),
+            SyscallNumber::Invalid => SyscallResult::Error(SyscallError::InvalidSyscall),
+            _ => SyscallResult::Error(SyscallError::OperationNotSupported),
         };
 
         match result {

@@ -914,9 +914,40 @@ impl StorageDriver for IdeDriver {
             return Err(StorageError::NotSupported);
         }
 
-        // In real implementation, execute SMART READ DATA command
-        // For now, return empty SMART data
-        Ok(vec![0; 512])
+        self.select_drive()?;
+
+        // Set up SMART READ DATA registers
+        // Features = 0xD0 (SMART READ DATA)
+        // LBA low = 0xC0, LBA mid = 0x4F, LBA high = 0xC2 (SMART signature)
+        // Sector count = 1
+        self.write_io_reg(IdeIoReg::Features, 0xD0);
+        self.write_io_reg(IdeIoReg::SectorCount, 1);
+        self.write_io_reg(IdeIoReg::LbaLow, 0xC0);
+        self.write_io_reg(IdeIoReg::LbaMid, 0x4F);
+        self.write_io_reg(IdeIoReg::LbaHigh, 0xC2);
+
+        // Drive/Head register with LBA bit set
+        let drive_head = 0xE0 | (self.drive << 4);
+        self.write_io_reg(IdeIoReg::DriveHead, drive_head);
+
+        // Send SMART command (0xB0)
+        self.write_io_reg(IdeIoReg::Status, 0xB0);
+
+        // Wait for data request
+        self.wait_drq()?;
+
+        // Read 512 bytes of SMART data via PIO (256 16-bit reads)
+        let mut smart_data = vec![0u8; 512];
+        for i in 0..256 {
+            let word = self.read_data();
+            smart_data[i * 2] = (word & 0xFF) as u8;
+            smart_data[i * 2 + 1] = ((word >> 8) & 0xFF) as u8;
+        }
+
+        // Wait for command completion
+        self.wait_ready()?;
+
+        Ok(smart_data)
     }
 }
 

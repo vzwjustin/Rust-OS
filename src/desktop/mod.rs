@@ -32,7 +32,7 @@ impl Default for DesktopConfig {
             double_buffered: true,
             hardware_acceleration: false,
             show_splash: true,
-            background_color: Color::rgb(28, 34, 54),
+            background_color: Color::rgb(36, 52, 71),
         }
     }
 }
@@ -100,59 +100,14 @@ impl Desktop {
             unsafe { crate::early_serial_write_str("desktop:splash done\r\n") };
         }
 
-        // Create real shell/status windows for the initial desktop.
+        // Create Linux-style default applications wired to kernel subsystems.
         if let Some(ref mut wm) = self.window_manager {
             unsafe { crate::early_serial_write_str("desktop:create windows\r\n") };
-            let welcome = wm.create_window("RustOS Desktop", 88, 56, 400, 260);
-            wm.set_window_content(
-                welcome,
-                &[
-                    "RustOS framebuffer desktop",
-                    "",
-                    "This is the kernel UI shell.",
-                    "It renders from real framebuffer",
-                    "and window-manager state.",
-                    "",
-                    "No userspace app registry",
-                    "is mounted yet.",
-                    "",
-                    "Use Activities for open",
-                    "window overview.",
-                ],
-            );
-
-            let status = wm.create_window("Runtime Status", 188, 152, 350, 220);
-            wm.set_window_content(
-                status,
-                &[
-                    "Runtime-backed values:",
-                    "",
-                    "Uptime: panel top-right",
-                    "Windows: panel task list",
-                    "Focus: launcher indicator",
-                    "",
-                    "Network: quick settings",
-                    "Audio: unavailable",
-                ],
-            );
-
-            let sysinfo = wm.create_window("Kernel Info", 288, 248, 300, 200);
-            wm.set_window_content(
-                sysinfo,
-                &[
-                    "RustOS",
-                    "",
-                    "Kernel: x86_64 no_std",
-                    "Display: 32-bit framebuffer",
-                    "Input: PS/2 keyboard/mouse",
-                    "",
-                    "Subsystem status is shown",
-                    "only when wired to kernel",
-                    "state.",
-                ],
-            );
 
             wm.create_shell_window(112, 96, 440, 260);
+            wm.create_file_manager_window(180, 88, 420, 300);
+            wm.create_system_monitor_window(240, 140, 360, 240);
+
             wm.force_redraw();
             unsafe { crate::early_serial_write_str("desktop:windows done\r\n") };
         }
@@ -270,6 +225,7 @@ impl Desktop {
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
         if let Some(ref mut wm) = self.window_manager {
+            wm.tick();
             if wm.needs_redraw() {
                 wm.render();
             }

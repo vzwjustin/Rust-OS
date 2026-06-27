@@ -17,12 +17,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 pub mod file_descriptor;
+pub mod procfs;
 pub mod ramfs;
 
 #[cfg(test)]
 pub mod examples;
 
-pub use file_descriptor::{FileDescriptor, OpenFileTable};
+pub use file_descriptor::{FdKind, FileDescriptor, OpenFileTable};
 
 /// VFS error type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +231,26 @@ pub trait InodeOps: Send + Sync {
 
     /// Get the inode type
     fn inode_type(&self) -> InodeType;
+
+    /// Read the target path of a symbolic link (default: not supported)
+    fn read_symlink_target(&self) -> VfsResult<alloc::string::String> {
+        Err(VfsError::NotSupported)
+    }
+
+    /// Write the target path for a symbolic link (default: not supported)
+    fn write_symlink_target(&self, _target: &str) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
+
+    /// Change file permissions (default: not supported)
+    fn set_mode(&self, _mode: u32) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
+
+    /// Change file owner and group (default: not supported)
+    fn set_owner(&self, _uid: u32, _gid: u32) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
 }
 
 /// Superblock operations trait
@@ -305,8 +326,21 @@ impl Vfs {
         let mut mounts = self.mounts.write();
         mounts.push(MountPoint {
             path: String::from("/"),
-            sb: root_sb,
+            sb: root_sb.clone(),
         });
+
+        drop(mounts);
+
+        // Standard Linux paths expected by userspace
+        let root = root_sb.root();
+        let _ = root.create("tmp", InodeType::Directory, 0o1777);
+        let _ = root.create("dev", InodeType::Directory, 0o755);
+        let _ = root.create("sys", InodeType::Directory, 0o555);
+        let _ = root.create("run", InodeType::Directory, 0o755);
+        let _ = root.create("var", InodeType::Directory, 0o755);
+        let _ = root.create("home", InodeType::Directory, 0o755);
+        let _ = root.create("etc", InodeType::Directory, 0o755);
+        let _ = procfs::install_proc(root);
 
         Ok(())
     }
@@ -330,6 +364,28 @@ impl Vfs {
             sb,
         });
 
+        Ok(())
+    }
+
+    /// Get filesystem statistics for a path
+    pub fn statfs(&self, path: &str) -> VfsResult<StatFs> {
+        let mounts = self.mounts.read();
+        let mount = mounts
+            .iter()
+            .filter(|m| path.starts_with(&m.path))
+            .max_by_key(|m| m.path.len());
+        match mount {
+            Some(m) => m.sb.statfs(),
+            None => Err(VfsError::NotFound),
+        }
+    }
+
+    /// Sync all mounted filesystems
+    pub fn sync_all(&self) -> VfsResult<()> {
+        let mounts = self.mounts.read();
+        for m in mounts.iter() {
+            m.sb.sync_fs()?;
+        }
         Ok(())
     }
 
@@ -437,9 +493,33 @@ impl Vfs {
 
         // Add to file table
         let mut file_table = self.file_table.lock();
-        let fd = file_table.insert(FileDescriptor::new(inode, flags))?;
+        let kind = if inode.inode_type() == InodeType::Directory {
+            FdKind::Directory {
+                path: String::from(path),
+            }
+        } else {
+            FdKind::Regular
+        };
+        let fd = file_table.insert(FileDescriptor::with_kind(inode, flags, kind))?;
 
         Ok(fd)
+    }
+
+    /// Allocate a VFS fd for a special (non-regular) object.
+    pub fn open_special(
+        &self,
+        inode: Arc<dyn InodeOps>,
+        flags: OpenFlags,
+        kind: FdKind,
+    ) -> VfsResult<i32> {
+        let mut file_table = self.file_table.lock();
+        file_table.insert(FileDescriptor::with_kind(inode, flags, kind))
+    }
+
+    /// Get fd kind for poll/read dispatch.
+    pub fn fd_kind(&self, fd: i32) -> VfsResult<FdKind> {
+        let file_table = self.file_table.lock();
+        file_table.kind(fd)
     }
 
     /// Close a file descriptor
@@ -482,6 +562,37 @@ impl Vfs {
         file_desc.offset += bytes_written as u64;
 
         Ok(bytes_written)
+    }
+
+    /// Read from a file descriptor at a given offset without changing the file position
+    pub fn pread(&self, fd: i32, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let file_table = self.file_table.lock();
+        let file_desc = file_table.get(fd)?;
+
+        if !file_desc.flags.is_readable() {
+            return Err(VfsError::PermissionDenied);
+        }
+
+        file_desc.inode.read_at(offset, buf)
+    }
+
+    /// Write to a file descriptor at a given offset without changing the file position
+    pub fn pwrite(&self, fd: i32, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        let file_table = self.file_table.lock();
+        let file_desc = file_table.get(fd)?;
+
+        if !file_desc.flags.is_writable() {
+            return Err(VfsError::PermissionDenied);
+        }
+
+        file_desc.inode.write_at(offset, buf)
+    }
+
+    /// Get the inode for a file descriptor (for ftruncate etc.)
+    pub fn fd_inode(&self, fd: i32) -> VfsResult<Arc<dyn InodeOps>> {
+        let file_table = self.file_table.lock();
+        let file_desc = file_table.get(fd)?;
+        Ok(Arc::clone(&file_desc.inode))
     }
 
     /// Seek in a file descriptor
@@ -556,6 +667,18 @@ impl Vfs {
         parent.unlink(&filename)
     }
 
+    /// Change file permissions
+    pub fn chmod(&self, path: &str, mode: u32) -> VfsResult<()> {
+        let inode = self.resolve_path(path)?;
+        inode.set_mode(mode)
+    }
+
+    /// Change file owner and group
+    pub fn chown(&self, path: &str, uid: u32, gid: u32) -> VfsResult<()> {
+        let inode = self.resolve_path(path)?;
+        inode.set_owner(uid, gid)
+    }
+
     /// Read directory entries
     pub fn readdir(&self, path: &str) -> VfsResult<Vec<DirEntry>> {
         let inode = self.resolve_path(path)?;
@@ -565,6 +688,38 @@ impl Vfs {
         }
 
         inode.readdir()
+    }
+
+    /// Read directory entries via an open directory fd.
+    pub fn readdir_fd(&self, fd: i32) -> VfsResult<(Vec<DirEntry>, u64)> {
+        let mut file_table = self.file_table.lock();
+        let file_desc = file_table.get_mut(fd)?;
+
+        let path = match &file_desc.kind {
+            FdKind::Directory { path } => path.clone(),
+            _ => return Err(VfsError::NotDirectory),
+        };
+        let cookie = file_desc.offset;
+        drop(file_table);
+
+        let mut entries = self.readdir(&path)?;
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok((entries, cookie))
+    }
+
+    /// Advance directory read cookie on fd.
+    pub fn set_dir_cookie(&self, fd: i32, cookie: u64) -> VfsResult<()> {
+        let mut file_table = self.file_table.lock();
+        let file_desc = file_table.get_mut(fd)?;
+        file_desc.offset = cookie;
+        Ok(())
+    }
+
+    /// Rename a file or directory.
+    pub fn rename(&self, oldpath: &str, newpath: &str) -> VfsResult<()> {
+        let (old_parent, old_name) = self.resolve_parent(oldpath)?;
+        let (new_parent, new_name) = self.resolve_parent(newpath)?;
+        old_parent.rename(&old_name, new_parent, &new_name)
     }
 
     /// Sync a file descriptor
@@ -584,6 +739,29 @@ impl Vfs {
     pub fn dup2(&self, oldfd: i32, newfd: i32) -> VfsResult<i32> {
         let mut file_table = self.file_table.lock();
         file_table.duplicate_to(oldfd, newfd)
+    }
+
+    /// Create a hard link
+    pub fn link(&self, oldpath: &str, newpath: &str) -> VfsResult<()> {
+        let target = self.resolve_path(oldpath)?;
+        let (new_parent, new_name) = self.resolve_parent(newpath)?;
+        new_parent.link(&new_name, target)
+    }
+
+    /// Create a symbolic link
+    pub fn symlink(&self, target: &str, linkpath: &str) -> VfsResult<()> {
+        let (parent, name) = self.resolve_parent(linkpath)?;
+        let inode = parent.create(&name, InodeType::Symlink, 0o777)?;
+        inode.write_symlink_target(target)
+    }
+
+    /// Read the target of a symbolic link
+    pub fn readlink(&self, path: &str) -> VfsResult<alloc::string::String> {
+        let inode = self.resolve_path(path)?;
+        if inode.inode_type() != InodeType::Symlink {
+            return Err(VfsError::NotSupported);
+        }
+        inode.read_symlink_target()
     }
 }
 
@@ -657,7 +835,90 @@ pub fn vfs_readdir(path: &str) -> VfsResult<Vec<DirEntry>> {
     VFS.readdir(path)
 }
 
+/// Read directory entries by open fd
+pub fn vfs_readdir_fd(fd: i32) -> VfsResult<(Vec<DirEntry>, u64)> {
+    VFS.readdir_fd(fd)
+}
+
+/// Set directory read cookie
+pub fn vfs_set_dir_cookie(fd: i32, cookie: u64) -> VfsResult<()> {
+    VFS.set_dir_cookie(fd, cookie)
+}
+
+/// Get fd kind
+pub fn vfs_fd_kind(fd: i32) -> VfsResult<FdKind> {
+    VFS.fd_kind(fd)
+}
+
+/// Open a special fd
+pub fn vfs_open_special(inode: Arc<dyn InodeOps>, flags: u32, kind: FdKind) -> VfsResult<i32> {
+    VFS.open_special(inode, OpenFlags::new(flags), kind)
+}
+
+/// Rename paths
+pub fn vfs_rename(oldpath: &str, newpath: &str) -> VfsResult<()> {
+    VFS.rename(oldpath, newpath)
+}
+
 /// Sync a file descriptor
 pub fn vfs_fsync(fd: i32) -> VfsResult<()> {
     VFS.fsync(fd)
+}
+
+/// Create a hard link
+pub fn vfs_link(oldpath: &str, newpath: &str) -> VfsResult<()> {
+    VFS.link(oldpath, newpath)
+}
+
+/// Create a symbolic link
+pub fn vfs_symlink(target: &str, linkpath: &str) -> VfsResult<()> {
+    VFS.symlink(target, linkpath)
+}
+
+/// Read the target of a symbolic link
+pub fn vfs_readlink(path: &str) -> VfsResult<alloc::string::String> {
+    VFS.readlink(path)
+}
+
+/// Read from fd at offset without changing file position
+pub fn vfs_pread(fd: i32, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+    VFS.pread(fd, buf, offset)
+}
+
+/// Write to fd at offset without changing file position
+pub fn vfs_pwrite(fd: i32, buf: &[u8], offset: u64) -> VfsResult<usize> {
+    VFS.pwrite(fd, buf, offset)
+}
+
+/// Truncate file by fd
+pub fn vfs_ftruncate(fd: i32, size: u64) -> VfsResult<()> {
+    let inode = VFS.fd_inode(fd)?;
+    inode.truncate(size)
+}
+
+/// Get filesystem statistics for a path
+pub fn vfs_statfs(path: &str) -> VfsResult<StatFs> {
+    VFS.statfs(path)
+}
+
+/// Change file permissions
+pub fn vfs_chmod(path: &str, mode: u32) -> VfsResult<()> {
+    VFS.chmod(path, mode)
+}
+
+/// Change file owner and group
+pub fn vfs_chown(path: &str, uid: u32, gid: u32) -> VfsResult<()> {
+    VFS.chown(path, uid, gid)
+}
+
+/// Change file permissions by fd
+pub fn vfs_fchmod(fd: i32, mode: u32) -> VfsResult<()> {
+    let inode = VFS.fd_inode(fd)?;
+    inode.set_mode(mode)
+}
+
+/// Change file owner and group by fd
+pub fn vfs_fchown(fd: i32, uid: u32, gid: u32) -> VfsResult<()> {
+    let inode = VFS.fd_inode(fd)?;
+    inode.set_owner(uid, gid)
 }

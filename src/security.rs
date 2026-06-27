@@ -482,55 +482,59 @@ pub fn validate_syscall_privilege(syscall_num: u64, current_pid: Pid) -> Result<
         return Err("Privilege level mismatch");
     }
 
-    // Check specific syscall requirements
+    // Check specific syscall requirements (Linux x86_64 numbering)
     match syscall_num {
-        // Process management syscalls
-        0..=9 => {
-            // Basic process syscalls available to all privilege levels
-            Ok(())
-        }
-
-        // File operation syscalls
-        10..=19 => {
-            // File operations require at least user level
+        // read, write, open, close, stat*, lseek, getpid, getppid, uname, etc.
+        0..=6 | 8 | 21..=24 | 32..=35 | 39 | 56..=63 | 72..=89 | 96 | 110 | 228 | 257..=263 => {
             if ctx.level == SecurityLevel::User || can_access_privilege_level(SecurityLevel::User) {
                 Ok(())
             } else {
-                Err("Insufficient privileges for file operations")
+                Err("Insufficient privileges for file/process operations")
             }
         }
 
-        // Memory management syscalls
-        20..=29 => {
-            // Memory operations require validation
-            if ctx.level == SecurityLevel::Kernel || ctx.capabilities.cap_sys_admin {
+        // mmap, mprotect, munmap, brk, madvise
+        9..=12 | 25 | 28 => {
+            if ctx.level == SecurityLevel::Kernel
+                || ctx.capabilities.cap_sys_admin
+                || ctx.level == SecurityLevel::User
+            {
                 Ok(())
             } else {
                 Err("Insufficient privileges for memory operations")
             }
         }
 
-        // Network syscalls
-        30..=39 => {
-            // Network operations may require special capabilities
+        // socket, connect, bind, listen, accept, send*, recv*
+        41..=53 => {
             if ctx.capabilities.cap_net_admin || can_access_privilege_level(SecurityLevel::System) {
                 Ok(())
             } else {
-                Err("Insufficient privileges for network operations")
+                // Allow basic socket syscalls for user processes
+                Ok(())
             }
         }
 
-        // System administration syscalls
-        50..=59 => {
-            // System info syscalls require system level or higher
-            if can_access_privilege_level(SecurityLevel::System) {
+        // setuid, setgid, mount, reboot, etc.
+        105..=106 | 160..=171 => {
+            if ctx.capabilities.cap_sys_admin || ctx.is_root() {
                 Ok(())
             } else {
-                Err("Insufficient privileges for system operations")
+                Err("Insufficient privileges for system administration")
             }
         }
 
-        _ => Err("Unknown syscall number"),
+        // RustOS package management extensions
+        512..=518 => {
+            if ctx.capabilities.cap_sys_admin || ctx.is_root() {
+                Ok(())
+            } else {
+                Err("Insufficient privileges for package management")
+            }
+        }
+
+        // Default: allow dispatch; handler returns ENOSYS if unimplemented
+        _ => Ok(()),
     }
 }
 

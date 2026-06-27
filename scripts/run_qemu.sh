@@ -34,6 +34,6 @@ qemu-system-x86_64 \
     -serial stdio \
     -display "$DISPLAY_MODE" \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -machine q35 \
+    -machine pc \
     -cpu qemu64,+lm,+nx \
     -enable-kvm

@@ -31,6 +31,20 @@ fn inc_ops() {
     FS_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Helper to convert null-terminated C string to Rust string
+unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
+    if ptr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let mut len = 0;
+    while *ptr.add(len) != 0 {
+        len += 1;
+    }
+    let slice = core::slice::from_raw_parts(ptr, len);
+    String::from_utf8(slice.iter().copied().collect())
+        .map_err(|_| LinuxError::EINVAL)
+}
+
 // ============================================================================
 // Mount Flags
 // ============================================================================
@@ -277,15 +291,20 @@ pub fn statfs(path: *const u8, buf: *mut StatFs) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get filesystem statistics for path
+    let path = unsafe { c_str_to_string(path)? };
+    let vfs_stat = crate::vfs::vfs_statfs(&path).map_err(|_| LinuxError::ENOSYS)?;
+
     unsafe {
         *buf = StatFs::zero();
-        (*buf).f_type = fstype::EXT2_SUPER_MAGIC;
-        (*buf).f_blocks = 1000000;
-        (*buf).f_bfree = 500000;
-        (*buf).f_bavail = 400000;
-        (*buf).f_files = 100000;
-        (*buf).f_ffree = 50000;
+        (*buf).f_type = vfs_stat.fs_type as i64;
+        (*buf).f_bsize = vfs_stat.block_size as i64;
+        (*buf).f_blocks = vfs_stat.total_blocks;
+        (*buf).f_bfree = vfs_stat.free_blocks;
+        (*buf).f_bavail = vfs_stat.avail_blocks;
+        (*buf).f_files = vfs_stat.total_inodes;
+        (*buf).f_ffree = vfs_stat.free_inodes;
+        (*buf).f_namelen = vfs_stat.max_name_len as i64;
+        (*buf).f_frsize = vfs_stat.block_size as i64;
     }
 
     Ok(0)
@@ -303,9 +322,19 @@ pub fn fstatfs(fd: Fd, buf: *mut StatFs) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get filesystem statistics for fd
+    // Get filesystem statistics for fd by looking up the root mount
+    let vfs_stat = crate::vfs::vfs_statfs("/").map_err(|_| LinuxError::ENOSYS)?;
     unsafe {
         *buf = StatFs::zero();
+        (*buf).f_type = vfs_stat.fs_type as i64;
+        (*buf).f_bsize = vfs_stat.block_size as i64;
+        (*buf).f_blocks = vfs_stat.total_blocks;
+        (*buf).f_bfree = vfs_stat.free_blocks;
+        (*buf).f_bavail = vfs_stat.avail_blocks;
+        (*buf).f_files = vfs_stat.total_inodes;
+        (*buf).f_ffree = vfs_stat.free_inodes;
+        (*buf).f_namelen = vfs_stat.max_name_len as i64;
+        (*buf).f_frsize = vfs_stat.block_size as i64;
     }
 
     Ok(0)
@@ -332,10 +361,7 @@ pub fn ustat(dev: Dev, ubuf: *mut u8) -> LinuxResult<i32> {
 pub fn sync() {
     inc_ops();
 
-    // TODO: Sync all filesystems
-    // Write all dirty buffers
-    // Sync all inodes
-    // Flush all caches
+    let _ = crate::vfs::get_vfs().sync_all();
 }
 
 /// syncfs - sync filesystem containing file
@@ -346,7 +372,8 @@ pub fn syncfs(fd: Fd) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    // TODO: Sync specific filesystem
+    // Sync all filesystems (syncfs syncs the filesystem containing the fd)
+    let _ = crate::vfs::get_vfs().sync_all();
     Ok(0)
 }
 

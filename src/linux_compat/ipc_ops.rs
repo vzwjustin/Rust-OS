@@ -604,57 +604,25 @@ pub fn shmctl(shmid: ShmId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
 /// pipe - create pipe (returns read and write file descriptors)
 pub fn pipe(pipefd: *mut [Fd; 2]) -> LinuxResult<i32> {
     inc_ops();
-
-    if pipefd.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let ipc_manager = get_ipc_manager();
-
-    match ipc_manager.create_pipe() {
-        Ok((read_id, write_id)) => {
-            // For now, use the IPC IDs directly as file descriptors
-            // In a full implementation, these would be registered with VFS
-            unsafe {
-                (*pipefd)[0] = read_id as Fd;
-                (*pipefd)[1] = write_id as Fd;
-            }
-            Ok(0)
-        }
-        Err(_) => Err(LinuxError::EMFILE),
-    }
+    super::special_fd::pipe(pipefd)
 }
 
 /// pipe2 - create pipe with flags
 pub fn pipe2(pipefd: *mut [Fd; 2], flags: i32) -> LinuxResult<i32> {
     inc_ops();
-
-    // For now, ignore flags and just create a regular pipe
-    pipe(pipefd)
+    super::special_fd::pipe2(pipefd, flags)
 }
 
 /// eventfd - create file descriptor for event notification
 pub fn eventfd(initval: u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
-
-    let fd = NEXT_EVENTFD.fetch_add(1, Ordering::SeqCst) as Fd;
-
-    let event = EventFd {
-        value: AtomicU64::new(initval as u64),
-        flags,
-    };
-
-    let mut table = EVENTFD_TABLE.write();
-    table.insert(fd, event);
-
-    Ok(fd)
+    super::special_fd::eventfd2(initval, flags)
 }
 
 /// eventfd2 - create file descriptor for event notification with flags
 pub fn eventfd2(initval: u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
-
-    eventfd(initval, flags)
+    super::special_fd::eventfd2(initval, flags)
 }
 
 /// signalfd - create file descriptor for accepting signals
@@ -697,27 +665,7 @@ pub fn signalfd(fd: Fd, mask: *const SigSet, flags: i32) -> LinuxResult<Fd> {
 /// timerfd_create - create a timer that delivers events via file descriptor
 pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
-
-    match clockid {
-        clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
-            let fd = NEXT_TIMERFD.fetch_add(1, Ordering::SeqCst) as Fd;
-
-            let timer = TimerFd {
-                clockid,
-                interval_sec: 0,
-                interval_nsec: 0,
-                value_sec: 0,
-                value_nsec: 0,
-                flags,
-            };
-
-            let mut table = TIMERFD_TABLE.write();
-            table.insert(fd, timer);
-
-            Ok(fd)
-        }
-        _ => Err(LinuxError::EINVAL),
-    }
+    super::special_fd::timerfd_create(clockid, flags)
 }
 
 /// Timer specification structure (struct itimerspec)
@@ -734,77 +682,21 @@ struct ITimerSpec {
 pub fn timerfd_settime(
     fd: Fd,
     flags: i32,
-    new_value: *const u8, // struct itimerspec
-    old_value: *mut u8,   // struct itimerspec
+    new_value: *const u8,
+    old_value: *mut u8,
 ) -> LinuxResult<i32> {
     inc_ops();
-
-    if fd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
-    if new_value.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let new_spec = unsafe { *(new_value as *const ITimerSpec) };
-
-    let mut table = TIMERFD_TABLE.write();
-    let timer = table.get_mut(&fd).ok_or(LinuxError::EBADF)?;
-
-    // Save old value if requested
-    if !old_value.is_null() {
-        let old_spec = ITimerSpec {
-            it_interval_sec: timer.interval_sec,
-            it_interval_nsec: timer.interval_nsec,
-            it_value_sec: timer.value_sec,
-            it_value_nsec: timer.value_nsec,
-        };
-        unsafe {
-            *(old_value as *mut ITimerSpec) = old_spec;
-        }
-    }
-
-    // Set new timer values
-    timer.interval_sec = new_spec.it_interval_sec;
-    timer.interval_nsec = new_spec.it_interval_nsec;
-    timer.value_sec = new_spec.it_value_sec;
-    timer.value_nsec = new_spec.it_value_nsec;
-
-    Ok(0)
+    super::special_fd::timerfd_settime(fd, flags, new_value, old_value)
 }
 
 /// timerfd_gettime - get current setting of timer via file descriptor
-pub fn timerfd_gettime(
-    fd: Fd,
-    curr_value: *mut u8, // struct itimerspec
-) -> LinuxResult<i32> {
+pub fn timerfd_gettime(fd: Fd, curr_value: *mut u8) -> LinuxResult<i32> {
     inc_ops();
-
-    if fd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
-    if curr_value.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let table = TIMERFD_TABLE.read();
-    let timer = table.get(&fd).ok_or(LinuxError::EBADF)?;
-
-    let spec = ITimerSpec {
-        it_interval_sec: timer.interval_sec,
-        it_interval_nsec: timer.interval_nsec,
-        it_value_sec: timer.value_sec,
-        it_value_nsec: timer.value_nsec,
-    };
-
-    unsafe {
-        *(curr_value as *mut ITimerSpec) = spec;
-    }
-
-    Ok(0)
+    super::special_fd::timerfd_gettime(fd, curr_value)
 }
+
+/// memfd_create - create an anonymous file (re-exported from memory_ops)
+pub use super::memory_ops::memfd_create;
 
 #[cfg(any())]
 mod tests {

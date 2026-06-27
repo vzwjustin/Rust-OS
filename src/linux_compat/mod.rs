@@ -19,6 +19,7 @@ pub mod memory_ops;
 pub mod process_ops;
 pub mod resource_ops;
 pub mod signal_ops;
+pub mod special_fd;
 pub mod socket_ops;
 pub mod sysinfo_ops;
 pub mod thread_ops;
@@ -123,7 +124,32 @@ pub enum LinuxError {
     ENODATA = 61,
     /// Not supported
     ENOTSUP = 95,
+    /// Not a socket
+    ENOTSOCK = 88,
+    /// Address family not supported by protocol
+    EAFNOSUPPORT = 97,
+    /// Address already in use
+    EADDRINUSE = 98,
+    /// Network is unreachable
+    ENETUNREACH = 101,
+    /// Software caused connection abort
+    ECONNABORTED = 103,
+    /// Connection reset by peer
+    ECONNRESET = 104,
+    /// No buffer space available
+    ENOBUFS = 105,
+    /// Connection timed out
+    ETIMEDOUT = 110,
+    /// Connection refused
+    ECONNREFUSED = 111,
+    /// No route to host
+    EHOSTUNREACH = 113,
+    /// Protocol option not available
+    ENOPROTOOPT = 92,
+    /// Transport endpoint is not connected
+    ENOTCONN = 107,
 }
+
 
 // Linux compatibility aliases - these errno values are intentionally the same
 /// Operation would block (alias for EAGAIN)
@@ -179,6 +205,7 @@ pub fn init_linux_compat() {
     fs_ops::init_fs_operations();
     resource_ops::init_resource_operations();
     sysinfo_ops::init_sysinfo_operations();
+    special_fd::init_special_fd();
 }
 
 /// Get Linux compatibility layer statistics

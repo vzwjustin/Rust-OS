@@ -372,7 +372,7 @@ impl BenchmarkSuite {
                 "syscall_throughput" => {
                     let context = crate::syscall::SyscallContext {
                         pid: 1,
-                        syscall_num: crate::syscall::SyscallNumber::GetTime,
+                        syscall_num: crate::syscall::SyscallNumber::ClockGettime,
                         args: [0; 6],
                         user_sp: 0x7fff_0000,
                         user_ip: 0x4000_0000,

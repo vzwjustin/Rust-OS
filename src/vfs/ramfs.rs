@@ -8,6 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
 use super::{DirEntry, InodeOps, InodeType, Stat, StatFs, SuperblockOps, VfsError, VfsResult};
@@ -18,6 +19,8 @@ enum RamFsInodeData {
     File(RwLock<Vec<u8>>),
     /// Directory entries (name -> inode)
     Directory(RwLock<BTreeMap<String, Arc<RamFsInode>>>),
+    /// Symbolic link target path
+    Symlink(RwLock<String>),
 }
 
 /// RAM filesystem inode
@@ -27,11 +30,11 @@ pub struct RamFsInode {
     /// Inode type
     inode_type: InodeType,
     /// Access mode
-    mode: u32,
+    mode: AtomicU32,
     /// Owner user ID
-    uid: u32,
+    uid: AtomicU32,
     /// Owner group ID
-    gid: u32,
+    gid: AtomicU32,
     /// Number of hard links
     nlink: RwLock<u32>,
     /// Access time
@@ -51,9 +54,9 @@ impl RamFsInode {
         Arc::new(Self {
             ino,
             inode_type: InodeType::File,
-            mode,
-            uid: 0,
-            gid: 0,
+            mode: AtomicU32::new(mode),
+            uid: AtomicU32::new(0),
+            gid: AtomicU32::new(0),
             nlink: RwLock::new(1),
             atime: RwLock::new(now),
             mtime: RwLock::new(now),
@@ -68,14 +71,31 @@ impl RamFsInode {
         Arc::new(Self {
             ino,
             inode_type: InodeType::Directory,
-            mode: mode | 0o111, // Directories need execute permission
-            uid: 0,
-            gid: 0,
+            mode: AtomicU32::new(mode | 0o111),
+            uid: AtomicU32::new(0),
+            gid: AtomicU32::new(0),
             nlink: RwLock::new(2), // . and ..
             atime: RwLock::new(now),
             mtime: RwLock::new(now),
             ctime: RwLock::new(now),
             data: RamFsInodeData::Directory(RwLock::new(BTreeMap::new())),
+        })
+    }
+
+    /// Create a new symlink inode
+    pub fn new_symlink(ino: u64, target: &str) -> Arc<Self> {
+        let now = get_time();
+        Arc::new(Self {
+            ino,
+            inode_type: InodeType::Symlink,
+            mode: AtomicU32::new(0o777),
+            uid: AtomicU32::new(0),
+            gid: AtomicU32::new(0),
+            nlink: RwLock::new(1),
+            atime: RwLock::new(now),
+            mtime: RwLock::new(now),
+            ctime: RwLock::new(now),
+            data: RamFsInodeData::Symlink(RwLock::new(String::from(target))),
         })
     }
 
@@ -112,6 +132,19 @@ impl InodeOps for RamFsInode {
                 Ok(bytes_to_copy)
             }
             RamFsInodeData::Directory(_) => Err(VfsError::IsDirectory),
+            RamFsInodeData::Symlink(target) => {
+                self.update_atime();
+                let target = target.read();
+                let bytes = target.as_bytes();
+                let start = offset as usize;
+                if start >= bytes.len() {
+                    return Ok(0);
+                }
+                let end = core::cmp::min(start + buf.len(), bytes.len());
+                let n = end - start;
+                buf[..n].copy_from_slice(&bytes[start..end]);
+                Ok(n)
+            }
         }
     }
 
@@ -133,6 +166,7 @@ impl InodeOps for RamFsInode {
                 Ok(buf.len())
             }
             RamFsInodeData::Directory(_) => Err(VfsError::IsDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotSupported),
         }
     }
 
@@ -140,6 +174,7 @@ impl InodeOps for RamFsInode {
         let size = match &self.data {
             RamFsInodeData::File(content) => content.read().len() as u64,
             RamFsInodeData::Directory(entries) => entries.read().len() as u64,
+            RamFsInodeData::Symlink(target) => target.read().len() as u64,
         };
 
         let blocks = (size + 511) / 512;
@@ -150,10 +185,10 @@ impl InodeOps for RamFsInode {
             size,
             blksize: 4096,
             blocks,
-            mode: self.mode,
+            mode: self.mode.load(Ordering::Relaxed),
             nlink: *self.nlink.read(),
-            uid: self.uid,
-            gid: self.gid,
+            uid: self.uid.load(Ordering::Relaxed),
+            gid: self.gid.load(Ordering::Relaxed),
             rdev: 0,
             atime: *self.atime.read(),
             mtime: *self.mtime.read(),
@@ -169,6 +204,7 @@ impl InodeOps for RamFsInode {
                 Ok(())
             }
             RamFsInodeData::Directory(_) => Err(VfsError::IsDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotSupported),
         }
     }
 
@@ -189,6 +225,7 @@ impl InodeOps for RamFsInode {
                     .ok_or(VfsError::NotFound)
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 
@@ -219,6 +256,7 @@ impl InodeOps for RamFsInode {
                 let new_inode = match inode_type {
                     InodeType::File => RamFsInode::new_file(ino, mode),
                     InodeType::Directory => RamFsInode::new_directory(ino, mode),
+                    InodeType::Symlink => RamFsInode::new_symlink(ino, ""),
                     _ => return Err(VfsError::NotSupported),
                 };
 
@@ -230,6 +268,7 @@ impl InodeOps for RamFsInode {
                 Ok(new_inode as Arc<dyn InodeOps>)
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 
@@ -248,6 +287,7 @@ impl InodeOps for RamFsInode {
                 Ok(())
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 
@@ -295,6 +335,7 @@ impl InodeOps for RamFsInode {
                 Ok(())
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 
@@ -314,6 +355,7 @@ impl InodeOps for RamFsInode {
                 Ok(())
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 
@@ -336,11 +378,43 @@ impl InodeOps for RamFsInode {
                 Ok(result)
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
+            RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 
     fn inode_type(&self) -> InodeType {
         self.inode_type
+    }
+
+    fn read_symlink_target(&self) -> VfsResult<alloc::string::String> {
+        match &self.data {
+            RamFsInodeData::Symlink(target) => Ok(target.read().clone()),
+            _ => Err(VfsError::NotSupported),
+        }
+    }
+
+    fn write_symlink_target(&self, target: &str) -> VfsResult<()> {
+        match &self.data {
+            RamFsInodeData::Symlink(t) => {
+                *t.write() = String::from(target);
+                self.update_mtime();
+                Ok(())
+            }
+            _ => Err(VfsError::NotSupported),
+        }
+    }
+
+    fn set_mode(&self, mode: u32) -> VfsResult<()> {
+        self.mode.store(mode, Ordering::Relaxed);
+        *self.ctime.write() = get_time();
+        Ok(())
+    }
+
+    fn set_owner(&self, uid: u32, gid: u32) -> VfsResult<()> {
+        self.uid.store(uid, Ordering::Relaxed);
+        self.gid.store(gid, Ordering::Relaxed);
+        *self.ctime.write() = get_time();
+        Ok(())
     }
 }
 

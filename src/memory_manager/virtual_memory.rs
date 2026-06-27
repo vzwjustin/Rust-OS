@@ -266,41 +266,46 @@ impl VirtualMemoryManager {
     fn map_region(&self, region: &MemoryRegion) -> VmResult<()> {
         let page_count = region.size_in_pages();
 
-        // Convert protection flags to page table flags
-        let mut pt_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        // x86_64 hardware flags for the live page table (distinct from this
+        // module's own PageTableFlags type).
+        let mut pt_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
 
         if region.protection.is_writable() {
-            pt_flags = pt_flags | PageTableFlags::WRITABLE;
+            pt_flags |= x86_64::structures::paging::PageTableFlags::WRITABLE;
         }
 
         if !region.protection.is_executable() {
-            pt_flags = pt_flags | PageTableFlags::NO_EXECUTE;
+            pt_flags |= x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         }
 
-        // Map each page
+        // Allocate a real zeroed frame for each page and map it into the live
+        // (CR3) kernel page table. On partial failure, roll back the pages we
+        // mapped so a retry (e.g. a smaller brk) starts from a clean range.
         let mut virt_addr = region.start;
         for _ in 0..page_count {
-            // In a real implementation, allocate a physical frame here
-            let phys_addr = PhysAddr::new(0x1000_0000); // Placeholder
-
-            // Map the page (would use actual page table here)
-            // page_table.map(virt_addr, phys_addr, pt_flags)?;
-
+            if crate::memory::map_user_page(virt_addr.as_u64() as usize, pt_flags).is_err() {
+                let mut undo = region.start;
+                while undo < virt_addr {
+                    let _ = crate::memory::unmap_user_page(undo.as_u64() as usize);
+                    undo += 4096u64;
+                }
+                return Err(VmError::OutOfMemory);
+            }
             virt_addr += 4096u64;
         }
 
         Ok(())
     }
 
-    /// Unmap a range of addresses
+    /// Unmap a range of addresses, reclaiming each backing frame.
     fn unmap_range(&self, start: VirtAddr, end: VirtAddr) -> VmResult<()> {
         let page_count = ((end.as_u64() - start.as_u64()) / 4096) as usize;
 
         let mut virt_addr = start;
         for _ in 0..page_count {
-            // Unmap the page (would use actual page table here)
-            // page_table.unmap(virt_addr)?;
-
+            crate::memory::unmap_user_page(virt_addr.as_u64() as usize)
+                .map_err(|_| VmError::InvalidAddress)?;
             virt_addr += 4096u64;
         }
 
@@ -311,27 +316,24 @@ impl VirtualMemoryManager {
     fn protect_range(&self, start: VirtAddr, end: VirtAddr, prot: ProtectionFlags) -> VmResult<()> {
         let page_count = ((end.as_u64() - start.as_u64()) / 4096) as usize;
 
-        // Convert protection flags to page table flags
-        let mut pt_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        // x86_64 hardware flags for the live page table.
+        let mut pt_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
 
         if prot.is_writable() {
-            pt_flags = pt_flags | PageTableFlags::WRITABLE;
+            pt_flags |= x86_64::structures::paging::PageTableFlags::WRITABLE;
         }
 
         if !prot.is_executable() {
-            pt_flags = pt_flags | PageTableFlags::NO_EXECUTE;
+            pt_flags |= x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         }
 
         let mut virt_addr = start;
         for _ in 0..page_count {
-            // Update page flags (would use actual page table here)
-            // page_table.update_flags(virt_addr, pt_flags)?;
-
+            crate::memory::protect_user_page(virt_addr.as_u64() as usize, pt_flags)
+                .map_err(|_| VmError::InvalidAddress)?;
             virt_addr += 4096u64;
         }
-
-        // Flush TLB for the range
-        self.page_table_manager.flush_tlb(start);
 
         Ok(())
     }

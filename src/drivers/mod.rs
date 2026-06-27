@@ -3,6 +3,7 @@
 //! This module provides a unified interface for all hardware drivers in RustOS,
 //! including graphics, input, network, and storage drivers with hot-plug support.
 
+pub mod display;
 pub mod hotplug;
 pub mod input_manager;
 pub mod network;
@@ -12,6 +13,7 @@ pub mod ps2_mouse;
 pub mod storage;
 pub mod vbe;
 pub mod vbe_io;
+pub mod virtio;
 
 // Removed unused imports
 use alloc::format;
@@ -22,6 +24,15 @@ use core::fmt;
 pub use vbe::{
     driver as vbe_driver, get_current_framebuffer_info, init as init_vbe, set_desktop_mode,
     VbeDriver, VbeStatus, VideoMode,
+};
+
+// Re-export display driver functionality
+pub use display::{
+    change_mode, clear, controller, dimensions, driver_info, fill_rect, init as init_display,
+    init_from_bootloader as init_display_from_bootloader, is_ready as is_display_ready,
+    is_text_mode as is_display_text_mode, mode as display_mode, present, set_pixel,
+    status as display_status, DisplayControllerInfo, DisplayDriver, DisplayDriverInfo, DisplayMode,
+    DisplayStatus,
 };
 
 // Re-export PCI functionality
@@ -265,7 +276,7 @@ impl DeviceInfo {
     }
 }
 
-/// Driver manager for handling all system drivers (simplified)
+/// Driver manager for handling all system drivers
 pub struct DriverManager {
     driver_count: usize,
     device_count: usize,
@@ -284,9 +295,9 @@ impl DriverManager {
         }
     }
 
-    /// Initialize all drivers
+    /// Initialize all drivers by scanning PCI for real hardware
     pub fn init(&mut self) -> Result<(), &'static str> {
-        // Detect hardware devices
+        // Detect hardware devices via PCI
         self.detect_devices()?;
 
         // Initialize graphics drivers
@@ -301,39 +312,83 @@ impl DriverManager {
         Ok(())
     }
 
-    /// Detect hardware devices (simplified)
+    /// Detect hardware devices by scanning PCI bus
     fn detect_devices(&mut self) -> Result<(), &'static str> {
-        // Simplified device detection - just count some common devices
-        self.device_count = 4; // QEMU VGA, VirtualBox, VMware, Intel
+        use crate::pci::{list_devices, PciClass};
+
+        let devices = list_devices();
+        self.device_count = devices.len();
+
+        for dev in devices.iter() {
+            crate::serial_println!(
+                "pci: {:02x}:{:02x}.{} {:04X}:{:04X} class={:?} ({})",
+                dev.bus,
+                dev.device,
+                dev.function,
+                dev.vendor_id,
+                dev.device_id,
+                dev.class_code,
+                dev.name
+            );
+        }
+
         Ok(())
     }
 
-    /// Initialize graphics drivers (simplified)
+    /// Initialize graphics drivers based on PCI detection
     fn init_graphics_drivers(&mut self) -> Result<(), &'static str> {
-        // Simplified VBE driver initialization
-        self.driver_count += 1;
-        self.graphics_initialized = true;
+        use crate::pci::{get_devices_by_class, PciClass};
+
+        let gpu_count = get_devices_by_class(PciClass::Display).len();
+        self.driver_count += gpu_count;
+        self.graphics_initialized = gpu_count > 0 || display::is_ready();
+
         Ok(())
     }
 
-    /// Initialize input drivers (simplified)
+    /// Initialize input drivers (PS/2 is already initialized in boot path)
     fn init_input_drivers(&mut self) -> Result<(), &'static str> {
-        // Simplified input driver initialization
-        self.driver_count += 2; // keyboard + mouse
+        self.driver_count += 2;
         self.input_initialized = true;
         Ok(())
     }
 
-    /// Initialize system drivers (simplified)
+    /// Initialize system drivers (PCI, hotplug already initialized)
     fn init_system_drivers(&mut self) -> Result<(), &'static str> {
-        // Simplified system driver initialization
-        self.driver_count += 1; // PCI driver
+        use crate::pci::{get_devices_by_class, PciClass};
+
+        let net_count = get_devices_by_class(PciClass::Network).len();
+        let storage_count = get_devices_by_class(PciClass::MassStorage).len();
+        self.driver_count += net_count + storage_count;
+
         Ok(())
     }
 
-    /// Get driver count by type (simplified)
-    pub fn get_drivers_by_type_count(&self, _driver_type: DriverType) -> usize {
-        1 // Simplified - just return 1 for any type
+    /// Get driver count by type
+    pub fn get_drivers_by_type_count(&self, driver_type: DriverType) -> usize {
+        use crate::pci::{get_devices_by_class, PciClass};
+        match driver_type {
+            DriverType::Graphics => {
+                if self.graphics_initialized {
+                    1
+                } else {
+                    0
+                }
+            }
+            DriverType::Network => get_devices_by_class(PciClass::Network).len(),
+            DriverType::Storage => get_devices_by_class(PciClass::MassStorage).len(),
+            DriverType::Input => {
+                if self.input_initialized {
+                    1
+                } else {
+                    0
+                }
+            }
+            DriverType::Audio => 0,
+            DriverType::USB => 0,
+            DriverType::PCI => 0,
+            DriverType::System => 0,
+        }
     }
 
     /// Get driver count
@@ -346,9 +401,19 @@ impl DriverManager {
         self.device_count
     }
 
-    /// Get ready driver count
+    /// Get ready driver count (graphics + input + PCI devices)
     pub fn ready_driver_count(&self) -> usize {
-        self.driver_count // Simplified - assume all are ready
+        use crate::pci::{get_devices_by_class, PciClass};
+        let mut count = 0;
+        if self.graphics_initialized {
+            count += 1;
+        }
+        if self.input_initialized {
+            count += 1;
+        }
+        count += get_devices_by_class(PciClass::Network).len();
+        count += get_devices_by_class(PciClass::MassStorage).len();
+        count
     }
 
     /// Check if graphics is initialized
@@ -402,6 +467,11 @@ pub fn init_drivers() -> Result<(), &'static str> {
     // Process any initial hot-plug events
     let _ = process_hotplug_events();
 
+    // Initialize VirtIO devices (virtio-net, virtio-blk)
+    if let Err(e) = virtio::init() {
+        crate::serial_println!("virtio: init failed: {}", e);
+    }
+
     unsafe {
         DRIVER_MANAGER_INITIALIZED = true;
         GRAPHICS_INITIALIZED = true;
@@ -423,12 +493,19 @@ pub fn is_driver_manager_initialized() -> bool {
 
 /// Get driver system status (simplified)
 pub fn get_driver_system_status() -> Option<DriverSystemStatus> {
+    use crate::pci::{get_devices_by_class, list_devices, PciClass};
+
     unsafe {
         if DRIVER_MANAGER_INITIALIZED {
+            let total_devices = list_devices().len();
+            let gpu_count = get_devices_by_class(PciClass::Display).len();
+            let net_count = get_devices_by_class(PciClass::Network).len();
+            let storage_count = get_devices_by_class(PciClass::MassStorage).len();
+            let total_drivers = gpu_count + net_count + storage_count + 2; // +2 for input
             Some(DriverSystemStatus {
-                total_drivers: 4,
-                ready_drivers: 4,
-                total_devices: 4,
+                total_drivers,
+                ready_drivers: total_drivers,
+                total_devices,
                 graphics_ready: GRAPHICS_INITIALIZED,
                 input_ready: true,
             })

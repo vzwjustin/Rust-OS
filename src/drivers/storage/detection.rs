@@ -85,6 +85,17 @@ impl StorageDetector {
         let pci_devices = scan_pci_devices();
 
         for device in pci_devices {
+            // Check for VirtIO block devices (vendor 0x1AF4, device 0x1001)
+            if device.vendor_id == 0x1AF4 && device.device_id == 0x1001 {
+                if let Err(e) = self.detect_virtio_blk_device(&device) {
+                    self.detection_results.errors.push(format!(
+                        "VirtIO-blk detection failed for device {:04x}:{:04x}: {:?}",
+                        device.vendor_id, device.device_id, e
+                    ));
+                }
+                continue;
+            }
+
             if device.class_code == PCI_CLASS_STORAGE {
                 match device.subclass {
                     PCI_SUBCLASS_SATA => {
@@ -136,21 +147,78 @@ impl StorageDetector {
             return Err(StorageError::NotSupported);
         }
 
-        // Get BAR5 (AHCI base address)
-        let base_addr = device.bar5 as u64;
+        // BAR5 is a 32-bit memory BAR; low 4 bits are type flags, not address.
+        let base_addr = (device.bar5 & !0xF) as u64;
         if base_addr == 0 {
             return Err(StorageError::HardwareError);
         }
 
-        // BAR5 MMIO is not mapped by the bootloader. Skip AHCI init to avoid page faults.
-        Err(StorageError::NotSupported)
+        // Map the HBA register space (ABAR) so init can touch MMIO without faulting.
+        // 0x2000 covers generic regs + 32 port register sets (0x100 + 32*0x80 = 0x1100).
+        crate::memory::map_mmio_region(base_addr as usize, 0x2000)
+            .map_err(|_| StorageError::HardwareError)?;
+
+        let mut driver = AhciDriver::new(
+            format!("ahci-{:04x}:{:04x}", device.vendor_id, device.device_id),
+            device.vendor_id,
+            device.device_id,
+            base_addr,
+        );
+        driver.init()?;
+
+        let model = format!(
+            "AHCI Controller {:04x}:{:04x}",
+            device.vendor_id, device.device_id
+        );
+        let serial = format!("AHCI-{:04x}-{:04x}", device.vendor_id, device.device_id);
+        self.manager.register_device(
+            Box::new(driver),
+            model,
+            serial,
+            "1.0".to_string(),
+            get_current_time(),
+        )?;
+
+        self.detection_results.ahci_controllers += 1;
+        self.detection_results.total_devices += 1;
+        Ok(())
     }
 
     /// Detect NVMe controller
     fn detect_nvme_controller(&mut self, device: &PciDevice) -> Result<(), StorageError> {
-        // BAR0 MMIO is not mapped by the bootloader. Skip NVMe init to avoid page faults.
-        let _ = device;
-        Err(StorageError::NotSupported)
+        // NVMe BAR0 is a 64-bit memory BAR: low 4 bits are flags, high half is bar1.
+        let base_addr = ((device.bar1 as u64) << 32) | ((device.bar0 & !0xF) as u64);
+        if base_addr == 0 {
+            return Err(StorageError::HardwareError);
+        }
+
+        // Map controller registers + admin doorbell (doorbells start at 0x1000).
+        // ponytail: 0x2000 covers admin + first I/O queue; widen if many queues are used.
+        crate::memory::map_mmio_region(base_addr as usize, 0x2000)
+            .map_err(|_| StorageError::HardwareError)?;
+
+        let mut driver = NvmeDriver::new(
+            format!("nvme-{:04x}:{:04x}", device.vendor_id, device.device_id),
+            base_addr,
+        );
+        driver.init()?;
+
+        let model = format!(
+            "NVMe Controller {:04x}:{:04x}",
+            device.vendor_id, device.device_id
+        );
+        let serial = format!("NVME-{:04x}-{:04x}", device.vendor_id, device.device_id);
+        self.manager.register_device(
+            Box::new(driver),
+            model,
+            serial,
+            "1.0".to_string(),
+            get_current_time(),
+        )?;
+
+        self.detection_results.nvme_controllers += 1;
+        self.detection_results.total_devices += 1;
+        Ok(())
     }
 
     /// Detect PCI IDE controller
@@ -199,6 +267,38 @@ impl StorageDetector {
             self.detection_results.ide_controllers += 1;
             self.detection_results.total_devices += devices_found;
         }
+
+        Ok(())
+    }
+
+    /// Detect VirtIO block device
+    fn detect_virtio_blk_device(&mut self, device: &PciDevice) -> Result<(), StorageError> {
+        // VirtIO-blk is already initialized by the virtio subsystem during boot.
+        // Here we just register it as a storage device if it's available.
+        if !crate::drivers::virtio::blk::is_available() {
+            return Ok(());
+        }
+
+        let capacity_sectors = crate::drivers::virtio::blk::capacity_sectors().unwrap_or(0);
+
+        let driver: Box<dyn StorageDriver> = Box::new(VirtioBlkStorageAdapter { capacity_sectors });
+
+        let model = format!("VirtIO Block Disk");
+        let serial = format!(
+            "virtio-blk-{:04x}-{:04x}",
+            device.vendor_id, device.device_id
+        );
+        let firmware = "1.0".to_string();
+
+        let _device_id =
+            self.manager
+                .register_device(driver, model, serial, firmware, get_current_time())?;
+
+        self.detection_results.total_devices += 1;
+        crate::serial_println!(
+            "virtio-blk: registered as storage device ({} sectors)",
+            capacity_sectors
+        );
 
         Ok(())
     }
@@ -296,3 +396,92 @@ impl Clone for DetectionResults {
 }
 
 // Additional methods for IDE driver are already implemented in ide.rs
+
+/// Adapter that wraps the virtio-blk driver to implement the StorageDriver trait
+#[derive(Debug)]
+struct VirtioBlkStorageAdapter {
+    capacity_sectors: u64,
+}
+
+impl StorageDriver for VirtioBlkStorageAdapter {
+    fn name(&self) -> &str {
+        "VirtIO Block"
+    }
+
+    fn device_type(&self) -> StorageDeviceType {
+        StorageDeviceType::Unknown
+    }
+
+    fn state(&self) -> super::StorageDeviceState {
+        if crate::drivers::virtio::blk::is_available() {
+            super::StorageDeviceState::Ready
+        } else {
+            super::StorageDeviceState::Offline
+        }
+    }
+
+    fn capabilities(&self) -> super::StorageCapabilities {
+        super::StorageCapabilities {
+            capacity_bytes: self.capacity_sectors * 512,
+            sector_size: 512,
+            max_transfer_size: 128 * 1024,
+            max_queue_depth: 32,
+            supports_ncq: false,
+            read_speed_mbps: 200,
+            write_speed_mbps: 200,
+            supports_smart: false,
+            supports_trim: false,
+            is_removable: false,
+        }
+    }
+
+    fn init(&mut self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    fn read_sectors(
+        &mut self,
+        start_sector: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StorageError> {
+        crate::drivers::virtio::blk::read_sectors(start_sector, buffer)
+            .map_err(|_| StorageError::HardwareError)
+    }
+
+    fn write_sectors(&mut self, start_sector: u64, buffer: &[u8]) -> Result<usize, StorageError> {
+        crate::drivers::virtio::blk::write_sectors(start_sector, buffer)
+            .map_err(|_| StorageError::HardwareError)
+    }
+
+    fn flush(&mut self) -> Result<(), StorageError> {
+        crate::drivers::virtio::blk::flush().map_err(|_| StorageError::HardwareError)
+    }
+
+    fn get_stats(&self) -> super::StorageStats {
+        super::StorageStats::default()
+    }
+
+    fn reset(&mut self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    fn standby(&mut self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    fn wake(&mut self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    fn vendor_command(&mut self, _command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {
+        Err(StorageError::NotSupported)
+    }
+
+    fn get_smart_data(&mut self) -> Result<Vec<u8>, StorageError> {
+        Err(StorageError::NotSupported)
+    }
+
+    fn get_model(&self) -> Option<String> {
+        Some("VirtIO Block Disk".to_string())
+    }
+}

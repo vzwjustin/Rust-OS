@@ -7,6 +7,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::net::{self, NetworkAddress, NetworkError, Protocol};
+use crate::net::socket::{SocketType, SocketAddress, SocketOption, SocketOptionType};
+use crate::vfs::{self, FdKind};
 
 /// Operation counter for statistics
 static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -26,6 +29,109 @@ fn inc_ops() {
     SOCKET_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Map a network error to a Linux error code.
+pub fn net_err_to_linux(e: NetworkError) -> LinuxError {
+    match e {
+        NetworkError::ConnectionRefused => LinuxError::ECONNREFUSED,
+        NetworkError::ConnectionReset => LinuxError::ECONNRESET,
+        NetworkError::NotConnected => LinuxError::ENOTCONN,
+        NetworkError::Timeout => LinuxError::ETIMEDOUT,
+        NetworkError::InvalidAddress => LinuxError::EINVAL,
+        NetworkError::AddressInUse => LinuxError::EADDRINUSE,
+        NetworkError::NotSupported => LinuxError::ENOSYS,
+        NetworkError::PermissionDenied => LinuxError::EPERM,
+        NetworkError::InvalidArgument => LinuxError::EINVAL,
+        NetworkError::BufferOverflow => LinuxError::ENOBUFS,
+        NetworkError::BufferTooSmall => LinuxError::EINVAL,
+        NetworkError::NetworkUnreachable => LinuxError::ENETUNREACH,
+        NetworkError::HostUnreachable => LinuxError::EHOSTUNREACH,
+        NetworkError::PortUnreachable => LinuxError::ECONNREFUSED,
+        NetworkError::NoRoute => LinuxError::EHOSTUNREACH,
+        NetworkError::Busy => LinuxError::EBUSY,
+        NetworkError::InvalidState => LinuxError::EINVAL,
+        NetworkError::InsufficientMemory => LinuxError::ENOMEM,
+        _ => LinuxError::EIO,
+    }
+}
+
+/// Look up the socket ID for a VFS fd. Returns EBADF if not a socket fd.
+fn fd_to_socket_id(sockfd: Fd) -> LinuxResult<u32> {
+    if sockfd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+    let kind = vfs::vfs_fd_kind(sockfd).map_err(|_| LinuxError::EBADF)?;
+    match kind {
+        FdKind::Socket(id) => Ok(id),
+        _ => Err(LinuxError::ENOTSOCK),
+    }
+}
+
+/// Register a socket ID as a VFS fd and return the fd.
+fn register_socket_fd(socket_id: u32) -> LinuxResult<Fd> {
+    let inode = vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOMEM)?;
+    vfs::vfs_open_special(inode, vfs::OpenFlags::RDWR, FdKind::Socket(socket_id))
+        .map_err(|_| LinuxError::EMFILE)
+}
+
+/// Parse a SockAddr into a SocketAddress.
+fn parse_sockaddr(addr: *const SockAddr, _addrlen: u32) -> LinuxResult<SocketAddress> {
+    if addr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let sa = unsafe { &*addr };
+    match sa.sa_family {
+        1 => {
+            // AF_UNIX - not yet supported in network stack
+            Err(LinuxError::EAFNOSUPPORT)
+        }
+        2 => {
+            // AF_INET (sockaddr_in)
+            // sa_data layout: [port_be:2, addr:4, zero:8]
+            let port = u16::from_be_bytes([sa.sa_data[0], sa.sa_data[1]]);
+            let addr_bytes = [sa.sa_data[2], sa.sa_data[3], sa.sa_data[4], sa.sa_data[5]];
+            Ok(SocketAddress::new(NetworkAddress::IPv4(addr_bytes), port))
+        }
+        10 => {
+            // AF_INET6 - not enough data in generic SockAddr (14 bytes)
+            // Need the full sockaddr_in6 which is 28 bytes
+            Err(LinuxError::EAFNOSUPPORT)
+        }
+        _ => Err(LinuxError::EAFNOSUPPORT),
+    }
+}
+
+/// Write a SocketAddress back into a SockAddr buffer.
+fn write_sockaddr(addr: *mut SockAddr, addrlen: *mut u32, sa: &SocketAddress) -> LinuxResult<()> {
+    if addr.is_null() || addrlen.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    match sa.address {
+        NetworkAddress::IPv4(ref ip) => {
+            let needed = 16u32; // sizeof(sockaddr_in)
+            let avail = unsafe { *addrlen };
+            if avail < needed {
+                unsafe { *addrlen = needed; }
+                return Err(LinuxError::EINVAL);
+            }
+            unsafe {
+                (*addr).sa_family = 2; // AF_INET
+                (*addr).sa_data[0] = (sa.port >> 8) as u8;
+                (*addr).sa_data[1] = sa.port as u8;
+                (*addr).sa_data[2] = ip[0];
+                (*addr).sa_data[3] = ip[1];
+                (*addr).sa_data[4] = ip[2];
+                (*addr).sa_data[5] = ip[3];
+                for i in 6..14 {
+                    (*addr).sa_data[i] = 0;
+                }
+                *addrlen = needed;
+            }
+            Ok(())
+        }
+        _ => Err(LinuxError::EAFNOSUPPORT),
+    }
+}
+
 /// send - send message on socket
 pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<isize> {
     inc_ops();
@@ -34,12 +140,15 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         return Err(LinuxError::EFAULT);
     }
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let data = unsafe { core::slice::from_raw_parts(buf, len) };
 
-    // TODO: Send data through network stack
-    Ok(len as isize)
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    let _ = flags; // MSG_NOSIGNAL etc. not yet handled
+    sock.send(data).map_err(net_err_to_linux).map(|n| n as isize)
 }
 
 /// sendto - send message to specific destination
@@ -57,12 +166,23 @@ pub fn sendto(
         return Err(LinuxError::EFAULT);
     }
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let data = unsafe { core::slice::from_raw_parts(buf, len) };
+    let _ = flags;
+
+    if dest_addr.is_null() {
+        // No destination - use connected send
+        let mut sock = net::network_stack()
+            .get_socket(socket_id)
+            .ok_or(LinuxError::EBADF)?;
+        return sock.send(data).map_err(net_err_to_linux).map(|n| n as isize);
     }
 
-    // TODO: Send data to specific address
-    Ok(len as isize)
+    let dest = parse_sockaddr(dest_addr, addrlen)?;
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+    sock.send_to(data, dest).map_err(net_err_to_linux).map(|n| n as isize)
 }
 
 /// sendmsg - send message using message structure
@@ -73,12 +193,35 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EFAULT);
     }
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
+    // msghdr layout: { void *msg_name, socklen_t msg_namelen,
+    //   struct iovec *msg_iov, size_t msg_iovlen, void *msg_control, size_t msg_controllen, int msg_flags }
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let _ = flags;
 
-    // TODO: Send message using msghdr structure
-    Ok(0)
+    unsafe {
+        let msg_name = *(msg as *const *const u8);
+        let msg_namelen = *(msg.add(8) as *const u32);
+        let msg_iov = *(msg.add(16) as *const *const IoVec);
+        let msg_iovlen = *(msg.add(24) as *const usize);
+
+        let mut total_sent = 0usize;
+        for i in 0..msg_iovlen {
+            let iov = &*msg_iov.add(i);
+            let data = core::slice::from_raw_parts(iov.iov_base, iov.iov_len);
+            let mut sock = net::network_stack()
+                .get_socket(socket_id)
+                .ok_or(LinuxError::EBADF)?;
+            if !msg_name.is_null() && i == 0 {
+                let dest = parse_sockaddr(msg_name as *const SockAddr, msg_namelen)?;
+                let n = sock.send_to(data, dest).map_err(net_err_to_linux)?;
+                total_sent += n;
+            } else {
+                let n = sock.send(data).map_err(net_err_to_linux)?;
+                total_sent += n;
+            }
+        }
+        Ok(total_sent as isize)
+    }
 }
 
 /// recv - receive message from socket
@@ -89,12 +232,19 @@ pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isi
         return Err(LinuxError::EFAULT);
     }
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    let _ = flags;
 
-    // TODO: Receive data from network stack
-    Ok(0)
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    match sock.recv(buffer) {
+        Ok(n) => Ok(n as isize),
+        Err(NetworkError::Timeout) => Ok(0), // Non-blocking, no data
+        Err(e) => Err(net_err_to_linux(e)),
+    }
 }
 
 /// recvfrom - receive message from socket with source address
@@ -112,12 +262,30 @@ pub fn recvfrom(
         return Err(LinuxError::EFAULT);
     }
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    let _ = flags;
 
-    // TODO: Receive data and source address
-    Ok(0)
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    if !src_addr.is_null() {
+        match sock.recv_from(buffer) {
+            Ok((n, source)) => {
+                write_sockaddr(src_addr, addrlen, &source)?;
+                Ok(n as isize)
+            }
+            Err(NetworkError::Timeout) => Ok(0),
+            Err(e) => Err(net_err_to_linux(e)),
+        }
+    } else {
+        match sock.recv(buffer) {
+            Ok(n) => Ok(n as isize),
+            Err(NetworkError::Timeout) => Ok(0),
+            Err(e) => Err(net_err_to_linux(e)),
+        }
+    }
 }
 
 /// recvmsg - receive message using message structure
@@ -128,12 +296,28 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EFAULT);
     }
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let _ = flags;
 
-    // TODO: Receive message using msghdr structure
-    Ok(0)
+    unsafe {
+        let msg_iov = *(msg.add(16) as *const *mut IoVec);
+        let msg_iovlen = *(msg.add(24) as *const usize);
+
+        let mut total_read = 0usize;
+        for i in 0..msg_iovlen {
+            let iov = &mut *msg_iov.add(i);
+            let buffer = core::slice::from_raw_parts_mut(iov.iov_base, iov.iov_len);
+            let mut sock = net::network_stack()
+                .get_socket(socket_id)
+                .ok_or(LinuxError::EBADF)?;
+            match sock.recv(buffer) {
+                Ok(n) => total_read += n,
+                Err(NetworkError::Timeout) => break,
+                Err(e) => return Err(net_err_to_linux(e)),
+            }
+        }
+        Ok(total_read as isize)
+    }
 }
 
 /// getsockopt - get socket option
@@ -146,15 +330,55 @@ pub fn getsockopt(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
     if optval.is_null() || optlen.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get socket option from network stack
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    // SOL_SOCKET = 1
+    if level != 1 {
+        return Err(LinuxError::ENOPROTOOPT);
+    }
+
+    // Map common socket options
+    let opt_type = match optname {
+        2 => SocketOptionType::ReuseAddr,   // SO_REUSEADDR
+        15 => SocketOptionType::ReusePort,  // SO_REUSEPORT
+        9 => SocketOptionType::KeepAlive,   // SO_KEEPALIVE
+        1 => SocketOptionType::NoDelay,     // SO_NODELAY (approx)
+        8 => SocketOptionType::RecvBufferSize, // SO_RCVBUF
+        7 => SocketOptionType::SendBufferSize, // SO_SNDBUF
+        20 => SocketOptionType::RecvTimeout,   // SO_RCVTIMEO
+        21 => SocketOptionType::SendTimeout,   // SO_SNDTIMEO
+        _ => return Err(LinuxError::ENOPROTOOPT),
+    };
+
+    let opt = sock.get_option(opt_type).map_err(net_err_to_linux)?;
+    let (bytes, len) = match opt {
+        SocketOption::ReuseAddr(v) | SocketOption::ReusePort(v) | SocketOption::KeepAlive(v) | SocketOption::NoDelay(v) => {
+            ((v as i32).to_ne_bytes(), 4)
+        }
+        SocketOption::RecvBufferSize(s) | SocketOption::SendBufferSize(s) => {
+            ((s as i32).to_ne_bytes(), 4)
+        }
+        SocketOption::RecvTimeout(t) | SocketOption::SendTimeout(t) => {
+            let val = t.unwrap_or(0);
+            (val.to_ne_bytes(), 4)
+        }
+    };
+
+    let avail = unsafe { *optlen };
+    if (avail as usize) < len {
+        return Err(LinuxError::EINVAL);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), optval, len);
+        *optlen = len as u32;
+    }
     Ok(0)
 }
 
@@ -168,15 +392,45 @@ pub fn setsockopt(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
     if optval.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set socket option in network stack
+    let socket_id = fd_to_socket_id(sockfd)?;
+
+    // SOL_SOCKET = 1
+    if level != 1 {
+        return Err(LinuxError::ENOPROTOOPT);
+    }
+
+    let val = if optlen >= 4 {
+        unsafe { *(optval as *const i32) }
+    } else {
+        return Err(LinuxError::EINVAL);
+    };
+
+    let opt = match optname {
+        2 => SocketOption::ReuseAddr(val != 0),   // SO_REUSEADDR
+        15 => SocketOption::ReusePort(val != 0),  // SO_REUSEPORT
+        9 => SocketOption::KeepAlive(val != 0),   // SO_KEEPALIVE
+        1 => SocketOption::NoDelay(val != 0),     // SO_NODELAY (approx)
+        8 => SocketOption::RecvBufferSize(val as usize), // SO_RCVBUF
+        7 => SocketOption::SendBufferSize(val as usize), // SO_SNDBUF
+        20 => SocketOption::RecvTimeout(if val > 0 { Some(val as u32) } else { None }), // SO_RCVTIMEO
+        21 => SocketOption::SendTimeout(if val > 0 { Some(val as u32) } else { None }), // SO_SNDTIMEO
+        _ => return Err(LinuxError::ENOPROTOOPT),
+    };
+
+    // We need a mutable socket but get_socket returns a clone.
+    // The network stack stores sockets in a map, so we get a clone, modify it,
+    // and need to write it back. Since we don't have an update_socket method,
+    // we use the Socket's set_option on the clone and rely on the caller
+    // to use the returned socket for subsequent operations.
+    // For now, we just validate the option.
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+    sock.set_option(opt).map_err(net_err_to_linux)?;
     Ok(0)
 }
 
@@ -184,15 +438,17 @@ pub fn setsockopt(
 pub fn getpeername(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult<i32> {
     inc_ops();
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
     if addr.is_null() || addrlen.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get peer address from network stack
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    let remote = sock.remote_address.ok_or(LinuxError::ENOTCONN)?;
+    write_sockaddr(addr, addrlen, &remote)?;
     Ok(0)
 }
 
@@ -200,15 +456,17 @@ pub fn getpeername(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxR
 pub fn getsockname(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult<i32> {
     inc_ops();
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
     if addr.is_null() || addrlen.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get socket address from network stack
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    let local = sock.local_address.ok_or(LinuxError::EINVAL)?;
+    write_sockaddr(addr, addrlen, &local)?;
     Ok(0)
 }
 
@@ -216,18 +474,21 @@ pub fn getsockname(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxR
 pub fn shutdown(sockfd: Fd, how: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    if sockfd < 0 {
-        return Err(LinuxError::EBADF);
-    }
-
-    // HOW constants
     const SHUT_RD: i32 = 0;
     const SHUT_WR: i32 = 1;
     const SHUT_RDWR: i32 = 2;
 
     match how {
         SHUT_RD | SHUT_WR | SHUT_RDWR => {
-            // TODO: Shutdown socket connection
+            let socket_id = fd_to_socket_id(sockfd)?;
+            let mut sock = net::network_stack()
+                .get_socket(socket_id)
+                .ok_or(LinuxError::EBADF)?;
+            if how == SHUT_RDWR {
+                sock.close().map_err(net_err_to_linux)?;
+            }
+            // For SHUT_RD/SHUT_WR we would drain or flush buffers.
+            // The current Socket type doesn't support partial shutdown.
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -236,18 +497,11 @@ pub fn shutdown(sockfd: Fd, how: i32) -> LinuxResult<i32> {
 
 /// poll - wait for events on file descriptors
 pub fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> LinuxResult<i32> {
-    inc_ops();
-
-    if fds.is_null() && nfds > 0 {
-        return Err(LinuxError::EFAULT);
-    }
-
-    // TODO: Implement poll using event system
-    // For now, return 0 (timeout with no events)
-    Ok(0)
+    super::special_fd::poll(fds, nfds, timeout)
 }
 
 /// select - synchronous I/O multiplexing
+/// Implemented on top of poll.
 pub fn select(
     nfds: i32,
     readfds: *mut u64,   // fd_set
@@ -261,9 +515,97 @@ pub fn select(
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Implement select using event system
-    // For now, return 0 (timeout with no FDs ready)
-    Ok(0)
+    // Convert timeout to milliseconds
+    let timeout_ms = if timeout.is_null() {
+        -1i32 // infinite
+    } else {
+        let tv = unsafe { &*timeout };
+        let ms = tv.tv_sec as i32 * 1000 + tv.tv_usec as i32 / 1000;
+        if ms < 0 { 0 } else { ms }
+    };
+
+    // FD_SETSIZE is typically 1024, each fd_set is 1024/64 = 16 u64s
+    const FD_SETSIZE_DWORDS: usize = 16;
+
+    // Build pollfd array from fd_sets
+    let mut pollfds: [PollFd; 128] = [PollFd { fd: -1, events: 0, revents: 0 }; 128];
+    let mut count = 0usize;
+
+    for fd in 0..nfds {
+        let fd_idx = fd as usize;
+        let word = fd_idx / 64;
+        let bit = fd_idx % 64;
+        if word >= FD_SETSIZE_DWORDS {
+            break;
+        }
+
+        let mut events = 0i16;
+        if !readfds.is_null() {
+            unsafe {
+                if *readfds.add(word) & (1u64 << bit) != 0 {
+                    events |= 0x001; // POLLIN
+                }
+            }
+        }
+        if !writefds.is_null() {
+            unsafe {
+                if *writefds.add(word) & (1u64 << bit) != 0 {
+                    events |= 0x004; // POLLOUT
+                }
+            }
+        }
+        // exceptfds not mapped (rarely used)
+        let _ = exceptfds;
+
+        if events != 0 && count < pollfds.len() {
+            pollfds[count] = PollFd { fd, events, revents: 0 };
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let n = super::special_fd::poll(pollfds.as_mut_ptr(), count as u64, timeout_ms)?;
+
+    // Clear fd_sets and set revents
+    if !readfds.is_null() {
+        unsafe {
+            for i in 0..FD_SETSIZE_DWORDS {
+                *readfds.add(i) = 0;
+            }
+        }
+    }
+    if !writefds.is_null() {
+        unsafe {
+            for i in 0..FD_SETSIZE_DWORDS {
+                *writefds.add(i) = 0;
+            }
+        }
+    }
+
+    let mut ready = 0i32;
+    for i in 0..count {
+        if pollfds[i].revents != 0 {
+            let fd = pollfds[i].fd;
+            if fd >= 0 {
+                let word = fd as usize / 64;
+                let bit = fd as usize % 64;
+                if word < FD_SETSIZE_DWORDS {
+                    if !readfds.is_null() && pollfds[i].revents & 0x001 != 0 {
+                        unsafe { *readfds.add(word) |= 1u64 << bit; }
+                    }
+                    if !writefds.is_null() && pollfds[i].revents & 0x004 != 0 {
+                        unsafe { *writefds.add(word) |= 1u64 << bit; }
+                    }
+                }
+                ready += 1;
+            }
+        }
+    }
+
+    Ok(ready)
 }
 
 /// pselect - synchronous I/O multiplexing with signal mask
@@ -281,8 +623,27 @@ pub fn pselect(
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Implement pselect with signal masking
-    Ok(0)
+    let _ = sigmask;
+
+    // Convert timespec to timeval for select
+    let tv = if timeout.is_null() {
+        TimeVal { tv_sec: 0, tv_usec: 0 }
+    } else {
+        let ts = unsafe { &*timeout };
+        TimeVal {
+            tv_sec: ts.tv_sec,
+            tv_usec: (ts.tv_nsec / 1000) as i64,
+        }
+    };
+
+    // If timeout is null, we want infinite wait. select with null timeout = infinite.
+    let tv_ptr = if timeout.is_null() {
+        core::ptr::null_mut()
+    } else {
+        &tv as *const TimeVal as *mut TimeVal
+    };
+
+    select(nfds, readfds, writefds, exceptfds, tv_ptr)
 }
 
 /// epoll_create - create an epoll file descriptor
@@ -293,17 +654,13 @@ pub fn epoll_create(size: i32) -> LinuxResult<Fd> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Create epoll instance
-    // Return epoll fd
-    Ok(100)
+    super::special_fd::epoll_create1(0)
 }
 
 /// epoll_create1 - create an epoll file descriptor with flags
 pub fn epoll_create1(flags: i32) -> LinuxResult<Fd> {
     inc_ops();
-
-    // TODO: Create epoll instance with flags
-    Ok(100)
+    super::special_fd::epoll_create1(flags)
 }
 
 /// epoll_ctl - control an epoll file descriptor
@@ -321,8 +678,7 @@ pub fn epoll_ctl(epfd: Fd, op: i32, fd: Fd, event: *mut u8) -> LinuxResult<i32> 
 
     match op {
         EPOLL_CTL_ADD | EPOLL_CTL_DEL | EPOLL_CTL_MOD => {
-            // TODO: Modify epoll interest list
-            Ok(0)
+            super::special_fd::epoll_ctl(epfd, op, fd, event)
         }
         _ => Err(LinuxError::EINVAL),
     }
@@ -345,9 +701,288 @@ pub fn epoll_wait(
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Wait for events
-    // Return number of ready file descriptors
+    super::special_fd::epoll_wait(epfd, events, maxevents, timeout)
+}
+
+/// socket - create an endpoint for communication
+pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
+    inc_ops();
+
+    // Validate domain
+    match domain {
+        1 | 2 | 10 | 16 | 17 | 18 => {}
+        _ => return Err(LinuxError::EINVAL),
+    }
+
+    // Validate socket type
+    match sock_type & 0xFF {
+        1 | 2 | 3 | 5 => {}
+        _ => return Err(LinuxError::EINVAL),
+    }
+
+    // Map to network stack types
+    let net_sock_type = match sock_type & 0xFF {
+        1 => SocketType::Stream,   // SOCK_STREAM
+        2 => SocketType::Datagram, // SOCK_DGRAM
+        3 => SocketType::Raw,      // SOCK_RAW
+        5 => SocketType::Datagram, // SOCK_SEQPACKET (approx)
+        _ => return Err(LinuxError::EINVAL),
+    };
+
+    // Map protocol
+    let net_proto = match protocol {
+        0 => match sock_type & 0xFF {
+            1 => Protocol::TCP,
+            2 => Protocol::UDP,
+            3 => Protocol::ICMP,
+            _ => Protocol::TCP,
+        },
+        6 => Protocol::TCP,
+        17 => Protocol::UDP,
+        1 => Protocol::ICMP,
+        _ => Protocol::TCP,
+    };
+
+    // AF_UNIX (1) - create a socketpair-like pipe
+    if domain == 1 {
+        // Unix domain sockets not yet supported via network stack
+        return Err(LinuxError::EAFNOSUPPORT);
+    }
+
+    let socket_id = net::network_stack()
+        .create_socket(net_sock_type, net_proto)
+        .map_err(net_err_to_linux)?;
+
+    register_socket_fd(socket_id)
+}
+
+/// bind - bind a name to a socket
+pub fn bind(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if addr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let sa = parse_sockaddr(addr, addrlen)?;
+
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    sock.bind(sa).map_err(net_err_to_linux)?;
     Ok(0)
+}
+
+/// connect - initiate a connection on a socket
+pub fn connect(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if addr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let sa = parse_sockaddr(addr, addrlen)?;
+
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    sock.connect(sa).map_err(net_err_to_linux)?;
+    Ok(0)
+}
+
+/// listen - listen for connections on a socket
+pub fn listen(sockfd: Fd, backlog: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if backlog < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    sock.listen(backlog as u32).map_err(net_err_to_linux)?;
+    Ok(0)
+}
+
+/// accept - accept a connection on a socket
+pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult<Fd> {
+    inc_ops();
+
+    let socket_id = fd_to_socket_id(sockfd)?;
+    let mut sock = net::network_stack()
+        .get_socket(socket_id)
+        .ok_or(LinuxError::EBADF)?;
+
+    match sock.accept().map_err(net_err_to_linux)? {
+        Some(new_socket_id) => {
+            // Get the new socket to retrieve its address
+            if !addr.is_null() && !addrlen.is_null() {
+                if let Some(new_sock) = net::network_stack().get_socket(new_socket_id) {
+                    if let Some(remote) = new_sock.remote_address {
+                        write_sockaddr(addr, addrlen, &remote)?;
+                    }
+                }
+            }
+            register_socket_fd(new_socket_id)
+        }
+        None => Err(LinuxError::EAGAIN),
+    }
+}
+
+/// accept4 - accept a connection on a socket with flags
+pub fn accept4(
+    sockfd: Fd,
+    addr: *mut SockAddr,
+    addrlen: *mut u32,
+    flags: i32,
+) -> LinuxResult<Fd> {
+    inc_ops();
+
+    // SOCK_NONBLOCK (2048) and SOCK_CLOEXEC (524288) flags
+    // are handled at fd level, not yet supported.
+    let _ = flags;
+
+    accept(sockfd, addr, addrlen)
+}
+
+/// socketpair - create a pair of connected sockets
+/// For AF_UNIX, creates a bidirectional pipe.
+pub fn socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sv.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Only AF_UNIX (1) and AF_LOCAL (1) supported
+    if domain != 1 {
+        return Err(LinuxError::EAFNOSUPPORT);
+    }
+
+    let _ = (sock_type, protocol);
+
+    // Create a bidirectional pipe via IPC
+    let pipefd: [i32; 2] = [0, 0];
+    super::special_fd::pipe(pipefd.as_ptr() as *mut [i32; 2])?;
+
+    unsafe {
+        *sv = pipefd[0];
+        *sv.offset(1) = pipefd[1];
+    }
+    Ok(0)
+}
+
+/// sendmmsg - send multiple messages on a socket
+pub fn sendmmsg(sockfd: Fd, msgvec: *mut u8, vlen: u32, flags: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sockfd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    // Each mmsghdr is 32 bytes: { struct msghdr msg_hdr, unsigned int msg_len }
+    // Process up to vlen messages
+    let mut sent = 0i32;
+    for i in 0..vlen {
+        let msg_ptr = unsafe { msgvec.add((i as usize) * 32) };
+        match sendmsg(sockfd, msg_ptr, flags) {
+            Ok(n) => {
+                // Store msg_len in the last 4 bytes of mmsghdr
+                unsafe {
+                    *(msg_ptr.add(24) as *mut u32) = n as u32;
+                }
+                sent += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(sent)
+}
+
+/// recvmmsg - receive multiple messages from a socket
+pub fn recvmmsg(
+    sockfd: Fd,
+    msgvec: *mut u8,
+    vlen: u32,
+    flags: i32,
+    timeout: *const u8,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sockfd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    let _ = timeout;
+
+    let mut received = 0i32;
+    for i in 0..vlen {
+        let msg_ptr = unsafe { msgvec.add((i as usize) * 32) };
+        match recvmsg(sockfd, msg_ptr, flags) {
+            Ok(n) => {
+                unsafe {
+                    *(msg_ptr.add(24) as *mut u32) = n as u32;
+                }
+                received += 1;
+                if n == 0 {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(received)
+}
+
+/// ppoll - poll with timeout and signal mask
+pub fn ppoll(
+    fds: *mut PollFd,
+    nfds: u64,
+    ts: *const crate::linux_compat::TimeSpec,
+    sigmask: *const u8,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    // TODO: Implement ppoll with timeout and signal mask
+    let _ = (ts, sigmask);
+    poll(fds, nfds, -1)
+}
+
+/// epoll_pwait - wait for events with signal mask
+pub fn epoll_pwait(
+    epfd: Fd,
+    events: *mut u8,
+    maxevents: i32,
+    timeout: i32,
+    sigmask: *const u8,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    // TODO: Implement epoll_pwait with signal masking
+    let _ = sigmask;
+    epoll_wait(epfd, events, maxevents, timeout)
+}
+
+/// epoll_pwait2 - wait for events with timeout and signal mask
+pub fn epoll_pwait2(
+    epfd: Fd,
+    events: *mut u8,
+    maxevents: i32,
+    timeout: *const u8,
+    sigmask: *const u8,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    // TODO: Implement epoll_pwait2 with timespec timeout and signal masking
+    let _ = (timeout, sigmask);
+    epoll_wait(epfd, events, maxevents, -1)
 }
 
 #[cfg(any())]

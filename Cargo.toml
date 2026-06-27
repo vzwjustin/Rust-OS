@@ -68,7 +68,7 @@ version = "1.0"
 
 # Bootloader support for bootimage compatibility
 [dependencies.bootloader]
-version = "0.9.23"
+version = "=0.9.34"
 features = ["map_physical_memory"]
 
 # Bitflags for flag constants

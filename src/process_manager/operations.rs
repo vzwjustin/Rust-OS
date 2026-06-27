@@ -7,6 +7,7 @@ use spin::Mutex;
 
 use super::pcb::{ProcessControlBlock, ProcessState};
 use super::table::ProcessTable;
+use crate::process::elf_loader::{ElfLoader, ElfLoaderError};
 use crate::process::Pid;
 
 /// Fork the current process - creates a copy of the parent process
@@ -52,28 +53,50 @@ pub fn exec(
         return Err("Cannot exec zombie process");
     }
 
-    // Parse program (stub - would integrate with ELF loader)
-    let entry_point = parse_program(program)?;
+    let elf_loader = ElfLoader::new(true, true);
+    let loaded_binary = elf_loader
+        .load_elf_binary(program, pid)
+        .map_err(map_elf_loader_error)?;
 
-    // Clear old process image
-    // Note: In full implementation, would:
-    // 1. Free old memory pages
-    // 2. Load new program from ELF
-    // 3. Setup new stack and heap
-    // 4. Initialize new page table
-    // 5. Setup program arguments on stack
+    let rsp = build_argv_stack(loaded_binary.stack_top.as_u64(), args)?;
 
-    // Set new entry point
-    pcb.set_entry_point(entry_point);
+    pcb.memory.code_start = loaded_binary.base_address.as_u64();
+    pcb.memory.code_size = loaded_binary
+        .code_regions
+        .iter()
+        .map(|r| r.size as u64)
+        .sum();
+    pcb.memory.data_start = loaded_binary
+        .data_regions
+        .first()
+        .map(|r| r.start.as_u64())
+        .unwrap_or(0);
+    pcb.memory.data_size = loaded_binary
+        .data_regions
+        .iter()
+        .map(|r| r.size as u64)
+        .sum();
+    pcb.memory.heap_start = loaded_binary.heap_start.as_u64();
+    pcb.memory.heap_size = 8 * 1024;
+    pcb.memory.stack_start = loaded_binary
+        .stack_top
+        .as_u64()
+        .saturating_sub(8 * 1024 * 1024);
+    pcb.memory.stack_size = 8 * 1024 * 1024;
 
-    // Set arguments
+    pcb.set_entry_point(loaded_binary.entry_point.as_u64());
     pcb.set_args(args);
+    pcb.context.rsp = rsp;
+    pcb.context.rbp = rsp;
+    pcb.context.rax = 0;
+    pcb.context.rbx = 0;
+    pcb.context.rcx = 0;
+    pcb.context.rdx = 0;
+    pcb.context.rsi = 0;
+    pcb.context.rdi = 0;
 
-    // Reset CPU context to start at entry point
-    pcb.context.rip = entry_point;
-    pcb.context.rsp = pcb.memory.stack_start + pcb.memory.stack_size - 16;
+    pcb.fd_table.retain(|&fd, _| fd <= 2);
 
-    // Reset process state
     pcb.state = ProcessState::Ready;
     pcb.cpu_time = 0;
 
@@ -243,28 +266,50 @@ fn cleanup_process(pid: Pid, process_table: &Mutex<ProcessTable>) -> Result<(), 
     Ok(())
 }
 
-/// Parse program and return entry point (stub)
-fn parse_program(program: &[u8]) -> Result<u64, &'static str> {
-    // This is a stub - in real implementation would:
-    // 1. Parse ELF header
-    // 2. Verify magic number
-    // 3. Load segments into memory
-    // 4. Resolve relocations
-    // 5. Setup initial stack
-    // 6. Return entry point
+fn map_elf_loader_error(err: ElfLoaderError) -> &'static str {
+    match err {
+        ElfLoaderError::MemoryAllocationFailed | ElfLoaderError::MappingFailed => "Out of memory",
+        _ => "Invalid program format",
+    }
+}
 
-    if program.len() < 4 {
-        return Err("Invalid program format");
+/// Build a minimal argc/argv stack for process_manager exec().
+fn build_argv_stack(stack_top: u64, args: &[&str]) -> Result<u64, &'static str> {
+    let mut sp = stack_top & !0xF;
+
+    let mut arg_addrs = Vec::with_capacity(args.len());
+    for arg in args.iter().rev() {
+        let bytes = arg.as_bytes();
+        sp = sp.wrapping_sub((bytes.len() + 1) as u64);
+        let addr = sp;
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+            (addr as *mut u8).add(bytes.len()).write(0);
+        }
+        arg_addrs.push(addr);
+    }
+    arg_addrs.reverse();
+
+    sp = sp.wrapping_sub(8);
+    unsafe {
+        (sp as *mut u64).write(0);
+    }
+    for &addr in arg_addrs.iter().rev() {
+        sp = sp.wrapping_sub(8);
+        unsafe {
+            (sp as *mut u64).write(addr);
+        }
+    }
+    sp = sp.wrapping_sub(8);
+    unsafe {
+        (sp as *mut u64).write(args.len() as u64);
     }
 
-    // Check for ELF magic number
-    if program[0..4] != [0x7f, b'E', b'L', b'F'] {
-        return Err("Not an ELF binary");
+    if sp % 16 != 0 {
+        return Err("Stack alignment failed");
     }
 
-    // Return placeholder entry point
-    // Real implementation would parse ELF and return actual entry point
-    Ok(0x400000)
+    Ok(sp)
 }
 
 /// Create a new process (not a standard POSIX call, but useful for kernel)

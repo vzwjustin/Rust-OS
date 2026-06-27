@@ -407,3 +407,104 @@ pub mod signal {
     /// Keyboard stop
     pub const SIGTSTP: i32 = 20;
 }
+
+/// Arguments for clone3 system call
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CloneArgs {
+    /// Flags bit mask
+    pub flags: u64,
+    /// Where to store pidfd
+    pub pidfd: u64,
+    /// Where to store child TID in child's memory
+    pub child_tid: u64,
+    /// Where to store child TID in parent's memory
+    pub parent_tid: u64,
+    /// Signal to deliver to parent on child exit
+    pub exit_signal: u64,
+    /// Pointer to lowest address of stack
+    pub stack: u64,
+    /// Size of stack
+    pub stack_size: u64,
+    /// Location of new TLS
+    pub tls: u64,
+    /// Pointer to an array of preferred TIDs
+    pub set_tid: u64,
+    /// Size of set_tid array
+    pub set_tid_size: u64,
+    /// File descriptor for target cgroup of child
+    pub cgroup: u64,
+}
+
+/// Timestamp representation for statx
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct StatxTimestamp {
+    /// Seconds since Epoch
+    pub tv_sec: i64,
+    /// Nanoseconds
+    pub tv_nsec: u32,
+    /// Reserved for alignment/future
+    pub __reserved: i32,
+}
+
+/// Detailed file status structure for statx system call
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Statx {
+    /// Mask indicating which fields are populated
+    pub stx_mask: u32,
+    /// Optimal block size for I/O
+    pub stx_blksize: u32,
+    /// Extra file attributes
+    pub stx_attributes: u64,
+    /// Number of hard links
+    pub stx_nlink: u32,
+    /// User ID of owner
+    pub stx_uid: u32,
+    /// Group ID of owner
+    pub stx_gid: u32,
+    /// File type and mode
+    pub stx_mode: u16,
+    /// Spare padding
+    pub __spare0: [u16; 1],
+    /// Inode number
+    pub stx_ino: u64,
+    /// Total size in bytes
+    pub stx_size: u64,
+    /// Number of 512B blocks allocated
+    pub stx_blocks: u64,
+    /// Mask showing which attributes are supported
+    pub stx_attributes_mask: u64,
+    /// Last access time
+    pub stx_atime: StatxTimestamp,
+    /// Creation (birth) time
+    pub stx_btime: StatxTimestamp,
+    /// Last status change time
+    pub stx_ctime: StatxTimestamp,
+    /// Last modification time
+    pub stx_mtime: StatxTimestamp,
+    /// Device major ID (if device file)
+    pub stx_rdev_major: u32,
+    /// Device minor ID (if device file)
+    pub stx_rdev_minor: u32,
+    /// Device major ID containing file
+    pub stx_dev_major: u32,
+    /// Device minor ID containing file
+    pub stx_dev_minor: u32,
+    /// Padding/reserved for future use
+    pub __spare2: [u64; 14],
+}
+
+/// Arguments for openat2 system call
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct OpenHow {
+    /// Open flags (O_* constants)
+    pub flags: u64,
+    /// Mode for file creation
+    pub mode: u64,
+    /// Resolve flags (RESOLVE_* constants)
+    pub resolve: u64,
+}
+

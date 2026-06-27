@@ -49,10 +49,18 @@ lazy_static! {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt.page_fault.set_handler_fn(page_fault_handler);
+        unsafe {
+            idt.page_fault
+                .set_handler_fn(page_fault_handler)
+                .set_stack_index(crate::gdt::PAGE_FAULT_IST_INDEX);
+        }
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        unsafe {
+            idt.general_protection_fault
+                .set_handler_fn(general_protection_fault_handler)
+                .set_stack_index(crate::gdt::GENERAL_PROTECTION_IST_INDEX);
+        }
         idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
         idt.segment_not_present.set_handler_fn(segment_not_present_handler);
         idt.overflow.set_handler_fn(overflow_handler);
@@ -832,6 +840,14 @@ fn attempt_page_fault_recovery(
     if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
         // Page not present - check if it's within valid memory ranges
         let addr = fault_address.as_u64();
+
+        // MMIO regions (PCI BARs, framebuffer, APIC, etc.) are typically
+        // mapped at high physical addresses (>= 0x80000000). These should
+        // already be mapped via map_mmio_region — if they fault, it's a
+        // real error, not a demand page. Skip swap-in for these.
+        if addr >= 0x8000_0000 {
+            return None;
+        }
 
         // Check if address is in user space and within reasonable bounds
         if addr >= 0x1000 && addr < 0x7fff_ffff_ffff {

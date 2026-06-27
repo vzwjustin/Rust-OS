@@ -355,9 +355,18 @@ impl RealtekDriver {
             // Wait for reset to complete
         }
 
-        // Init receive buffer (8KB + 16 bytes + 1500 bytes)
-        // In real implementation, we'd allocate proper DMA buffer
-        self.write_reg32(RTL8139_RBSTART, 0x12345000);
+        // Allocate receive buffer (8KB + 16 bytes + 1500 bytes = ~10KB, page-aligned)
+        let rx_buf_size = 8192 + 16 + 1518;
+        let layout = alloc::alloc::Layout::from_size_align(rx_buf_size, 4096)
+            .map_err(|_| NetworkError::HardwareError)?;
+        let rx_buf = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if rx_buf.is_null() {
+            return Err(NetworkError::HardwareError);
+        }
+        let rx_buf_phys = rx_buf as u64;
+
+        // Set receive buffer start address (physical/DMA address)
+        self.write_reg32(RTL8139_RBSTART, rx_buf_phys as u32);
 
         // Set IMR + ISR
         self.write_reg16(RTL8139_IMR, 0x0005);
@@ -374,9 +383,6 @@ impl RealtekDriver {
 
     /// Initialize RTL8169/RTL8168 controller
     fn init_rtl8169(&mut self) -> Result<(), NetworkError> {
-        // RTL8169/8168 initialization is more complex
-        // This is a simplified version
-
         // Software reset
         self.write_reg8(0x37, 0x10); // Command register
         while (self.read_reg8(0x37) & 0x10) != 0 {
@@ -389,35 +395,64 @@ impl RealtekDriver {
         // Configure power management
         self.write_reg8(0x82, 0x01);
 
-        // Set up descriptor rings (simplified)
-        // In real implementation, we'd allocate proper DMA buffers
+        // Set up TX descriptor rings (4 descriptors * 16 bytes = 64 bytes)
+        let tx_desc_size = 4 * 16;
+        let tx_layout = alloc::alloc::Layout::from_size_align(tx_desc_size, 256)
+            .map_err(|_| NetworkError::HardwareError)?;
+        let tx_descs = unsafe { alloc::alloc::alloc_zeroed(tx_layout) };
+        if tx_descs.is_null() {
+            return Err(NetworkError::HardwareError);
+        }
+        let tx_desc_phys = tx_descs as u64;
+        // TX descriptor address low/high registers
+        self.write_reg32(0x20, tx_desc_phys as u32);
+        self.write_reg32(0x24, (tx_desc_phys >> 32) as u32);
+
+        // Set up RX descriptor rings (4 descriptors * 16 bytes = 64 bytes)
+        let rx_desc_size = 4 * 16;
+        let rx_layout = alloc::alloc::Layout::from_size_align(rx_desc_size, 256)
+            .map_err(|_| NetworkError::HardwareError)?;
+        let rx_descs = unsafe { alloc::alloc::alloc_zeroed(rx_layout) };
+        if rx_descs.is_null() {
+            return Err(NetworkError::HardwareError);
+        }
+        let rx_desc_phys = rx_descs as u64;
+        // RX descriptor address low/high registers
+        self.write_reg32(0xE4, rx_desc_phys as u32);
+        self.write_reg32(0xE8, (rx_desc_phys >> 32) as u32);
+
+        // Configure RX: accept broadcast + multicast, RX FIFO threshold 256 bytes
+        self.write_reg32(0x44, 0x0000E0F8);
+
+        // Configure TX: IFG2|IFG1=11b, Max DMA Burst 1024 bytes
+        self.write_reg32(0x40, 0x03000700);
+
+        // Enable transmitter and receiver
+        self.write_reg8(0x37, 0x0C);
 
         Ok(())
     }
 
     /// Read MAC address from device
     fn read_mac_address(&mut self) -> Result<(), NetworkError> {
-        match self.device_info.map(|info| info.series) {
-            Some(RealtekSeries::Rtl8139) => {
-                let mac_low = self.read_reg32(RTL8139_IDR0);
-                let mac_high = self.read_reg16(RTL8139_IDR4);
+        // All Realtek NICs store MAC at IDR0 (0x00) and IDR4 (0x04)
+        let mac_low = self.read_reg32(RTL8139_IDR0);
+        let mac_high = self.read_reg16(RTL8139_IDR4);
 
-                let mac_bytes = [
-                    (mac_low & 0xFF) as u8,
-                    ((mac_low >> 8) & 0xFF) as u8,
-                    ((mac_low >> 16) & 0xFF) as u8,
-                    ((mac_low >> 24) & 0xFF) as u8,
-                    (mac_high & 0xFF) as u8,
-                    ((mac_high >> 8) & 0xFF) as u8,
-                ];
-                self.mac_address = mac_bytes;
-            }
-            _ => {
-                // For RTL8169/8168, MAC is at different offset
-                // Generate default MAC with Realtek OUI for now
-                self.mac_address =
-                    super::utils::generate_mac_with_vendor(super::utils::REALTEK_OUI);
-            }
+        let mac_bytes = [
+            (mac_low & 0xFF) as u8,
+            ((mac_low >> 8) & 0xFF) as u8,
+            ((mac_low >> 16) & 0xFF) as u8,
+            ((mac_low >> 24) & 0xFF) as u8,
+            (mac_high & 0xFF) as u8,
+            ((mac_high >> 8) & 0xFF) as u8,
+        ];
+
+        // If MAC is all zeros, use Realtek OUI as fallback
+        if mac_bytes.iter().all(|&b| b == 0) {
+            self.mac_address = super::utils::generate_mac_with_vendor(super::utils::REALTEK_OUI);
+        } else {
+            self.mac_address = mac_bytes;
         }
 
         Ok(())
@@ -507,7 +542,25 @@ impl NetworkDriver for RealtekDriver {
             return Err(NetworkError::InvalidState);
         }
 
-        // Enable device-specific features
+        // Enable interrupts: TX OK + RX OK + RX overflow
+        match self.device_info.map(|info| info.series) {
+            Some(RealtekSeries::Rtl8139) => {
+                self.write_reg16(RTL8139_IMR, 0x0007);
+            }
+            _ => {
+                // RTL8169: IMR at 0x3C
+                self.write_reg16(0x3C, 0x0007);
+            }
+        }
+
+        // Read link speed from hardware
+        let media_status = match self.device_info.map(|info| info.series) {
+            Some(RealtekSeries::Rtl8139) => self.read_reg8(0x12),
+            _ => self.read_reg8(0x6B),
+        };
+        self.current_speed = if (media_status & 0x01) != 0 { 100 } else { 10 };
+        self.full_duplex = (media_status & 0x04) != 0;
+
         self.state = DeviceState::Running;
         Ok(())
     }

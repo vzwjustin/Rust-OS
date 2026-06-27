@@ -586,7 +586,12 @@ impl TimerManager {
                     return Err("Invalid HPET base address");
                 }
 
-                return Ok(VirtAddr::new(physical_offset + hpet_info.base_address));
+                let virt = physical_offset + hpet_info.base_address;
+                // HPET MMIO isn't mapped by the bootloader; map it before init
+                // writes the config register (else a page fault halts boot).
+                crate::memory::map_mmio_region(virt as usize, 0x1000)
+                    .map_err(|_| "Failed to map HPET MMIO")?;
+                return Ok(VirtAddr::new(virt));
             }
         }
 
@@ -602,7 +607,10 @@ impl TimerManager {
                         return Err("Invalid HPET base address from ACPI");
                     }
 
-                    return Ok(VirtAddr::new(physical_offset + hpet_info.base_address));
+                    let virt = physical_offset + hpet_info.base_address;
+                    crate::memory::map_mmio_region(virt as usize, 0x1000)
+                        .map_err(|_| "Failed to map HPET MMIO")?;
+                    return Ok(VirtAddr::new(virt));
                 }
                 Err("ACPI info not available")
             }

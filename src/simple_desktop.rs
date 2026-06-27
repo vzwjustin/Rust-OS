@@ -4,6 +4,7 @@
 
 use crate::print;
 use crate::vga_buffer::{Color, VGA_WRITER};
+use alloc::format;
 use heapless::String;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -134,8 +135,37 @@ impl FileManagerState {
             view_mode: FileViewMode::List,
         };
         let _ = state.current_path.push_str("/");
-
+        state.refresh();
         state
+    }
+
+    pub fn refresh(&mut self) {
+        self.files.clear();
+        match crate::vfs::vfs_readdir(self.current_path.as_str()) {
+            Ok(entries) => {
+                for entry in entries {
+                    if self.files.len() >= 16 {
+                        break;
+                    }
+                    let mut name = String::new();
+                    let _ = name.push_str(entry.name.as_str());
+                    let is_directory = entry.inode_type == crate::vfs::InodeType::Directory;
+                    let size = 0u64;
+                    let mut perms = String::new();
+                    let _ = perms.push_str(if is_directory { "drwx" } else { "-rw-" });
+                    let _ = self.files.push(FileEntry {
+                        name,
+                        is_directory,
+                        size,
+                        permissions: perms,
+                    });
+                }
+            }
+            Err(_) => {}
+        }
+        if self.selected_file >= self.files.len() {
+            self.selected_file = self.files.len().saturating_sub(1);
+        }
     }
 }
 
@@ -177,8 +207,13 @@ impl SystemInfoState {
     pub fn update(&mut self) {
         self.refresh_counter += 1;
 
-        self.memory_usage = 0;
-        self.cpu_usage = 0;
+        if let Ok(basic) = crate::memory_basic::get_memory_stats() {
+            self.memory_usage = basic.usable_memory as u64;
+        } else if let Some(stats) = crate::memory::get_memory_stats() {
+            self.memory_usage = stats.total_memory as u64;
+        }
+
+        self.cpu_usage = crate::performance_monitor::cpu_utilization();
         self.uptime = crate::time::uptime_ms() / 1000;
     }
 }
@@ -641,17 +676,21 @@ impl Desktop {
         print!("Arch: x86_64");
 
         self.set_cursor(window.x + 2, window.y + 6);
-        print!("RAM: unavailable");
+        print!("Arch: x86_64");
 
         self.set_cursor(window.x + 2, window.y + 7);
-        print!("CPU: unavailable");
+        if state.memory_usage > 0 {
+            let mib = state.memory_usage / (1024 * 1024);
+            print!("RAM: {} MiB usable", mib);
+        } else {
+            print!("RAM: unavailable");
+        }
 
         self.set_cursor(window.x + 2, window.y + 8);
-        print!("Uptime: {}s", state.uptime);
+        print!("CPU est: {}%", state.cpu_usage);
 
         self.set_cursor(window.x + 2, window.y + 9);
-        self.set_color(Color::Green, Color::Black);
-        print!("Stats: kernel-only");
+        print!("Uptime: {}s", state.uptime);
     }
 
     /// Show start menu
@@ -786,20 +825,19 @@ impl Desktop {
     /// Update desktop (called periodically)
     /// Update desktop state and applications
     pub fn update(&mut self) {
-        self.current_time += 1;
+        let uptime_s = crate::time::uptime_ms() / 1000;
+        let secs = crate::time::system_time() % 86400;
+        self.current_time = ((secs / 3600) % 24) as usize * 60 + ((secs / 60) % 60) as usize;
 
-        // Update system info every 50 cycles
-        if self.current_time % 50 == 0 {
+        if uptime_s % 2 == 0 {
             self.update_system_info();
         }
 
-        // Update taskbar clock every 100 cycles
-        if self.current_time % 100 == 0 {
-            self.draw_taskbar(); // Update clock
+        if uptime_s % 5 == 0 {
+            self.draw_taskbar();
         }
 
-        // Refresh display if needed
-        if self.current_time % 200 == 0 {
+        if uptime_s % 10 == 0 {
             self.refresh_display();
         }
     }
@@ -810,6 +848,9 @@ impl Desktop {
             if let Some(ref mut win) = window {
                 if let WindowContent::SystemInfo(ref mut state) = win.content {
                     state.update();
+                }
+                if let WindowContent::FileManager(ref mut state) = win.content {
+                    state.refresh();
                 }
             }
         }
@@ -858,9 +899,12 @@ lazy_static! {
 pub fn init_desktop() {
     crate::serial_println!("simple_desktop: init_desktop start");
 
-    // Draw desktop directly without creating the large Desktop struct
-    // The Window struct is too large for stack allocation
-    draw_simple_desktop();
+    let mut desktop_lock = DESKTOP.lock();
+    if desktop_lock.is_none() {
+        let mut desktop = Desktop::new();
+        desktop.init();
+        *desktop_lock = Some(desktop);
+    }
 
     crate::serial_println!("simple_desktop: init_desktop done");
 }
@@ -1291,7 +1335,7 @@ fn draw_pixel_desktop() {
     draw_pixel_taskbar();
 
     // Draw some classic windows
-    draw_pixel_window(20, 20, 140, 100, "My Computer", true);
+    draw_pixel_window(20, 20, 140, 100, "Shell", true);
     draw_pixel_window(170, 40, 130, 90, "Welcome", false);
 }
 
@@ -1380,10 +1424,15 @@ fn draw_pixel_taskbar() {
     fill_rect(tray_x + 1, taskbar_y + 3, 56, 22, colors::BUTTON_FACE);
 
     // Clock in system tray
+    let ts = crate::time::system_time() % 86400;
+    let hours = (ts / 3600) % 24;
+    let minutes = (ts / 60) % 60;
+    let mut clock = heapless::String::<8>::new();
+    let _ = clock.push_str(&format!("{:02}:{:02}", hours, minutes));
     draw_string(
         tray_x + 8,
         taskbar_y + 10,
-        "12:00",
+        clock.as_str(),
         colors::BLACK,
         colors::BUTTON_FACE,
     );
@@ -1485,25 +1534,18 @@ fn draw_pixel_window(x: usize, y: usize, w: usize, h: usize, title: &str, active
     fill_rect(x + 3, client_y, w - 6, client_h, colors::WINDOW_BACKGROUND);
 
     // Some content in the window
-    if title == "My Computer" {
+    if title == "Shell" {
         draw_string(
             x + 8,
             client_y + 8,
-            "C: Local Disk",
+            "Kernel shell (text mode)",
             colors::BLACK,
             colors::WINDOW_BACKGROUND,
         );
         draw_string(
             x + 8,
             client_y + 20,
-            "D: CD-ROM",
-            colors::BLACK,
-            colors::WINDOW_BACKGROUND,
-        );
-        draw_string(
-            x + 8,
-            client_y + 32,
-            "A: Floppy",
+            "Use Terminal window keys",
             colors::BLACK,
             colors::WINDOW_BACKGROUND,
         );

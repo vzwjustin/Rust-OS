@@ -925,8 +925,43 @@ impl AhciDriver {
             return Ok(()); // No device on this port
         }
 
-        // Set up command list and FIS receive area (simplified)
-        // In a real implementation, we'd allocate DMA memory here
+        // Set up command list and FIS receive area with real DMA memory
+        // AHCI requires 1KB command list, 256B FIS area, 256B command table per port
+        // Allocate one 4KB page per port to hold all three structures
+        let dma_size = 4096;
+        let layout = alloc::alloc::Layout::from_size_align(dma_size, 4096)
+            .map_err(|_| StorageError::HardwareError)?;
+        let dma_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if dma_ptr.is_null() {
+            return Err(StorageError::HardwareError);
+        }
+        let dma_phys = dma_ptr as u64;
+
+        // Command list at offset 0 (1KB, aligned to 1KB)
+        let cmd_list_phys = dma_phys;
+        // FIS receive area at offset 0x400 (256B, aligned to 256B)
+        let fis_phys = dma_phys + 0x400;
+        // Command table at offset 0x500 (256B minimum, aligned to 128B)
+        let cmd_table_phys = dma_phys + 0x500;
+
+        self.command_lists[port as usize] = cmd_list_phys;
+        self.command_tables[port as usize] = cmd_table_phys;
+
+        // Program command list base address
+        self.write_port_reg(port, AhciPortReg::Clb, (cmd_list_phys & 0xFFFFFFFF) as u32);
+        self.write_port_reg(
+            port,
+            AhciPortReg::Clbu,
+            ((cmd_list_phys >> 32) & 0xFFFFFFFF) as u32,
+        );
+
+        // Program FIS base address
+        self.write_port_reg(port, AhciPortReg::Fb, (fis_phys & 0xFFFFFFFF) as u32);
+        self.write_port_reg(
+            port,
+            AhciPortReg::Fbu,
+            ((fis_phys >> 32) & 0xFFFFFFFF) as u32,
+        );
 
         // Enable FIS receive
         cmd = self.read_port_reg(port, AhciPortReg::Cmd);
@@ -962,14 +997,13 @@ impl AhciDriver {
             return Err(StorageError::DeviceBusy);
         }
 
-        // Allocate DMA memory for command structures (simplified - using static addresses)
-        // NOTE: Command list and table still use static addresses - full refactor needed
-        let cmd_list_phys = 0x80000 + (port as u64 * 0x1000); // 4KB per port
-        let cmd_table_phys = cmd_list_phys + 0x400; // Command table after command list
+        // Use DMA addresses already allocated during port setup
+        let cmd_list_phys = self.command_lists[port as usize];
+        let cmd_table_phys = self.command_tables[port as usize];
 
-        // Store addresses for cleanup
-        self.command_lists[port as usize] = cmd_list_phys;
-        self.command_tables[port as usize] = cmd_table_phys;
+        if cmd_list_phys == 0 || cmd_table_phys == 0 {
+            return Err(StorageError::HardwareError);
+        }
 
         // Allocate proper DMA buffer for data transfer - Production implementation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
@@ -991,22 +1025,6 @@ impl AhciDriver {
                 .ok_or(StorageError::HardwareError)?
                 .as_u64()
         };
-
-        // Set up command list and FIS receive area
-        self.write_port_reg(port, AhciPortReg::Clb, (cmd_list_phys & 0xFFFFFFFF) as u32);
-        self.write_port_reg(
-            port,
-            AhciPortReg::Clbu,
-            ((cmd_list_phys >> 32) & 0xFFFFFFFF) as u32,
-        );
-
-        let fis_phys = cmd_list_phys + 0x200; // FIS area after command list
-        self.write_port_reg(port, AhciPortReg::Fb, (fis_phys & 0xFFFFFFFF) as u32);
-        self.write_port_reg(
-            port,
-            AhciPortReg::Fbu,
-            ((fis_phys >> 32) & 0xFFFFFFFF) as u32,
-        );
 
         // 1. Set up command table with FIS
         unsafe {
@@ -1337,11 +1355,20 @@ impl StorageDriver for AhciDriver {
             return Err(StorageError::DeviceBusy);
         }
 
-        // Execute vendor-specific command (implementation depends on vendor)
-        self.execute_command(0, command, 0, data.len() as u16, None)?;
+        // Allocate a response buffer for the vendor command
+        let response_size = if data.is_empty() { 512 } else { data.len() };
+        let mut response = vec![0u8; response_size];
 
-        // Return empty response for now
-        Ok(Vec::new())
+        // Execute vendor-specific command with data buffer for response
+        self.execute_command(
+            0,
+            command,
+            0,
+            ((response_size + 511) / 512) as u16,
+            Some(&mut response),
+        )?;
+
+        Ok(response)
     }
 
     fn get_smart_data(&mut self) -> Result<Vec<u8>, StorageError> {
@@ -1349,9 +1376,105 @@ impl StorageDriver for AhciDriver {
             return Err(StorageError::NotSupported);
         }
 
-        // In real implementation, execute SMART READ DATA command
-        // For now, return empty SMART data
-        Ok(vec![0; 512])
+        // SMART READ DATA: ATA command 0xB0, features=0xD0, LBA=0xC24F8C0
+        // The 512-byte SMART data is returned in the DMA buffer
+        let mut smart_data = vec![0u8; 512];
+
+        // Execute SMART command via a custom FIS
+        // We use execute_command with command=0xB0 (SMART)
+        // The features register and LBA need to be set properly for SMART READ DATA
+        // LBA = 0xC24F8C0 (SMART signature), features = 0xD0 (SMART READ DATA)
+        // Since execute_command doesn't expose features, we build the FIS directly
+
+        let port = 0u8;
+        let cmd_list_phys = self.command_lists[port as usize];
+        let cmd_table_phys = self.command_tables[port as usize];
+
+        if cmd_list_phys == 0 || cmd_table_phys == 0 {
+            return Err(StorageError::HardwareError);
+        }
+
+        use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
+        let dma_buf =
+            DmaBuffer::allocate(512, DMA_ALIGNMENT).map_err(|_| StorageError::HardwareError)?;
+
+        let buffer_phys = {
+            use crate::memory::get_memory_manager;
+            use x86_64::VirtAddr;
+            let virt_addr = VirtAddr::new(dma_buf.virtual_addr() as u64);
+            let mm = get_memory_manager().ok_or(StorageError::HardwareError)?;
+            mm.translate_addr(virt_addr)
+                .ok_or(StorageError::HardwareError)?
+                .as_u64()
+        };
+
+        // Build SMART READ DATA FIS
+        unsafe {
+            let cmd_table = cmd_table_phys as *mut u8;
+
+            // Clear command table
+            for i in 0..0x80 {
+                *cmd_table.add(i) = 0;
+            }
+
+            // H2D Register FIS
+            *cmd_table = 0x27; // FIS Type: Register H2D
+            *cmd_table.add(1) = 0x80; // C bit set
+            *cmd_table.add(2) = 0xB0; // SMART command
+            *cmd_table.add(3) = 0xD0; // Features: SMART READ DATA
+
+            // SMART signature LBA: 0xC24F8C0
+            *cmd_table.add(4) = 0xC0; // LBA low
+            *cmd_table.add(5) = 0x4F; // LBA mid
+            *cmd_table.add(6) = 0xC2; // LBA high
+            *cmd_table.add(7) = 0xA0; // Device register (LBA mode)
+            *cmd_table.add(8) = 0; // LBA[31:24]
+            *cmd_table.add(9) = 0; // LBA[39:32]
+            *cmd_table.add(10) = 0; // LBA[47:40]
+            *cmd_table.add(11) = 0; // Features (high)
+            *cmd_table.add(12) = 1; // Sector count
+            *cmd_table.add(13) = 0; // Sector count (high)
+
+            // Set up PRDT (Physical Region Descriptor Table) in command table
+            // PRDT starts at offset 0x80 in command table
+            let prdt_ptr = cmd_table.add(0x80) as *mut u64;
+            *prdt_ptr = buffer_phys; // Data base address
+            *prdt_ptr.add(1) = 512; // Data byte count
+
+            // Set up command list entry
+            let cmd_list = cmd_list_phys as *mut u32;
+            // Command FIS length: 20 bytes (5 DWORDs)
+            *cmd_list = 5 | (1 << 16); // CFL=5, PRDTL=1
+                                       // Command table base address
+            *(cmd_list.add(2)) = (cmd_table_phys & 0xFFFFFFFF) as u32;
+            *(cmd_list.add(3)) = (cmd_table_phys >> 32) as u32;
+        }
+
+        // Issue command by setting CI (Command Issue) bit
+        let ci = self.read_port_reg(port, AhciPortReg::Ci);
+        self.write_port_reg(port, AhciPortReg::Ci, ci | 1);
+
+        // Wait for completion
+        let mut timeout = 1_000_000u32;
+        loop {
+            let ci = self.read_port_reg(port, AhciPortReg::Ci);
+            if (ci & 1) == 0 {
+                break;
+            }
+            if timeout == 0 {
+                return Err(StorageError::Timeout);
+            }
+            timeout -= 1;
+            core::hint::spin_loop();
+        }
+
+        // Copy SMART data from DMA buffer
+        let src = dma_buf.virtual_addr() as *const u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(src, smart_data.as_mut_ptr(), 512);
+        }
+
+        Ok(smart_data)
     }
 }
 

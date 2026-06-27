@@ -195,13 +195,16 @@ pub struct NetworkStats {
     pub dropped_packets: u64,
 }
 
-/// Dummy Ethernet driver for testing
+/// Dummy Ethernet driver for testing only — not used in production.
+/// Real NIC drivers are loaded via PCI scanning in `init_network_drivers()`.
+#[cfg(test)]
 pub struct DummyEthernetDriver {
     name: String,
     mac: MacAddress,
     state: DeviceState,
 }
 
+#[cfg(test)]
 impl DummyEthernetDriver {
     pub fn new(name: String, mac: MacAddress) -> Self {
         Self {
@@ -212,6 +215,7 @@ impl DummyEthernetDriver {
     }
 }
 
+#[cfg(test)]
 impl NetworkDriver for DummyEthernetDriver {
     fn name(&self) -> &str {
         &self.name
@@ -538,39 +542,68 @@ pub fn create_network_driver_from_pci(
         return Some((driver, caps));
     }
 
-    // Try Atheros WiFi series
-    if let Some((driver, caps)) =
-        atheros_wifi::create_atheros_wifi_driver(vendor_id, device_id, base_addr, irq)
-    {
-        return Some((driver, caps));
-    }
+    // Atheros WiFi driver is a stub — not loaded in production
 
     None
 }
 
-/// Initialize network driver system
+/// Initialize network driver system by scanning PCI for real NICs
 pub fn init_network_drivers() -> Result<NetworkDriverManager, NetworkError> {
     let mut manager = NetworkDriverManager::new();
 
-    // In a real implementation, we would:
-    // 1. Enumerate PCI devices
-    // 2. Identify network controllers
-    // 3. Load appropriate drivers
-    // 4. Configure hardware
+    use crate::pci::{get_devices_by_class, PciClass};
 
-    // For now, create a dummy driver for testing
-    let dummy_driver = DummyEthernetDriver::new(
-        "Generic Ethernet".to_string(),
-        [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
-    );
+    let net_devices = get_devices_by_class(PciClass::Network);
 
-    let caps = ExtendedNetworkCapabilities {
-        base: DeviceCapabilities::default(),
-        max_bandwidth_mbps: 1000,
-        ..Default::default()
-    };
+    for dev in net_devices.iter() {
+        let bar0 = dev.bars[0];
+        if bar0 == 0 {
+            continue;
+        }
 
-    manager.register_driver(Box::new(dummy_driver), caps);
+        let base_addr = if bar0 & 0x1 == 0 {
+            (bar0 & 0xFFFF_FFF0) as u64
+        } else {
+            continue;
+        };
+
+        let irq = 0;
+
+        crate::serial_println!(
+            "net: PCI {:02x}:{:02x}.{} vendor=0x{:04X} device=0x{:04X} bar0=0x{:08X} mmio=0x{:X}",
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id,
+            bar0,
+            base_addr
+        );
+
+        let mapped = base_addr;
+
+        if let Some((driver, caps)) =
+            create_network_driver_from_pci(dev.vendor_id, dev.device_id, mapped, irq)
+        {
+            crate::serial_println!(
+                "net: loaded driver '{}' for {:04X}:{:04X}",
+                driver.name(),
+                dev.vendor_id,
+                dev.device_id
+            );
+            manager.register_driver(driver, caps);
+        } else {
+            crate::serial_println!(
+                "net: no driver for vendor=0x{:04X} device=0x{:04X}",
+                dev.vendor_id,
+                dev.device_id
+            );
+        }
+    }
+
+    if manager.list_drivers().is_empty() {
+        crate::serial_println!("net: no NIC drivers loaded");
+    }
 
     Ok(manager)
 }
@@ -619,15 +652,19 @@ pub mod utils {
 
     /// Generate random MAC address with specific vendor prefix
     pub fn generate_mac_with_vendor(vendor_prefix: [u8; 3]) -> MacAddress {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static MAC_COUNTER: AtomicU32 = AtomicU32::new(0);
+
         let mut mac = [0u8; 6];
         mac[0] = vendor_prefix[0] & 0xFE; // Ensure unicast
         mac[1] = vendor_prefix[1];
         mac[2] = vendor_prefix[2];
 
-        // Generate random lower 3 bytes (simplified)
-        mac[3] = 0x12;
-        mac[4] = 0x34;
-        mac[5] = 0x56;
+        // Generate unique lower 3 bytes from a monotonic counter
+        let counter = MAC_COUNTER.fetch_add(1, Ordering::Relaxed);
+        mac[3] = ((counter >> 16) & 0xFF) as u8;
+        mac[4] = ((counter >> 8) & 0xFF) as u8;
+        mac[5] = (counter & 0xFF) as u8;
 
         mac
     }
@@ -659,74 +696,76 @@ pub fn get_network_driver_manager() -> Option<&'static mut NetworkDriverManager>
 pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
     let mut loaded_drivers = Vec::new();
 
-    // Real implementation: Scan PCI bus for network controllers
-    // 1. Get all PCI devices with Network class (0x02)
-    // 2. Match vendor/device IDs to known network drivers
-    // 3. Load and initialize appropriate drivers
-    // 4. Configure hardware settings
-
     use crate::pci::{get_devices_by_class, PciClass};
 
-    // Scan PCI bus for network devices
     let network_devices = get_devices_by_class(PciClass::Network);
 
     for device in network_devices.iter() {
-        let device_name = match (device.vendor_id, device.device_id) {
-            // Intel network controllers
-            (0x8086, 0x100E) => "Intel 82540EM Gigabit Ethernet Controller",
-            (0x8086, 0x100F) => "Intel 82545EM Gigabit Ethernet Controller",
-            (0x8086, 0x10D3) => "Intel 82574L Gigabit Ethernet Controller",
-            (0x8086, 0x10EA) => "Intel 82577LM Gigabit Network Connection",
-            (0x8086, 0x1502) => "Intel 82579LM Gigabit Network Connection",
-            (0x8086, 0x153A) => "Intel I217-LM Gigabit Network Connection",
-            (0x8086, 0x15A1) => "Intel I218-LM Gigabit Network Connection",
-            (0x8086, 0x156F) => "Intel I219-LM Gigabit Network Connection",
+        let bar0 = device.bars[0];
+        if bar0 == 0 || (bar0 & 0x1) != 0 {
+            continue;
+        }
 
-            // Realtek network controllers
-            (0x10EC, 0x8139) => "Realtek RTL8139 Fast Ethernet",
-            (0x10EC, 0x8168) => "Realtek RTL8168 Gigabit Ethernet",
-            (0x10EC, 0x8169) => "Realtek RTL8169 Gigabit Ethernet",
-            (0x10EC, 0x8136) => "Realtek RTL8101E Fast Ethernet",
+        let base_addr = (bar0 & 0xFFFF_FFF0) as u64;
+        let irq = 0u8;
 
-            // Broadcom network controllers
-            (0x14E4, 0x1677) => "Broadcom NetXtreme BCM5751 Gigabit Ethernet",
-            (0x14E4, 0x1659) => "Broadcom NetXtreme BCM5721 Gigabit Ethernet",
-            (0x14E4, 0x1678) => "Broadcom NetXtreme BCM5715 Gigabit Ethernet",
-            (0x14E4, 0x165D) => "Broadcom NetXtreme BCM5705M Gigabit Ethernet",
+        if let Some((mut driver, caps)) =
+            create_network_driver_from_pci(device.vendor_id, device.device_id, base_addr, irq)
+        {
+            let name = driver.name().to_string();
+            crate::serial_println!(
+                "net: initializing '{}' for {:04X}:{:04X} at 0x{:X}",
+                name,
+                device.vendor_id,
+                device.device_id,
+                base_addr
+            );
 
-            // Qualcomm Atheros wireless controllers
-            (0x168C, 0x002A) => "Atheros AR928X Wireless Network Adapter",
-            (0x168C, 0x0030) => "Atheros AR93xx Wireless Network Adapter",
-            (0x168C, 0x0032) => "Atheros AR9485 Wireless Network Adapter",
-            (0x168C, 0x0034) => "Atheros AR9462 Wireless Network Adapter",
-
-            // Generic/Unknown network device
-            _ => {
-                // For unknown devices, create a descriptive name
-                let vendor_name = match device.vendor_id {
-                    0x8086 => "Intel",
-                    0x10EC => "Realtek",
-                    0x14E4 => "Broadcom",
-                    0x168C => "Qualcomm Atheros",
-                    _ => "Unknown",
-                };
-                loaded_drivers.push(alloc::format!(
-                    "{} Network Controller ({}:{:04X}:{:04X})",
-                    vendor_name,
-                    device.bus,
-                    device.vendor_id,
-                    device.device_id
-                ));
-                continue;
+            match driver.init() {
+                Ok(()) => {
+                    crate::serial_println!("net: '{}' initialized, starting...", name);
+                    match driver.start() {
+                        Ok(()) => {
+                            let (link_up, speed, full_duplex) = driver.get_link_status();
+                            crate::serial_println!(
+                                "net: '{}' started, link={} speed={}Mbps duplex={}",
+                                name,
+                                link_up,
+                                speed,
+                                if full_duplex { "full" } else { "half" }
+                            );
+                        }
+                        Err(e) => {
+                            crate::serial_println!("net: '{}' start failed: {:?}", name, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::serial_println!("net: '{}' init failed: {:?}", name, e);
+                }
             }
-        };
 
-        loaded_drivers.push(device_name.to_string());
+            loaded_drivers.push(name);
+        } else {
+            let vendor_name = match device.vendor_id {
+                0x8086 => "Intel",
+                0x10EC => "Realtek",
+                0x14E4 => "Broadcom",
+                0x168C => "Qualcomm Atheros",
+                _ => "Unknown",
+            };
+            loaded_drivers.push(alloc::format!(
+                "{} Network Controller ({}:{:04X}:{:04X}) — no driver",
+                vendor_name,
+                device.bus,
+                device.vendor_id,
+                device.device_id
+            ));
+        }
     }
 
-    // If no PCI network devices found, log a warning but don't fail
     if loaded_drivers.is_empty() {
-        crate::println!("[WARN] No network devices detected on PCI bus");
+        crate::serial_println!("net: no network devices detected on PCI bus");
     }
 
     Ok(loaded_drivers)

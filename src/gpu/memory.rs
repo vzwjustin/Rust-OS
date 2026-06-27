@@ -947,53 +947,20 @@ impl GPUMemoryManager {
         }
     }
 
-    /// Configure Intel GPU memory management
-    fn configure_intel_gpu_mmu(&self, virt_addr: u64, size: usize) -> Result<(), &'static str> {
-        // Intel GPUs use Global Graphics Translation Table (GGTT)
-        unsafe {
-            let gpu_base = 0xFED00000u64 as *mut u32;
-            if !gpu_base.is_null() {
-                // Configure GGTT entry for this allocation
-                let ggtt_base = gpu_base.add(0x100000 / 4); // GGTT at offset 0x100000
-                let entry_index = ((virt_addr - 0xFE000000) / 4096) as usize; // Page index
-                let pages = (size + 4095) / 4096;
-
-                for i in 0..pages {
-                    let phys_addr = self.virt_to_phys(virt_addr + i as u64 * 4096)?;
-                    let ggtt_entry = (phys_addr & 0xFFFFF000) | 0x1; // Valid bit
-                    core::ptr::write_volatile(ggtt_base.add(entry_index + i), ggtt_entry as u32);
-                }
-
-                // Flush GGTT cache
-                core::ptr::write_volatile(gpu_base.add(0x4010 / 4), 0x1);
-            }
-        }
-
+    /// Configure Intel GPU memory management (GGTT).
+    ///
+    /// No-op until a real Intel GPU is detected. The GGTT lives in the GPU's own
+    /// MMIO BAR; the old code wrote it at 0xFED00000 — the HPET timer, not a GPU —
+    /// which faults. Needs the device's actual BAR + GGTT offset to be real.
+    fn configure_intel_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
         Ok(())
     }
 
-    /// Configure AMD GPU memory management
-    fn configure_amd_gpu_mmu(&self, virt_addr: u64, size: usize) -> Result<(), &'static str> {
-        // AMD GPUs use Graphics Memory Management Unit (GMMU)
-        unsafe {
-            let gpu_base = 0xFED00000u64 as *mut u32;
-            if !gpu_base.is_null() {
-                // Configure page table entries for this allocation
-                let pt_base = gpu_base.add(0x200000 / 4); // Page table at offset 0x200000
-                let entry_index = ((virt_addr - 0xFE000000) / 4096) as usize;
-                let pages = (size + 4095) / 4096;
-
-                for i in 0..pages {
-                    let phys_addr = self.virt_to_phys(virt_addr + i as u64 * 4096)?;
-                    let pt_entry = (phys_addr & 0xFFFFF000) | 0x3; // Valid | Readable | Writable
-                    core::ptr::write_volatile(pt_base.add(entry_index + i), pt_entry as u32);
-                }
-
-                // Invalidate TLB
-                core::ptr::write_volatile(gpu_base.add(0x1740 / 4), 0xFFFFFFFF);
-            }
-        }
-
+    /// Configure AMD GPU memory management (GMMU).
+    ///
+    /// No-op until a real AMD GPU is detected — same reason as the Intel path:
+    /// the page tables live in the GPU's MMIO BAR, not at the HPET address.
+    fn configure_amd_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
         Ok(())
     }
 

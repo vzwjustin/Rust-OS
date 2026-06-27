@@ -301,7 +301,7 @@ fn test_process_creation_syscalls() -> TestResult {
     // Test yield syscall
     let yield_context = SyscallContext {
         pid: 1,
-        syscall_num: SyscallNumber::Yield,
+        syscall_num: SyscallNumber::SchedYield,
         args: [0; 6],
         user_sp: 0x7fff_0000,
         user_ip: 0x4000_0000,
@@ -443,7 +443,7 @@ fn test_time_scheduling_syscalls() -> TestResult {
     // Test gettime syscall
     let gettime_context = SyscallContext {
         pid: 1,
-        syscall_num: SyscallNumber::GetTime,
+        syscall_num: SyscallNumber::ClockGettime,
         args: [0; 6],
         user_sp: 0x7fff_0000,
         user_ip: 0x4000_0000,
@@ -458,7 +458,7 @@ fn test_time_scheduling_syscalls() -> TestResult {
     // Test sleep syscall
     let sleep_context = SyscallContext {
         pid: 1,
-        syscall_num: SyscallNumber::Sleep,
+        syscall_num: SyscallNumber::Nanosleep,
         args: [1000, 0, 0, 0, 0, 0], // Sleep for 1ms
         user_sp: 0x7fff_0000,
         user_ip: 0x4000_0000,
@@ -473,7 +473,7 @@ fn test_time_scheduling_syscalls() -> TestResult {
     // Test set priority syscall
     let setprio_context = SyscallContext {
         pid: 1,
-        syscall_num: SyscallNumber::SetPriority,
+        syscall_num: SyscallNumber::Setpriority,
         args: [2, 0, 0, 0, 0, 0], // Normal priority
         user_sp: 0x7fff_0000,
         user_ip: 0x4000_0000,

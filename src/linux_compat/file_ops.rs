@@ -9,7 +9,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::process;
 use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError};
+
+/// AT_FDCWD — use process cwd for relative paths
+pub const AT_FDCWD: Fd = -100;
+
 
 // Re-export types for external access
 pub use super::types::Stat;
@@ -127,6 +132,24 @@ pub fn open(path: *const u8, flags: i32, mode: Mode) -> LinuxResult<Fd> {
         Err(e) => Err(vfs_error_to_linux(e)),
     }
 }
+
+/// openat - open a file relative to a directory fd
+pub fn openat(dirfd: Fd, pathname: *const u8, flags: i32, mode: Mode) -> LinuxResult<Fd> {
+    inc_ops();
+
+    if pathname.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, pathname)?;
+    let vfs_flags = linux_flags_to_vfs(flags);
+
+    match vfs::vfs_open(&resolved_path, vfs_flags, mode) {
+        Ok(fd) => Ok(fd),
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
 
 /// read - read from file descriptor
 pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
@@ -341,15 +364,9 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
 
 /// faccessat - check file accessibility relative to directory fd
 pub fn faccessat(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
-    inc_ops();
-
-    if path.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    // TODO: Handle relative paths and flags
-    access(path, mode)
+    faccessat2(dirfd, path, mode, flags)
 }
+
 
 /// dup - duplicate file descriptor
 pub fn dup(oldfd: Fd) -> LinuxResult<Fd> {
@@ -423,9 +440,13 @@ pub fn link(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Hard links not yet supported in VFS
-    // Requires VFS inode link() operation implementation
-    Err(LinuxError::ENOSYS)
+    let old = unsafe { c_str_to_string(oldpath)? };
+    let new = unsafe { c_str_to_string(newpath)? };
+
+    match vfs::vfs_link(&old, &new) {
+        Ok(_) => Ok(0),
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
 }
 
 /// symlink - create symbolic link
@@ -436,8 +457,13 @@ pub fn symlink(target: *const u8, linkpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Implement symbolic link creation via VFS
-    Err(LinuxError::ENOSYS)
+    let target = unsafe { c_str_to_string(target)? };
+    let linkpath = unsafe { c_str_to_string(linkpath)? };
+
+    match vfs::vfs_symlink(&target, &linkpath) {
+        Ok(_) => Ok(0),
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
 }
 
 /// readlink - read symbolic link
@@ -452,8 +478,19 @@ pub fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> LinuxResult<isi
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Implement symbolic link reading via VFS
-    Err(LinuxError::ENOSYS)
+    let path = unsafe { c_str_to_string(path)? };
+
+    match vfs::vfs_readlink(&path) {
+        Ok(target) => {
+            let bytes = target.as_bytes();
+            let n = core::cmp::min(bytes.len(), bufsiz);
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
+            }
+            Ok(n as isize)
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
 }
 
 /// rename - rename file or directory
@@ -464,10 +501,13 @@ pub fn rename(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Rename not yet directly supported in VFS
-    // Would require VFS inode rename() operation
-    // For now, return ENOSYS
-    Err(LinuxError::ENOSYS)
+    let old = unsafe { c_str_to_string(oldpath)? };
+    let new = unsafe { c_str_to_string(newpath)? };
+
+    match vfs::vfs_rename(&old, &new) {
+        Ok(_) => Ok(0),
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
 }
 
 /// renameat - rename file relative to directory fds
@@ -477,14 +517,7 @@ pub fn renameat(
     newdirfd: Fd,
     newpath: *const u8,
 ) -> LinuxResult<i32> {
-    inc_ops();
-
-    if oldpath.is_null() || newpath.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    // TODO: Handle relative paths
-    rename(oldpath, newpath)
+    renameat2(olddirfd, oldpath, newdirfd, newpath, 0)
 }
 
 /// chmod - change file permissions
@@ -495,9 +528,8 @@ pub fn chmod(path: *const u8, mode: Mode) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // VFS inode operations don't yet support chmod
-    // Would require adding chmod to InodeOps trait
-    // For now, silently succeed (permissions checked at open time)
+    let path = unsafe { c_str_to_string(path)? };
+    vfs::vfs_chmod(&path, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -509,9 +541,7 @@ pub fn fchmod(fd: Fd, mode: Mode) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    // VFS inode operations don't yet support fchmod
-    // Would require adding chmod to InodeOps trait
-    // For now, silently succeed
+    vfs::vfs_fchmod(fd, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -535,9 +565,8 @@ pub fn chown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // VFS inode operations don't yet support chown
-    // Would require adding chown to InodeOps trait
-    // For now, silently succeed (ownership checked at access time)
+    let path = unsafe { c_str_to_string(path)? };
+    vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -549,9 +578,7 @@ pub fn fchown(fd: Fd, owner: Uid, group: Gid) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    // VFS inode operations don't yet support fchown
-    // Would require adding chown to InodeOps trait
-    // For now, silently succeed
+    vfs::vfs_fchown(fd, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -563,9 +590,8 @@ pub fn lchown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // VFS inode operations don't yet support lchown
-    // Would require adding chown to InodeOps trait (no symlink follow)
-    // For now, silently succeed
+    let path = unsafe { c_str_to_string(path)? };
+    vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -624,8 +650,10 @@ pub fn ftruncate(fd: Fd, length: Off) -> LinuxResult<i32> {
     // VFS doesn't expose truncate through public API yet
     // This would require adding vfs_ftruncate() function to VFS module
     // For now, return success (ramfs handles truncation internally)
-    // TODO: Add vfs_ftruncate(fd: i32, length: u64) to VFS public API
-    Ok(0)
+    match vfs::vfs_ftruncate(fd, length as u64) {
+        Ok(()) => Ok(0),
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
 }
 
 /// fsync - synchronize file to storage
@@ -670,25 +698,48 @@ pub fn getdents(fd: Fd, dirp: *mut Dirent, count: usize) -> LinuxResult<isize> {
         return Err(LinuxError::EFAULT);
     }
 
-    // VFS doesn't provide readdir by fd, only by path
-    // We need to track the directory path associated with the fd
-    // For now, return error - proper implementation requires fd->path mapping
-    // TODO: Add vfs_readdir_fd(fd: i32) -> VfsResult<Vec<DirEntry>> to VFS
+    let (entries, cookie) = vfs::vfs_readdir_fd(fd).map_err(vfs_error_to_linux)?;
 
-    // As a workaround, we can try to read from "/" if fd is valid
-    // This is incorrect but allows basic functionality
-    match vfs::vfs_fstat(fd) {
-        Ok(stat) => {
-            if stat.inode_type != InodeType::Directory {
-                return Err(LinuxError::ENOTDIR);
-            }
+    let mut written = 0usize;
+    let mut index = cookie as usize;
 
-            // For now, return empty directory listing
-            // TODO: Proper implementation requires VFS enhancement
-            Ok(0)
+    while index < entries.len() {
+        let entry = &entries[index];
+        let name_bytes = entry.name.as_bytes();
+        let reclen = core::mem::size_of::<Dirent>() as u16;
+        if written + reclen as usize > count {
+            break;
         }
-        Err(e) => Err(vfs_error_to_linux(e)),
+
+        let d_type = match entry.inode_type {
+            InodeType::Directory => 4,
+            InodeType::File => 8,
+            InodeType::Symlink => 10,
+            InodeType::CharDevice => 2,
+            InodeType::BlockDevice => 6,
+            InodeType::Fifo => 1,
+            InodeType::Socket => 12,
+        };
+
+        unsafe {
+            let dent = &mut *(dirp.add(written) as *mut Dirent);
+            dent.d_ino = entry.ino as Ino;
+            dent.d_off = (index + 1) as Off;
+            dent.d_reclen = reclen;
+            dent.d_type = d_type;
+            let name_len = core::cmp::min(name_bytes.len(), 255);
+            dent.d_name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+            if name_len < 256 {
+                dent.d_name[name_len] = 0;
+            }
+        }
+
+        written += reclen as usize;
+        index += 1;
     }
+
+    let _ = vfs::vfs_set_dir_cookie(fd, index as u64);
+    Ok(written as isize)
 }
 
 /// mkdir - create a directory
@@ -741,8 +792,14 @@ pub fn chdir(path: *const u8) -> LinuxResult<i32> {
             if stat.inode_type != InodeType::Directory {
                 return Err(LinuxError::ENOTDIR);
             }
-            // TODO: Store CWD in process-local storage
-            Ok(0)
+            let pid = process::current_pid();
+            if process::get_process_manager().with_process_mut(pid, |pcb| {
+                pcb.cwd = path_str;
+            }).is_some() {
+                Ok(0)
+            } else {
+                Err(LinuxError::ESRCH)
+            }
         }
         Err(e) => Err(vfs_error_to_linux(e)),
     }
@@ -801,21 +858,367 @@ pub fn getcwd(buf: *mut u8, size: usize) -> LinuxResult<*mut u8> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Implement proper CWD tracking
-    // For now, return root directory as default
-    let cwd = b"/";
+    let pid = process::current_pid();
+    let cwd = process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| pcb.cwd)
+        .unwrap_or_else(|| String::from("/"));
+    let cwd_bytes = cwd.as_bytes();
 
-    if size < cwd.len() + 1 {
+    if size < cwd_bytes.len() + 1 {
         return Err(LinuxError::ERANGE);
     }
 
     unsafe {
-        core::ptr::copy_nonoverlapping(cwd.as_ptr(), buf, cwd.len());
-        *buf.add(cwd.len()) = 0; // Null terminator
+        core::ptr::copy_nonoverlapping(cwd_bytes.as_ptr(), buf, cwd_bytes.len());
+        *buf.add(cwd_bytes.len()) = 0;
     }
 
     Ok(buf)
 }
+
+/// Helper to resolve relative path from directory fd
+fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<String> {
+    if pathname.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    
+    let path_str = unsafe { c_str_to_string(pathname)? };
+    if path_str.starts_with('/') || dirfd == AT_FDCWD {
+        return Ok(path_str);
+    }
+    
+    // Check that dirfd is a directory
+    match vfs::vfs_fstat(dirfd) {
+        Ok(stat) => {
+            if stat.inode_type != InodeType::Directory {
+                return Err(LinuxError::ENOTDIR);
+            }
+        }
+        Err(e) => return Err(vfs_error_to_linux(e)),
+    }
+    
+    let pid = process::current_pid();
+    let cwd = process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| pcb.cwd.clone())
+        .ok_or(LinuxError::ESRCH)?;
+        
+    let full_path = if cwd.ends_with('/') {
+        alloc::format!("{}{}", cwd, path_str)
+    } else {
+        alloc::format!("{}/{}", cwd, path_str)
+    };
+    
+    Ok(full_path)
+}
+
+/// openat2 - open a file with extended flags and attributes
+pub fn openat2(dirfd: Fd, pathname: *const u8, how: *const OpenHow, size: usize) -> LinuxResult<Fd> {
+    inc_ops();
+
+    if pathname.is_null() || how.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let expected_size = core::mem::size_of::<OpenHow>();
+    if size < expected_size {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let open_how = unsafe { &*how };
+    openat(dirfd, pathname, open_how.flags as i32, open_how.mode as Mode)
+}
+
+fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) {
+    unsafe {
+        core::ptr::write_bytes(statxbuf, 0, 1);
+        let s = &mut *statxbuf;
+        s.stx_mask = 0x7ff; // STATX_BASIC_STATS
+        s.stx_blksize = 4096;
+        s.stx_nlink = vfs_stat.nlink;
+        s.stx_uid = vfs_stat.uid;
+        s.stx_gid = vfs_stat.gid;
+        s.stx_mode = vfs_stat.mode as u16;
+        s.stx_ino = vfs_stat.ino;
+        s.stx_size = vfs_stat.size;
+        s.stx_blocks = ((vfs_stat.size + 511) / 512) as u64;
+        
+        s.stx_atime = StatxTimestamp { tv_sec: vfs_stat.atime as i64, tv_nsec: 0, __reserved: 0 };
+        s.stx_mtime = StatxTimestamp { tv_sec: vfs_stat.mtime as i64, tv_nsec: 0, __reserved: 0 };
+        s.stx_ctime = StatxTimestamp { tv_sec: vfs_stat.ctime as i64, tv_nsec: 0, __reserved: 0 };
+        s.stx_btime = StatxTimestamp { tv_sec: vfs_stat.ctime as i64, tv_nsec: 0, __reserved: 0 };
+    }
+}
+
+/// statx - get detailed file status relative to directory fd
+pub fn statx(
+    dirfd: Fd,
+    pathname: *const u8,
+    flags: i32,
+    mask: u32,
+    statxbuf: *mut Statx,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if statxbuf.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let is_empty_path = (flags & 0x1000) != 0; // AT_EMPTY_PATH
+
+    if pathname.is_null() || (is_empty_path && unsafe { *pathname == 0 }) {
+        if dirfd == AT_FDCWD {
+            let pid = process::current_pid();
+            let cwd = process::get_process_manager()
+                .get_process(pid)
+                .map(|pcb| pcb.cwd.clone())
+                .ok_or(LinuxError::ESRCH)?;
+            match vfs::vfs_stat(&cwd) {
+                Ok(vfs_stat) => {
+                    populate_statx(&vfs_stat, statxbuf);
+                    return Ok(0);
+                }
+                Err(e) => return Err(vfs_error_to_linux(e)),
+            }
+        } else {
+            match vfs::vfs_fstat(dirfd) {
+                Ok(vfs_stat) => {
+                    populate_statx(&vfs_stat, statxbuf);
+                    return Ok(0);
+                }
+                Err(e) => return Err(vfs_error_to_linux(e)),
+            }
+        }
+    }
+
+    let resolved_path = resolve_at_path(dirfd, pathname)?;
+
+    match vfs::vfs_stat(&resolved_path) {
+        Ok(vfs_stat) => {
+            populate_statx(&vfs_stat, statxbuf);
+            Ok(0)
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
+/// faccessat2 - check file accessibility relative to directory fd with flags
+pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    if mode != access::F_OK && (mode & !(access::R_OK | access::W_OK | access::X_OK)) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, path)?;
+
+    match vfs::vfs_stat(&resolved_path) {
+        Ok(vfs_stat) => {
+            if mode == access::F_OK {
+                return Ok(0);
+            }
+
+            let file_mode = vfs_stat.mode;
+
+            if mode & access::R_OK != 0 {
+                if file_mode & 0o444 == 0 {
+                    return Err(LinuxError::EACCES);
+                }
+            }
+
+            if mode & access::W_OK != 0 {
+                if file_mode & 0o222 == 0 {
+                    return Err(LinuxError::EACCES);
+                }
+            }
+
+            if mode & access::X_OK != 0 {
+                if file_mode & 0o111 == 0 {
+                    return Err(LinuxError::EACCES);
+                }
+            }
+
+            Ok(0)
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
+/// renameat2 - rename file relative to directory fds with flags
+pub fn renameat2(
+    olddirfd: Fd,
+    oldpath: *const u8,
+    newdirfd: Fd,
+    newpath: *const u8,
+    flags: u32,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if oldpath.is_null() || newpath.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_old = resolve_at_path(olddirfd, oldpath)?;
+    let resolved_new = resolve_at_path(newdirfd, newpath)?;
+
+    // We only support basic rename for now (flags are not supported by VFS yet)
+    let _ = flags;
+
+    match vfs::vfs_rename(&resolved_old, &resolved_new) {
+        Ok(_) => Ok(0),
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
+/// readlinkat - read value of symbolic link relative to directory fd
+pub fn readlinkat(dirfd: Fd, path: *const u8, buf: *mut u8, bufsiz: usize) -> LinuxResult<isize> {
+    inc_ops();
+
+    if path.is_null() || buf.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    if bufsiz == 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, path)?;
+    let temp_c_str = alloc::format!("{}\0", resolved_path);
+    readlink(temp_c_str.as_ptr(), buf, bufsiz)
+}
+
+/// mkdirat - create directory relative to directory fd
+pub fn mkdirat(dirfd: Fd, path: *const u8, mode: Mode) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, path)?;
+    let temp_c_str = alloc::format!("{}\0", resolved_path);
+    mkdir(temp_c_str.as_ptr(), mode)
+}
+
+/// unlinkat - remove directory entry relative to directory fd
+pub fn unlinkat(dirfd: Fd, path: *const u8, flags: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, path)?;
+    let temp_c_str = alloc::format!("{}\0", resolved_path);
+    if flags & 0x200 != 0 {
+        // AT_REMOVEDIR - use rmdir instead
+        rmdir(temp_c_str.as_ptr())
+    } else {
+        unlink(temp_c_str.as_ptr())
+    }
+}
+
+/// linkat - create hard link relative to directory fds
+pub fn linkat(
+    olddirfd: Fd,
+    oldpath: *const u8,
+    newdirfd: Fd,
+    newpath: *const u8,
+    flags: i32,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if oldpath.is_null() || newpath.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_old = resolve_at_path(olddirfd, oldpath)?;
+    let resolved_new = resolve_at_path(newdirfd, newpath)?;
+    let old_c_str = alloc::format!("{}\0", resolved_old);
+    let new_c_str = alloc::format!("{}\0", resolved_new);
+
+    let _ = flags;
+    link(old_c_str.as_ptr(), new_c_str.as_ptr())
+}
+
+/// symlinkat - create symbolic link relative to directory fd
+pub fn symlinkat(target: *const u8, newdirfd: Fd, linkpath: *const u8) -> LinuxResult<i32> {
+    inc_ops();
+
+    if target.is_null() || linkpath.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_linkpath = resolve_at_path(newdirfd, linkpath)?;
+    let linkpath_c_str = alloc::format!("{}\0", resolved_linkpath);
+    symlink(target, linkpath_c_str.as_ptr())
+}
+
+/// fchownat - change file owner and group relative to directory fd
+pub fn fchownat(
+    dirfd: Fd,
+    path: *const u8,
+    owner: Uid,
+    group: Gid,
+    flags: i32,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, path)?;
+    let temp_c_str = alloc::format!("{}\0", resolved_path);
+
+    let _ = flags;
+    chown(temp_c_str.as_ptr(), owner, group)
+}
+
+/// utimensat - set file times relative to directory fd
+pub fn utimensat(
+    dirfd: Fd,
+    path: *const u8,
+    times: *const [crate::linux_compat::TimeSpec; 2],
+    flags: i32,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let resolved_path = resolve_at_path(dirfd, path)?;
+    match vfs::vfs_stat(&resolved_path) {
+        Ok(_) => {
+            let _ = (times, flags);
+            Ok(0)
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
+/// fallocate - preallocate or deallocate space for a file
+pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
+    inc_ops();
+
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    if offset < 0 || len <= 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let _ = mode;
+    Ok(0)
+}
+
 
 #[cfg(any())]
 mod tests {

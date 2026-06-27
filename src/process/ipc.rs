@@ -488,6 +488,24 @@ impl IpcManager {
         }
     }
 
+    /// Returns true when the pipe has buffered data to read.
+    pub fn pipe_has_data(&self, pipe_id: IpcId) -> bool {
+        self.pipes
+            .read()
+            .get(&pipe_id)
+            .map(|pipe| pipe.has_data())
+            .unwrap_or(false)
+    }
+
+    /// Returns true when the pipe can accept more writes.
+    pub fn pipe_has_space(&self, pipe_id: IpcId) -> bool {
+        self.pipes
+            .read()
+            .get(&pipe_id)
+            .map(|pipe| pipe.has_space())
+            .unwrap_or(false)
+    }
+
     /// Close pipe
     pub fn close_pipe(
         &self,

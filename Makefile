@@ -19,7 +19,7 @@ BOOTIMAGE_DEBUG = $(BOOTIMAGE_DEBUG_BIOS)  # Default to BIOS for compatibility
 BOOTIMAGE_RELEASE = $(BOOTIMAGE_RELEASE_BIOS)
 
 # QEMU configuration with bootloader_api support
-QEMU_ARGS = -m 512M -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -cpu qemu64,+apic -machine q35,accel=tcg
+QEMU_ARGS = -m 512M -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -cpu qemu64,+apic -machine pc,accel=tcg
 QEMU_X86 = qemu-system-x86_64
 QEMU_ARM = qemu-system-aarch64
 

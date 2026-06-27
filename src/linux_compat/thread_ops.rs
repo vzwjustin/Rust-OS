@@ -7,10 +7,40 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::RwLock;
 
+use super::process_ops;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::process;
+
+/// FS base MSR (x86_64)
+const MSR_FS_BASE: u32 = 0xC000_0100;
+/// GS base MSR (x86_64)
+const MSR_GS_BASE: u32 = 0xC000_0101;
+
+static FS_BASE: AtomicU64 = AtomicU64::new(0);
+static GS_BASE: AtomicU64 = AtomicU64::new(0);
+static CLEAR_CHILD_TID: AtomicU64 = AtomicU64::new(0);
+
+/// Futex wait queues keyed by userspace address.
+static FUTEX_WAITERS: RwLock<BTreeMap<usize, Vec<Pid>>> = RwLock::new(BTreeMap::new());
+
+#[inline(always)]
+unsafe fn wrmsr(msr: u32, value: u64) {
+    let low = value as u32;
+    let high = (value >> 32) as u32;
+    core::arch::asm!(
+        "wrmsr",
+        in("ecx") msr,
+        in("eax") low,
+        in("edx") high,
+        options(nostack, preserves_flags)
+    );
+}
 
 /// Operation counter for statistics
 static THREAD_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -120,55 +150,34 @@ pub mod futex_op {
 /// clone - create a child process or thread
 pub fn clone(
     flags: u64,
-    stack: *mut u8,
-    parent_tid: *mut Pid,
-    child_tid: *mut Pid,
-    tls: u64,
+    _stack: *mut u8,
+    _parent_tid: *mut Pid,
+    _child_tid: *mut Pid,
+    _tls: u64,
 ) -> LinuxResult<Pid> {
     inc_ops();
 
-    // Validate flags combination
     if (flags & clone_flags::CLONE_THREAD) != 0 {
-        // Thread creation requires these flags
-        if (flags & clone_flags::CLONE_SIGHAND) == 0 {
-            return Err(LinuxError::EINVAL);
-        }
-        if (flags & clone_flags::CLONE_VM) == 0 {
-            return Err(LinuxError::EINVAL);
-        }
+        // Thread creation shares address space with parent; reuse fork for now.
+        return process_ops::fork();
     }
 
-    // Validate stack
-    if !stack.is_null() {
-        // Stack provided
-    }
-
-    // TODO: Create new thread or process
-    // Set up TLS if CLONE_SETTLS
-    // Set parent_tid if CLONE_PARENT_SETTID
-    // Set child_tid if CLONE_CHILD_SETTID
-    // Handle namespace cloning (CLONE_NEWNS, etc.)
-
-    // Return new thread/process ID
-    Ok(1000)
+    process_ops::fork()
 }
 
 /// set_tid_address - set pointer to thread ID
 pub fn set_tid_address(tidptr: *mut Pid) -> Pid {
     inc_ops();
 
-    // TODO: Set clear_child_tid address
-    // When thread exits, kernel will clear *tidptr and wake futex
-    // Return current thread ID
-    1
+    CLEAR_CHILD_TID.store(tidptr as u64, Ordering::SeqCst);
+    process::current_pid() as Pid
 }
 
 /// gettid - get thread ID
 pub fn gettid() -> Pid {
     inc_ops();
 
-    // TODO: Return current thread ID
-    1
+    process::current_pid() as Pid
 }
 
 /// tkill - send signal to thread
@@ -226,8 +235,22 @@ pub fn futex(
 
     match op {
         futex_op::FUTEX_WAIT => {
-            // TODO: Wait on futex if *uaddr == val
-            // Block until woken or timeout
+            unsafe {
+                if *uaddr != val {
+                    return Err(LinuxError::EAGAIN);
+                }
+            }
+
+            let key = uaddr as usize;
+            let pid = process::current_pid();
+            {
+                let mut waiters = FUTEX_WAITERS.write();
+                waiters.entry(key).or_default().push(pid as Pid);
+            }
+
+            let _ = process::get_process_manager().block_process(pid);
+
+            // Re-check value after wakeup
             unsafe {
                 if *uaddr != val {
                     return Err(LinuxError::EAGAIN);
@@ -236,48 +259,22 @@ pub fn futex(
             Ok(0)
         }
         futex_op::FUTEX_WAKE => {
-            // TODO: Wake up to val waiters on futex
-            // Return number of waiters woken
-            Ok(val)
-        }
-        futex_op::FUTEX_REQUEUE => {
-            // TODO: Wake val waiters and requeue rest to uaddr2
-            if uaddr2.is_null() {
-                return Err(LinuxError::EFAULT);
-            }
-            Ok(val)
-        }
-        futex_op::FUTEX_CMP_REQUEUE => {
-            // TODO: Like REQUEUE but compare *uaddr with val3 first
-            if uaddr2.is_null() {
-                return Err(LinuxError::EFAULT);
-            }
-            unsafe {
-                if *uaddr != val3 {
-                    return Err(LinuxError::EAGAIN);
+            let key = uaddr as usize;
+            let mut woke = 0i32;
+            if val > 0 {
+                let mut waiters = FUTEX_WAITERS.write();
+                if let Some(queue) = waiters.get_mut(&key) {
+                    let count = core::cmp::min(val as usize, queue.len());
+                    for waiter in queue.drain(..count) {
+                        let _ = process::get_process_manager().unblock_process(waiter as u32);
+                        woke += 1;
+                    }
+                    if queue.is_empty() {
+                        waiters.remove(&key);
+                    }
                 }
             }
-            Ok(val)
-        }
-        futex_op::FUTEX_WAIT_BITSET => {
-            // TODO: Wait with bitset matching
-            Ok(0)
-        }
-        futex_op::FUTEX_WAKE_BITSET => {
-            // TODO: Wake with bitset matching
-            Ok(val)
-        }
-        futex_op::FUTEX_LOCK_PI => {
-            // TODO: Lock priority-inheritance futex
-            Ok(0)
-        }
-        futex_op::FUTEX_UNLOCK_PI => {
-            // TODO: Unlock priority-inheritance futex
-            Ok(0)
-        }
-        futex_op::FUTEX_TRYLOCK_PI => {
-            // TODO: Try to lock PI futex without blocking
-            Ok(0)
+            Ok(woke)
         }
         _ => Err(LinuxError::ENOSYS),
     }
@@ -373,24 +370,36 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
 
     match code {
         ARCH_SET_FS => {
-            // TODO: Set FS base register for TLS
+            FS_BASE.store(addr, Ordering::SeqCst);
+            unsafe {
+                wrmsr(MSR_FS_BASE, addr);
+            }
             Ok(0)
         }
         ARCH_GET_FS => {
-            // TODO: Get FS base register
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
+            }
+            let base = FS_BASE.load(Ordering::SeqCst);
+            unsafe {
+                *(addr as *mut u64) = base;
             }
             Ok(0)
         }
         ARCH_SET_GS => {
-            // TODO: Set GS base register
+            GS_BASE.store(addr, Ordering::SeqCst);
+            unsafe {
+                wrmsr(MSR_GS_BASE, addr);
+            }
             Ok(0)
         }
         ARCH_GET_GS => {
-            // TODO: Get GS base register
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
+            }
+            let base = GS_BASE.load(Ordering::SeqCst);
+            unsafe {
+                *(addr as *mut u64) = base;
             }
             Ok(0)
         }
@@ -501,6 +510,36 @@ pub fn membarrier(cmd: i32, flags: i32) -> LinuxResult<i32> {
         }
         _ => Err(LinuxError::EINVAL),
     }
+}
+
+/// clone3 - create a child process or thread with extended arguments
+pub fn clone3(cl_args: *const CloneArgs, size: usize) -> LinuxResult<Pid> {
+    inc_ops();
+
+    if cl_args.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Ensure we don't read past size
+    let expected_size = core::mem::size_of::<CloneArgs>();
+    if size < expected_size {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let args = unsafe { &*cl_args };
+
+    if (args.flags & clone_flags::CLONE_THREAD) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    // Call clone with parameters from clone_args
+    clone(
+        args.flags,
+        args.stack as *mut u8,
+        args.parent_tid as *mut Pid,
+        args.child_tid as *mut Pid,
+        args.tls,
+    )
 }
 
 #[cfg(any())]

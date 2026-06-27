@@ -35,13 +35,27 @@ pub fn clock_gettime(clockid: i32, tp: *mut TimeSpec) -> LinuxResult<i32> {
     }
 
     match clockid {
-        clock::CLOCK_REALTIME
-        | clock::CLOCK_MONOTONIC
-        | clock::CLOCK_PROCESS_CPUTIME_ID
+        clock::CLOCK_REALTIME => {
+            let secs = crate::time::system_time();
+            let ms = crate::time::uptime_ms() % 1000;
+            unsafe {
+                (*tp).tv_sec = secs as Time;
+                (*tp).tv_nsec = (ms * 1_000_000) as Nsec;
+            }
+            Ok(0)
+        }
+        clock::CLOCK_MONOTONIC => {
+            let ms = crate::time::uptime_ms();
+            unsafe {
+                (*tp).tv_sec = (ms / 1000) as Time;
+                (*tp).tv_nsec = ((ms % 1000) * 1_000_000) as Nsec;
+            }
+            Ok(0)
+        }
+        clock::CLOCK_PROCESS_CPUTIME_ID
         | clock::CLOCK_THREAD_CPUTIME_ID
         | clock::CLOCK_MONOTONIC_RAW
         | clock::CLOCK_BOOTTIME => {
-            // TODO: Get actual time from hardware timer
             unsafe {
                 (*tp).tv_sec = 0;
                 (*tp).tv_nsec = 0;
@@ -113,8 +127,8 @@ pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> LinuxResult<i32> {
             return Err(LinuxError::EINVAL);
         }
 
-        // TODO: Implement actual sleep using kernel timer
-        // For now, just spin (not ideal for real system)
+        let sleep_us = sleep_time.tv_sec as u64 * 1_000_000 + (sleep_time.tv_nsec as u64 / 1_000);
+        crate::time::sleep_us(sleep_us);
 
         // If interrupted by signal and rem is not null, store remaining time
         if !rem.is_null() {
@@ -143,15 +157,26 @@ pub fn clock_nanosleep(
 
     match clockid {
         clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
-            // TODO: Implement clock-specific sleep
             if flags & TIMER_ABSTIME != 0 {
-                // Absolute time sleep
-                // TODO: Sleep until specified absolute time
+                // Absolute time sleep: compute remaining time from now
+                let now_ns: i64 = if clockid == clock::CLOCK_REALTIME {
+                    crate::time::system_time() as i64 * 1_000_000_000
+                } else {
+                    crate::time::uptime_ns() as i64
+                };
+                let target_ns = unsafe { (*req).tv_sec as i64 * 1_000_000_000 + (*req).tv_nsec as i64 };
+                if target_ns > now_ns {
+                    let remaining_ns = target_ns - now_ns;
+                    let sleep_ts = TimeSpec {
+                        tv_sec: remaining_ns / 1_000_000_000,
+                        tv_nsec: remaining_ns % 1_000_000_000,
+                    };
+                    return nanosleep(&sleep_ts, rem);
+                }
+                Ok(0)
             } else {
-                // Relative time sleep
-                return nanosleep(req, rem);
+                nanosleep(req, rem)
             }
-            Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
     }
@@ -165,10 +190,12 @@ pub fn gettimeofday(tv: *mut TimeVal, tz: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get actual time of day
+    // Get actual time of day from kernel time subsystem
+    let secs = crate::time::system_time();
+    let us = crate::time::uptime_us() % 1_000_000;
     unsafe {
-        (*tv).tv_sec = 0;
-        (*tv).tv_usec = 0;
+        (*tv).tv_sec = secs as Time;
+        (*tv).tv_usec = us as Time;
     }
 
     // tz is obsolete and should be NULL
@@ -285,8 +312,7 @@ pub fn alarm(seconds: u32) -> u32 {
 pub fn sleep(seconds: u32) -> u32 {
     inc_ops();
 
-    // TODO: Implement sleep
-    // Return 0 if full sleep completed, else remaining seconds
+    crate::time::sleep_us(seconds as u64 * 1_000_000);
     0
 }
 
@@ -298,7 +324,7 @@ pub fn usleep(usec: u32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Implement microsecond sleep
+    crate::time::sleep_us(usec as u64);
     Ok(0)
 }
 

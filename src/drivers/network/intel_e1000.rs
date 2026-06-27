@@ -860,6 +860,12 @@ pub enum E1000Reg {
     Ral = 0x05400,
     /// Receive Address High
     Rah = 0x05404,
+    /// Wake Up Control
+    Wuc = 0x05800,
+    /// Wake Up Filter Control
+    Wufc = 0x05808,
+    /// Wake Up Status
+    Wus = 0x05810,
 }
 
 /// E1000 control register bits
@@ -1319,12 +1325,9 @@ impl IntelE1000Driver {
         // Advance tail pointer in software
         tx_ring.advance_tail();
 
-        // Get new tail value
-        let new_tail = self.read_reg(E1000Reg::Tdt) as usize;
-        let next_tail = (new_tail + 1) % 256; // 256 descriptors
-
-        // Update hardware tail pointer to start transmission
-        self.write_reg(E1000Reg::Tdt, next_tail as u32);
+        // Write the new tail value to hardware to start transmission
+        let new_tail = tx_ring.tail();
+        self.write_reg(E1000Reg::Tdt, new_tail as u32);
 
         // Update statistics
         self.stats.tx_packets += 1;
@@ -1382,10 +1385,9 @@ impl IntelE1000Driver {
         // Advance head pointer
         rx_ring.advance_head();
 
-        // Update hardware head pointer
-        let new_head = self.read_reg(E1000Reg::Rdh) as usize;
-        let next_head = (new_head + 1) % 256; // 256 descriptors
-        self.write_reg(E1000Reg::Rdh, next_head as u32);
+        // Write the new head value to hardware
+        let new_head = rx_ring.head();
+        self.write_reg(E1000Reg::Rdh, new_head as u32);
 
         // Update statistics
         self.stats.rx_packets += 1;
@@ -1418,21 +1420,27 @@ impl IntelE1000Driver {
         Ok(())
     }
 
-    /// Handle transmit interrupt
+    /// Handle transmit interrupt — clean up completed transmit descriptors
     fn handle_tx_interrupt(&mut self) -> Result<(), NetworkError> {
-        // Process completed transmit descriptors
-        // In real implementation, this would clean up transmitted buffers
+        let tx_ring = self.tx_ring.as_mut().ok_or(NetworkError::InvalidState)?;
+        let cleaned = tx_ring.cleanup_completed_tx();
+        self.stats.tx_packets += cleaned as u64;
         Ok(())
     }
 
     /// Handle receive interrupt
     fn handle_rx_interrupt(&mut self) -> Result<(), NetworkError> {
-        // Process received packets
+        // Process received packets and pass them to the network stack
         while let Some(packet_data) = self.receive_packet_hardware()? {
-            // In real implementation, this would pass packet to network stack
-            // For now, just update statistics
             self.stats.rx_packets += 1;
             self.stats.rx_bytes += packet_data.len() as u64;
+
+            // Pass packet to the network stack for protocol processing
+            let mut pkt = crate::net::PacketBuffer::new(packet_data.len());
+            pkt.data[..packet_data.len()].copy_from_slice(&packet_data);
+            pkt.length = packet_data.len();
+
+            let _ = crate::net::network_stack().process_packet("eth0", pkt);
         }
         Ok(())
     }
@@ -1537,12 +1545,33 @@ impl IntelE1000Driver {
 
     /// Configure Wake-on-LAN
     pub fn configure_wol(&mut self, config: WakeOnLanConfig) -> Result<(), NetworkError> {
-        self.wol_config = config;
+        // Program Wake Up Control register
+        let mut wuc = 0u32;
+        if config.magic_packet {
+            wuc |= 0x01; // APME
+        }
+        self.write_reg(E1000Reg::Wuc, wuc);
 
-        // In a real implementation, we would:
-        // 1. Configure WoL filters
-        // 2. Set up magic packet detection
-        // 3. Configure power management
+        // Program Wake Up Filter Control register
+        let mut wufc = 0u32;
+        if config.magic_packet {
+            wufc |= 0x01;
+        }
+        if config.pattern_match {
+            wufc |= 0x02;
+        }
+        if config.link_change {
+            wufc |= 0x04;
+        }
+        if config.secure_on {
+            wufc |= 0x08;
+        }
+        self.write_reg(E1000Reg::Wufc, wufc);
+
+        // Clear previous wake up status
+        self.write_reg(E1000Reg::Wus, 0xFFFFFFFF);
+
+        self.wol_config = config;
 
         Ok(())
     }
@@ -1693,8 +1722,22 @@ impl NetworkDriver for IntelE1000Driver {
             PowerState::D3Hot => {
                 // Low power with wake capabilities
                 if self.wol_config.enabled {
-                    // Configure Wake-on-LAN
-                    // In real implementation, set WOL registers
+                    // Enable WOL filters before entering low power
+                    let mut wufc = 0u32;
+                    if self.wol_config.magic_packet {
+                        wufc |= 0x01;
+                    }
+                    if self.wol_config.pattern_match {
+                        wufc |= 0x02;
+                    }
+                    if self.wol_config.link_change {
+                        wufc |= 0x04;
+                    }
+                    if self.wol_config.secure_on {
+                        wufc |= 0x08;
+                    }
+                    self.write_reg(E1000Reg::Wufc, wufc);
+                    self.write_reg(E1000Reg::Wuc, 0x01); // APME
                 }
                 self.power_state = state;
             }
@@ -1710,10 +1753,33 @@ impl NetworkDriver for IntelE1000Driver {
             return Err(NetworkError::NotSupported);
         }
 
-        self.wol_config = config;
+        // Program Wake Up Control register (WUC)
+        let mut wuc = 0u32;
+        if config.magic_packet {
+            wuc |= 0x01; // APME
+        }
+        self.write_reg(E1000Reg::Wuc, wuc);
 
-        // In real implementation, configure hardware WOL registers
-        // For now, just store the configuration
+        // Program Wake Up Filter Control register (WUFC)
+        let mut wufc = 0u32;
+        if config.magic_packet {
+            wufc |= 0x01; // LPCK
+        }
+        if config.pattern_match {
+            wufc |= 0x02; // MAG
+        }
+        if config.link_change {
+            wufc |= 0x04; // BC
+        }
+        if config.secure_on {
+            wufc |= 0x08; // ARP
+        }
+        self.write_reg(E1000Reg::Wufc, wufc);
+
+        // Clear any previous wake up status
+        self.write_reg(E1000Reg::Wus, 0xFFFFFFFF);
+
+        self.wol_config = config;
 
         Ok(())
     }

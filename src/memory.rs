@@ -344,7 +344,10 @@ impl PhysicalFrameAllocator {
         zone_start[MemoryZone::Normal as usize] = PhysAddr::new(DMA_ZONE_END);
         zone_end[MemoryZone::Normal as usize] = PhysAddr::new(NORMAL_ZONE_END);
         zone_start[MemoryZone::HighMem as usize] = PhysAddr::new(NORMAL_ZONE_END);
-        zone_end[MemoryZone::HighMem as usize] = PhysAddr::new(u64::MAX);
+        // Max representable physical address (52-bit). PhysAddr::new(u64::MAX)
+        // panics — bits 52..64 must be clear — and that unconditional panic made
+        // the whole allocator init noreturn, DCE-ing the rest of the kernel.
+        zone_end[MemoryZone::HighMem as usize] = PhysAddr::new_truncate(u64::MAX);
 
         // Highest end address of a usable block per zone, used to size the
         // allocation bitmap by address span. The bitmap is indexed by
@@ -2695,14 +2698,19 @@ pub fn init_memory_management(
     memory_regions: &[MemoryRegion],
     physical_memory_offset: Option<u64>,
 ) -> Result<(), MemoryError> {
-    // Determine physical memory offset (default to zero if not provided)
-    let physical_memory_offset = VirtAddr::new(physical_memory_offset.unwrap_or(0));
+    // Determine physical memory offset (default to zero if not provided).
+    // new_truncate, not new: a bad/edge offset must not panic here — this runs
+    // before the IDT exists, so a panic would triple-fault. It also kept the
+    // whole function from being seen as always-panicking (which DCE'd the rest
+    // of the kernel after this call).
+    let physical_memory_offset = VirtAddr::new_truncate(physical_memory_offset.unwrap_or(0));
 
     // Get current page table
     let level_4_table = unsafe {
         let (level_4_table_frame, _) = Cr3::read();
         let phys = level_4_table_frame.start_address();
-        let virt = physical_memory_offset + phys.as_u64();
+        let virt =
+            VirtAddr::new_truncate(physical_memory_offset.as_u64().wrapping_add(phys.as_u64()));
         &mut *(virt.as_mut_ptr() as *mut PageTable)
     };
 
@@ -2822,6 +2830,22 @@ pub fn align_down(addr: usize, align: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test_case]
+    fn test_mmio_page_span() {
+        // BAR straddling into a second page -> two pages mapped.
+        assert_eq!(
+            mmio_page_span(0xFEBF_1000, 0x1100),
+            (0xFEBF_1000, 0xFEBF_3000)
+        );
+        // Unaligned base rounds down; small size still spans the containing page.
+        assert_eq!(
+            mmio_page_span(0xFEBF_1080, 0x100),
+            (0xFEBF_1000, 0xFEBF_2000)
+        );
+        // Exactly one page.
+        assert_eq!(mmio_page_span(0x9000, 0x1000), (0x9000, 0xA000));
+    }
 
     #[test_case]
     fn test_memory_protection_flags() {
@@ -3089,6 +3113,151 @@ pub fn map_physical_memory(
         // This should only happen during very early initialization
         Err("Memory manager not initialized - cannot map physical memory")
     }
+}
+
+/// Page-aligned [start, end) span covering `size` bytes from `phys`.
+const fn mmio_page_span(phys: usize, size: usize) -> (usize, usize) {
+    const PAGE: usize = 4096;
+    let start = phys & !(PAGE - 1);
+    let end = (phys + size + PAGE - 1) & !(PAGE - 1);
+    (start, end)
+}
+
+/// Identity-map a device MMIO region (e.g. a PCI BAR) into kernel space.
+///
+/// Maps every 4K page touched by `[phys, phys+size)` as present, writable and
+/// uncached at the identical virtual address, so drivers can dereference BAR
+/// addresses directly. Returns the (unaligned) virtual base, which equals `phys`.
+/// MMIO must be uncached or device registers read stale — that NO_CACHE is
+/// correctness, not a shortcut.
+///
+/// ponytail: identity map, no vaddr allocator — BARs sit above RAM so they
+/// don't collide. Add an ioremap vaddr arena only if a BAR ever overlaps RAM.
+pub fn map_mmio_region(phys: usize, size: usize) -> Result<usize, &'static str> {
+    if size == 0 {
+        return Err("map_mmio_region: zero size");
+    }
+    let flags = MemoryFlags::PRESENT | MemoryFlags::WRITABLE | MemoryFlags::NO_CACHE;
+    let (start, end) = mmio_page_span(phys, size);
+    let mut addr = start;
+    while addr < end {
+        // Skip pages already mapped — another driver may share this MMIO region
+        // (e.g. the framebuffer mapped by both the display and VBE paths). Being
+        // idempotent lets overlapping mappers coexist instead of erroring.
+        if translate_addr(VirtAddr::new(addr as u64)).is_none() {
+            map_physical_memory(addr, addr, flags)?;
+        }
+        addr += 4096;
+    }
+    Ok(phys)
+}
+
+/// Allocate a zeroed physical frame and map it at user virtual address `virt`.
+///
+/// Production backing for brk/mmap: every page a process faults in routes through
+/// here, so the frame is real, zeroed (no stale kernel data leaks into user space),
+/// and mapped into the single shared kernel page table. Lock order matches
+/// `MemoryManager::map_region` (page table, then frame allocator) to avoid deadlock.
+pub fn map_user_page(virt: usize, flags: PageTableFlags) -> Result<(), &'static str> {
+    let mm = get_memory_manager().ok_or("memory manager not initialized")?;
+    let mut page_table_manager = mm.page_table_manager.lock();
+    let mut frame_allocator = mm.frame_allocator.lock();
+
+    let frame = frame_allocator
+        .allocate_frame()
+        .ok_or("out of physical frames")?;
+
+    // Zero the frame via the physical-offset map before it becomes user-visible.
+    unsafe {
+        let ptr = (mm.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
+        core::ptr::write_bytes(ptr, 0, 4096);
+    }
+
+    let page = Page::containing_address(VirtAddr::new(virt as u64));
+    page_table_manager
+        .map_page(page, frame, flags, &mut *frame_allocator)
+        .map_err(|_| "failed to map user page")
+}
+
+/// Unmap a user page and return its frame to the allocator (real reclaim).
+///
+/// Idempotent: unmapping an already-free page is `Ok`, so brk-shrink / munmap
+/// over a partially mapped range doesn't error.
+pub fn unmap_user_page(virt: usize) -> Result<(), &'static str> {
+    let mm = get_memory_manager().ok_or("memory manager not initialized")?;
+    let page = Page::containing_address(VirtAddr::new(virt as u64));
+
+    let frame = mm.page_table_manager.lock().unmap_page(page);
+    if let Some(frame) = frame {
+        let zone = MemoryZone::from_address(frame.start_address());
+        mm.deallocate_frame(frame, zone);
+    }
+    Ok(())
+}
+
+/// Change the page-table flags of an existing user page (mprotect backing).
+///
+/// `update_flags` drops the `MapperFlush`, so flush this page's TLB entry here
+/// or the old permissions linger until the next CR3 reload.
+pub fn protect_user_page(virt: usize, flags: PageTableFlags) -> Result<(), &'static str> {
+    let mm = get_memory_manager().ok_or("memory manager not initialized")?;
+    let virt_addr = VirtAddr::new(virt as u64);
+    let page = Page::containing_address(virt_addr);
+    mm.page_table_manager.lock().update_flags(page, flags)?;
+    x86_64::instructions::tlb::flush(virt_addr);
+    Ok(())
+}
+
+/// True only if every page spanned by `[start, start+len)` is currently mapped.
+///
+/// Lets hot paths (e.g. text rendering) reject a dangling/corrupt `&str` before
+/// dereferencing it, so bad data can't fault the kernel. Reads the str's ptr/len
+/// metadata only — never the buffer itself.
+pub fn range_is_mapped(start: usize, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = start.saturating_add(len);
+    let mut addr = start & !0xFFF;
+    while addr < end {
+        if translate_addr(VirtAddr::new(addr as u64)).is_none() {
+            return false;
+        }
+        addr += 4096;
+    }
+    true
+}
+
+/// Boot-time runtime self-test of the user-page mapping primitives.
+///
+/// Proves the production path end to end: `map_user_page` backs a virtual
+/// address with a real, zeroed frame; a write/read round-trip confirms the
+/// frame is actually there; `unmap_user_page` tears it down and reclaims it.
+/// A compile check can't prove any of this — only running it on real paging can.
+pub fn selftest_user_paging() -> Result<(), &'static str> {
+    use x86_64::structures::paging::PageTableFlags as F;
+    // Free high user VA; kernel-accessible flags so the test write doesn't trip
+    // SMAP. The USER_ACCESSIBLE bit is just a flag value, not a separate path.
+    const TEST_VA: usize = 0x0000_5000_0000_0000;
+    let flags = F::PRESENT | F::WRITABLE;
+
+    map_user_page(TEST_VA, flags)?;
+
+    let p = TEST_VA as *mut u64;
+    unsafe {
+        if p.read_volatile() != 0 {
+            let _ = unmap_user_page(TEST_VA);
+            return Err("selftest: mapped frame was not zeroed");
+        }
+        p.write_volatile(0xDEAD_BEEF_CAFE_F00D);
+        if p.read_volatile() != 0xDEAD_BEEF_CAFE_F00D {
+            let _ = unmap_user_page(TEST_VA);
+            return Err("selftest: read-back mismatch (no real frame backing VA)");
+        }
+    }
+
+    unmap_user_page(TEST_VA)?;
+    Ok(())
 }
 
 /// Unmap a virtual page

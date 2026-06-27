@@ -379,6 +379,27 @@ pub const BCM_MAC_ADDR_0_LOW: u32 = 0x0414;
 pub const BCM_RX_RULES_CFG: u32 = 0x0500;
 pub const BCM_RX_MODE: u32 = 0x0468;
 pub const BCM_TX_MODE: u32 = 0x045C;
+// Receive Buffer Descriptor Ring Base Address (low/high)
+pub const BCM_RCVBD_RING_BASE_LOW: u32 = 0x2400;
+pub const BCM_RCVBD_RING_BASE_HIGH: u32 = 0x2404;
+// Receive BD Ring Index
+pub const BCM_RCVBD_RING_INDEX: u32 = 0x2420;
+// Receive BD Ring Producer Index (mailbox)
+pub const BCM_RCVBD_PROD_INDEX: u32 = 0x2618;
+// Receive BD Ring Consumer Index (mailbox)
+pub const BCM_RCVBD_CONS_INDEX: u32 = 0x2600;
+// Receive Return Ring Base Address (low/high)
+pub const BCM_RCV_RETURN_RING_BASE_LOW: u32 = 0x2500;
+pub const BCM_RCV_RETURN_RING_BASE_HIGH: u32 = 0x2504;
+// Receive Return Ring Consumer Index
+pub const BCM_RCV_RETURN_CONS_INDEX: u32 = 0x2630;
+// Transmit BD Ring Base Address (low/high)
+pub const BCM_TXBD_RING_BASE_LOW: u32 = 0x2700;
+pub const BCM_TXBD_RING_BASE_HIGH: u32 = 0x2704;
+// Transmit BD Ring Producer Index (mailbox)
+pub const BCM_TXBD_PROD_INDEX: u32 = 0x2710;
+// Transmit BD Ring Consumer Index (mailbox)
+pub const BCM_TXBD_CONS_INDEX: u32 = 0x2720;
 
 /// Broadcom driver implementation
 #[derive(Debug)]
@@ -394,6 +415,24 @@ pub struct BroadcomDriver {
     mac_address: MacAddress,
     current_speed: u32,
     full_duplex: bool,
+    /// TX DMA buffer for packet transmission
+    tx_dma: Option<alloc::vec::Vec<u8>>,
+    /// RX DMA buffer for packet reception
+    rx_dma: Option<alloc::vec::Vec<u8>>,
+    /// RX BD (Buffer Descriptor) ring — 512 entries, each 8 bytes
+    rx_bd_ring: Option<alloc::vec::Vec<u8>>,
+    /// RX return ring — 1024 entries, each 32 bytes
+    rx_return_ring: Option<alloc::vec::Vec<u8>>,
+    /// TX BD ring — 512 entries, each 12 bytes
+    tx_bd_ring: Option<alloc::vec::Vec<u8>>,
+    /// RX BD producer index
+    rx_bd_prod: u32,
+    /// RX return consumer index
+    rx_return_cons: u32,
+    /// TX BD producer index
+    tx_bd_prod: u32,
+    /// TX BD consumer index
+    tx_bd_cons: u32,
 }
 
 impl BroadcomDriver {
@@ -431,6 +470,15 @@ impl BroadcomDriver {
             mac_address: [0, 0, 0, 0, 0, 0],
             current_speed: 0,
             full_duplex: false,
+            tx_dma: None,
+            rx_dma: None,
+            rx_bd_ring: None,
+            rx_return_ring: None,
+            tx_bd_ring: None,
+            rx_bd_prod: 0,
+            rx_return_cons: 0,
+            tx_bd_prod: 0,
+            tx_bd_cons: 0,
         }
     }
 
@@ -489,8 +537,56 @@ impl BroadcomDriver {
         Ok(())
     }
 
-    /// Initialize receive engine
+    /// Initialize receive engine with real DMA descriptor rings
     fn init_rx(&mut self) -> Result<(), NetworkError> {
+        // Allocate RX BD ring: 512 entries * 8 bytes = 4096 bytes
+        let rx_bd_ring = alloc::vec![0u8; 512 * 8];
+        let rx_bd_phys = rx_bd_ring.as_ptr() as u64;
+
+        // Allocate RX return ring: 1024 entries * 32 bytes = 32768 bytes
+        let rx_return_ring = alloc::vec![0u8; 1024 * 32];
+        let rx_return_phys = rx_return_ring.as_ptr() as u64;
+
+        // Allocate RX DMA buffer for received packet data (2048 bytes)
+        let rx_buf = alloc::vec![0u8; 2048];
+        let rx_buf_phys = rx_buf.as_ptr() as u64;
+
+        // Store rings
+        self.rx_bd_ring = Some(rx_bd_ring);
+        self.rx_return_ring = Some(rx_return_ring);
+        self.rx_dma = Some(rx_buf);
+
+        // Program RX BD ring base address
+        self.write_reg(BCM_RCVBD_RING_BASE_LOW, (rx_bd_phys & 0xFFFFFFFF) as u32);
+        self.write_reg(BCM_RCVBD_RING_BASE_HIGH, (rx_bd_phys >> 32) as u32);
+
+        // Program RX return ring base address
+        self.write_reg(
+            BCM_RCV_RETURN_RING_BASE_LOW,
+            (rx_return_phys & 0xFFFFFFFF) as u32,
+        );
+        self.write_reg(BCM_RCV_RETURN_RING_BASE_HIGH, (rx_return_phys >> 32) as u32);
+
+        // Set up the first RX BD entry to point to our receive buffer
+        // BD format: [flags:16, len:16, addr_low:32, addr_high:16, reserved:16]
+        if let Some(ref ring) = self.rx_bd_ring {
+            unsafe {
+                let bd_ptr = ring.as_ptr() as *mut u32;
+                *bd_ptr = 2048; // Length = 2048, flags = 0
+                *bd_ptr.add(1) = (rx_buf_phys & 0xFFFFFFFF) as u32; // Address low
+                *bd_ptr.add(2) = (rx_buf_phys >> 32) as u32; // Address high
+                *bd_ptr.add(3) = 0; // Reserved
+            }
+        }
+
+        // Set RX BD producer index to 1 (one descriptor available)
+        self.rx_bd_prod = 1;
+        self.write_reg(BCM_RCVBD_PROD_INDEX, self.rx_bd_prod);
+
+        // Set RX return consumer index to 0
+        self.rx_return_cons = 0;
+        self.write_reg(BCM_RCV_RETURN_CONS_INDEX, self.rx_return_cons);
+
         // Configure receive mode
         let mut rx_mode = 0x02; // Enable receive
         rx_mode |= 0x400; // Keep VLAN tag
@@ -502,8 +598,28 @@ impl BroadcomDriver {
         Ok(())
     }
 
-    /// Initialize transmit engine
+    /// Initialize transmit engine with real DMA descriptor ring
     fn init_tx(&mut self) -> Result<(), NetworkError> {
+        // Allocate TX BD ring: 512 entries * 12 bytes = 6144 bytes
+        let tx_bd_ring = alloc::vec![0u8; 512 * 12];
+        let tx_bd_phys = tx_bd_ring.as_ptr() as u64;
+
+        // Allocate TX DMA buffer for packet data (2048 bytes)
+        let tx_buf = alloc::vec![0u8; 2048];
+
+        self.tx_bd_ring = Some(tx_bd_ring);
+        self.tx_dma = Some(tx_buf);
+
+        // Program TX BD ring base address
+        self.write_reg(BCM_TXBD_RING_BASE_LOW, (tx_bd_phys & 0xFFFFFFFF) as u32);
+        self.write_reg(BCM_TXBD_RING_BASE_HIGH, (tx_bd_phys >> 32) as u32);
+
+        // Initialize TX BD producer/consumer indices
+        self.tx_bd_prod = 0;
+        self.tx_bd_cons = 0;
+        self.write_reg(BCM_TXBD_PROD_INDEX, 0);
+        self.write_reg(BCM_TXBD_CONS_INDEX, 0);
+
         // Configure transmit mode
         let mut tx_mode = 0x02; // Enable transmit
         self.write_reg(BCM_TX_MODE, tx_mode);
@@ -656,7 +772,33 @@ impl NetworkDriver for BroadcomDriver {
             return Err(NetworkError::BufferTooSmall);
         }
 
-        // Simulate packet transmission
+        // Copy packet to TX DMA buffer
+        let tx_buf = self.tx_dma.as_mut().ok_or(NetworkError::InvalidState)?;
+        let copy_len = core::cmp::min(data.len(), tx_buf.len());
+        tx_buf[..copy_len].copy_from_slice(&data[..copy_len]);
+        let tx_buf_phys = tx_buf.as_ptr() as u64;
+
+        // Build TX BD (Buffer Descriptor) entry
+        // TX BD format (12 bytes): [flags:16, len:16, addr_low:32, addr_high:32, vlan_tag:16, reserved:16]
+        if let Some(ref ring) = self.tx_bd_ring {
+            let bd_offset = (self.tx_bd_prod as usize) * 12;
+            unsafe {
+                let bd_ptr = ring.as_ptr().add(bd_offset) as *mut u32;
+                *bd_ptr = copy_len as u32; // Flags=0, length
+                *bd_ptr.add(1) = (tx_buf_phys & 0xFFFFFFFF) as u32; // Address low
+                *bd_ptr.add(2) = (tx_buf_phys >> 32) as u32; // Address high
+                *bd_ptr.add(3) = 0; // VLAN tag + reserved
+            }
+        }
+
+        // Ensure cache coherency
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Advance TX BD producer index and ring mailbox
+        self.tx_bd_prod = (self.tx_bd_prod + 1) % 512;
+        self.write_reg(BCM_TXBD_PROD_INDEX, self.tx_bd_prod);
+
+        // Update statistics
         self.stats.tx_packets += 1;
         self.stats.tx_bytes += data.len() as u64;
 
@@ -668,8 +810,66 @@ impl NetworkDriver for BroadcomDriver {
             return Ok(None);
         }
 
-        // Simulate packet reception
-        Ok(None)
+        // Check RX return ring consumer index vs producer
+        // The hardware writes completion entries to the RX return ring
+        // and updates the producer index. We read from consumer index.
+        let return_prod = self.read_reg(BCM_RCV_RETURN_CONS_INDEX) & 0xFFFF;
+        if return_prod == self.rx_return_cons {
+            // No new completions
+            return Ok(None);
+        }
+
+        // Read the RX return ring entry at consumer index
+        // Return ring entry format (32 bytes): [flags:32, vlan:16, len:16, addr_low:32, addr_high:32, ...]
+        let packet = if let Some(ref ring) = self.rx_return_ring {
+            let entry_offset = (self.rx_return_cons as usize) * 32;
+            unsafe {
+                let entry_ptr = ring.as_ptr().add(entry_offset) as *const u32;
+                let flags = *entry_ptr;
+                let len = (*entry_ptr.add(1) >> 16) as usize;
+
+                // Check if this is a valid completion (frame ready bit)
+                if (flags & 0x01) == 0 || len == 0 || len > 2048 {
+                    // Not a valid frame or error
+                    None
+                } else {
+                    // Copy packet data from RX DMA buffer
+                    let rx_buf = self.rx_dma.as_ref().ok_or(NetworkError::InvalidState)?;
+                    let pkt_data = rx_buf[..len].to_vec();
+                    Some(pkt_data)
+                }
+            }
+        } else {
+            return Ok(None);
+        };
+
+        // Advance RX return consumer index
+        self.rx_return_cons = (self.rx_return_cons + 1) % 1024;
+        self.write_reg(BCM_RCV_RETURN_CONS_INDEX, self.rx_return_cons);
+
+        // Replenish RX BD: reset the BD entry for the next receive
+        if let Some(ref ring) = self.rx_bd_ring {
+            let bd_offset = (self.rx_bd_prod as usize) * 8;
+            if let Some(ref rx_buf) = self.rx_dma {
+                let rx_buf_phys = rx_buf.as_ptr() as u64;
+                unsafe {
+                    let bd_ptr = ring.as_ptr().add(bd_offset) as *mut u32;
+                    *bd_ptr = 2048; // Length
+                    *bd_ptr.add(1) = (rx_buf_phys & 0xFFFFFFFF) as u32;
+                    *bd_ptr.add(2) = (rx_buf_phys >> 32) as u32;
+                    *bd_ptr.add(3) = 0;
+                }
+            }
+        }
+        self.rx_bd_prod = (self.rx_bd_prod + 1) % 512;
+        self.write_reg(BCM_RCVBD_PROD_INDEX, self.rx_bd_prod);
+
+        if let Some(ref pkt) = packet {
+            self.stats.rx_packets += 1;
+            self.stats.rx_bytes += pkt.len() as u64;
+        }
+
+        Ok(packet)
     }
 
     fn is_link_up(&self) -> bool {
