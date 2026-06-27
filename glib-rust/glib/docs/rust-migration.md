@@ -52,7 +52,7 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **8** | Main loop & threading | `gmain.*`, `gsource.*`, `gthread.*`, `gasyncqueue.*`, `gpoll.*`, `giochannel.*`, `gthreadpool.*` | **Partial** (async queue, thread primitives, poll types, I/O channel types, main loop types (MainContext/MainLoop/Source), timeout_add/idle_add, thread pool task queue done, actual thread creation/poll-based event loop needs OS support) |
 | **9** | GObject core | `gobject/*` (types, signals, properties, values) | **Partial** (GType registry with 21 fundamental types, type registration/lookup/query, GValue polymorphic container for all basic types, GParamSpec with typed constructors, GSignal with connect/emit/disconnect, GObject base class with ref counting, properties, weak refs, user data, property binding) |
 | **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | **Partial** (gmodule ported: `GModule` ref-counted handle, `ModulePlatform` trait for OS-specific dlopen/dlsym/dlclose, `NoModulePlatform` stub for bare metal, registry with name/handle dedup, `module_open_full`/`module_open`/`module_close`/`module_symbol`/`module_make_resident`/`module_build_path`/`module_error`/`module_error_quark`, 20 unit tests passing) |
-| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | Planned |
+| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; remaining GIO submodules — streams, sockets, D-Bus, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned) |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | Planned |
 | **13** | Remove C implementations; expose stable C ABI from Rust via `extern "C"` | all | Planned |
 
@@ -114,6 +114,48 @@ re-export list for documentation and name resolution.
 - Full poll-based event loop (needs OS `poll`/`epoll` syscall).
 - Thread creation/joining (needs OS `clone`/`futex` or `pthread`).
 - Real thread pool worker threads.
+
+## Phase 11 detail (partial)
+
+### Modules
+
+- **`gfileattribute`** — First GIO submodule. Mirrors
+  `gio/gfileattribute.h` / `gio/gfileattribute.c`:
+  - `FileAttributeType` enum (10 types: Invalid, String, ByteString,
+    Boolean, Uint32, Int32, Uint64, Int64, Object, Stringv) with
+    `#[repr(u32)]` so the discriminant values match the upstream C
+    enum. `as_str()` method matching
+    `g_file_attribute_type_to_string`.
+  - `FileAttributeInfoFlags` (NONE / COPY_WITH_FILE /
+    COPY_WHEN_MOVED) with `BitOr` and `contains`.
+  - `FileAttributeInfo` struct (name, type, flags).
+  - `FileAttributeInfoList` — ref-counted (via `Arc`) sorted-by-name
+    list with binary-search `lookup` and `add` (insert-or-update),
+    `dup` (deep copy), `ref_` (clone for API parity), `n_infos` /
+    `infos` / `info` accessors. Mirrors
+    `g_file_attribute_info_list_new` / `_dup` / `_ref` / `_unref` /
+    `_lookup` / `_add` and the internal
+    `g_file_attribute_info_list_bsearch`. `add` requires unique
+    ownership (ref count == 1); if shared, callers `dup` first and
+    mutate the clone.
+  - 14 unit tests covering enum values, flags, empty list, add +
+    lookup, update-in-place, sorted insertion, dup independence, ref
+    count, indexing, out-of-bounds panic, and binary-search
+    correctness with 26 entries — all passing.
+
+### Deferred
+
+- Remaining GIO submodules: GInputStream / GOutputStream, GFile,
+  GFileInfo, GCancellable, GAsyncResult, GIcon and implementations
+  (GThemedIcon, GEmblem, GEmblemedIcon, GBytesIcon), GDataInput /
+  GDataOutput streams, GBuffered streams, GMemory streams, sockets,
+  D-Bus, GSettings, GApplication, GAction, GVolume, GMount, GDrive,
+  GResolver, GNetworkAddress, GSocket, GDBus, etc.
+- Most GIO types are GObject subclasses / interfaces, so this sub-
+  phase requires the deferred GObject interface system (Phase 9
+  deferred: GInterface vtable init + dispatch). The current port
+  picks a leaf boxed type (`GFileAttributeInfoList` is a `G_DEFINE_BOXED_TYPE`)
+  that doesn't depend on the interface system.
 
 ## Phase 10 detail (partial)
 
@@ -339,7 +381,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**52 modules** ported across Phases 1–10, all wired into RustOS:
+**53 modules** ported across Phases 1–11, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -353,6 +395,7 @@ re-export list for documentation and name resolution.
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
 | 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
 | 10 | gmodule | Partial (1) |
+| 11 | gfileattribute | Partial (1) |
 
 ### RustOS smoke test coverage
 
@@ -384,6 +427,12 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
   "not supported" error on `NoModulePlatform`; `GModule::new` +
   `name`/`ref_count`/`is_resident`/`make_resident` struct behaviour
   exercised directly
+- **GFileAttributeInfoList** — `FileAttributeType` enum values,
+  `FileAttributeInfoFlags` BitOr/contains, empty list, sorted insert
+  (3 attrs inserted in non-sorted order stay sorted by name),
+  `lookup` returns the right type+flags, re-adding an existing name
+  updates in place, `dup` produces an independent copy, `ref_` bumps
+  the ref count (and drop decrements)
 
 ## Running Rust tests
 

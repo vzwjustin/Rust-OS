@@ -61,6 +61,7 @@ pub mod gsignal;
 pub mod gstring;
 pub mod gtype;
 pub mod gvalue;
+pub mod gfileattribute;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -390,6 +391,10 @@ pub use gmodule::{
     module_supported, module_open, module_open_full, module_close,
     module_make_resident, module_error, module_symbol, module_name,
     module_build_path, module_error_quark,
+};
+pub use gfileattribute::{
+    FileAttributeType, FileAttributeInfoFlags, FileAttributeInfo,
+    FileAttributeInfoList,
 };
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,

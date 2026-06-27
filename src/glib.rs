@@ -337,6 +337,11 @@ pub use glib_native::{
     module_name,
     module_build_path,
     module_error_quark,
+    // GIO file attribute info list
+    FileAttributeType,
+    FileAttributeInfoFlags,
+    FileAttributeInfo,
+    FileAttributeInfoList,
     // URI functions
     escape_string,
     is_valid,
@@ -1584,6 +1589,79 @@ pub fn smoke_check() -> Result<(), &'static str> {
     let close_result = module_close::<NoModulePlatform>(&transient);
     if close_result.is_ok() || close_result.unwrap_err().0 != GModuleError::Failed {
         return Err("GModule close error path");
+    }
+
+    // GIO file attribute info list (Phase 11 entry point). Exercise the
+    // full surface: create, sorted insert, binary-search lookup, dup
+    // independence, ref count, and the type/flag enum values.
+    if FileAttributeType::Invalid as u32 != 0
+        || FileAttributeType::String as u32 != 1
+        || FileAttributeType::Object as u32 != 8
+        || FileAttributeType::Stringv as u32 != 9
+    {
+        return Err("GFileAttributeType values");
+    }
+    let rw = FileAttributeInfoFlags::COPY_WITH_FILE | FileAttributeInfoFlags::COPY_WHEN_MOVED;
+    if !rw.contains(FileAttributeInfoFlags::COPY_WITH_FILE)
+        || !rw.contains(FileAttributeInfoFlags::COPY_WHEN_MOVED)
+        || FileAttributeInfoFlags::COPY_WITH_FILE.0 != 1
+        || FileAttributeInfoFlags::COPY_WHEN_MOVED.0 != 2
+    {
+        return Err("GFileAttributeInfoFlags");
+    }
+    let mut attr_list = FileAttributeInfoList::new();
+    if attr_list.n_infos() != 0 || attr_list.lookup("standard::name").is_some() {
+        return Err("GFileAttributeInfoList empty");
+    }
+    attr_list
+        .add("standard::size", FileAttributeType::Uint64, FileAttributeInfoFlags::COPY_WITH_FILE)
+        .map_err(|_| "GFileAttributeInfoList add size")?;
+    attr_list
+        .add("standard::name", FileAttributeType::String, FileAttributeInfoFlags::COPY_WITH_FILE)
+        .map_err(|_| "GFileAttributeInfoList add name")?;
+    attr_list
+        .add("standard::is-hidden", FileAttributeType::Boolean, FileAttributeInfoFlags::NONE)
+        .map_err(|_| "GFileAttributeInfoList add hidden")?;
+    if attr_list.n_infos() != 3 {
+        return Err("GFileAttributeInfoList count");
+    }
+    // List should be sorted by name: name, is-hidden, size.
+    if attr_list.infos()[0].name != "standard::is-hidden"
+        || attr_list.infos()[1].name != "standard::name"
+        || attr_list.infos()[2].name != "standard::size"
+    {
+        return Err("GFileAttributeInfoList sorted order");
+    }
+    let size_info = attr_list.lookup("standard::size").ok_or("GFileAttributeInfoList lookup")?;
+    if size_info.r#type != FileAttributeType::Uint64
+        || !size_info.flags.contains(FileAttributeInfoFlags::COPY_WITH_FILE)
+    {
+        return Err("GFileAttributeInfoList lookup fields");
+    }
+    // Re-adding an existing name updates type in place.
+    attr_list
+        .add("standard::size", FileAttributeType::Int64, FileAttributeInfoFlags::NONE)
+        .map_err(|_| "GFileAttributeInfoList update")?;
+    if attr_list.n_infos() != 3
+        || attr_list.lookup("standard::size").unwrap().r#type != FileAttributeType::Int64
+    {
+        return Err("GFileAttributeInfoList update-in-place");
+    }
+    // dup produces an independent copy.
+    let mut dup = attr_list.dup();
+    dup.add("standard::extra", FileAttributeType::String, FileAttributeInfoFlags::NONE)
+        .map_err(|_| "GFileAttributeInfoList dup add")?;
+    if dup.n_infos() != 4 || attr_list.n_infos() != 3 || attr_list.lookup("standard::extra").is_some() {
+        return Err("GFileAttributeInfoList dup independence");
+    }
+    // ref count via clone.
+    let shared = attr_list.ref_();
+    if attr_list.ref_count() < 2 {
+        return Err("GFileAttributeInfoList ref count");
+    }
+    drop(shared);
+    if attr_list.ref_count() != 1 {
+        return Err("GFileAttributeInfoList ref count drop");
     }
 
     Ok(())
