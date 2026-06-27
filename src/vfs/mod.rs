@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
+pub mod devfs;
 pub mod file_descriptor;
 pub mod procfs;
 pub mod ramfs;
@@ -237,6 +238,11 @@ pub trait InodeOps: Send + Sync {
         Err(VfsError::NotSupported)
     }
 
+    /// Attach an existing inode as a directory entry (device nodes, etc.)
+    fn attach_child(&self, _name: &str, _child: Arc<dyn InodeOps>) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
+
     /// Write the target path for a symbolic link (default: not supported)
     fn write_symlink_target(&self, _target: &str) -> VfsResult<()> {
         Err(VfsError::NotSupported)
@@ -341,7 +347,8 @@ impl Vfs {
         let _ = root.create("home", InodeType::Directory, 0o755);
         let _ = root.create("etc", InodeType::Directory, 0o755);
         let _ = root.create("bin", InodeType::Directory, 0o755);
-        let _ = procfs::install_proc(root);
+        let _ = procfs::install_proc(root.clone());
+        let _ = devfs::install_dev(root);
 
         Ok(())
     }
@@ -521,6 +528,12 @@ impl Vfs {
     pub fn fd_kind(&self, fd: i32) -> VfsResult<FdKind> {
         let file_table = self.file_table.lock();
         file_table.kind(fd)
+    }
+
+    /// Snapshot open fds for syscall tracing.
+    pub fn open_fd_snapshot(&self) -> Vec<(i32, FdKind)> {
+        let file_table = self.file_table.lock();
+        file_table.snapshot()
     }
 
     /// Close a file descriptor

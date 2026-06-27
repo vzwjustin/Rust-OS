@@ -165,6 +165,10 @@ pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
 
     let buffer = unsafe { core::slice::from_raw_parts_mut(buf, count) };
 
+    if let Some(result) = super::special_fd::try_read(fd, buffer) {
+        return result;
+    }
+
     match vfs::vfs_read(fd, buffer) {
         Ok(n) => Ok(n as isize),
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -184,6 +188,10 @@ pub fn write(fd: Fd, buf: *const u8, count: usize) -> LinuxResult<isize> {
     }
 
     let buffer = unsafe { core::slice::from_raw_parts(buf, count) };
+
+    if let Some(result) = super::special_fd::try_write(fd, buffer) {
+        return result;
+    }
 
     match vfs::vfs_write(fd, buffer) {
         Ok(n) => Ok(n as isize),

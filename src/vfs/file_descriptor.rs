@@ -131,6 +131,14 @@ impl OpenFileTable {
         Ok(())
     }
 
+    /// Snapshot open file descriptors for debugging.
+    pub fn snapshot(&self) -> alloc::vec::Vec<(i32, FdKind)> {
+        self.files
+            .iter()
+            .map(|(&fd, file)| (fd, file.kind.clone()))
+            .collect()
+    }
+
     /// Duplicate a file descriptor
     pub fn duplicate(&mut self, fd: i32) -> VfsResult<i32> {
         let file = self.get(fd)?;

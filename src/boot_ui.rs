@@ -1168,25 +1168,36 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
 
     let mut result = FilesystemMountResult::new();
 
-    // Initialize VFS and mount root filesystem
-    update_substage(1, "Initializing virtual file system...");
-    match crate::fs::init() {
+    // Initialize VFS used by the live syscall path (linux_compat → src/vfs).
+    update_substage(1, "Initializing syscall VFS...");
+    match crate::vfs::init() {
         Ok(()) => {
-            report_success("VFS root filesystem mounted");
+            report_success("Syscall VFS initialized (/proc, /dev, ramfs root)");
             result.vfs_ready = true;
             result.root_mounted = true;
         }
         Err(e) => {
-            let reason = format!("{}", e);
-            report_warning("VFS", &reason);
+            let reason = format!("{:?}", e);
+            report_warning("Syscall VFS", &reason);
         }
     }
 
-    update_substage(2, "Root file system status...");
+    // Legacy desktop VFS (src/fs) — not used by linux_compat syscalls.
+    update_substage(2, "Initializing legacy file system...");
+    match crate::fs::init() {
+        Ok(()) => {
+            report_success("Legacy VFS mounted (desktop path only)");
+        }
+        Err(e) => {
+            let reason = format!("{}", e);
+            report_warning("Legacy VFS", &reason);
+        }
+    }
+
     if result.root_mounted {
-        report_success("Root filesystem ready");
+        report_success("Root filesystem ready for syscalls");
     } else {
-        report_warning("Root filesystem", "Not mounted");
+        report_warning("Root filesystem", "Syscall VFS not mounted");
     }
 
     // Initialize initramfs

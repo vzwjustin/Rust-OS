@@ -27,7 +27,7 @@ pub fn dispatch_syscall(
     arg5: u64,
     arg6: u64,
 ) -> i64 {
-    match SyscallNumber::from_u64(syscall_num) {
+    let result = match SyscallNumber::from_u64(syscall_num) {
         // File operations
         SyscallNumber::Read => syscall_read(arg1 as i32, arg2 as *mut u8, arg3 as usize),
         SyscallNumber::Write => syscall_write(arg1 as i32, arg2 as *const u8, arg3 as usize),
@@ -338,7 +338,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Setitimer => syscall_setitimer(arg1 as i32, arg2 as *const u8, arg3 as *mut u8),
 
         _ => -38, // ENOSYS
-    }
+    };
+    crate::debug::trace_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, result);
+    result
 }
 
 // Syscall implementations - these call into linux_compat
