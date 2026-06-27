@@ -392,6 +392,12 @@ pub use glib_native::{
     // GIO network address (hostname + port + optional scheme)
     NetworkAddress,
     NetworkAddressError,
+    // GValue transform functions (Phase 9 deferred item)
+    value_register_transform_func,
+    value_type_transformable,
+    value_type_compatible,
+    value_transform,
+    init_builtin_transforms,
     // URI functions
     escape_string,
     is_valid,
@@ -2330,6 +2336,64 @@ pub fn smoke_check() -> Result<(), &'static str> {
     let c = NetworkAddress::new("example.com", 81);
     if !a.equal(&b) || a.equal(&c) {
         return Err("GNetworkAddress equal");
+    }
+
+    // GValue transform functions (Phase 9 deferred item). Exercise
+    // numeric casts, bool-from-numeric, numeric→string, bool→string,
+    // same-type copy, and no-transform-available.
+    init_builtin_transforms();
+    // int → uint.
+    let mut src_val = glib_native::GValue::for_type(glib_native::G_TYPE_INT);
+    src_val.set_int(42);
+    let mut dest_val = glib_native::GValue::for_type(glib_native::G_TYPE_UINT);
+    if !value_transform(&src_val, &mut dest_val) || dest_val.get_uint() != 42 {
+        return Err("GValue transform int→uint");
+    }
+    // int → double.
+    let mut dest_val = glib_native::GValue::for_type(glib_native::G_TYPE_DOUBLE);
+    if !value_transform(&src_val, &mut dest_val) || dest_val.get_double() != 42.0 {
+        return Err("GValue transform int→double");
+    }
+    // int → string.
+    let mut dest_val = glib_native::GValue::for_type(glib_native::G_TYPE_STRING);
+    if !value_transform(&src_val, &mut dest_val) || dest_val.get_string() != Some("42") {
+        return Err("GValue transform int→string");
+    }
+    // int → bool (non-zero → true).
+    let mut dest_val = glib_native::GValue::for_type(glib_native::G_TYPE_BOOLEAN);
+    if !value_transform(&src_val, &mut dest_val) || !dest_val.get_boolean() {
+        return Err("GValue transform int→bool");
+    }
+    src_val.set_int(0);
+    if !value_transform(&src_val, &mut dest_val) || dest_val.get_boolean() {
+        return Err("GValue transform int→bool zero");
+    }
+    // bool → string.
+    let mut bool_val = glib_native::GValue::for_type(glib_native::G_TYPE_BOOLEAN);
+    bool_val.set_boolean(true);
+    let mut str_dest = glib_native::GValue::for_type(glib_native::G_TYPE_STRING);
+    if !value_transform(&bool_val, &mut str_dest) || str_dest.get_string() != Some("TRUE") {
+        return Err("GValue transform bool→string TRUE");
+    }
+    bool_val.set_boolean(false);
+    if !value_transform(&bool_val, &mut str_dest) || str_dest.get_string() != Some("FALSE") {
+        return Err("GValue transform bool→string FALSE");
+    }
+    // Same-type copy via value_type_compatible.
+    let mut int_dest = glib_native::GValue::for_type(glib_native::G_TYPE_INT);
+    if !value_transform(&src_val, &mut int_dest) || int_dest.get_int() != 0 {
+        return Err("GValue transform same-type copy");
+    }
+    // value_type_transformable checks.
+    if !value_type_transformable(glib_native::G_TYPE_INT, glib_native::G_TYPE_UINT)
+        || !value_type_transformable(glib_native::G_TYPE_INT, glib_native::G_TYPE_DOUBLE)
+        || !value_type_transformable(glib_native::G_TYPE_INT, glib_native::G_TYPE_INT)
+    {
+        return Err("GValue type_transformable");
+    }
+    // string → float has no transform → not transformable.
+    if value_type_transformable(glib_native::G_TYPE_STRING, glib_native::G_TYPE_FLOAT) {
+        return Err("GValue type_transformable false negative");
     }
 
     Ok(())
