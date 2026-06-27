@@ -63,6 +63,7 @@ pub mod gtype;
 pub mod gvalue;
 pub mod gfileattribute;
 pub mod gdbusintrospection;
+pub mod gdbuserror;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -403,6 +404,13 @@ pub use gdbusintrospection::{
     dbus_annotation_info_lookup, dbus_interface_info_lookup_method,
     dbus_interface_info_lookup_signal, dbus_interface_info_lookup_property,
     dbus_node_info_lookup_interface,
+};
+pub use gdbuserror::{
+    DBusError, DBusErrorEntry,
+    dbus_error_quark, dbus_error_register_error, dbus_error_unregister_error,
+    dbus_error_register_error_domain, dbus_error_is_remote_error,
+    dbus_error_get_remote_error, dbus_error_strip_remote_error,
+    dbus_error_new_for_dbus_error, dbus_error_encode_gerror,
 };
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,

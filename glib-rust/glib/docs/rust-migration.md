@@ -52,7 +52,7 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **8** | Main loop & threading | `gmain.*`, `gsource.*`, `gthread.*`, `gasyncqueue.*`, `gpoll.*`, `giochannel.*`, `gthreadpool.*` | **Partial** (async queue, thread primitives, poll types, I/O channel types, main loop types (MainContext/MainLoop/Source), timeout_add/idle_add, thread pool task queue done, actual thread creation/poll-based event loop needs OS support) |
 | **9** | GObject core | `gobject/*` (types, signals, properties, values) | **Partial** (GType registry with 21 fundamental types, type registration/lookup/query, GValue polymorphic container for all basic types, GParamSpec with typed constructors, GSignal with connect/emit/disconnect, GObject base class with ref counting, properties, weak refs, user data, property binding) |
 | **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | **Partial** (gmodule ported: `GModule` ref-counted handle, `ModulePlatform` trait for OS-specific dlopen/dlsym/dlclose, `NoModulePlatform` stub for bare metal, registry with name/handle dedup, `module_open_full`/`module_open`/`module_close`/`module_symbol`/`module_make_resident`/`module_build_path`/`module_error`/`module_error_quark`, 20 unit tests passing) |
-| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
+| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; gdbuserror ported: `DBusError` enum (44 well-known `org.freedesktop.DBus.Error.*` codes), `DBusErrorEntry` struct, `dbus_error_quark` (lazily registers all 44 well-known entries), `dbus_error_register_error`/`_unregister_error`/`_register_error_domain` global registry (BTreeMap-backed), `dbus_error_is_remote_error`/`_get_remote_error`/`_strip_remote_error` remote-error prefix parsing, `dbus_error_new_for_dbus_error` (registered + `org.gtk.GDBus.UnmappedGError.Quark._*` fallback), `dbus_error_encode_gerror` (with hex-escaped `_XX` unmapped form), 23 unit tests passing; remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | Planned |
 | **13** | Remove C implementations; expose stable C ABI from Rust via `extern "C"` | all | Planned |
 
@@ -164,6 +164,47 @@ re-export list for documentation and name resolution.
     property/interface lookup, nested annotations, ref count, and
     full hierarchy construction + lookup — all passing.
 
+- **`gdbuserror`** — GIO D-Bus error handling. Mirrors
+  `gio/gdbuserror.h` / `gio/gdbuserror.c`:
+  - `DBusError` enum (44 well-known `org.freedesktop.DBus.Error.*`
+    codes) with `#[repr(i32)]` so discriminant values match the
+    upstream C enum. `to_code()` and `to_dbus_name()` accessors.
+  - `DBusErrorEntry` struct for registering error-domain tables.
+  - `dbus_error_quark()` — lazily-initialized `G_DBUS_ERROR` quark
+    that registers all 44 well-known entries via
+    `dbus_error_register_error_domain` on first call (using
+    `spin::once::Once`).
+  - `dbus_error_register_error` / `_unregister_error` /
+    `_register_error_domain` — global registry mapping
+    `(Quark, code)` <-> `dbus_error_name`, backed by two
+    `BTreeMap`s in a `spin::Mutex` (mirrors upstream's two hash
+    tables). `register` returns `false` on duplicate pair or name.
+  - `dbus_error_is_remote_error` / `_get_remote_error` /
+    `_strip_remote_error` — recognize and handle the
+    `"GDBus.Error:NAME: "` prefix. `_get_remote_error` first checks
+    the registry by `(domain, code)`, then falls back to prefix
+    parsing. `_strip_remote_error` mutates the `Error` in place via
+    a new `Error::set_message` method.
+  - `dbus_error_new_for_dbus_error` — build a `glib_native::Error`
+    from a D-Bus error name + message. Uses registered `(domain,
+    code)` if available, else decodes the
+    `org.gtk.GDBus.UnmappedGError.Quark._*` form, else falls back
+    to a synthetic domain quark.
+  - `dbus_error_encode_gerror` — encode an `Error` as a D-Bus error
+    name. Uses the registered name if available, else produces the
+    `org.gtk.GDBus.UnmappedGError.Quark._<hex-escaped-quark-name>.Code<code>`
+    form with `_XX` hex escapes for non-alphanumeric chars (matches
+    upstream exactly so interop works).
+  - `parse_remote_prefix` — public helper that parses the
+    `"GDBus.Error:NAME: REST"` prefix (handles colons in the
+    message body by finding the first `": "` separator).
+  - 23 unit tests covering enum values, name/code accessors, quark
+    stability, well-known entry registration, custom register/
+    unregister semantics, domain registration, remote-error
+    detection/parsing/stripping, new_for_dbus_error (registered +
+    unmapped + fallback), encode round-trip with hex escapes,
+    parse with colons in message — all passing.
+
 ### Deferred
 
 - Remaining GIO submodules: GInputStream / GOutputStream, GFile,
@@ -175,8 +216,9 @@ re-export list for documentation and name resolution.
 - Most GIO types are GObject subclasses / interfaces, so this sub-
   phase requires the deferred GObject interface system (Phase 9
   deferred: GInterface vtable init + dispatch). The current ports
-  pick leaf boxed types (`GFileAttributeInfoList` and the
-  `GDBus*Info` structs are all `G_DEFINE_BOXED_TYPE`) that don't
+  pick leaf boxed types (`GFileAttributeInfoList`, the
+  `GDBus*Info` structs, and the `GDBusError` registry are all
+  `G_DEFINE_BOXED_TYPE` or pure data/registry code) that don't
   depend on the interface system.
 - `g_dbus_node_info_new_for_xml` (XML parsing of introspection data)
   and `g_dbus_interface_info_generate_xml` / `_node_info_generate_xml`
@@ -184,6 +226,9 @@ re-export list for documentation and name resolution.
   the introspection parser state machine.
 - `g_dbus_interface_info_cache_build` / `_release` (per-interface
   name→info lookup cache) — deferred; needs a global cache table.
+- `g_dbus_error_set_dbus_error` / `_valist` (printf-style error
+  construction) — deferred; need printf-style formatting which is
+  already partially ported in `printf.rs` but not wired here.
 
 ## Phase 10 detail (partial)
 
@@ -409,7 +454,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**54 modules** ported across Phases 1–11, all wired into RustOS:
+**55 modules** ported across Phases 1–11, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -423,7 +468,7 @@ re-export list for documentation and name resolution.
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
 | 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
 | 10 | gmodule | Partial (1) |
-| 11 | gfileattribute, gdbusintrospection | Partial (2) |
+| 11 | gfileattribute, gdbusintrospection, gdbuserror | Partial (3) |
 
 ### RustOS smoke test coverage
 
@@ -469,6 +514,17 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
   (hit + miss), method in/out args preserved, property flags
   preserved, `ref_` returns the same Arc handle, dropping the node
   Arc leaves the interface Arc alive
+- **GDBusError** — `DBusError` enum values + `to_dbus_name`,
+  `dbus_error_quark` (non-zero + stable across calls), well-known
+  entry registration (Failed code 0 → org.freedesktop.DBus.Error.Failed),
+  `dbus_error_is_remote_error` / `_get_remote_error` (registered +
+  prefix-parse fallback), `dbus_error_strip_remote_error` (strips +
+  returns false on local), `dbus_error_new_for_dbus_error` (registered
+  domain + message prefix), `dbus_error_encode_gerror` (registered
+  name + unmapped form with `_2d` hex escapes for hyphens + `.Code<N>`
+  suffix), unmapped-form round-trip (encode → new_for_dbus_error
+  recovers domain + code), custom register/unregister semantics,
+  `parse_remote_prefix` with colons in the message body
 
 ## Running Rust tests
 

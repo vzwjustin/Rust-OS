@@ -356,6 +356,18 @@ pub use glib_native::{
     dbus_interface_info_lookup_signal,
     dbus_interface_info_lookup_property,
     dbus_node_info_lookup_interface,
+    // GIO D-Bus error handling
+    DBusError,
+    DBusErrorEntry,
+    dbus_error_quark,
+    dbus_error_register_error,
+    dbus_error_unregister_error,
+    dbus_error_register_error_domain,
+    dbus_error_is_remote_error,
+    dbus_error_get_remote_error,
+    dbus_error_strip_remote_error,
+    dbus_error_new_for_dbus_error,
+    dbus_error_encode_gerror,
     // URI functions
     escape_string,
     is_valid,
@@ -1784,6 +1796,102 @@ pub fn smoke_check() -> Result<(), &'static str> {
     // echo_iface should still be alive (we hold one Arc).
     if echo_iface.name != "org.test.Echo" {
         return Err("GDBus iface alive after node drop");
+    }
+
+    // GIO D-Bus error handling (Phase 11). Exercise the enum, quark,
+    // registry, remote-error parsing/stripping, encode/decode round-trip.
+    if DBusError::Failed as i32 != 0
+        || DBusError::PropertyReadOnly as i32 != 44
+        || DBusError::Failed.to_dbus_name() != "org.freedesktop.DBus.Error.Failed"
+        || DBusError::SpawnExecFailed.to_dbus_name() != "org.freedesktop.DBus.Error.Spawn.ExecFailed"
+    {
+        return Err("GDBusError enum");
+    }
+    let dbus_q = dbus_error_quark();
+    if dbus_q == 0 {
+        return Err("GDBus error quark");
+    }
+    if dbus_error_quark() != dbus_q {
+        return Err("GDBus error quark stable");
+    }
+    // The well-known G_DBUS_ERROR entries should be registered after
+    // the quark call. Failed (code 0) -> org.freedesktop.DBus.Error.Failed.
+    let failed_err = glib_native::Error::new(dbus_q, 0, "GDBus.Error:org.freedesktop.DBus.Error.Failed: boom");
+    if !dbus_error_is_remote_error(&failed_err) {
+        return Err("GDBus is_remote_error");
+    }
+    if dbus_error_get_remote_error(&failed_err).as_deref() != Some("org.freedesktop.DBus.Error.Failed") {
+        return Err("GDBus get_remote_error registered");
+    }
+    // Strip the prefix.
+    let mut stripped = failed_err.clone();
+    if !dbus_error_strip_remote_error(&mut stripped) || stripped.message() != "boom" {
+        return Err("GDBus strip_remote_error");
+    }
+    // A non-remote error should not be strippable.
+    let local_err = glib_native::Error::new(dbus_q, 0, "just a local error");
+    let mut local_stripped = local_err.clone();
+    if dbus_error_strip_remote_error(&mut local_stripped) {
+        return Err("GDBus strip on local");
+    }
+    // new_for_dbus_error with a registered name uses the registered
+    // (domain, code).
+    let new_err = dbus_error_new_for_dbus_error(
+        "org.freedesktop.DBus.Error.NoMemory",
+        "out of memory",
+    );
+    if new_err.domain() != dbus_q || new_err.code() != DBusError::NoMemory as i32 {
+        return Err("GDBus new_for_dbus_error registered");
+    }
+    if !new_err.message().contains("org.freedesktop.DBus.Error.NoMemory")
+        || !new_err.message().ends_with("out of memory")
+    {
+        return Err("GDBus new_for_dbus_error message");
+    }
+    // encode_gerror on a registered (domain, code) returns the
+    // registered D-Bus name.
+    let encoded = dbus_error_encode_gerror(&new_err);
+    if encoded != "org.freedesktop.DBus.Error.NoMemory" {
+        return Err("GDBus encode_gerror registered");
+    }
+    // encode_gerror on an unregistered (domain, code) produces the
+    // org.gtk.GDBus.UnmappedGError.Quark._* form, and new_for_dbus_error
+    // can decode it back.
+    let unmapped_domain = glib_native::quark_from_string(Some("rustos-test-unmapped"));
+    let unmapped_err = glib_native::Error::new(unmapped_domain, 99, "mystery");
+    let unmapped_encoded = dbus_error_encode_gerror(&unmapped_err);
+    if !unmapped_encoded.starts_with("org.gtk.GDBus.UnmappedGError.Quark._") {
+        return Err("GDBus encode unmapped prefix");
+    }
+    if !unmapped_encoded.contains("rustos_2dtest_2dunmapped") {
+        return Err("GDBus encode unmapped escapes hyphens");
+    }
+    if !unmapped_encoded.ends_with(".Code99") {
+        return Err("GDBus encode unmapped code suffix");
+    }
+    let roundtripped = dbus_error_new_for_dbus_error(&unmapped_encoded, "the message");
+    if roundtripped.domain() != unmapped_domain || roundtripped.code() != 99 {
+        return Err("GDBus unmapped round-trip");
+    }
+    // Register a custom error and verify register/unregister semantics.
+    let custom_domain = glib_native::quark_from_static_string(Some("rustos-custom-dbus"));
+    // Clean slate in case a previous run registered it.
+    let _ = dbus_error_unregister_error(custom_domain, 7, "org.rustos.Custom");
+    if !dbus_error_register_error(custom_domain, 7, "org.rustos.Custom") {
+        return Err("GDBus register custom");
+    }
+    if dbus_error_register_error(custom_domain, 7, "org.rustos.Custom") {
+        return Err("GDBus re-register should fail");
+    }
+    if !dbus_error_unregister_error(custom_domain, 7, "org.rustos.Custom") {
+        return Err("GDBus unregister custom");
+    }
+    // Parse a remote-error prefix with colons in the message body.
+    let msg_with_colons = "GDBus.Error:org.test.X: error: with: colons";
+    let (name, rest) = glib_native::gdbuserror::parse_remote_prefix(msg_with_colons)
+        .ok_or("GDBus parse_remote_prefix")?;
+    if name != "org.test.X" || rest != "error: with: colons" {
+        return Err("GDBus parse_remote_prefix content");
     }
 
     Ok(())

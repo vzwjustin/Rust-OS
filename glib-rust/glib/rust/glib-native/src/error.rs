@@ -65,6 +65,17 @@ impl Error {
         &self.message
     }
 
+    /// Replace the error message in place.
+    ///
+    /// Used by D-Bus error stripping (`g_dbus_error_strip_remote_error`)
+    /// to remove the `"GDBus.Error:NAME: "` prefix from the message.
+    /// Not part of the upstream public `GError` API (upstream pokes
+    /// `error->message` directly) but exposed here so D-Bus error
+    /// handling can be implemented outside the `error` module.
+    pub fn set_message(&mut self, message: impl Into<String>) {
+        self.message = message.into();
+    }
+
     /// Whether this error matches `domain` and `code` (`g_error_matches`).
     #[inline]
     #[must_use]
