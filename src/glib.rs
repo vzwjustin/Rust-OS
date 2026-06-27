@@ -374,6 +374,11 @@ pub use glib_native::{
     io_error_from_errno,
     io_error_from_file_error,
     file_error_from_errno,
+    // GIO desktop notification
+    Notification,
+    NotificationPriority,
+    NotificationButton,
+    NotificationIcon,
     // URI functions
     escape_string,
     is_valid,
@@ -1947,6 +1952,96 @@ pub fn smoke_check() -> Result<(), &'static str> {
         || file_error_from_errno(9999) != glib_native::FileError::Failed
     {
         return Err("GFileError from_errno");
+    }
+
+    // GIO desktop notification (Phase 11). Exercise the full surface:
+    // construction, setters, buttons with targets, default action with
+    // target, priority, urgent mapping, category, opaque icon.
+    if NotificationPriority::Normal as i32 != 0
+        || NotificationPriority::Low as i32 != 1
+        || NotificationPriority::High as i32 != 2
+        || NotificationPriority::Urgent as i32 != 3
+    {
+        return Err("GNotificationPriority values");
+    }
+    let mut notif = Notification::new("RustOS boot complete");
+    if notif.title() != "RustOS boot complete"
+        || notif.body() != ""
+        || notif.priority() != NotificationPriority::Normal
+        || notif.n_buttons() != 0
+        || notif.default_action().is_some()
+        || notif.default_action_target().is_some()
+        || notif.icon().is_some()
+    {
+        return Err("GNotification defaults");
+    }
+    notif.set_body("All systems nominal");
+    notif.set_priority(NotificationPriority::High);
+    notif.set_category("system.boot");
+    if notif.body() != "All systems nominal"
+        || notif.priority() != NotificationPriority::High
+        || notif.category() != Some("system.boot")
+    {
+        return Err("GNotification setters");
+    }
+    // set_urgent maps true -> Urgent, false -> Normal.
+    notif.set_urgent(true);
+    if notif.priority() != NotificationPriority::Urgent {
+        return Err("GNotification set_urgent true");
+    }
+    notif.set_urgent(false);
+    if notif.priority() != NotificationPriority::Normal {
+        return Err("GNotification set_urgent false");
+    }
+    // Buttons with and without targets.
+    notif.add_button("Dismiss", "app.dismiss");
+    notif.add_button_with_target_value(
+        "Open",
+        "app.open",
+        glib_native::Variant::new_string("/etc/hostname"),
+    );
+    if notif.n_buttons() != 2 {
+        return Err("GNotification button count");
+    }
+    let buttons = notif.buttons();
+    if buttons[0].label != "Dismiss"
+        || buttons[0].action_name != "app.dismiss"
+        || buttons[0].target.is_some()
+    {
+        return Err("GNotification button 0");
+    }
+    if buttons[1].label != "Open"
+        || buttons[1].action_name != "app.open"
+        || buttons[1].target.is_none()
+        || buttons[1].target.as_ref().unwrap().get_string() != "/etc/hostname"
+    {
+        return Err("GNotification button 1");
+    }
+    // Default action with target.
+    notif.set_default_action_with_target_value("app.activate", glib_native::Variant::new_int32(42));
+    if notif.default_action() != Some("app.activate") {
+        return Err("GNotification default action");
+    }
+    if notif.default_action_target().is_none()
+        || notif.default_action_target().unwrap().get_int32() != 42
+    {
+        return Err("GNotification default action target");
+    }
+    // set_default_action (without target) clears the target.
+    notif.set_default_action("app.activate");
+    if notif.default_action_target().is_some() {
+        return Err("GNotification default action clears target");
+    }
+    // Opaque icon storage.
+    let icon: NotificationIcon = alloc::sync::Arc::new(0xDEADBEEFu32);
+    notif.set_icon(icon);
+    if notif.icon().is_none() {
+        return Err("GNotification icon set");
+    }
+    let stored_icon = notif.icon().unwrap();
+    let downcasted = stored_icon.downcast_ref::<u32>();
+    if downcasted != Some(&0xDEADBEEF) {
+        return Err("GNotification icon downcast");
     }
 
     Ok(())

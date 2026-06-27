@@ -65,6 +65,7 @@ pub mod gfileattribute;
 pub mod gdbusintrospection;
 pub mod gdbuserror;
 pub mod gioerror;
+pub mod gnotification;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -417,6 +418,9 @@ pub use gioerror::{
     IOErrorEnum, io_error_quark, io_error_from_errno, io_error_from_file_error,
 };
 pub use fileutils::file_error_from_errno;
+pub use gnotification::{
+    Notification, NotificationPriority, NotificationButton, NotificationIcon,
+};
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,
