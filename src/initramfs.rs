@@ -246,29 +246,54 @@ pub unsafe fn execute_init(entry_point: u64, stack_pointer: u64) -> ! {
     crate::usermode::switch_to_user_mode(entry_point, stack_pointer)
 }
 
+/// Return the first userspace init path present on the root VFS.
+pub fn find_userspace_init() -> Option<&'static str> {
+    for path in ["/bin/init", "/init"] {
+        if crate::vfs::vfs_stat(path).is_ok() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// True when `/bin/init` or `/init` exists and is reachable via the VFS.
+pub fn userspace_init_available() -> bool {
+    find_userspace_init().is_some()
+}
+
 /// Try to exec `/bin/init` or `/init` and enter user mode.
 ///
 /// # Safety
 /// Never returns on success.
-#[allow(dead_code)]
-pub unsafe fn try_exec_init() -> ! {
+pub unsafe fn boot_userspace_init() -> ! {
     use crate::linux_compat::process_ops;
 
-    for path in [c"/bin/init", c"/init"] {
-        let path_ptr = path.as_ptr() as *const u8;
+    if let Some(path) = find_userspace_init() {
+        crate::serial_println!("init: launching {} as PID 1", path);
+        let path_c = match path {
+            "/bin/init" => c"/bin/init",
+            _ => c"/init",
+        };
+        let path_ptr = path_c.as_ptr() as *const u8;
         let argv: [*const u8; 2] = [path_ptr, core::ptr::null()];
         let envp: [*const u8; 1] = [core::ptr::null()];
-        if process_ops::execve_and_enter_user_mode(path_ptr, argv.as_ptr(), envp.as_ptr())
-            .is_ok()
-        {
+        if process_ops::execve_and_enter_user_mode(path_ptr, argv.as_ptr(), envp.as_ptr()).is_ok() {
             unreachable!("switch_to_user_mode returns !");
         }
+        crate::serial_println!("init: exec {} failed", path);
+    } else {
+        crate::serial_println!("init: no /bin/init or /init on rootfs");
     }
 
-    crate::serial_println!("init: /bin/init and /init not found");
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+/// Legacy alias kept for callers that probe both init paths manually.
+#[allow(dead_code)]
+pub unsafe fn try_exec_init() -> ! {
+    boot_userspace_init()
 }
 
 /// Load initramfs at kernel boot

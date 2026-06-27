@@ -340,6 +340,7 @@ impl Vfs {
         let _ = root.create("var", InodeType::Directory, 0o755);
         let _ = root.create("home", InodeType::Directory, 0o755);
         let _ = root.create("etc", InodeType::Directory, 0o755);
+        let _ = root.create("bin", InodeType::Directory, 0o755);
         let _ = procfs::install_proc(root);
 
         Ok(())
