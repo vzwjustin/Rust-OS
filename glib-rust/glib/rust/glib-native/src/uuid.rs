@@ -5,6 +5,15 @@
 
 use crate::prelude::*;
 use crate::rand::Rand;
+use spin::mutex::Mutex;
+use spin::once::Once;
+
+/// Global RNG used by `uuid_string_random` so consecutive calls produce
+/// different UUIDs. Seeded with a fixed value (no `/dev/urandom` in
+/// `no_std`) but advances state between calls — matching upstream
+/// behaviour of producing fresh UUIDs per call. Initialized lazily via
+/// `spin::Once` because `Rand::with_seed` is not `const`.
+static GLOBAL_RNG: Once<Mutex<Rand>> = Once::new();
 
 /// Validate a UUID string (`g_uuid_string_is_valid`).
 ///
@@ -33,9 +42,12 @@ pub fn uuid_string_is_valid(str: &str) -> bool {
 
 /// Generate a random UUID string (RFC 4122 v4) (`g_uuid_string_random`).
 ///
-/// Uses the global RNG for randomness.
+/// Uses a global RNG that persists state between calls so consecutive
+/// invocations return different UUIDs (matching upstream behaviour).
 pub fn uuid_string_random() -> String {
-    let mut rng = Rand::new();
+    let mut rng = GLOBAL_RNG
+        .call_once(|| Mutex::new(Rand::with_seed(0x6d4f_3a2b)))
+        .lock();
     uuid_string_random_with(&mut rng)
 }
 

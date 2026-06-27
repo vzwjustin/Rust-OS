@@ -154,6 +154,10 @@ pub struct Scanner {
     next_value: TokenValue,
     next_line: u32,
     next_position: u32,
+    /// Byte offset of the scanner position AFTER the peeked token, so
+    /// `get_next_token` can advance `pos` past a consumed peek without
+    /// re-scanning the same token.
+    next_pos: usize,
     has_next: bool,
     symbols: SymbolTable,
     scope_id: u32,
@@ -177,6 +181,7 @@ impl Scanner {
             next_value: TokenValue::None,
             next_line: 1,
             next_position: 1,
+            next_pos: 0,
             has_next: false,
             symbols: BTreeMap::new(),
             scope_id: 0,
@@ -279,10 +284,15 @@ impl Scanner {
             let saved_line = self.line;
             let saved_column = self.column;
             let (tok, val, line, pos) = self.scan_token();
+            // `scan_token` advanced `self.pos` past the token; capture
+            // that end position so `get_next_token` can resume there
+            // when consuming the peek.
+            let end_pos = self.pos;
             self.next_token = tok;
             self.next_value = val;
             self.next_line = line;
             self.next_position = pos;
+            self.next_pos = end_pos;
             self.pos = saved_pos;
             self.line = saved_line;
             self.column = saved_column;
@@ -298,6 +308,9 @@ impl Scanner {
             self.value = core::mem::replace(&mut self.next_value, TokenValue::None);
             self.line = self.next_line;
             self.column = self.next_position;
+            // Advance past the peeked token so the next scan resumes
+            // after it, not at the pre-peek position.
+            self.pos = self.next_pos;
             self.has_next = false;
         } else {
             let (tok, val, line, pos) = self.scan_token();
