@@ -70,6 +70,7 @@ pub mod gsrvtarget;
 pub mod ginetaddress;
 pub mod ginetaddressmask;
 pub mod gnetworkaddress;
+pub mod gvaluetransform;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -429,6 +430,10 @@ pub use gsrvtarget::{SrvTarget, srv_target_list_sort};
 pub use ginetaddress::{InetAddress, InetAddrBytes, SocketFamily};
 pub use ginetaddressmask::{InetAddressMask, InetAddressMaskError};
 pub use gnetworkaddress::{NetworkAddress, NetworkAddressError};
+pub use gvaluetransform::{
+    value_register_transform_func, value_type_transformable,
+    value_type_compatible, value_transform, init_builtin_transforms,
+};
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,

@@ -515,7 +515,10 @@ re-export list for documentation and name resolution.
 - GInterface vtable initialization and dispatch.
 - GObject closure system (`GClosure`).
 - GParamSpec pool and override.
-- GValue transform functions between types.
+- ~~GValue transform functions between types.~~ **Done** — see
+  `gvaluetransform` module: `value_register_transform_func` /
+  `value_type_transformable` / `value_type_compatible` /
+  `value_transform` + built-in numeric/bool/string transforms.
 - GType plugin system (dynamic type registration).
 - C ABI compatibility (`extern "C"` wrappers, `GTypeInstance` layout).
 
@@ -662,7 +665,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**61 modules** ported across Phases 1–11, all wired into RustOS:
+**62 modules** ported across Phases 1–11, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -674,7 +677,7 @@ re-export list for documentation and name resolution.
 | 6 | fileutils (+ file_error_from_errno), convert, charset, checksum, base64, hmac, hostutils, environ, keyfile, bitlock, hook, pattern, shell, uri, markup, stringchunk, strvbuilder, version, scanner, timer, utils, pathbuf, uuid, regex, testutils + dir/mappedfile/spawn/stdio (stubs) | Partial (29) |
 | 7 | date, datetime, timezone, varianttype, variant, unicode, utf8 | Partial (7) |
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
-| 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
+| 9 | gtype, gvalue, gparamspec, gsignal, gobject, gvaluetransform | Partial (6) |
 | 10 | gmodule | Partial (1) |
 | 11 | gfileattribute, gdbusintrospection, gdbuserror, gioerror, gnotification, gsrvtarget, ginetaddress, ginetaddressmask, gnetworkaddress | Partial (9) |
 
@@ -780,6 +783,11 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
   unclosed bracket), `parse_uri` (http://example.com:8080/path →
   scheme/host/port, no-port → default, invalid URI rejected), `equal`
   (same/different-port)
+- **GValueTransform** — `init_builtin_transforms`, int→uint, int→double,
+  int→string, int→bool (non-zero→true, zero→false), bool→string
+  (TRUE/FALSE), same-type copy via `value_type_compatible`,
+  `value_type_transformable` checks (true for int→uint/int→double/
+  int→int, false for string→float)
 
 ## Running Rust tests
 
