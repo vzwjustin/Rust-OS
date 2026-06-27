@@ -7,12 +7,10 @@ use super::{
     DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats, FileSystemType,
     FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
-use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
+use crate::drivers::storage::{read_storage_sectors, write_storage_sectors};
 use alloc::{
-    boxed::Box,
     collections::BTreeMap,
-    format,
-    string::{String, ToString},
+    string::String,
     vec,
     vec::Vec,
 };
@@ -97,7 +95,7 @@ pub struct Fat32DirEntry {
     pub file_size: u32,        // File size in bytes
 }
 
-/// FAT32 file attributes
+// FAT32 file attributes
 bitflags::bitflags! {
     pub struct Fat32Attr: u8 {
         const READ_ONLY = 0x01;
@@ -583,7 +581,7 @@ impl Fat32FileSystem {
     }
 
     /// Get file metadata from directory entry
-    fn get_file_metadata(&self, cluster: u32, filename: &str) -> FsResult<FileMetadata> {
+    fn get_file_metadata(&self, _cluster: u32, filename: &str) -> FsResult<FileMetadata> {
         let parent_cluster = if filename.contains('/') {
             let parent_path = filename.rsplitn(2, '/').nth(1).unwrap_or("/");
             self.resolve_path(parent_path)?

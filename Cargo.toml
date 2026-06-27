@@ -103,5 +103,12 @@ test-success-exit-code = 33
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 
+[features]
+default = []
+stack-protection = []
+memory_manager = []
+time = []
+serial = []
+
 [build-dependencies]
 cc = "1.0"

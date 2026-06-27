@@ -3,11 +3,9 @@
 //! This module implements advanced Linux I/O operations including
 //! vectored I/O, positional I/O, zero-copy operations, and extended attributes.
 
-#![no_std]
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
@@ -349,7 +347,7 @@ pub fn splice(
 }
 
 /// tee - duplicate pipe content
-pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, flags: u32) -> LinuxResult<isize> {
+pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, _flags: u32) -> LinuxResult<isize> {
     inc_ops();
 
     if fd_in < 0 || fd_out < 0 {
@@ -426,8 +424,8 @@ pub fn copy_file_range(
 pub fn getxattr(
     path: *const u8,
     name: *const u8,
-    value: *mut u8,
-    size: usize,
+    _value: *mut u8,
+    _size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -444,8 +442,8 @@ pub fn getxattr(
 pub fn lgetxattr(
     path: *const u8,
     name: *const u8,
-    value: *mut u8,
-    size: usize,
+    _value: *mut u8,
+    _size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -458,7 +456,7 @@ pub fn lgetxattr(
 }
 
 /// fgetxattr - get extended attribute by file descriptor
-pub fn fgetxattr(fd: Fd, name: *const u8, value: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn fgetxattr(fd: Fd, name: *const u8, _value: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
@@ -478,7 +476,7 @@ pub fn setxattr(
     path: *const u8,
     name: *const u8,
     value: *const u8,
-    size: usize,
+    _size: usize,
     flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -504,8 +502,8 @@ pub fn lsetxattr(
     path: *const u8,
     name: *const u8,
     value: *const u8,
-    size: usize,
-    flags: i32,
+    _size: usize,
+    _flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -522,8 +520,8 @@ pub fn fsetxattr(
     fd: Fd,
     name: *const u8,
     value: *const u8,
-    size: usize,
-    flags: i32,
+    _size: usize,
+    _flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -540,7 +538,7 @@ pub fn fsetxattr(
 }
 
 /// listxattr - list extended attribute names
-pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn listxattr(path: *const u8, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if path.is_null() {
@@ -553,7 +551,7 @@ pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isi
 }
 
 /// llistxattr - list extended attributes (don't follow symlinks)
-pub fn llistxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn llistxattr(path: *const u8, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if path.is_null() {
@@ -565,7 +563,7 @@ pub fn llistxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<is
 }
 
 /// flistxattr - list extended attributes by file descriptor
-pub fn flistxattr(fd: Fd, list: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn flistxattr(fd: Fd, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {

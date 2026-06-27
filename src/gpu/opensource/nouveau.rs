@@ -57,6 +57,7 @@ impl NouveauContext {
         }
     }
 
+    #[allow(unreachable_patterns)]
     fn detect_generation(device_id: u16) -> NouveauGeneration {
         match device_id {
             // NV04 generation

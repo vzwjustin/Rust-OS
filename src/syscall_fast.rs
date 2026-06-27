@@ -51,22 +51,18 @@ pub fn init() {
     // SYSRET loads:
     // - CS = STAR[63:48] + 16
     // - SS = STAR[63:48] + 8
-    let star_value = (user_code - 16) << 48 | kernel_code << 32;
+    let _star_value = (user_code - 16) << 48 | kernel_code << 32;
 
-    unsafe {
-        Star::write(
-            crate::gdt::get_user_code_selector(),
-            crate::gdt::get_user_data_selector(),
-            crate::gdt::get_kernel_code_selector(),
-            crate::gdt::get_kernel_data_selector(),
-        )
-        .expect("Failed to write STAR MSR");
-    }
+    Star::write(
+        crate::gdt::get_user_code_selector(),
+        crate::gdt::get_user_data_selector(),
+        crate::gdt::get_kernel_code_selector(),
+        crate::gdt::get_kernel_data_selector(),
+    )
+    .expect("Failed to write STAR MSR");
 
     // Configure LSTAR MSR - points to syscall entry point
-    unsafe {
-        LStar::write(VirtAddr::new(syscall_entry as u64));
-    }
+    LStar::write(VirtAddr::new(syscall_entry as *const () as u64));
 
     // Configure FMASK MSR - RFLAGS bits to clear on syscall
     // Clear:
@@ -76,9 +72,7 @@ pub fn init() {
     // - AC (bit 18): Clear alignment check
     let fmask: u64 = (1 << 9) | (1 << 10) | (1 << 8) | (1 << 18);
 
-    unsafe {
-        SFMask::write(x86_64::registers::rflags::RFlags::from_bits_truncate(fmask));
-    }
+    SFMask::write(x86_64::registers::rflags::RFlags::from_bits_truncate(fmask));
 
     // Enable SYSCALL/SYSRET in EFER
     unsafe {
@@ -251,9 +245,9 @@ extern "C" fn syscall_handler_wrapper(frame: *const SyscallFrame) -> i64 {
 pub fn is_supported() -> bool {
     // Check CPUID for SYSCALL support
     // CPUID.80000001h:EDX[11] = SYSCALL/SYSRET support
-    let mut eax: u32;
-    let mut ebx: u32;
-    let mut ecx: u32;
+    let mut _eax: u32;
+    let mut _ebx: u32;
+    let mut _ecx: u32;
     let mut edx: u32;
 
     unsafe {
@@ -262,9 +256,9 @@ pub fn is_supported() -> bool {
             "mov {tmp:e}, ebx",
             "cpuid",
             "mov ebx, {tmp:e}",
-            tmp = out(reg) ebx,
-            out("eax") eax,
-            out("ecx") ecx,
+            tmp = out(reg) _ebx,
+            out("eax") _eax,
+            out("ecx") _ecx,
             out("edx") edx,
             options(nostack, preserves_flags)
         );

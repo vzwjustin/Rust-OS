@@ -4,7 +4,7 @@
 //! and manages cursor position, button states, and event routing to the desktop environment.
 
 use crate::drivers::ps2_mouse::{MouseButtons, MousePacket};
-use crate::keyboard::{KeyEvent, SpecialKey};
+use crate::keyboard::KeyEvent;
 use heapless::spsc::Queue;
 use spin::Mutex;
 

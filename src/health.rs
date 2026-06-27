@@ -5,9 +5,9 @@ use crate::error::{ErrorContext, ErrorSeverity, KernelError, ERROR_MANAGER};
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 /// System health metrics
 #[derive(Debug, Clone)]
@@ -199,7 +199,7 @@ impl HealthMonitor {
     fn estimate_cpu_usage(&self) -> u8 {
         // Simplified CPU usage estimation
         // In a real implementation, this would use performance counters
-        let timer_stats = crate::time::get_timer_stats();
+        let _timer_stats = crate::time::get_timer_stats();
         let interrupt_count = crate::interrupts::get_interrupt_count();
 
         // Very basic estimation based on interrupt frequency

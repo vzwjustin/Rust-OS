@@ -262,7 +262,7 @@ impl UsbMassStorageDriver {
 
         // Create Command Block Wrapper
         let tag = self.next_tag();
-        let cbw =
+        let _cbw =
             CommandBlockWrapper::new(tag, data_length, direction_in, self.active_lun, command);
 
         // In a real implementation, we would:

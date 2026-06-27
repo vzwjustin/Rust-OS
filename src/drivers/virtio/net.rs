@@ -4,7 +4,7 @@
 //! Uses virtqueues for RX (receive) and TX (transmit) with scatter-gather DMA.
 
 use super::*;
-use crate::net::{MacAddress, NetworkError};
+use crate::net::MacAddress;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -113,7 +113,7 @@ impl VirtioNet {
                 unsafe { core::ptr::read_volatile((transport.common_base + 30) as *const u16) };
             notify_off
         };
-        let mut tx_queue = VirtQueue::new(tx_size, tx_notify_off)?;
+        let tx_queue = VirtQueue::new(tx_size, tx_notify_off)?;
         transport.setup_queue(&tx_queue);
 
         // Allocate RX buffers and fill the receive queue
@@ -265,7 +265,7 @@ static VIRTIO_NET: Mutex<Option<VirtioNet>> = Mutex::new(None);
 
 /// Initialize virtio-net from a transport
 pub fn init_virtio_net(transport: VirtioTransport) -> Result<(), &'static str> {
-    let mut net = VirtioNet::new(transport)?;
+    let net = VirtioNet::new(transport)?;
 
     // Register with the network stack
     let mac = net.mac_address();

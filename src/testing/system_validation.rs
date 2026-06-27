@@ -675,7 +675,7 @@ pub fn run_system_validation(config: SystemValidationConfig) -> SystemValidation
     let uptime_achieved_hours = (end_time - start_time) as f32 / (3600.0 * 1_000_000.0);
 
     // Collect results
-    let (memory_used, memory_total) = crate::performance_monitor::memory_usage();
+    let (memory_used, _memory_total) = crate::performance_monitor::memory_usage();
     let peak_memory_usage_mb = (memory_used / (1024 * 1024)) as usize;
 
     // Calculate real stability score based on test results

@@ -11,7 +11,6 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::mem;
 use core::ptr;
 
 /// AHCI vendor IDs and device IDs database
@@ -659,6 +658,7 @@ pub const AHCI_DEVICE_IDS: &[AhciDeviceId] = &[
 
 /// AHCI register offsets
 #[repr(u32)]
+#[allow(non_camel_case_types)]
 pub enum AhciReg {
     /// Host capability register
     Cap = 0x00,
@@ -719,7 +719,7 @@ pub enum AhciPortReg {
     Sntf = 0x3c,
 }
 
-/// AHCI port command register bits
+// AHCI port command register bits
 bitflags::bitflags! {
     pub struct PortCmd: u32 {
         const ST = 1 << 0;      // Start
@@ -850,7 +850,7 @@ impl AhciDriver {
         let cap2 = self.read_reg(AhciReg::Cap2);
         if (cap2 & (1 << 0)) != 0 {
             // BIOS/OS handoff supported
-            self.write_reg(AhciReg::Bohc, (1 << 1)); // Request OS ownership
+            self.write_reg(AhciReg::Bohc, 1 << 1); // Request OS ownership
 
             // Wait for handoff completion (simplified)
             for _ in 0..1000 {

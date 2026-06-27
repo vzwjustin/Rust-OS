@@ -3,7 +3,6 @@
 //! This module provides data structures that match Linux kernel types
 //! for binary compatibility with Linux applications.
 
-use core::fmt;
 
 /// File descriptor type
 pub type Fd = i32;

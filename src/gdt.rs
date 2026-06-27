@@ -4,7 +4,6 @@
 //! and privilege level management for RustOS.
 
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::instructions::segmentation::{Segment, CS, DS, ES, FS, GS, SS};
 use x86_64::instructions::tables::load_tss;
 use x86_64::structures::gdt::{
@@ -258,7 +257,7 @@ pub fn get_stack_info() -> StackInfo {
 ///
 /// The stack pointer must point to a valid, mapped kernel stack.
 pub fn set_kernel_stack(stack_ptr: VirtAddr) {
-    use core::ptr;
+    
 
     // Get a mutable reference to TSS
     // Safety: We have exclusive access during init

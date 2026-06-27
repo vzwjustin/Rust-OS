@@ -12,9 +12,8 @@
 
 use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
 use alloc::{
-    string::{String, ToString},
+    string::ToString,
     vec,
-    vec::Vec,
 };
 
 /// Create hardware test suite
@@ -86,13 +85,12 @@ fn teardown_timer_tests() {}
 
 /// Test PCI device detection and enumeration
 fn test_pci_device_detection() -> TestResult {
-    let mut devices_found = 0;
     let mut configuration_successful = 0;
 
     // Test PCI bus scanning
-    match crate::pci::scan_pci_bus() {
+    let devices_found = match crate::pci::scan_pci_bus() {
         Ok(devices) => {
-            devices_found = devices.len();
+            let count = devices.len();
 
             // Test configuration space access for each device
             for device in devices {
@@ -110,11 +108,13 @@ fn test_pci_device_detection() -> TestResult {
                     }
                 }
             }
+
+            count
         }
         Err(_) => {
             return TestResult::Fail;
         }
-    }
+    };
 
     // Pass if we found devices and could configure most of them
     if devices_found > 0 && configuration_successful >= devices_found / 2 {

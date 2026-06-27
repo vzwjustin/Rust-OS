@@ -3,14 +3,11 @@
 //! This module implements Linux system information operations including
 //! sysinfo, uname, and other system query functions.
 
-#![no_std]
 
 extern crate alloc;
 
-use alloc::string::String;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::types::*;
 use super::{LinuxError, LinuxResult};
 
 /// Operation counter for statistics
@@ -338,7 +335,7 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
 // ============================================================================
 
 /// syslog - read/control kernel ring buffer
-pub fn syslog(log_type: i32, bufp: *mut u8, len: i32) -> LinuxResult<i32> {
+pub fn syslog(log_type: i32, bufp: *mut u8, _len: i32) -> LinuxResult<i32> {
     inc_ops();
 
     // Syslog command types
@@ -377,7 +374,7 @@ pub fn syslog(log_type: i32, bufp: *mut u8, len: i32) -> LinuxResult<i32> {
 // ============================================================================
 
 /// reboot - reboot or enable/disable Ctrl-Alt-Del
-pub fn reboot(magic: i32, magic2: i32, cmd: u32, arg: *mut u8) -> LinuxResult<i32> {
+pub fn reboot(magic: i32, magic2: i32, cmd: u32, _arg: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Magic numbers for reboot

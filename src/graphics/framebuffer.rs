@@ -1064,7 +1064,7 @@ fn present_hardware_frame(framebuffer_addr: u64) {
     // This would be GPU-specific in a real implementation
 
     // For VBE/VESA, we might need to update display start address
-    if let Some(vbe_driver) = crate::drivers::vbe::driver().get_current_mode() {
+    if let Some(_vbe_driver) = crate::drivers::vbe::driver().get_current_mode() {
         // Update display start address if double buffering is used
         update_display_start_address(framebuffer_addr);
     }

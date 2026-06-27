@@ -9,7 +9,6 @@ use crate::testing::{
     comprehensive_test_runner::{ComprehensiveTestConfig, ComprehensiveTestRunner},
     system_validation::{HardwareConfig, SystemValidationConfig, SystemValidationResults},
 };
-use crate::testing_framework::{TestResult, TestStats};
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},

@@ -10,7 +10,6 @@ pub use framebuffer::{
     framebuffer, init, init_with_buffer, Color, FramebufferInfo, PixelFormat, Rect,
 };
 
-use alloc::{format, string::String};
 use spin::{Mutex, Once};
 
 /// Graphics system status

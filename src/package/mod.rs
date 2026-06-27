@@ -14,13 +14,10 @@
 //!
 //! See docs/LINUX_APP_SUPPORT.md for detailed requirements.
 
-#![no_std]
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt;
 
 pub mod adapters;
@@ -35,8 +32,6 @@ pub mod types;
 #[cfg(test)]
 pub mod tests;
 
-pub use adapters::*;
-pub use database::*;
 pub use manager::PackageManager;
 pub use syscalls::{handle_package_syscall, init_package_manager};
 pub use types::*;

@@ -7,11 +7,11 @@
 //! - Network protocol implementations
 //! - Inter-process communication
 
-use crate::scheduler::{Pid, Priority};
-use crate::syscall::{SyscallContext, SyscallNumber, SyscallResult};
+use crate::scheduler::Priority;
+use crate::syscall::{SyscallContext, SyscallNumber};
 use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
 use alloc::{
-    string::{String, ToString},
+    string::ToString,
     vec,
     vec::Vec,
 };
@@ -633,11 +633,8 @@ fn test_page_fault_handling() -> TestResult {
 
     // Page fault handling is tested indirectly through memory operations
     // For now, just verify that the page fault handler exists
-    if stats.page_fault_count >= 0 {
-        TestResult::Pass
-    } else {
-        TestResult::Fail
-    }
+    let _ = stats.page_fault_count;
+    TestResult::Pass
 }
 
 /// Test heap management functionality

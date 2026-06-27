@@ -109,7 +109,7 @@ pub fn wait(
     process_table: &Mutex<ProcessTable>,
 ) -> Result<(Pid, i32), &'static str> {
     loop {
-        let mut table = process_table.lock();
+        let table = process_table.lock();
 
         // Get parent process
         let parent = table.get(parent_pid).ok_or("Parent process not found")?;
@@ -230,7 +230,7 @@ pub fn exit(
 }
 
 /// Get process ID
-pub fn getpid(process_table: &Mutex<ProcessTable>) -> Pid {
+pub fn getpid(_process_table: &Mutex<ProcessTable>) -> Pid {
     // In real implementation, would get from CPU-local storage
     let pm = crate::process_manager::get_process_manager();
     pm.current_pid()

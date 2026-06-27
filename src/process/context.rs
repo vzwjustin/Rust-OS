@@ -348,29 +348,25 @@ impl ContextSwitcher {
     /// Check if processor has SSE support
     fn has_sse(&self) -> bool {
         // Check CPUID for SSE support using the intrinsic to avoid clobbering RBX
-        unsafe { (__cpuid(1).edx & (1 << 25)) != 0 }
+        (__cpuid(1).edx & (1 << 25)) != 0
     }
 
     /// Check if processor has XSAVE support
     fn has_xsave(&self) -> bool {
-        unsafe { (__cpuid(1).ecx & (1 << 26)) != 0 }
+        (__cpuid(1).ecx & (1 << 26)) != 0
     }
 
     /// Check if processor has AVX support
     fn has_avx(&self) -> bool {
-        unsafe {
-            let cpuid = __cpuid(1);
-            (cpuid.ecx & (1 << 28)) != 0 && (cpuid.ecx & (1 << 26)) != 0 // AVX + XSAVE
-        }
+        let cpuid = __cpuid(1);
+        (cpuid.ecx & (1 << 28)) != 0 && (cpuid.ecx & (1 << 26)) != 0 // AVX + XSAVE
     }
 
     /// Get XSAVE area size
     fn get_xsave_area_size(&self) -> usize {
         if self.has_xsave() {
-            unsafe {
-                let cpuid = __cpuid(13); // XSAVE features
-                cpuid.ecx as usize
-            }
+            let cpuid = __cpuid(13); // XSAVE features
+            cpuid.ecx as usize
         } else {
             512 // Standard FXSAVE area size
         }

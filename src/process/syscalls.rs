@@ -446,7 +446,7 @@ impl SyscallDispatcher {
         let wait_pid = args.get(0).map(|&p| p as i32).unwrap_or(-1);
 
         // Get current process
-        let current_process = match process_manager.get_process(current_pid) {
+        let _current_process = match process_manager.get_process(current_pid) {
             Some(p) => p,
             None => return SyscallResult::Error(SyscallError::ProcessNotFound),
         };
@@ -1123,7 +1123,7 @@ impl SyscallDispatcher {
             // Request process termination
             if let Some(mut target) = process_manager.get_process(target_pid) {
                 // Check if process has a signal handler for SIGTERM
-                if let Some(&handler) = target.signal_handlers.get(&15) {
+                if let Some(&_handler) = target.signal_handlers.get(&15) {
                     // Queue signal for delivery
                     target.pending_signals.push(signal);
                     if matches!(target.state, ProcessState::Sleeping) {
@@ -1145,7 +1145,7 @@ impl SyscallDispatcher {
             // SIGINT
             // Interrupt signal (Ctrl+C)
             if let Some(mut target) = process_manager.get_process(target_pid) {
-                if let Some(&handler) = target.signal_handlers.get(&2) {
+                if let Some(&_handler) = target.signal_handlers.get(&2) {
                     target.pending_signals.push(signal);
                     if matches!(target.state, ProcessState::Sleeping) {
                         process_manager.unblock_process(target_pid).ok();

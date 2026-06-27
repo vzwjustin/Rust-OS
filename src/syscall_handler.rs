@@ -27,7 +27,7 @@ pub fn dispatch_syscall(
     arg5: u64,
     arg6: u64,
 ) -> i64 {
-    match SyscallNumber::from_u64(syscall_num) {
+    let result = match SyscallNumber::from_u64(syscall_num) {
         // File operations
         SyscallNumber::Read => syscall_read(arg1 as i32, arg2 as *mut u8, arg3 as usize),
         SyscallNumber::Write => syscall_write(arg1 as i32, arg2 as *const u8, arg3 as usize),
@@ -338,7 +338,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Setitimer => syscall_setitimer(arg1 as i32, arg2 as *const u8, arg3 as *mut u8),
 
         _ => -38, // ENOSYS
-    }
+    };
+    crate::debug::trace_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, result);
+    result
 }
 
 // Syscall implementations - these call into linux_compat
@@ -450,9 +452,8 @@ fn syscall_execve(filename: *const u8, argv: *const *const u8, envp: *const *con
     }
 }
 
-fn syscall_exit(status: i32) -> i64 {
+fn syscall_exit(status: i32) -> ! {
     crate::linux_compat::process_ops::exit(status);
-    0 // Never returns
 }
 
 fn syscall_wait4(pid: i32, wstatus: *mut i32, options: i32, rusage: *mut u8) -> i64 {
@@ -754,13 +755,13 @@ fn syscall_setuid(uid: u32) -> i64 {
 fn syscall_setgid(gid: u32) -> i64 {
     match crate::linux_compat::process_ops::setgid(gid) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
-fn syscall_setreuid(ruid: u32, euid: u32) -> i64 {
+fn syscall_setreuid(_ruid: u32, euid: u32) -> i64 {
     match crate::linux_compat::process_ops::seteuid(euid) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
-fn syscall_setregid(rgid: u32, egid: u32) -> i64 {
+fn syscall_setregid(_rgid: u32, egid: u32) -> i64 {
     match crate::linux_compat::process_ops::setegid(egid) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
-fn syscall_setresuid(ruid: u32, euid: u32, suid: u32) -> i64 {
+fn syscall_setresuid(_ruid: u32, euid: u32, _suid: u32) -> i64 {
     match crate::linux_compat::process_ops::seteuid(euid) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
 fn syscall_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> i64 {
@@ -771,7 +772,7 @@ fn syscall_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> i64 {
     }
     0
 }
-fn syscall_setresgid(rgid: u32, egid: u32, sgid: u32) -> i64 {
+fn syscall_setresgid(_rgid: u32, egid: u32, _sgid: u32) -> i64 {
     match crate::linux_compat::process_ops::setegid(egid) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
 fn syscall_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> i64 {
@@ -805,7 +806,7 @@ fn syscall_setsid() -> i64 {
 fn syscall_getsid(pid: i32) -> i64 {
     match crate::linux_compat::process_ops::getsid(pid) { Ok(p) => p as i64, Err(e) => -(e as i64) }
 }
-fn syscall_umask(mask: u32) -> i64 { 0o022 } // return previous umask (stub)
+fn syscall_umask(_mask: u32) -> i64 { 0o022 } // return previous umask (stub)
 fn syscall_chroot(_path: *const u8) -> i64 { 0 } // stub
 
 // ── Resource limit syscalls ──

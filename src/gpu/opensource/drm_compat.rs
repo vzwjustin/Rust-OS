@@ -192,7 +192,7 @@ impl DRMCompatLayer {
     pub fn register_device(
         &mut self,
         card_number: u32,
-        driver_name: &str,
+        _driver_name: &str,
     ) -> Result<(), &'static str> {
         let device_path = format!("/dev/dri/card{}", card_number);
         self.device_nodes.insert(card_number, device_path);

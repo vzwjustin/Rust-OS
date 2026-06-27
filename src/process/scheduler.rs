@@ -502,7 +502,7 @@ pub fn get_scheduler_stats() -> SchedulingStats {
 }
 
 /// Timer tick notification to scheduler
-pub fn timer_tick(delta_ms: u64) {
+pub fn timer_tick(_delta_ms: u64) {
     let process_manager = super::get_process_manager();
     let mut scheduler = process_manager.scheduler.lock();
     scheduler.tick();

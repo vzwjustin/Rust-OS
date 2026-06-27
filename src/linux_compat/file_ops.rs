@@ -165,6 +165,10 @@ pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
 
     let buffer = unsafe { core::slice::from_raw_parts_mut(buf, count) };
 
+    if let Some(result) = super::special_fd::try_read(fd, buffer) {
+        return result;
+    }
+
     match vfs::vfs_read(fd, buffer) {
         Ok(n) => Ok(n as isize),
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -184,6 +188,10 @@ pub fn write(fd: Fd, buf: *const u8, count: usize) -> LinuxResult<isize> {
     }
 
     let buffer = unsafe { core::slice::from_raw_parts(buf, count) };
+
+    if let Some(result) = super::special_fd::try_write(fd, buffer) {
+        return result;
+    }
 
     match vfs::vfs_write(fd, buffer) {
         Ok(n) => Ok(n as isize),
@@ -405,7 +413,7 @@ pub fn dup2(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
 }
 
 /// dup3 - duplicate file descriptor with flags
-pub fn dup3(oldfd: Fd, newfd: Fd, flags: i32) -> LinuxResult<Fd> {
+pub fn dup3(oldfd: Fd, newfd: Fd, _flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
     if oldfd < 0 || newfd < 0 || oldfd == newfd {
@@ -546,7 +554,7 @@ pub fn fchmod(fd: Fd, mode: Mode) -> LinuxResult<i32> {
 }
 
 /// fchmodat - change file permissions relative to directory fd
-pub fn fchmodat(dirfd: Fd, path: *const u8, mode: Mode, flags: i32) -> LinuxResult<i32> {
+pub fn fchmodat(_dirfd: Fd, path: *const u8, mode: Mode, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -956,7 +964,7 @@ pub fn statx(
     dirfd: Fd,
     pathname: *const u8,
     flags: i32,
-    mask: u32,
+    _mask: u32,
     statxbuf: *mut Statx,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -1004,7 +1012,7 @@ pub fn statx(
 }
 
 /// faccessat2 - check file accessibility relative to directory fd with flags
-pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
+pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {

@@ -7,9 +7,8 @@
 //! - Parameter validation and copying
 //! - Security checks and capabilities
 
-use crate::fs::FileDescriptor;
 use crate::scheduler::Pid;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use core::arch::asm;
 use x86_64::structures::idt::InterruptStackFrame;
@@ -285,7 +284,7 @@ extern "x86-interrupt" fn syscall_interrupt_handler(_stack_frame: InterruptStack
 /// Dispatch a system call to the appropriate handler
 pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
     // Validate privilege level for the syscall
-    if let Err(error_msg) =
+    if let Err(_error_msg) =
         crate::security::validate_syscall_privilege(context.syscall_num as u64, context.pid)
     {
         // Log security violation
@@ -417,7 +416,7 @@ fn sys_fork() -> SyscallResult {
 }
 
 /// Execute a new program in the current process
-fn sys_exec(program_path_ptr: u64, argv_ptr: u64) -> SyscallResult {
+fn sys_exec(program_path_ptr: u64, _argv_ptr: u64) -> SyscallResult {
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
@@ -1550,7 +1549,7 @@ fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     SecurityValidator::validate_user_ptr(addr, length, true)?;
 
     // Check if process has permission to unmap memory
-    if let Some(ctx) = crate::security::get_context(current_pid) {
+    if let Some(_ctx) = crate::security::get_context(current_pid) {
         // Validate process isolation - can only unmap own memory
         if let Err(_) =
             crate::security::validate_process_isolation(current_pid, current_pid, "memory_access")

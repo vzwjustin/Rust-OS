@@ -33,8 +33,7 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::VirtAddr;
 
-use super::elf_loader::{elf_constants, Elf64Header, Elf64ProgramHeader};
-use crate::memory::{MemoryProtection, MemoryRegionType};
+use super::elf_loader::{elf_constants, Elf64ProgramHeader};
 
 /// Dynamic linker for loading shared libraries and resolving symbols
 #[derive(Clone)]
@@ -494,7 +493,7 @@ impl DynamicLinker {
     }
 
     /// Check if a file exists in the filesystem
-    fn check_file_exists(&self, path: &str) -> bool {
+    fn check_file_exists(&self, _path: &str) -> bool {
         // Try to get file metadata to check existence
         // In a full implementation, we would use the VFS
         // For now, return true to maintain compatibility
@@ -1191,7 +1190,7 @@ mod tests {
     }
 }
 
-/// Global dynamic linker instance
+// Global dynamic linker instance
 lazy_static! {
     static ref GLOBAL_DYNAMIC_LINKER: Mutex<Option<DynamicLinker>> = Mutex::new(None);
 }

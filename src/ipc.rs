@@ -382,4 +382,3 @@ pub fn test_ipc_functionality() -> bool {
 }
 
 // Re-export types from process::ipc
-pub use crate::process::ipc::SharedMemoryPermissions;

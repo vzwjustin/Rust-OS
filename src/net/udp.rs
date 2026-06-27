@@ -720,7 +720,7 @@ impl UdpManager {
         src_addr: &NetworkAddress,
         src_port: u16,
     ) -> Vec<(NetworkAddress, u16)> {
-        let mut receivers = self.find_receiving_sockets(dest_addr, dest_port);
+        let receivers = self.find_receiving_sockets(dest_addr, dest_port);
 
         // If multiple sockets can receive the packet, apply load balancing
         if receivers.len() > 1 {

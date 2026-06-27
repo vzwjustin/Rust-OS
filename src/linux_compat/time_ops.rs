@@ -120,7 +120,7 @@ pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> LinuxResult<i32> {
     }
 
     unsafe {
-        let sleep_time = (*req);
+        let sleep_time = *req;
 
         // Validate sleep time
         if sleep_time.tv_sec < 0 || sleep_time.tv_nsec < 0 || sleep_time.tv_nsec >= 1_000_000_000 {
@@ -229,7 +229,7 @@ pub type TimerId = i32;
 /// timer_create - create a POSIX timer
 pub fn timer_create(
     clockid: i32,
-    sevp: *const u8, // struct sigevent
+    _sevp: *const u8, // struct sigevent
     timerid: *mut TimerId,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -253,10 +253,10 @@ pub fn timer_create(
 
 /// timer_settime - arm/disarm a timer
 pub fn timer_settime(
-    timerid: TimerId,
-    flags: i32,
+    _timerid: TimerId,
+    _flags: i32,
     new_value: *const u8, // struct itimerspec
-    old_value: *mut u8,   // struct itimerspec
+    _old_value: *mut u8,   // struct itimerspec
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -270,7 +270,7 @@ pub fn timer_settime(
 
 /// timer_gettime - get timer value
 pub fn timer_gettime(
-    timerid: TimerId,
+    _timerid: TimerId,
     curr_value: *mut u8, // struct itimerspec
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -284,7 +284,7 @@ pub fn timer_gettime(
 }
 
 /// timer_delete - delete a timer
-pub fn timer_delete(timerid: TimerId) -> LinuxResult<i32> {
+pub fn timer_delete(_timerid: TimerId) -> LinuxResult<i32> {
     inc_ops();
 
     // TODO: Delete timer
@@ -292,7 +292,7 @@ pub fn timer_delete(timerid: TimerId) -> LinuxResult<i32> {
 }
 
 /// timer_getoverrun - get timer overrun count
-pub fn timer_getoverrun(timerid: TimerId) -> LinuxResult<i32> {
+pub fn timer_getoverrun(_timerid: TimerId) -> LinuxResult<i32> {
     inc_ops();
 
     // TODO: Get overrun count
@@ -300,7 +300,7 @@ pub fn timer_getoverrun(timerid: TimerId) -> LinuxResult<i32> {
 }
 
 /// alarm - set an alarm clock
-pub fn alarm(seconds: u32) -> u32 {
+pub fn alarm(_seconds: u32) -> u32 {
     inc_ops();
 
     // TODO: Set alarm

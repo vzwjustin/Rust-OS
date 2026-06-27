@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
 /// PIT (Programmable Interval Timer) frequency
 const PIT_FREQUENCY: u32 = 1193182;
@@ -566,7 +566,7 @@ impl TimerManager {
 
                 Ok(())
             }
-            Err(e) => {
+            Err(_e) => {
                 // If even PIT fails, we have a serious problem
                 Err("All timer initialization failed - system cannot continue")
             }

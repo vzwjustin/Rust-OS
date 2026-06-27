@@ -412,7 +412,7 @@ fn checksum_bytes(bytes: &[u8]) -> bool {
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
-struct SdtHeader {
+pub struct SdtHeader {
     signature: [u8; 4],
     length: u32,
     revision: u8,

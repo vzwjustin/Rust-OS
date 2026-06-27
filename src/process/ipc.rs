@@ -221,6 +221,7 @@ pub struct SharedMemoryPermissions {
     pub execute: bool,
 }
 
+#[allow(non_upper_case_globals)]
 impl SharedMemoryPermissions {
     /// Read and write permissions
     pub const ReadWrite: Self = Self {

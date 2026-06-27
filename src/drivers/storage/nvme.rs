@@ -11,7 +11,6 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::mem;
 use core::ptr;
 
 /// NVMe controller register offsets
@@ -46,7 +45,7 @@ pub enum NvmeReg {
 /// NVMe doorbell registers start at offset 0x1000
 pub const NVME_DOORBELL_BASE: u64 = 0x1000;
 
-/// NVMe controller capabilities register bits
+// NVMe controller capabilities register bits
 bitflags::bitflags! {
     pub struct NvmeCap: u64 {
         const MQES_MASK = 0xffff;           // Maximum Queue Entries Supported
@@ -64,7 +63,7 @@ bitflags::bitflags! {
     }
 }
 
-/// NVMe controller configuration register bits
+// NVMe controller configuration register bits
 bitflags::bitflags! {
     pub struct NvmeCc: u32 {
         const EN = 1 << 0;                  // Enable
@@ -77,7 +76,7 @@ bitflags::bitflags! {
     }
 }
 
-/// NVMe controller status register bits
+// NVMe controller status register bits
 bitflags::bitflags! {
     pub struct NvmeCsts: u32 {
         const RDY = 1 << 0;                 // Ready
@@ -1185,7 +1184,7 @@ impl StorageDriver for NvmeDriver {
         // Allocate buffer for SMART data - Production DMA allocation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
-        let mut dma_buffer =
+        let dma_buffer =
             DmaBuffer::allocate(512, DMA_ALIGNMENT).map_err(|_| StorageError::HardwareError)?;
 
         // Translate virtual address to physical for hardware DMA

@@ -3,7 +3,6 @@
 //! A simple in-memory filesystem implementation that serves as the default
 //! filesystem for RustOS. All data is stored in RAM and lost on shutdown.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -18,7 +17,7 @@ enum RamFsInodeData {
     /// File data (content)
     File(RwLock<Vec<u8>>),
     /// Directory entries (name -> inode)
-    Directory(RwLock<BTreeMap<String, Arc<RamFsInode>>>),
+    Directory(RwLock<BTreeMap<String, Arc<dyn InodeOps>>>),
     /// Symbolic link target path
     Symlink(RwLock<String>),
 }
@@ -221,7 +220,7 @@ impl InodeOps for RamFsInode {
                 let entries = entries.read();
                 entries
                     .get(name)
-                    .map(|inode| Arc::clone(inode) as Arc<dyn InodeOps>)
+                    .cloned()
                     .ok_or(VfsError::NotFound)
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
@@ -253,7 +252,7 @@ impl InodeOps for RamFsInode {
                 let ino = super::get_vfs().alloc_ino();
 
                 // Create new inode
-                let new_inode = match inode_type {
+                let new_inode: Arc<dyn InodeOps> = match inode_type {
                     InodeType::File => RamFsInode::new_file(ino, mode),
                     InodeType::Directory => RamFsInode::new_directory(ino, mode),
                     InodeType::Symlink => RamFsInode::new_symlink(ino, ""),
@@ -265,7 +264,7 @@ impl InodeOps for RamFsInode {
                 // Increment link count
                 *self.nlink.write() += 1;
 
-                Ok(new_inode as Arc<dyn InodeOps>)
+                Ok(new_inode)
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
             RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
@@ -278,10 +277,7 @@ impl InodeOps for RamFsInode {
                 self.update_mtime();
 
                 let mut entries = entries.write();
-                let inode = entries.remove(name).ok_or(VfsError::NotFound)?;
-
-                // Decrement link count
-                *inode.nlink.write() -= 1;
+                let _inode = entries.remove(name).ok_or(VfsError::NotFound)?;
                 *self.nlink.write() -= 1;
 
                 Ok(())
@@ -311,25 +307,7 @@ impl InodeOps for RamFsInode {
                     return Err(VfsError::AlreadyExists);
                 }
 
-                // Downcast to RamFsInode
-                let target_ramfs = target.as_ref() as *const dyn InodeOps as *const RamFsInode;
-
-                // This is unsafe but necessary for the link operation
-                let target_ramfs = unsafe { &*target_ramfs };
-
-                // Create a new Arc pointing to the same inode
-                let target_arc = unsafe { Arc::from_raw(target_ramfs as *const RamFsInode) };
-
-                // Increment reference count by cloning
-                let target_clone = Arc::clone(&target_arc);
-
-                // Forget the temporary Arc to avoid double-free
-                core::mem::forget(target_arc);
-
-                entries.insert(String::from(name), target_clone);
-
-                // Increment link count
-                *target_ramfs.nlink.write() += 1;
+                entries.insert(String::from(name), Arc::clone(&target));
                 *self.nlink.write() += 1;
 
                 Ok(())
@@ -349,7 +327,7 @@ impl InodeOps for RamFsInode {
                 };
 
                 // Add to destination directory
-                new_dir.link(new_name, inode as Arc<dyn InodeOps>)?;
+                new_dir.link(new_name, inode)?;
 
                 self.update_mtime();
                 Ok(())
@@ -368,10 +346,11 @@ impl InodeOps for RamFsInode {
                 let mut result = Vec::with_capacity(entries.len());
 
                 for (name, inode) in entries.iter() {
+                    let stat = inode.stat()?;
                     result.push(DirEntry {
-                        ino: inode.ino,
+                        ino: stat.ino,
                         name: name.clone(),
-                        inode_type: inode.inode_type,
+                        inode_type: inode.inode_type(),
                     });
                 }
 
@@ -401,6 +380,27 @@ impl InodeOps for RamFsInode {
                 Ok(())
             }
             _ => Err(VfsError::NotSupported),
+        }
+    }
+
+    fn attach_child(&self, name: &str, child: Arc<dyn InodeOps>) -> VfsResult<()> {
+        match &self.data {
+            RamFsInodeData::Directory(entries) => {
+                if name.len() > 255 {
+                    return Err(VfsError::NameTooLong);
+                }
+                if name.contains('/') || name == "." || name == ".." {
+                    return Err(VfsError::InvalidArgument);
+                }
+                let mut entries = entries.write();
+                if entries.contains_key(name) {
+                    return Err(VfsError::AlreadyExists);
+                }
+                entries.insert(String::from(name), child);
+                *self.nlink.write() += 1;
+                Ok(())
+            }
+            RamFsInodeData::File(_) | RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),
         }
     }
 

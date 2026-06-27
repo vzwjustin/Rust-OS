@@ -5,8 +5,6 @@
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
-use x86_64::structures::gdt::SegmentSelector;
-use x86_64::VirtAddr;
 
 /// Sentinel: no pending user-mode entry after execve.
 const PENDING_USER_ENTRY_NONE: u64 = u64::MAX;
@@ -203,7 +201,7 @@ pub unsafe fn patch_syscall_return_to_user(
 ///
 /// Must only be called from interrupt/syscall context with valid kernel state.
 pub unsafe fn return_to_kernel() {
-    let kernel_code_selector = crate::gdt::get_kernel_code_selector();
+    let _kernel_code_selector = crate::gdt::get_kernel_code_selector();
     let kernel_data_selector = crate::gdt::get_kernel_data_selector();
 
     // Restore kernel data segments

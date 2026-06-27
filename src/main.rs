@@ -1,5 +1,7 @@
 #![no_std]
 #![no_main]
+#![allow(dead_code)]
+#![allow(static_mut_refs)]
 #![feature(abi_x86_interrupt)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
@@ -7,7 +9,6 @@
 
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::ToString;
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
@@ -90,6 +91,7 @@ mod error;
 mod health;
 // Include comprehensive logging and debugging
 mod logging;
+mod debug;
 // Include comprehensive testing framework
 mod testing;
 // Include testing framework core (used by testing module)
@@ -406,7 +408,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // Record boot start time (after basic init)
-    let boot_start_time = 0u64; // Will use time::uptime_ms() after time init
+    let _boot_start_time = 0u64; // Will use time::uptime_ms() after time init
 
     // SAFETY: Debug output
     unsafe {
@@ -453,7 +455,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Note: bootloader v0.9.33 doesn't provide rsdp_addr or physical_memory_offset
     // We'll use manual ACPI detection and a default physical offset
     let physical_memory_offset = x86_64::VirtAddr::new(phys_mem_offset);
-    let acpi_result = {
+    let _acpi_result = {
         unsafe {
             early_serial_write_str("RustOS: ACPI begin_stage...\r\n");
         }
@@ -484,7 +486,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe {
         early_serial_write_str("RustOS: Starting PCI enumeration...\r\n");
     }
-    let pci_result = boot_ui::pci_enum_progress();
+    let _pci_result = boot_ui::pci_enum_progress();
     // SAFETY: Debug output
     unsafe {
         early_serial_write_str("RustOS: PCI enumeration done\r\n");
@@ -740,7 +742,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe {
         early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n");
     }
-    let fs_result = boot_ui::filesystem_mount_progress();
+    let _fs_result = boot_ui::filesystem_mount_progress();
     unsafe {
         early_serial_write_str("RustOS: Phase 8 complete\r\n");
     }
@@ -1354,7 +1356,7 @@ fn desktop_main_loop() -> ! {
             if current_time > last_time_display + 5000 {
                 last_time_display = current_time;
                 // Update desktop with current time info
-                simple_desktop::with_desktop(|desktop| {
+                simple_desktop::with_desktop(|_desktop| {
                     // The desktop will show uptime in its status
                 });
             }

@@ -8,17 +8,12 @@ pub mod memory_region;
 pub mod page_table;
 pub mod virtual_memory;
 
-pub use memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
-pub use page_table::{PageTable, PageTableFlags, PageTableManager};
+pub use memory_region::ProtectionFlags;
+pub use page_table::{PageTable, PageTableFlags};
 pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{
-        FrameAllocator, Mapper, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB,
-    },
     PhysAddr, VirtAddr,
 };
 

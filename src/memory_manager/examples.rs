@@ -266,7 +266,7 @@ pub fn example_thread_stack() -> Result<(), super::VmError> {
     let stack_bottom = vm_mmap(0, stack_size, prot, flags)?;
 
     // Stack grows down, so stack pointer starts at top
-    let stack_top = unsafe { stack_bottom.add(stack_size) };
+    let _stack_top = unsafe { stack_bottom.add(stack_size) };
 
     // Initialize stack with guard value
     unsafe {
@@ -297,7 +297,7 @@ pub fn example_guard_pages() -> Result<(), super::VmError> {
     vm_mprotect(base as usize, page_size, ProtectionFlags::NONE)?;
 
     // Stack starts after guard page
-    let stack_start = unsafe { base.add(page_size) };
+    let _stack_start = unsafe { base.add(page_size) };
 
     // Access to guard page would cause fault
     // unsafe { *base = 0; } // Would fault!
