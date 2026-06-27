@@ -1377,7 +1377,16 @@ extern "C" fn syscall_0x80_dispatch(frame: *const Int80Frame) -> i64 {
         crate::serial_println!("Syscall {} from user mode", f.rax);
     }
 
-    dispatch_syscall(f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9)
+    let result = dispatch_syscall(f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9);
+
+    // Successful execve must not return to the old user RIP; redirect the iretq frame.
+    if let Some((entry, stack)) = crate::usermode::take_pending_user_entry() {
+        unsafe {
+            crate::usermode::patch_syscall_return_to_user(frame as *mut u8, entry, stack);
+        }
+    }
+
+    result
 }
 
 /// INT 0x80 entry point (naked).

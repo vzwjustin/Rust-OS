@@ -21,6 +21,8 @@ pub struct BootConfig {
     pub verbose: bool,
     /// Force text mode even if framebuffer is available
     pub force_text_mode: bool,
+    /// When `/bin/init` or `/init` exists on the rootfs, exec it as PID 1 instead of the kernel desktop
+    pub prefer_userspace_init: bool,
 }
 
 impl Default for BootConfig {
@@ -30,6 +32,7 @@ impl Default for BootConfig {
             safe_mode: false,
             verbose: false,
             force_text_mode: false,
+            prefer_userspace_init: true,
         }
     }
 }
@@ -40,6 +43,7 @@ static mut BOOT_CONFIG: BootConfig = BootConfig {
     safe_mode: false,
     verbose: false,
     force_text_mode: false,
+    prefer_userspace_init: true,
 };
 
 /// Set the global boot configuration

@@ -3208,6 +3208,57 @@ pub fn protect_user_page(virt: usize, flags: PageTableFlags) -> Result<(), &'sta
     Ok(())
 }
 
+/// Copy file contents into an already-mapped user virtual range page-by-page.
+///
+/// Used by file-backed `mmap`: pages are mapped first via `map_user_page`, then
+/// populated from the VFS fd at `file_offset`.
+pub fn populate_user_mapping_from_vfs(
+    virt_start: usize,
+    length: usize,
+    fd: i32,
+    file_offset: u64,
+) -> Result<(), &'static str> {
+    if length == 0 {
+        return Ok(());
+    }
+
+    let mm = get_memory_manager().ok_or("memory manager not initialized")?;
+    let end = virt_start.saturating_add(length);
+    let mut page_buf = [0u8; 4096];
+    let mut va = virt_start & !0xFFF;
+    let mut off = file_offset & !0xFFF;
+
+    while va < end {
+        let page_end = va.saturating_add(4096);
+        let copy_start = core::cmp::max(va, virt_start);
+        let copy_end = core::cmp::min(page_end, end);
+        let page_len = copy_end.saturating_sub(copy_start);
+        let page_off = copy_start - va;
+
+        if page_len > 0 {
+            let read_off = off + page_off as u64;
+            let n = crate::vfs::vfs_pread(fd, &mut page_buf[..page_len], read_off)
+                .map_err(|_| "vfs pread failed")?;
+            if n < page_len {
+                page_buf[n..page_len].fill(0);
+            }
+
+            let phys = translate_addr(VirtAddr::new(va as u64)).ok_or("mmap page not mapped")?;
+            unsafe {
+                let ptr = (mm.physical_memory_offset + phys.as_u64())
+                    .as_mut_ptr::<u8>()
+                    .add(page_off);
+                core::ptr::copy_nonoverlapping(page_buf.as_ptr(), ptr, page_len);
+            }
+        }
+
+        va += 4096;
+        off += 4096;
+    }
+
+    Ok(())
+}
+
 /// True only if every page spanned by `[start, start+len)` is currently mapped.
 ///
 /// Lets hot paths (e.g. text rendering) reject a dangling/corrupt `&str` before

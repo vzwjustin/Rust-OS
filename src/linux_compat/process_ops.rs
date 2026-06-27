@@ -165,6 +165,7 @@ mod auxv {
     pub const AT_PAGESZ: u64 = 6;
     pub const AT_BASE: u64 = 7;
     pub const AT_ENTRY: u64 = 9;
+    pub const AT_EXECFN: u64 = 31;
     pub const AT_RANDOM: u64 = 25;
 }
 
@@ -280,6 +281,7 @@ fn build_linux_initial_stack(
     envp: &[String],
     loaded: &crate::process::elf_loader::LoadedBinary,
     header: &crate::process::elf_loader::Elf64Header,
+    exec_path: &str,
 ) -> Result<u64, LinuxError> {
     let mut sp = stack_top & !0xF;
 
@@ -305,8 +307,10 @@ fn build_linux_initial_stack(
         core::ptr::copy_nonoverlapping(random.as_ptr(), sp as *mut u8, 16);
     }
 
+    let execfn_addr = unsafe { push_cstring(&mut sp, exec_path) };
+
     let phdr_addr = compute_phdr_addr(loaded, header);
-    let auxv_entries: [(u64, u64); 8] = [
+    let auxv_entries: [(u64, u64); 9] = [
         (auxv::AT_PAGESZ, 4096),
         (auxv::AT_PHDR, phdr_addr),
         (
@@ -316,6 +320,7 @@ fn build_linux_initial_stack(
         (auxv::AT_PHNUM, header.e_phnum as u64),
         (auxv::AT_ENTRY, loaded.entry_point.as_u64()),
         (auxv::AT_BASE, loaded.base_address.as_u64()),
+        (auxv::AT_EXECFN, execfn_addr),
         (auxv::AT_RANDOM, random_addr),
         (auxv::AT_NULL, 0),
     ];
@@ -410,6 +415,9 @@ fn apply_loaded_binary(
     let process_manager = process::get_process_manager();
     process_manager
         .with_process_mut(pid, |pcb| {
+            let user_code = crate::gdt::get_user_code_selector().0;
+            let user_data = crate::gdt::get_user_data_selector().0;
+
             pcb.memory.code_start = loaded.base_address.as_u64();
             pcb.memory.code_size = loaded.code_regions.iter().map(|r| r.size as u64).sum();
             pcb.memory.data_start = loaded
@@ -433,6 +441,13 @@ fn apply_loaded_binary(
             pcb.context.rsi = 0;
             pcb.context.rdi = 0;
             pcb.context.rbp = rsp;
+            pcb.context.rflags = 0x202;
+            pcb.context.cs = user_code;
+            pcb.context.ss = user_data;
+            pcb.context.ds = user_data;
+            pcb.context.es = user_data;
+            pcb.context.fs = user_data;
+            pcb.context.gs = user_data;
 
             pcb.state = ProcessState::Ready;
             pcb.cpu_time = 0;
@@ -483,6 +498,57 @@ pub fn execve(
         &envp_strings,
         &loaded,
         &header,
+        &path,
+    )?;
+
+    let prog_name = argv_strings
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or(path.as_str());
+
+    let entry_point = loaded.entry_point.as_u64();
+    apply_loaded_binary(pid, &loaded, rsp, prog_name)?;
+
+    if crate::usermode::in_user_mode() {
+        crate::usermode::schedule_user_entry(entry_point, rsp);
+    }
+
+    Ok(0)
+}
+
+/// Load and jump to a program from kernel mode (boot / init path).
+///
+/// # Safety
+/// Never returns on success; caller must have initialized syscalls, GDT, and paging.
+pub unsafe fn execve_and_enter_user_mode(
+    filename: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+) -> Result<(), LinuxError> {
+    use crate::process::elf_loader::Elf64Header;
+
+    let path = c_str_to_string(filename)?;
+    if path.is_empty() {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let argv_strings = read_string_array(argv)?;
+    let envp_strings = read_string_array(envp)?;
+    let pid = process::current_pid();
+
+    let (binary_data, loaded) = load_executable_from_vfs(&path, pid)?;
+    if binary_data.len() < core::mem::size_of::<Elf64Header>() {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let header = core::ptr::read(binary_data.as_ptr() as *const Elf64Header);
+    let rsp = build_linux_initial_stack(
+        loaded.stack_top.as_u64(),
+        &argv_strings,
+        &envp_strings,
+        &loaded,
+        &header,
+        &path,
     )?;
 
     let prog_name = argv_strings
@@ -491,8 +557,7 @@ pub fn execve(
         .unwrap_or(path.as_str());
 
     apply_loaded_binary(pid, &loaded, rsp, prog_name)?;
-
-    Ok(0)
+    crate::usermode::switch_to_user_mode(loaded.entry_point.as_u64(), rsp);
 }
 
 /// wait4 - wait for process to change state (Linux-compatible syscall interface)

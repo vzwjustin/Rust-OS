@@ -974,6 +974,27 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_str("RustOS: Boot sequence complete, entering desktop\r\n");
     }
 
+    // ========================================================================
+    // Userspace init (PID 1) when rootfs provides /bin/init or /init
+    // ========================================================================
+    let boot_config = boot_ui::boot_config();
+    if boot_config.prefer_userspace_init
+        && !boot_config.safe_mode
+        && initramfs::userspace_init_available()
+    {
+        unsafe {
+            early_serial_write_str("RustOS: userspace init found, launching PID 1\r\n");
+        }
+        crate::serial_println!("Boot: transferring control to userspace init");
+        unsafe {
+            initramfs::boot_userspace_init();
+        }
+    } else if boot_config.verbose {
+        unsafe {
+            early_serial_write_str("RustOS: no userspace init (or disabled), using kernel desktop\r\n");
+        }
+    }
+
     // Launch appropriate desktop environment
     if use_graphics_desktop && desktop_result.window_manager_ready {
         println!();

@@ -139,7 +139,51 @@ impl VirtualMemoryManager {
         region.shared = flags.shared;
 
         // Allocate physical frames and map pages
-        // In a real implementation, this would allocate from the physical frame allocator
+        self.map_region(&region)?;
+
+        Ok(start_addr.as_mut_ptr())
+    }
+
+    /// Map a file-backed region (fd + offset recorded on the region descriptor).
+    pub fn mmap_file(
+        &self,
+        addr: usize,
+        length: usize,
+        prot: ProtectionFlags,
+        flags: MmapFlags,
+        fd: usize,
+        file_offset: usize,
+    ) -> VmResult<*mut u8> {
+        if length == 0 {
+            return Err(VmError::InvalidSize);
+        }
+
+        let aligned_length = (length + 4095) & !4095;
+        let start_addr = if flags.fixed {
+            if addr == 0 || addr % 4096 != 0 {
+                return Err(if addr == 0 {
+                    VmError::InvalidAddress
+                } else {
+                    VmError::NotAligned
+                });
+            }
+            VirtAddr::new(addr as u64)
+        } else if addr != 0 {
+            VirtAddr::new(addr as u64)
+        } else {
+            self.next_mmap_addr
+        };
+
+        let end_addr = start_addr + aligned_length as u64;
+
+        if flags.fixed && self.find_region_at(start_addr).is_some() {
+            return Err(VmError::AlreadyMapped);
+        }
+
+        let mut region = MemoryRegion::file_backed(start_addr, end_addr, prot, fd, file_offset);
+        region.shared = flags.shared;
+        region.copy_on_write = flags.private && !flags.shared;
+
         self.map_region(&region)?;
 
         Ok(start_addr.as_mut_ptr())
