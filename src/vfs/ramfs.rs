@@ -218,10 +218,7 @@ impl InodeOps for RamFsInode {
                 self.update_atime();
 
                 let entries = entries.read();
-                entries
-                    .get(name)
-                    .cloned()
-                    .ok_or(VfsError::NotFound)
+                entries.get(name).cloned().ok_or(VfsError::NotFound)
             }
             RamFsInodeData::File(_) => Err(VfsError::NotDirectory),
             RamFsInodeData::Symlink(_) => Err(VfsError::NotDirectory),

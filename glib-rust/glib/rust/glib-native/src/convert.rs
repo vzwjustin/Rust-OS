@@ -6,9 +6,9 @@
 //! Actual charset conversion (`g_convert`, `g_iconv`) requires iconv or an
 //! equivalent and is deferred to a platform abstraction layer.
 
+use crate::fileutils::{path_get_basename, path_is_absolute};
 use crate::prelude::*;
 use crate::quark::{quark_from_static_string, Quark};
-use crate::fileutils::{path_is_absolute, path_get_basename};
 
 /// Error codes for character set conversion (`GConvertError`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -215,8 +215,7 @@ mod tests {
 
     #[test]
     fn filename_from_uri_with_host() {
-        let (filename, host) =
-            filename_from_uri("file://server/share/file.txt").unwrap();
+        let (filename, host) = filename_from_uri("file://server/share/file.txt").unwrap();
         assert_eq!(filename, "/share/file.txt");
         assert_eq!(host, Some("server".to_owned()));
     }

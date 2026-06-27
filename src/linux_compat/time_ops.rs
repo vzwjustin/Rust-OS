@@ -164,7 +164,8 @@ pub fn clock_nanosleep(
                 } else {
                     crate::time::uptime_ns() as i64
                 };
-                let target_ns = unsafe { (*req).tv_sec as i64 * 1_000_000_000 + (*req).tv_nsec as i64 };
+                let target_ns =
+                    unsafe { (*req).tv_sec as i64 * 1_000_000_000 + (*req).tv_nsec as i64 };
                 if target_ns > now_ns {
                     let remaining_ns = target_ns - now_ns;
                     let sleep_ts = TimeSpec {
@@ -256,7 +257,7 @@ pub fn timer_settime(
     _timerid: TimerId,
     _flags: i32,
     new_value: *const u8, // struct itimerspec
-    _old_value: *mut u8,   // struct itimerspec
+    _old_value: *mut u8,  // struct itimerspec
 ) -> LinuxResult<i32> {
     inc_ops();
 

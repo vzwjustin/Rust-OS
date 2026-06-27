@@ -14,7 +14,6 @@
 //!
 //! See docs/LINUX_APP_SUPPORT.md for detailed requirements.
 
-
 extern crate alloc;
 
 use alloc::string::String;

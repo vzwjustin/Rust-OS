@@ -3,4 +3,3 @@
 //! This module provides basic archive format parsing for package management.
 
 pub mod ar;
-

@@ -130,7 +130,10 @@ pub fn shell_parse_argv(command_line: &str) -> Result<Vec<String>, ShellError> {
         match bytes[i] {
             b' ' | b'\t' | b'\n' | b'\r' => {
                 if in_arg {
-                    args.push(String::from_utf8(core::mem::take(&mut buf)).map_err(|_| ShellError::Failed)?);
+                    args.push(
+                        String::from_utf8(core::mem::take(&mut buf))
+                            .map_err(|_| ShellError::Failed)?,
+                    );
                     in_arg = false;
                 }
                 i += 1;
@@ -231,7 +234,10 @@ mod tests {
 
     #[test]
     fn unquote_double_with_escape() {
-        assert_eq!(shell_unquote("\"hello \\\"world\\\"\"").unwrap(), "hello \"world\"");
+        assert_eq!(
+            shell_unquote("\"hello \\\"world\\\"\"").unwrap(),
+            "hello \"world\""
+        );
     }
 
     #[test]
@@ -242,7 +248,10 @@ mod tests {
     #[test]
     fn unquote_unmatched() {
         assert_eq!(shell_unquote("'hello").unwrap_err(), ShellError::BadQuoting);
-        assert_eq!(shell_unquote("\"hello").unwrap_err(), ShellError::BadQuoting);
+        assert_eq!(
+            shell_unquote("\"hello").unwrap_err(),
+            ShellError::BadQuoting
+        );
     }
 
     #[test]

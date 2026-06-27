@@ -3,7 +3,6 @@
 //! This module implements advanced Linux I/O operations including
 //! vectored I/O, positional I/O, zero-copy operations, and extended attributes.
 
-
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -45,7 +44,6 @@ unsafe fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, Linux
     alloc::string::String::from_utf8(slice.iter().copied().collect())
         .map_err(|_| LinuxError::EINVAL)
 }
-
 
 /// Operation counter for statistics
 static ADVANCED_IO_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -263,7 +261,12 @@ pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxR
     // Read from in_fd at offset, write to out_fd
     let mut buf = [0u8; 4096];
     let mut total = 0usize;
-    let mut cur_offset = if offset.is_null() { 0u64 } else { let o: Off = unsafe { *offset }; o as u64 };
+    let mut cur_offset = if offset.is_null() {
+        0u64
+    } else {
+        let o: Off = unsafe { *offset };
+        o as u64
+    };
 
     while total < count {
         let to_read = core::cmp::min(buf.len(), count - total);
@@ -287,7 +290,9 @@ pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxR
     }
 
     if !offset.is_null() {
-        unsafe { *offset = cur_offset as Off; }
+        unsafe {
+            *offset = cur_offset as Off;
+        }
     }
     Ok(total as isize)
 }
@@ -321,8 +326,16 @@ pub fn splice(
     // Splice: read from fd_in, write to fd_out
     let mut buf = [0u8; 4096];
     let mut total = 0usize;
-    let mut in_off = if off_in.is_null() { None } else { Some(unsafe { *off_in } as u64) };
-    let mut out_off = if off_out.is_null() { None } else { Some(unsafe { *off_out } as u64) };
+    let mut in_off = if off_in.is_null() {
+        None
+    } else {
+        Some(unsafe { *off_in } as u64)
+    };
+    let mut out_off = if off_out.is_null() {
+        None
+    } else {
+        Some(unsafe { *off_out } as u64)
+    };
 
     while total < len {
         let to_read = core::cmp::min(buf.len(), len - total);
@@ -330,19 +343,35 @@ pub fn splice(
             Some(o) => vfs::vfs_pread(fd_in, &mut buf[..to_read], o).map_err(vfs_error_to_linux)?,
             None => vfs::vfs_read(fd_in, &mut buf[..to_read]).map_err(vfs_error_to_linux)?,
         };
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         let written = match out_off {
             Some(o) => vfs::vfs_pwrite(fd_out, &buf[..n], o).map_err(vfs_error_to_linux)?,
             None => vfs::vfs_write(fd_out, &buf[..n]).map_err(vfs_error_to_linux)?,
         };
         total += written;
-        if let Some(ref mut o) = in_off { *o += n as u64; }
-        if let Some(ref mut o) = out_off { *o += written as u64; }
-        if n < to_read { break; }
+        if let Some(ref mut o) = in_off {
+            *o += n as u64;
+        }
+        if let Some(ref mut o) = out_off {
+            *o += written as u64;
+        }
+        if n < to_read {
+            break;
+        }
     }
 
-    if !off_in.is_null() { unsafe { *off_in = in_off.unwrap_or(0) as Off; } }
-    if !off_out.is_null() { unsafe { *off_out = out_off.unwrap_or(0) as Off; } }
+    if !off_in.is_null() {
+        unsafe {
+            *off_in = in_off.unwrap_or(0) as Off;
+        }
+    }
+    if !off_out.is_null() {
+        unsafe {
+            *off_out = out_off.unwrap_or(0) as Off;
+        }
+    }
     Ok(total as isize)
 }
 
@@ -361,10 +390,14 @@ pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, _flags: u32) -> LinuxResult<isize>
     while total < len {
         let to_read = core::cmp::min(buf.len(), len - total);
         let n = vfs::vfs_read(fd_in, &mut buf[..to_read]).map_err(vfs_error_to_linux)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         let written = vfs::vfs_write(fd_out, &buf[..n]).map_err(vfs_error_to_linux)?;
         total += written;
-        if n < to_read { break; }
+        if n < to_read {
+            break;
+        }
     }
     Ok(total as isize)
 }
@@ -391,8 +424,16 @@ pub fn copy_file_range(
     // copy_file_range: read from fd_in, write to fd_out
     let mut buf = [0u8; 4096];
     let mut total = 0usize;
-    let mut in_off = if off_in.is_null() { None } else { Some(unsafe { *off_in } as u64) };
-    let mut out_off = if off_out.is_null() { None } else { Some(unsafe { *off_out } as u64) };
+    let mut in_off = if off_in.is_null() {
+        None
+    } else {
+        Some(unsafe { *off_in } as u64)
+    };
+    let mut out_off = if off_out.is_null() {
+        None
+    } else {
+        Some(unsafe { *off_out } as u64)
+    };
 
     while total < len {
         let to_read = core::cmp::min(buf.len(), len - total);
@@ -400,19 +441,35 @@ pub fn copy_file_range(
             Some(o) => vfs::vfs_pread(fd_in, &mut buf[..to_read], o).map_err(vfs_error_to_linux)?,
             None => vfs::vfs_read(fd_in, &mut buf[..to_read]).map_err(vfs_error_to_linux)?,
         };
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         let written = match out_off {
             Some(o) => vfs::vfs_pwrite(fd_out, &buf[..n], o).map_err(vfs_error_to_linux)?,
             None => vfs::vfs_write(fd_out, &buf[..n]).map_err(vfs_error_to_linux)?,
         };
         total += written;
-        if let Some(ref mut o) = in_off { *o += n as u64; }
-        if let Some(ref mut o) = out_off { *o += written as u64; }
-        if n < to_read { break; }
+        if let Some(ref mut o) = in_off {
+            *o += n as u64;
+        }
+        if let Some(ref mut o) = out_off {
+            *o += written as u64;
+        }
+        if n < to_read {
+            break;
+        }
     }
 
-    if !off_in.is_null() { unsafe { *off_in = in_off.unwrap_or(0) as Off; } }
-    if !off_out.is_null() { unsafe { *off_out = out_off.unwrap_or(0) as Off; } }
+    if !off_in.is_null() {
+        unsafe {
+            *off_in = in_off.unwrap_or(0) as Off;
+        }
+    }
+    if !off_out.is_null() {
+        unsafe {
+            *off_out = out_off.unwrap_or(0) as Off;
+        }
+    }
     Ok(total as isize)
 }
 

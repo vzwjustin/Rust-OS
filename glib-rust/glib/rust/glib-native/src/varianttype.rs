@@ -136,7 +136,9 @@ impl VariantType {
             let mut rest = inner;
             while !rest.is_empty() {
                 if let Some((ts, remaining)) = scan_type_string(rest) {
-                    result.push(VariantType { type_string: ts.to_owned() });
+                    result.push(VariantType {
+                        type_string: ts.to_owned(),
+                    });
                     rest = remaining;
                 } else {
                     break;
@@ -149,7 +151,9 @@ impl VariantType {
             let mut rest = inner;
             while !rest.is_empty() {
                 if let Some((ts, remaining)) = scan_type_string(rest) {
-                    result.push(VariantType { type_string: ts.to_owned() });
+                    result.push(VariantType {
+                        type_string: ts.to_owned(),
+                    });
                     rest = remaining;
                 } else {
                     break;
@@ -163,37 +167,69 @@ impl VariantType {
 
     // Convenience constructors for common types
     /// Boolean type (`b`).
-    pub fn boolean() -> Self { Self::new(VARIANT_TYPE_BOOLEAN).unwrap() }
+    pub fn boolean() -> Self {
+        Self::new(VARIANT_TYPE_BOOLEAN).unwrap()
+    }
     /// Byte type (`y`).
-    pub fn byte() -> Self { Self::new(VARIANT_TYPE_BYTE).unwrap() }
+    pub fn byte() -> Self {
+        Self::new(VARIANT_TYPE_BYTE).unwrap()
+    }
     /// Int16 type (`n`).
-    pub fn int16() -> Self { Self::new(VARIANT_TYPE_INT16).unwrap() }
+    pub fn int16() -> Self {
+        Self::new(VARIANT_TYPE_INT16).unwrap()
+    }
     /// UInt16 type (`q`).
-    pub fn uint16() -> Self { Self::new(VARIANT_TYPE_UINT16).unwrap() }
+    pub fn uint16() -> Self {
+        Self::new(VARIANT_TYPE_UINT16).unwrap()
+    }
     /// Int32 type (`i`).
-    pub fn int32() -> Self { Self::new(VARIANT_TYPE_INT32).unwrap() }
+    pub fn int32() -> Self {
+        Self::new(VARIANT_TYPE_INT32).unwrap()
+    }
     /// UInt32 type (`u`).
-    pub fn uint32() -> Self { Self::new(VARIANT_TYPE_UINT32).unwrap() }
+    pub fn uint32() -> Self {
+        Self::new(VARIANT_TYPE_UINT32).unwrap()
+    }
     /// Int64 type (`x`).
-    pub fn int64() -> Self { Self::new(VARIANT_TYPE_INT64).unwrap() }
+    pub fn int64() -> Self {
+        Self::new(VARIANT_TYPE_INT64).unwrap()
+    }
     /// UInt64 type (`t`).
-    pub fn uint64() -> Self { Self::new(VARIANT_TYPE_UINT64).unwrap() }
+    pub fn uint64() -> Self {
+        Self::new(VARIANT_TYPE_UINT64).unwrap()
+    }
     /// Double type (`d`).
-    pub fn double() -> Self { Self::new(VARIANT_TYPE_DOUBLE).unwrap() }
+    pub fn double() -> Self {
+        Self::new(VARIANT_TYPE_DOUBLE).unwrap()
+    }
     /// String type (`s`).
-    pub fn string() -> Self { Self::new(VARIANT_TYPE_STRING).unwrap() }
+    pub fn string() -> Self {
+        Self::new(VARIANT_TYPE_STRING).unwrap()
+    }
     /// Object path type (`o`).
-    pub fn object_path() -> Self { Self::new(VARIANT_TYPE_OBJECT_PATH).unwrap() }
+    pub fn object_path() -> Self {
+        Self::new(VARIANT_TYPE_OBJECT_PATH).unwrap()
+    }
     /// Signature type (`g`).
-    pub fn signature() -> Self { Self::new(VARIANT_TYPE_SIGNATURE).unwrap() }
+    pub fn signature() -> Self {
+        Self::new(VARIANT_TYPE_SIGNATURE).unwrap()
+    }
     /// Variant type (`v`).
-    pub fn variant() -> Self { Self::new(VARIANT_TYPE_VARIANT).unwrap() }
+    pub fn variant() -> Self {
+        Self::new(VARIANT_TYPE_VARIANT).unwrap()
+    }
     /// Handle type (`h`).
-    pub fn handle() -> Self { Self::new(VARIANT_TYPE_HANDLE).unwrap() }
+    pub fn handle() -> Self {
+        Self::new(VARIANT_TYPE_HANDLE).unwrap()
+    }
     /// Any type (`*`).
-    pub fn any() -> Self { Self::new(VARIANT_TYPE_ANY).unwrap() }
+    pub fn any() -> Self {
+        Self::new(VARIANT_TYPE_ANY).unwrap()
+    }
     /// Basic type (`?`).
-    pub fn basic() -> Self { Self::new(VARIANT_TYPE_BASIC).unwrap() }
+    pub fn basic() -> Self {
+        Self::new(VARIANT_TYPE_BASIC).unwrap()
+    }
 
     /// Copy the type string (`g_variant_type_dup_string`).
     pub fn dup_string(&self) -> String {
@@ -215,18 +251,26 @@ impl VariantType {
         let b = self.type_string.as_bytes()[0];
         matches!(
             b,
-            b'b' | b'y' | b'n' | b'q' | b'i' | b'u' | b'x' | b't'
-                | b'h' | b'd' | b's' | b'o' | b'g' | b'?'
+            b'b' | b'y'
+                | b'n'
+                | b'q'
+                | b'i'
+                | b'u'
+                | b'x'
+                | b't'
+                | b'h'
+                | b'd'
+                | b's'
+                | b'o'
+                | b'g'
+                | b'?'
         ) && self.type_string.len() == 1
     }
 
     /// Returns `true` if this is a container type.
     pub fn is_container(&self) -> bool {
         let b = self.type_string.as_bytes()[0];
-        matches!(
-            b,
-            b'v' | b'm' | b'a' | b'(' | b'{' | b'r' | b'*'
-        ) && !self.is_basic()
+        matches!(b, b'v' | b'm' | b'a' | b'(' | b'{' | b'r' | b'*') && !self.is_basic()
     }
 
     /// Returns `true` if this is a maybe type.
@@ -375,8 +419,8 @@ pub fn scan_type_string(string: &str) -> Option<(&str, &str)> {
 
     match bytes[0] {
         // Basic types
-        b'b' | b'y' | b'n' | b'q' | b'i' | b'u' | b'x' | b't' | b'h' | b'd'
-        | b's' | b'o' | b'g' | b'v' | b'?' => Some((&string[..1], &string[1..])),
+        b'b' | b'y' | b'n' | b'q' | b'i' | b'u' | b'x' | b't' | b'h' | b'd' | b's' | b'o'
+        | b'g' | b'v' | b'?' => Some((&string[..1], &string[1..])),
 
         // Wildcard (any type)
         b'*' => Some((&string[..1], &string[1..])),
@@ -477,8 +521,18 @@ fn is_subtype_of(type_str: &str, supertype_str: &str) -> bool {
     if supertype_str == "?" {
         return matches!(
             type_bytes[0],
-            b'b' | b'y' | b'n' | b'q' | b'i' | b'u' | b'x' | b't'
-                | b'h' | b'd' | b's' | b'o' | b'g'
+            b'b' | b'y'
+                | b'n'
+                | b'q'
+                | b'i'
+                | b'u'
+                | b'x'
+                | b't'
+                | b'h'
+                | b'd'
+                | b's'
+                | b'o'
+                | b'g'
         ) && type_str.len() == 1;
     }
 
@@ -684,12 +738,24 @@ mod tests {
 
     #[test]
     fn subtype_check() {
-        assert!(VariantType::new("b").unwrap().is_subtype_of(&VariantType::new("?").unwrap()));
-        assert!(VariantType::new("s").unwrap().is_subtype_of(&VariantType::new("*").unwrap()));
-        assert!(VariantType::new("(ii)").unwrap().is_subtype_of(&VariantType::new("r").unwrap()));
-        assert!(VariantType::new("as").unwrap().is_subtype_of(&VariantType::new("a*").unwrap()));
-        assert!(VariantType::new("a{sv}").unwrap().is_subtype_of(&VariantType::new("a{?*}").unwrap()));
-        assert!(!VariantType::new("b").unwrap().is_subtype_of(&VariantType::new("s").unwrap()));
+        assert!(VariantType::new("b")
+            .unwrap()
+            .is_subtype_of(&VariantType::new("?").unwrap()));
+        assert!(VariantType::new("s")
+            .unwrap()
+            .is_subtype_of(&VariantType::new("*").unwrap()));
+        assert!(VariantType::new("(ii)")
+            .unwrap()
+            .is_subtype_of(&VariantType::new("r").unwrap()));
+        assert!(VariantType::new("as")
+            .unwrap()
+            .is_subtype_of(&VariantType::new("a*").unwrap()));
+        assert!(VariantType::new("a{sv}")
+            .unwrap()
+            .is_subtype_of(&VariantType::new("a{?*}").unwrap()));
+        assert!(!VariantType::new("b")
+            .unwrap()
+            .is_subtype_of(&VariantType::new("s").unwrap()));
     }
 
     #[test]

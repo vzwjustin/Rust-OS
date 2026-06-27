@@ -3,7 +3,6 @@
 //! This module implements Linux terminal/TTY operations including
 //! pseudoterminals (pty), terminal attributes, job control, and line discipline.
 
-
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, Ordering};

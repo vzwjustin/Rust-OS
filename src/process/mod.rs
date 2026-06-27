@@ -566,6 +566,59 @@ impl ProcessManager {
         Ok(pid)
     }
 
+    /// Register a process created by `process_manager` (fork/exec) into the kernel scheduler.
+    pub fn adopt_spawned_process(&self, pcb: ProcessControlBlock) -> Result<(), &'static str> {
+        let pid = pcb.pid;
+        let priority = pcb.priority;
+        let is_new = {
+            let mut processes = self.processes.write();
+            if processes.contains_key(&pid) {
+                processes.insert(pid, pcb);
+                false
+            } else {
+                if self.process_count.load(Ordering::SeqCst) >= MAX_PROCESSES {
+                    return Err("Maximum process count exceeded");
+                }
+                processes.insert(pid, pcb);
+                self.process_count.fetch_add(1, Ordering::SeqCst);
+                if pid >= self.next_pid.load(Ordering::SeqCst) {
+                    self.next_pid.store(pid.saturating_add(1), Ordering::SeqCst);
+                }
+                true
+            }
+        };
+
+        {
+            let mut scheduler = self.scheduler.lock();
+            scheduler.add_process(pid, priority)?;
+        }
+
+        if is_new {
+            let ipc_manager = ipc::get_ipc_manager();
+            ipc_manager.init_process_signals(pid)?;
+        }
+
+        Ok(())
+    }
+
+    /// Mark an externally spawned process as exited and remove it from scheduling.
+    ///
+    /// Used for fork/exec smoke-test children whose address-space ownership stays
+    /// with the POSIX process manager; this avoids full kernel cleanup paths.
+    pub fn retire_spawned_process(&self, pid: Pid, exit_status: i32) -> Result<(), &'static str> {
+        {
+            let mut processes = self.processes.write();
+            let Some(pcb) = processes.get_mut(&pid) else {
+                return Err("Process not found");
+            };
+            pcb.set_state(ProcessState::Zombie);
+            pcb.exit_status = Some(exit_status);
+        }
+
+        let mut scheduler = self.scheduler.lock();
+        scheduler.remove_process(pid)
+    }
+
     /// Terminate a process
     pub fn terminate_process(&self, pid: Pid, exit_status: i32) -> Result<(), &'static str> {
         {
@@ -840,7 +893,6 @@ pub fn tick_system_time() {
     // This function is kept for compatibility with existing code
 }
 
-
 /// Get the currently running process ID
 ///
 /// Returns the PID of the process currently executing on this CPU.
@@ -855,4 +907,3 @@ pub fn terminate_current_process() {
     let pid = current_pid();
     let _ = process_manager.terminate_process(pid, 0);
 }
-

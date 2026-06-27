@@ -15,7 +15,6 @@ use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError}
 /// AT_FDCWD — use process cwd for relative paths
 pub const AT_FDCWD: Fd = -100;
 
-
 // Re-export types for external access
 pub use super::types::Stat;
 
@@ -149,7 +148,6 @@ pub fn openat(dirfd: Fd, pathname: *const u8, flags: i32, mode: Mode) -> LinuxRe
         Err(e) => Err(vfs_error_to_linux(e)),
     }
 }
-
 
 /// read - read from file descriptor
 pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
@@ -374,7 +372,6 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
 pub fn faccessat(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
     faccessat2(dirfd, path, mode, flags)
 }
-
 
 /// dup - duplicate file descriptor
 pub fn dup(oldfd: Fd) -> LinuxResult<Fd> {
@@ -801,9 +798,12 @@ pub fn chdir(path: *const u8) -> LinuxResult<i32> {
                 return Err(LinuxError::ENOTDIR);
             }
             let pid = process::current_pid();
-            if process::get_process_manager().with_process_mut(pid, |pcb| {
-                pcb.cwd = path_str;
-            }).is_some() {
+            if process::get_process_manager()
+                .with_process_mut(pid, |pcb| {
+                    pcb.cwd = path_str;
+                })
+                .is_some()
+            {
                 Ok(0)
             } else {
                 Err(LinuxError::ESRCH)
@@ -890,12 +890,12 @@ fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<String> {
     if pathname.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    
+
     let path_str = unsafe { c_str_to_string(pathname)? };
     if path_str.starts_with('/') || dirfd == AT_FDCWD {
         return Ok(path_str);
     }
-    
+
     // Check that dirfd is a directory
     match vfs::vfs_fstat(dirfd) {
         Ok(stat) => {
@@ -905,24 +905,29 @@ fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<String> {
         }
         Err(e) => return Err(vfs_error_to_linux(e)),
     }
-    
+
     let pid = process::current_pid();
     let cwd = process::get_process_manager()
         .get_process(pid)
         .map(|pcb| pcb.cwd.clone())
         .ok_or(LinuxError::ESRCH)?;
-        
+
     let full_path = if cwd.ends_with('/') {
         alloc::format!("{}{}", cwd, path_str)
     } else {
         alloc::format!("{}/{}", cwd, path_str)
     };
-    
+
     Ok(full_path)
 }
 
 /// openat2 - open a file with extended flags and attributes
-pub fn openat2(dirfd: Fd, pathname: *const u8, how: *const OpenHow, size: usize) -> LinuxResult<Fd> {
+pub fn openat2(
+    dirfd: Fd,
+    pathname: *const u8,
+    how: *const OpenHow,
+    size: usize,
+) -> LinuxResult<Fd> {
     inc_ops();
 
     if pathname.is_null() || how.is_null() {
@@ -935,7 +940,12 @@ pub fn openat2(dirfd: Fd, pathname: *const u8, how: *const OpenHow, size: usize)
     }
 
     let open_how = unsafe { &*how };
-    openat(dirfd, pathname, open_how.flags as i32, open_how.mode as Mode)
+    openat(
+        dirfd,
+        pathname,
+        open_how.flags as i32,
+        open_how.mode as Mode,
+    )
 }
 
 fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) {
@@ -951,11 +961,27 @@ fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) {
         s.stx_ino = vfs_stat.ino;
         s.stx_size = vfs_stat.size;
         s.stx_blocks = ((vfs_stat.size + 511) / 512) as u64;
-        
-        s.stx_atime = StatxTimestamp { tv_sec: vfs_stat.atime as i64, tv_nsec: 0, __reserved: 0 };
-        s.stx_mtime = StatxTimestamp { tv_sec: vfs_stat.mtime as i64, tv_nsec: 0, __reserved: 0 };
-        s.stx_ctime = StatxTimestamp { tv_sec: vfs_stat.ctime as i64, tv_nsec: 0, __reserved: 0 };
-        s.stx_btime = StatxTimestamp { tv_sec: vfs_stat.ctime as i64, tv_nsec: 0, __reserved: 0 };
+
+        s.stx_atime = StatxTimestamp {
+            tv_sec: vfs_stat.atime as i64,
+            tv_nsec: 0,
+            __reserved: 0,
+        };
+        s.stx_mtime = StatxTimestamp {
+            tv_sec: vfs_stat.mtime as i64,
+            tv_nsec: 0,
+            __reserved: 0,
+        };
+        s.stx_ctime = StatxTimestamp {
+            tv_sec: vfs_stat.ctime as i64,
+            tv_nsec: 0,
+            __reserved: 0,
+        };
+        s.stx_btime = StatxTimestamp {
+            tv_sec: vfs_stat.ctime as i64,
+            tv_nsec: 0,
+            __reserved: 0,
+        };
     }
 }
 
@@ -1226,7 +1252,6 @@ pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
     let _ = mode;
     Ok(0)
 }
-
 
 #[cfg(any())]
 mod tests {

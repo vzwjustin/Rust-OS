@@ -176,10 +176,7 @@ mod tests {
 
     #[test]
     fn printf_format_multiple() {
-        let result = printf_format("%s = %d", &[
-            PrintfArg::String("x"),
-            PrintfArg::Int(10),
-        ]);
+        let result = printf_format("%s = %d", &[PrintfArg::String("x"), PrintfArg::Int(10)]);
         assert_eq!(result, "x = 10");
     }
 

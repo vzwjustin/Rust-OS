@@ -31,12 +31,16 @@ impl SignalFlags {
     pub const NO_HOOKS: Self = Self(1 << 6);
     pub const MUST_COLLECT: Self = Self(1 << 7);
     pub const DEPRECATED: Self = Self(1 << 8);
-    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 impl core::ops::BitOr for SignalFlags {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 
 /// Connection flags (`GConnectFlags`).
@@ -47,12 +51,16 @@ impl ConnectFlags {
     pub const NONE: Self = Self(0);
     pub const SWAPPED: Self = Self(1 << 0);
     pub const AFTER: Self = Self(1 << 1);
-    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 impl core::ops::BitOr for ConnectFlags {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 
 /// A signal handler callback.
@@ -143,7 +151,8 @@ pub fn signal_lookup(name: &str, owner_type: GType) -> SignalID {
     ensure_registry();
     let guard = SIGNAL_REGISTRY.read();
     let reg = guard.as_ref().unwrap();
-    reg.signals.iter()
+    reg.signals
+        .iter()
         .find(|s| s.name == name && type_is_a(owner_type, s.owner_type))
         .map(|s| s.id)
         .unwrap_or(0)
@@ -154,7 +163,8 @@ pub fn signal_query(signal_id: SignalID) -> Option<SignalQuery> {
     ensure_registry();
     let guard = SIGNAL_REGISTRY.read();
     let reg = guard.as_ref().unwrap();
-    reg.signals.iter()
+    reg.signals
+        .iter()
         .find(|s| s.id == signal_id)
         .map(|s| SignalQuery {
             signal_id: s.id,
@@ -243,11 +253,7 @@ pub fn signal_handler_unblock(_handler_id: HandlerID) {
 ///
 /// Returns the return value from the last handler (for `RUN_LAST` signals)
 /// or the first handler (for `RUN_FIRST` signals).
-pub fn signal_emit(
-    instance_type: GType,
-    signal_id: SignalID,
-    args: &[GValue],
-) -> Option<GValue> {
+pub fn signal_emit(instance_type: GType, signal_id: SignalID, args: &[GValue]) -> Option<GValue> {
     ensure_registry();
     let guard = SIGNAL_REGISTRY.read();
     let reg = guard.as_ref().unwrap();
@@ -280,7 +286,9 @@ pub fn signal_emit(
     }
 
     // If no RUN_FIRST or RUN_LAST, just call all handlers
-    if !signal.flags.contains(SignalFlags::RUN_FIRST) && !signal.flags.contains(SignalFlags::RUN_LAST) {
+    if !signal.flags.contains(SignalFlags::RUN_FIRST)
+        && !signal.flags.contains(SignalFlags::RUN_LAST)
+    {
         for h in &reg.handlers {
             if h.signal_id == signal_id && type_is_a(instance_type, h.instance_type) {
                 result = (h.callback)(args);
@@ -309,7 +317,8 @@ pub fn signal_list_ids(owner_type: GType) -> Vec<SignalID> {
     ensure_registry();
     let guard = SIGNAL_REGISTRY.read();
     let reg = guard.as_ref().unwrap();
-    reg.signals.iter()
+    reg.signals
+        .iter()
         .filter(|s| type_is_a(owner_type, s.owner_type))
         .map(|s| s.id)
         .collect()
@@ -320,7 +329,10 @@ pub fn signal_n_handlers(signal_id: SignalID) -> usize {
     ensure_registry();
     let guard = SIGNAL_REGISTRY.read();
     let reg = guard.as_ref().unwrap();
-    reg.handlers.iter().filter(|h| h.signal_id == signal_id).count()
+    reg.handlers
+        .iter()
+        .filter(|h| h.signal_id == signal_id)
+        .count()
 }
 
 /// Disconnect all handlers for a signal on a type (`g_signal_handlers_disconnect_matched`).
@@ -329,7 +341,8 @@ pub fn signal_handlers_disconnect_all(instance_type: GType, signal_id: SignalID)
     let mut guard = SIGNAL_REGISTRY.write();
     let reg = guard.as_mut().unwrap();
     let len_before = reg.handlers.len();
-    reg.handlers.retain(|h| !(h.signal_id == signal_id && type_is_a(instance_type, h.instance_type)));
+    reg.handlers
+        .retain(|h| !(h.signal_id == signal_id && type_is_a(instance_type, h.instance_type)));
     len_before - reg.handlers.len()
 }
 
@@ -344,7 +357,13 @@ mod tests {
     #[test]
     fn register_and_lookup_signal() {
         type_init();
-        let id = signal_new("changed", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
+        let id = signal_new(
+            "changed",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
         assert!(id > 0);
         assert_eq!(signal_lookup("changed", G_TYPE_OBJECT), id);
         assert_eq!(signal_lookup("nonexistent", G_TYPE_OBJECT), 0);
@@ -353,7 +372,13 @@ mod tests {
     #[test]
     fn signal_query_info() {
         type_init();
-        let id = signal_new("notify", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[G_TYPE_STRING]);
+        let id = signal_new(
+            "notify",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[G_TYPE_STRING],
+        );
         let q = signal_query(id).unwrap();
         assert_eq!(q.signal_name, "notify");
         assert_eq!(q.owner_type, G_TYPE_OBJECT);
@@ -367,11 +392,22 @@ mod tests {
         let counter = Arc::new(AtomicI32::new(0));
         let counter_clone = counter.clone();
 
-        let id = signal_new("test-signal", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
-        signal_connect(G_TYPE_OBJECT, id, Arc::new(move |_| {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
-            None
-        }), ConnectFlags::NONE);
+        let id = signal_new(
+            "test-signal",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
+        signal_connect(
+            G_TYPE_OBJECT,
+            id,
+            Arc::new(move |_| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                None
+            }),
+            ConnectFlags::NONE,
+        );
 
         assert_eq!(signal_n_handlers(id), 1);
         signal_emit(G_TYPE_OBJECT, id, &[]);
@@ -381,7 +417,13 @@ mod tests {
     #[test]
     fn disconnect_handler() {
         type_init();
-        let id = signal_new("disconnect-test", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
+        let id = signal_new(
+            "disconnect-test",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
         let handler_id = signal_connect(G_TYPE_OBJECT, id, Arc::new(|_| None), ConnectFlags::NONE);
         assert!(signal_handler_is_connected(handler_id));
         assert!(signal_handler_disconnect(handler_id));
@@ -394,11 +436,22 @@ mod tests {
         let counter = Arc::new(AtomicI32::new(0));
         let counter_clone = counter.clone();
 
-        let id = signal_new("by-name-test", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
-        signal_connect(G_TYPE_OBJECT, id, Arc::new(move |_| {
-            counter_clone.fetch_add(10, Ordering::SeqCst);
-            None
-        }), ConnectFlags::NONE);
+        let id = signal_new(
+            "by-name-test",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
+        signal_connect(
+            G_TYPE_OBJECT,
+            id,
+            Arc::new(move |_| {
+                counter_clone.fetch_add(10, Ordering::SeqCst);
+                None
+            }),
+            ConnectFlags::NONE,
+        );
 
         signal_emit_by_name(G_TYPE_OBJECT, "by-name-test", &[]);
         assert_eq!(counter.load(Ordering::SeqCst), 10);
@@ -409,14 +462,25 @@ mod tests {
         type_init();
         let counter = Arc::new(AtomicI32::new(0));
 
-        let id = signal_new("multi-test", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
+        let id = signal_new(
+            "multi-test",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
 
         for _ in 0..3 {
             let c = counter.clone();
-            signal_connect(G_TYPE_OBJECT, id, Arc::new(move |_| {
-                c.fetch_add(1, Ordering::SeqCst);
-                None
-            }), ConnectFlags::NONE);
+            signal_connect(
+                G_TYPE_OBJECT,
+                id,
+                Arc::new(move |_| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    None
+                }),
+                ConnectFlags::NONE,
+            );
         }
 
         assert_eq!(signal_n_handlers(id), 3);
@@ -427,11 +491,20 @@ mod tests {
     #[test]
     fn signal_return_value() {
         type_init();
-        let id = signal_new("return-test", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_INT, &[]);
+        let id = signal_new(
+            "return-test",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_INT,
+            &[],
+        );
 
-        signal_connect(G_TYPE_OBJECT, id, Arc::new(|_| {
-            Some(value_new_int(42))
-        }), ConnectFlags::NONE);
+        signal_connect(
+            G_TYPE_OBJECT,
+            id,
+            Arc::new(|_| Some(value_new_int(42))),
+            ConnectFlags::NONE,
+        );
 
         let result = signal_emit(G_TYPE_OBJECT, id, &[]);
         assert!(result.is_some());
@@ -441,8 +514,20 @@ mod tests {
     #[test]
     fn list_signal_ids() {
         type_init();
-        signal_new("sig-a", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
-        signal_new("sig-b", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
+        signal_new(
+            "sig-a",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
+        signal_new(
+            "sig-b",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
         let ids = signal_list_ids(G_TYPE_OBJECT);
         assert!(ids.len() >= 2);
     }
@@ -450,7 +535,13 @@ mod tests {
     #[test]
     fn disconnect_all_for_signal() {
         type_init();
-        let id = signal_new("disconnect-all", G_TYPE_OBJECT, SignalFlags::RUN_LAST, G_TYPE_NONE, &[]);
+        let id = signal_new(
+            "disconnect-all",
+            G_TYPE_OBJECT,
+            SignalFlags::RUN_LAST,
+            G_TYPE_NONE,
+            &[],
+        );
         signal_connect(G_TYPE_OBJECT, id, Arc::new(|_| None), ConnectFlags::NONE);
         signal_connect(G_TYPE_OBJECT, id, Arc::new(|_| None), ConnectFlags::NONE);
         assert_eq!(signal_n_handlers(id), 2);

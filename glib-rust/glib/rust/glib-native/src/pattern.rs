@@ -32,9 +32,15 @@ impl PatternSpec {
 
         let match_type = if !has_wildcards {
             MatchType::Exact
-        } else if pattern.starts_with('*') && !pattern[1..].contains('*') && !pattern[1..].contains('?') {
+        } else if pattern.starts_with('*')
+            && !pattern[1..].contains('*')
+            && !pattern[1..].contains('?')
+        {
             MatchType::Suffix
-        } else if pattern.ends_with('*') && !pattern[..pattern.len() - 1].contains('*') && !pattern[..pattern.len() - 1].contains('?') {
+        } else if pattern.ends_with('*')
+            && !pattern[..pattern.len() - 1].contains('*')
+            && !pattern[..pattern.len() - 1].contains('?')
+        {
             MatchType::Prefix
         } else {
             MatchType::Glob
@@ -58,7 +64,12 @@ impl PatternSpec {
 
     /// Check if this pattern matches a string of known length
     /// (`g_pattern_spec_match`).
-    pub fn matches(&self, string_length: usize, string: &str, string_reversed: Option<&str>) -> bool {
+    pub fn matches(
+        &self,
+        string_length: usize,
+        string: &str,
+        string_reversed: Option<&str>,
+    ) -> bool {
         let _ = string_length;
         let _ = string_reversed;
         self.match_string(string)

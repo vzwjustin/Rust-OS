@@ -42,6 +42,19 @@ pub enum NetworkAddressError {
     InvalidUri,
 }
 
+impl NetworkAddressError {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NetworkAddressError::UnclosedBracket => "unclosed bracket in hostname",
+            NetworkAddressError::BadBracket => "bad bracket placement",
+            NetworkAddressError::EmptyPort => "empty port",
+            NetworkAddressError::InvalidPort => "invalid port",
+            NetworkAddressError::UnknownService => "unknown service",
+            NetworkAddressError::InvalidUri => "invalid URI",
+        }
+    }
+}
+
 // ──────────────────────── NetworkAddress ─────────────────────────────────
 
 /// A network address (`GNetworkAddress`).
@@ -92,7 +105,9 @@ impl NetworkAddress {
 
         if host_and_port.starts_with('[') {
             // Bracketed IPv6: [addr] or [addr]:port
-            let end = host_and_port.find(']').ok_or(NetworkAddressError::UnclosedBracket)?;
+            let end = host_and_port
+                .find(']')
+                .ok_or(NetworkAddressError::UnclosedBracket)?;
             let after_bracket = &host_and_port[end + 1..];
             match after_bracket {
                 "" => port_str = None,
@@ -142,7 +157,11 @@ impl NetworkAddress {
             default_port
         };
 
-        Ok(Self { hostname, port, scheme: None })
+        Ok(Self {
+            hostname,
+            port,
+            scheme: None,
+        })
     }
 
     /// Parse a URI of the form `"scheme://host:port"`
@@ -151,7 +170,8 @@ impl NetworkAddress {
     /// Uses the ported `Uri::parse` to extract scheme, host, and port.
     /// If the URI has no port, uses `default_port`.
     pub fn parse_uri(uri: &str, default_port: u16) -> Result<Self, NetworkAddressError> {
-        let parsed = Uri::parse(uri, UriFlags::NONE).map_err(|_| NetworkAddressError::InvalidUri)?;
+        let parsed =
+            Uri::parse(uri, UriFlags::NONE).map_err(|_| NetworkAddressError::InvalidUri)?;
         let scheme = parsed.scheme().to_string();
         let hostname = parsed.host().to_string();
         let port = parsed.port().unwrap_or(default_port);
@@ -180,9 +200,7 @@ impl NetworkAddress {
     /// Compare two network addresses (not in upstream public API but
     /// useful for testing).
     pub fn equal(&self, other: &NetworkAddress) -> bool {
-        self.hostname == other.hostname
-            && self.port == other.port
-            && self.scheme == other.scheme
+        self.hostname == other.hostname && self.port == other.port && self.scheme == other.scheme
     }
 }
 

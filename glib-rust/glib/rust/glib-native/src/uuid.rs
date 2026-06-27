@@ -90,9 +90,13 @@ mod tests {
     fn invalid_uuid() {
         assert!(!uuid_string_is_valid("not-a-uuid"));
         assert!(!uuid_string_is_valid("550e8400-e29b-41d4-a716-44665544000")); // too short
-        assert!(!uuid_string_is_valid("550e8400-e29b-41d4-a716-4466554400000")); // too long
+        assert!(!uuid_string_is_valid(
+            "550e8400-e29b-41d4-a716-4466554400000"
+        )); // too long
         assert!(!uuid_string_is_valid("550e8400e29b41d4a716446655440000")); // no hyphens
-        assert!(!uuid_string_is_valid("gggggggg-gggg-gggg-gggg-gggggggggggg")); // non-hex
+        assert!(!uuid_string_is_valid(
+            "gggggggg-gggg-gggg-gggg-gggggggggggg"
+        )); // non-hex
     }
 
     #[test]

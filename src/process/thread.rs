@@ -384,12 +384,14 @@ impl ThreadManager {
 
         // Set appropriate segments based on thread type
         if thread_type == ThreadType::User {
-            tcb.context.cs = 0x18 | 3; // User code segment with RPL=3
-            tcb.context.ds = 0x20 | 3; // User data segment with RPL=3
-            tcb.context.es = 0x20 | 3;
-            tcb.context.fs = 0x20 | 3;
-            tcb.context.gs = 0x20 | 3;
-            tcb.context.ss = 0x20 | 3; // User stack segment with RPL=3
+            let user_code = crate::gdt::get_user_code_selector().0 | 3;
+            let user_data = crate::gdt::get_user_data_selector().0 | 3;
+            tcb.context.cs = user_code;
+            tcb.context.ds = user_data;
+            tcb.context.es = user_data;
+            tcb.context.fs = user_data;
+            tcb.context.gs = user_data;
+            tcb.context.ss = user_data;
         } else {
             tcb.context.cs = 0x08; // Kernel code segment
             tcb.context.ds = 0x10; // Kernel data segment

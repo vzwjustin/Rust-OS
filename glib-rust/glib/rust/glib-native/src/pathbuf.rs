@@ -17,7 +17,9 @@ pub struct PathBuf {
 impl PathBuf {
     /// Create a new empty path buffer (`g_path_buf_new`).
     pub fn new() -> Self {
-        Self { segments: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
     }
 
     /// Create from an existing path (`g_path_buf_new_from_path`).

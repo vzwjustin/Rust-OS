@@ -4,6 +4,7 @@
 
 use crate::process::{CpuContext, MemoryInfo, Pid, Priority};
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 
 /// Process states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,8 @@ pub struct ProcessControlBlock {
     pub entry_point: u64,
     /// Arguments passed to the process
     pub args: [u8; 256],
+    /// Current working directory
+    pub cwd: String,
     /// Number of children processes
     pub child_count: u32,
 }
@@ -130,6 +133,7 @@ impl ProcessControlBlock {
             next_fd: 3, // 0, 1, 2 reserved for stdin, stdout, stderr
             entry_point: 0,
             args: [0u8; 256],
+            cwd: String::from("/"),
             child_count: 0,
         }
     }

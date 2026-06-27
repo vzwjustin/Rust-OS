@@ -4,6 +4,13 @@
 //! and script codes. These are pure type definitions with no OS dependency.
 //! Fully `no_std` compatible.
 
+use alloc::vec::Vec;
+
+pub use crate::unicode_norm::{
+    normalize_nfd, unichar_canonical_decomposition, unichar_normalize as unichar_normalize_impl,
+    UnicodeNormalizeMode,
+};
+
 /// Unicode general category (`GUnicodeType`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnicodeType {
@@ -283,19 +290,49 @@ pub fn combining_class(ch: u32) -> i32 {
     // Combining diacritical marks (0x0300-0x036F) have various classes
     if ch >= 0x0300 && ch <= 0x036F {
         return match ch {
-            0x0316..=0x0319 | 0x031C..=0x031E | 0x0323..=0x0326 |
-            0x032A | 0x032C | 0x0333..=0x0339 | 0x034C => 220,
-            0x0300..=0x0304 | 0x0306..=0x030C | 0x030F | 0x0311..=0x0312 |
-            0x0315 | 0x031A | 0x0322 | 0x032B | 0x0327..=0x0328 |
-            0x032F | 0x0331 | 0x0338 | 0x0342..=0x0344 | 0x0346 |
-            0x0350..=0x0352 | 0x0357 => 230,
-            0x0313..=0x0314 | 0x033D..=0x033E | 0x0340..=0x0341 |
-            0x0343 | 0x0345 | 0x0353..=0x0356 | 0x0359..=0x035A => 240,
+            0x0316..=0x0319
+            | 0x031C..=0x031E
+            | 0x0323..=0x0326
+            | 0x032A
+            | 0x032C
+            | 0x0333..=0x0339
+            | 0x034C => 220,
+            0x0300..=0x0304
+            | 0x0306..=0x030C
+            | 0x030F
+            | 0x0311..=0x0312
+            | 0x0315
+            | 0x031A
+            | 0x0322
+            | 0x032B
+            | 0x0327..=0x0328
+            | 0x032F
+            | 0x0331
+            | 0x0338
+            | 0x0342..=0x0344
+            | 0x0346
+            | 0x0350..=0x0352
+            | 0x0357 => 230,
+            0x0313..=0x0314
+            | 0x033D..=0x033E
+            | 0x0340..=0x0341
+            | 0x0343
+            | 0x0345
+            | 0x0353..=0x0356
+            | 0x0359..=0x035A => 240,
             0x0347..=0x0349 | 0x034D..=0x034E | 0x0358 => 232,
             _ => 0,
         };
     }
     0
+}
+
+/// Normalize a single code point (`g_unichar_normalize` / decomposition helpers).
+///
+/// `NormalizeMode::Default` and `::All` decompose; `::DefaultCompose` and
+/// `::AllCompose` additionally apply canonical composition where known.
+pub fn unichar_normalize(ch: u32, mode: UnicodeNormalizeMode) -> Vec<u32> {
+    unichar_normalize_impl(ch, mode)
 }
 
 #[cfg(test)]

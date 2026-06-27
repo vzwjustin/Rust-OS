@@ -7,9 +7,7 @@ use crate::elf_loader::parser::*;
 use crate::elf_loader::types::*;
 use crate::memory::PAGE_SIZE;
 use alloc::vec::Vec;
-use x86_64::structures::paging::{
-    FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
-};
+use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
 
 /// Default stack size (8 MB)

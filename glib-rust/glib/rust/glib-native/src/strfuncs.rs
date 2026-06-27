@@ -1,7 +1,7 @@
 //! String utility functions from `gstrfuncs.h` (non-printf subset).
 
-use crate::prelude::*;
 use crate::checked::{checked_add_size, checked_mul_size};
+use crate::prelude::*;
 use crate::Size;
 
 /// Returns the length of `s` in bytes (`strlen`).
@@ -131,7 +131,10 @@ fn is_ascii_space(c: u8) -> bool {
 
 /// Remove leading whitespace in place (`g_strchug`).
 pub fn strchug(s: &mut String) {
-    let start = s.bytes().position(|c| !is_ascii_space(c)).unwrap_or(s.len());
+    let start = s
+        .bytes()
+        .position(|c| !is_ascii_space(c))
+        .unwrap_or(s.len());
     if start > 0 {
         s.drain(..start);
     }
@@ -321,7 +324,11 @@ pub fn ascii_strtoull(nptr: &str, base: u32) -> (u64, &str) {
 
     // Optional base prefix
     let mut radix = base;
-    if (radix == 0 || radix == 16) && i + 1 < bytes.len() && bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+    if (radix == 0 || radix == 16)
+        && i + 1 < bytes.len()
+        && bytes[i] == b'0'
+        && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+    {
         i += 2;
         radix = 16;
     } else if radix == 0 {
@@ -339,9 +346,7 @@ pub fn ascii_strtoull(nptr: &str, base: u32) -> (u64, &str) {
         if d < 0 || d as u32 >= radix {
             break;
         }
-        result = result
-            .wrapping_mul(radix as u64)
-            .wrapping_add(d as u64);
+        result = result.wrapping_mul(radix as u64).wrapping_add(d as u64);
         i += 1;
     }
 
@@ -397,9 +402,14 @@ pub fn strsplit_set(s: &str, delimiters: &str, max_tokens: u32) -> Vec<String> {
         return vec![s.to_owned()];
     }
     if max_tokens == 0 {
-        return s.split(|c| delimiters.contains(c)).map(|p| p.to_owned()).collect();
+        return s
+            .split(|c| delimiters.contains(c))
+            .map(|p| p.to_owned())
+            .collect();
     }
-    let parts: Vec<&str> = s.splitn(max_tokens as usize + 1, |c| delimiters.contains(c)).collect();
+    let parts: Vec<&str> = s
+        .splitn(max_tokens as usize + 1, |c| delimiters.contains(c))
+        .collect();
     parts.into_iter().map(|p| p.to_owned()).collect()
 }
 
@@ -495,10 +505,22 @@ pub fn strcompress(source: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
             match bytes[i + 1] {
-                b'n' => { result.push('\n'); i += 2; }
-                b't' => { result.push('\t'); i += 2; }
-                b'r' => { result.push('\r'); i += 2; }
-                b'\\' => { result.push('\\'); i += 2; }
+                b'n' => {
+                    result.push('\n');
+                    i += 2;
+                }
+                b't' => {
+                    result.push('\t');
+                    i += 2;
+                }
+                b'r' => {
+                    result.push('\r');
+                    i += 2;
+                }
+                b'\\' => {
+                    result.push('\\');
+                    i += 2;
+                }
                 b'0'..=b'7' => {
                     // Octal escape: up to 3 octal digits
                     let mut val: u32 = 0;
@@ -510,7 +532,10 @@ pub fn strcompress(source: &str) -> String {
                     result.push(val as u8 as char);
                     i = j;
                 }
-                _ => { result.push('\\'); i += 1; }
+                _ => {
+                    result.push('\\');
+                    i += 1;
+                }
             }
         } else {
             result.push(bytes[i] as char);
@@ -751,18 +776,9 @@ mod tests {
 
     #[test]
     fn strsplit_test() {
-        assert_eq!(
-            strsplit("a:b:c", ":", 0),
-            vec!["a", "b", "c"]
-        );
-        assert_eq!(
-            strsplit("a:b:c", ":", 1),
-            vec!["a", "b:c"]
-        );
-        assert_eq!(
-            strsplit("a:b:c", ":", 2),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(strsplit("a:b:c", ":", 0), vec!["a", "b", "c"]);
+        assert_eq!(strsplit("a:b:c", ":", 1), vec!["a", "b:c"]);
+        assert_eq!(strsplit("a:b:c", ":", 2), vec!["a", "b", "c"]);
         assert_eq!(strsplit("abc", ":", 0), vec!["abc"]);
     }
 
@@ -816,14 +832,8 @@ mod tests {
 
     #[test]
     fn strsplit_set_test() {
-        assert_eq!(
-            strsplit_set("a,b;c.d", ",;.", 0),
-            vec!["a", "b", "c", "d"]
-        );
-        assert_eq!(
-            strsplit_set("a,b;c", ",;", 1),
-            vec!["a", "b;c"]
-        );
+        assert_eq!(strsplit_set("a,b;c.d", ",;.", 0), vec!["a", "b", "c", "d"]);
+        assert_eq!(strsplit_set("a,b;c", ",;", 1), vec!["a", "b;c"]);
     }
 
     #[test]

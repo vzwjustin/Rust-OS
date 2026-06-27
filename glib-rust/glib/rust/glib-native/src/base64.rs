@@ -54,12 +54,7 @@ impl Base64Encoder {
     /// Returns the number of bytes written to `output`.
     /// `output` must be large enough: at least `(input.len() / 3 + 1) * 4 + 4`
     /// bytes, plus extra for line breaks if enabled.
-    pub fn encode_step(
-        &mut self,
-        input: &[u8],
-        break_lines: bool,
-        output: &mut [u8],
-    ) -> usize {
+    pub fn encode_step(&mut self, input: &[u8], break_lines: bool, output: &mut [u8]) -> usize {
         if input.is_empty() {
             return 0;
         }
@@ -106,8 +101,7 @@ impl Base64Encoder {
                 out_idx += 1;
                 output[out_idx] = BASE64_ALPHABET[((c2 >> 4) | ((c1 & 0x3) << 4)) as usize];
                 out_idx += 1;
-                output[out_idx] =
-                    BASE64_ALPHABET[(((c2 & 0x0f) << 2) | (c3 >> 6)) as usize];
+                output[out_idx] = BASE64_ALPHABET[(((c2 & 0x0f) << 2) | (c3 >> 6)) as usize];
                 out_idx += 1;
                 output[out_idx] = BASE64_ALPHABET[(c3 & 0x3f) as usize];
                 out_idx += 1;
@@ -486,7 +480,8 @@ mod tests {
         let mut offset = 0;
         while offset < data.len() {
             let chunk = block_size.min(data.len() - offset);
-            total += encoder.encode_step(&data[offset..offset + chunk], false, &mut encoded[total..]);
+            total +=
+                encoder.encode_step(&data[offset..offset + chunk], false, &mut encoded[total..]);
             offset += chunk;
         }
         total += encoder.encode_close(false, &mut encoded[total..]);
@@ -505,7 +500,8 @@ mod tests {
         let mut offset = 0;
         while offset < data.len() {
             let chunk = block_size.min(data.len() - offset);
-            total += encoder.encode_step(&data[offset..offset + chunk], true, &mut encoded[total..]);
+            total +=
+                encoder.encode_step(&data[offset..offset + chunk], true, &mut encoded[total..]);
             offset += chunk;
         }
         total += encoder.encode_close(true, &mut encoded[total..]);
@@ -529,7 +525,8 @@ mod tests {
                 let mut offset = 0;
                 while offset < bytes.len() {
                     let chunk = block_size.min(bytes.len() - offset);
-                    total += decoder.decode_step(&bytes[offset..offset + chunk], &mut decoded[total..]);
+                    total +=
+                        decoder.decode_step(&bytes[offset..offset + chunk], &mut decoded[total..]);
                     offset += chunk;
                 }
                 decoded.truncate(total);
@@ -551,7 +548,11 @@ mod tests {
                 let mut offset = 0;
                 while offset <= i {
                     let chunk = block_size.min(i + 1 - offset);
-                    total += encoder.encode_step(&data[offset..offset + chunk], false, &mut encoded_stepped[total..]);
+                    total += encoder.encode_step(
+                        &data[offset..offset + chunk],
+                        false,
+                        &mut encoded_stepped[total..],
+                    );
                     offset += chunk;
                 }
                 total += encoder.encode_close(false, &mut encoded_stepped[total..]);

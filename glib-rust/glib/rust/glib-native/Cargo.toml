@@ -4,8 +4,20 @@ version = "0.1.0"
 description = "Native Rust reimplementation of GLib (phased migration)"
 edition = "2021"
 license = "LGPL-2.1-or-later"
+build = "build.rs"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# Host staticlib / C FFI: link `std` for allocator and panic runtime.
+c-abi = []
 
 [dependencies]
 spin = { version = "0.9", default-features = false, features = ["spin_mutex", "rwlock", "once"] }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
 [dev-dependencies]
+
+[build-dependencies]
+cbindgen = "0.27"

@@ -11,9 +11,7 @@ use alloc::sync::Arc;
 #[derive(Debug, Clone)]
 pub enum FdKind {
     Regular,
-    Directory {
-        path: String,
-    },
+    Directory { path: String },
     PipeRead(u32),
     PipeWrite(u32),
     EventFd(u32),

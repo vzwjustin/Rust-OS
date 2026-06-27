@@ -23,6 +23,13 @@ fn now() -> i64 {
     CLOCK.lock().map_or(0, |f| f())
 }
 
+/// Returns the current monotonic time in microseconds (`g_get_monotonic_time`).
+///
+/// Returns `0` if [`set_clock`] has not been called yet.
+pub fn monotonic_time_us() -> i64 {
+    now()
+}
+
 /// A timer (`GTimer`).
 ///
 /// Measures elapsed time. Start/stop/continue/reset like a stopwatch.
@@ -103,9 +110,15 @@ impl Default for Timer {
 mod tests {
     use super::*;
 
-    fn mock_clock_0() -> i64 { 0 }
-    fn mock_clock_1s() -> i64 { 1_000_000 }
-    fn mock_clock_2_5s() -> i64 { 2_500_000 }
+    fn mock_clock_0() -> i64 {
+        0
+    }
+    fn mock_clock_1s() -> i64 {
+        1_000_000
+    }
+    fn mock_clock_2_5s() -> i64 {
+        2_500_000
+    }
 
     #[test]
     fn timer_basic() {

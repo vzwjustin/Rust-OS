@@ -36,6 +36,8 @@ static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 static mut PAGE_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 /// Dedicated stack for the general-protection fault handler.
 static mut GP_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
+/// Ring-0 stack used when interrupts/syscalls arrive from Ring 3.
+static mut RING0_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 
 /// Task State Segment (mutable for stack updates)
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -88,6 +90,10 @@ lazy_static! {
 pub fn init() {
     // Initialize TSS with double fault stack
     unsafe {
+        TSS.privilege_stack_table[0] = {
+            let stack_start = VirtAddr::from_ptr(&raw const RING0_STACK);
+            stack_start + (STACK_SIZE - 8)
+        };
         TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
             let stack_end = stack_start + STACK_SIZE;
@@ -257,8 +263,6 @@ pub fn get_stack_info() -> StackInfo {
 ///
 /// The stack pointer must point to a valid, mapped kernel stack.
 pub fn set_kernel_stack(stack_ptr: VirtAddr) {
-    
-
     // Get a mutable reference to TSS
     // Safety: We have exclusive access during init
     unsafe {

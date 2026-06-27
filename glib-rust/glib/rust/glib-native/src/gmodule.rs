@@ -11,7 +11,9 @@
 
 use crate::prelude::*;
 use crate::quark::quark_from_string;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::mutex::Mutex;
@@ -170,6 +172,403 @@ impl ModulePlatform for NoModulePlatform {
     }
 }
 
+// ─────────────────────── libtool archive parser ─────────────────────────
+
+/// Parsed fields from a libtool `.la` archive file.
+///
+/// Mirrors the subset of keys read by `parse_libtool_archive` in
+/// `gmodule.c` (`dlname`, `libdir`, `installed`) plus the commonly
+/// present `library_names` and `dependency_libs` entries.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct LibtoolArchive {
+    /// Shared library file name (`dlname='…'`).
+    pub dlname: Option<String>,
+    /// Space-separated versioned names (`library_names='…'`).
+    pub library_names: Option<String>,
+    /// Linker flags for dependent libraries (`dependency_libs='…'`).
+    pub dependency_libs: Option<String>,
+    libdir: Option<String>,
+    installed: bool,
+}
+
+impl LibtoolArchive {
+    /// Build the filesystem path to the shared object described by this
+    /// archive, mirroring upstream's `parse_libtool_archive` result.
+    pub fn resolve_dlname_path(&self, libtool_path: Option<&str>) -> Result<String, String> {
+        let mut libdir = self.libdir.clone();
+        if !self.installed {
+            let base = libtool_path
+                .ok_or_else(|| "installed=no requires libtool archive path".to_owned())?;
+            let dir = base
+                .rsplit_once('/')
+                .or_else(|| base.rsplit_once('\\'))
+                .map(|(d, _)| d)
+                .unwrap_or(".");
+            libdir = Some(format!("{dir}/.libs"));
+        }
+
+        let libdir = libdir.ok_or_else(|| "missing libdir in libtool archive".to_owned())?;
+        let dlname = self
+            .dlname
+            .as_ref()
+            .ok_or_else(|| "missing dlname in libtool archive".to_owned())?;
+
+        let sep = if libdir.contains('\\') { '\\' } else { '/' };
+        if libdir.ends_with(sep) {
+            Ok(format!("{libdir}{dlname}"))
+        } else {
+            Ok(format!("{libdir}{sep}{dlname}"))
+        }
+    }
+}
+
+/// Parse a libtool `.la` file from its text content (pure string parsing).
+///
+/// `libtool_path` is only required when `installed=no` so the `.libs`
+/// sibling directory can be resolved.
+pub fn parse_libtool_archive(
+    content: &str,
+    libtool_path: Option<&str>,
+) -> Result<LibtoolArchive, String> {
+    let mut archive = LibtoolArchive {
+        installed: true,
+        ..LibtoolArchive::default()
+    };
+
+    for line in content.lines() {
+        let line = line.split('#').next().unwrap_or(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = parse_libtool_quoted_value(raw_value.trim())?;
+
+        match key {
+            "dlname" => archive.dlname = Some(value),
+            "library_names" => archive.library_names = Some(value),
+            "dependency_libs" => archive.dependency_libs = Some(value),
+            "libdir" => archive.libdir = Some(value),
+            "installed" => archive.installed = value == "yes",
+            _ => {}
+        }
+    }
+
+    if archive.dlname.is_none() {
+        return Err("missing dlname in libtool archive".to_owned());
+    }
+
+    // Validate `installed=no` can resolve before returning success.
+    if !archive.installed && libtool_path.is_none() {
+        return Err("installed=no requires libtool archive path".to_owned());
+    }
+
+    Ok(archive)
+}
+
+fn parse_libtool_quoted_value(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    if raw.starts_with('\'') {
+        let end = raw
+            .rfind('\'')
+            .filter(|idx| *idx > 0)
+            .ok_or_else(|| format!("unterminated quoted value: {raw}"))?;
+        Ok(raw[1..end].to_owned())
+    } else {
+        Ok(raw.to_owned())
+    }
+}
+
+// ───────────────────── host platform (tests only) ─────────────────────────
+
+/// Dynamic loader backed by the host OS (`dlopen` / `LoadLibrary`).
+///
+/// Only compiled for `cargo test` on Linux, macOS, or Windows. Bare-metal
+/// / kernel builds keep [`NoModulePlatform`] as the default.
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+pub struct HostModulePlatform;
+
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+mod host_platform {
+    use super::{HostModulePlatform, ModuleHandle, ModulePlatform};
+    use alloc::string::String;
+    use core::ffi::c_void;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    mod dl {
+        use core::ffi::{c_char, c_void};
+
+        #[cfg(target_os = "linux")]
+        pub(super) const RTLD_LAZY: i32 = 0x1;
+        #[cfg(target_os = "linux")]
+        pub(super) const RTLD_NOW: i32 = 0x2;
+        #[cfg(target_os = "linux")]
+        pub(super) const RTLD_LOCAL: i32 = 0;
+        #[cfg(target_os = "linux")]
+        pub(super) const RTLD_GLOBAL: i32 = 0x100;
+
+        #[cfg(target_os = "macos")]
+        pub(super) const RTLD_LAZY: i32 = 0x1;
+        #[cfg(target_os = "macos")]
+        pub(super) const RTLD_NOW: i32 = 0x2;
+        #[cfg(target_os = "macos")]
+        pub(super) const RTLD_LOCAL: i32 = 0x4;
+        #[cfg(target_os = "macos")]
+        pub(super) const RTLD_GLOBAL: i32 = 0x8;
+
+        extern "C" {
+            pub fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
+            pub fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+            pub fn dlclose(handle: *mut c_void) -> i32;
+            pub fn dlerror() -> *const c_char;
+        }
+
+        pub(super) fn dl_error_message() -> String {
+            // SAFETY: `dlerror` returns a thread-local C string or NULL.
+            let ptr = unsafe { dlerror() };
+            if ptr.is_null() {
+                "unknown dl-error".to_owned()
+            } else {
+                c_str_to_string(ptr)
+            }
+        }
+
+        pub(super) fn c_str_to_string(ptr: *const c_char) -> String {
+            let mut bytes = alloc::vec::Vec::new();
+            let mut offset = 0usize;
+            loop {
+                // SAFETY: reading a NUL-terminated C string.
+                let byte = unsafe { *ptr.add(offset) as u8 };
+                if byte == 0 {
+                    break;
+                }
+                bytes.push(byte);
+                offset += 1;
+                if offset > 4096 {
+                    break;
+                }
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    mod dl {
+        use core::ffi::{c_char, c_void};
+
+        type HMODULE = *mut c_void;
+        type DWORD = u32;
+
+        extern "system" {
+            fn LoadLibraryA(lp_lib_file_name: *const c_char) -> HMODULE;
+            fn GetProcAddress(h_module: HMODULE, lp_proc_name: *const c_char) -> *mut c_void;
+            fn FreeLibrary(h_module: HMODULE) -> i32;
+            fn GetModuleHandleA(lp_module_name: *const c_char) -> HMODULE;
+        }
+
+        pub(super) fn open(
+            path: &str,
+            _bind_lazy: bool,
+            _bind_local: bool,
+        ) -> Result<*mut c_void, String> {
+            let c_path =
+                std::ffi::CString::new(path).map_err(|_| "path contains NUL".to_owned())?;
+            // SAFETY: `c_path` is NUL-terminated.
+            let handle = unsafe { LoadLibraryA(c_path.as_ptr()) };
+            if handle.is_null() {
+                return Err(format!("failed to load library '{path}'"));
+            }
+            Ok(handle)
+        }
+
+        pub(super) fn self_handle() -> Result<*mut c_void, String> {
+            // SAFETY: NULL requests the executable module.
+            let handle = unsafe { GetModuleHandleA(core::ptr::null()) };
+            if handle.is_null() {
+                return Err("GetModuleHandleA(NULL) failed".to_owned());
+            }
+            Ok(handle)
+        }
+
+        pub(super) fn symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+            let c_name =
+                std::ffi::CString::new(name).map_err(|_| "symbol contains NUL".to_owned())?;
+            // SAFETY: valid module handle from open/self_handle.
+            let ptr = unsafe { GetProcAddress(handle, c_name.as_ptr()) };
+            if ptr.is_null() {
+                return Err(format!("symbol '{name}' not found"));
+            }
+            Ok(ptr)
+        }
+
+        pub(super) fn close(handle: *mut c_void) {
+            if !handle.is_null() {
+                // SAFETY: handle came from LoadLibraryA.
+                unsafe {
+                    let _ = FreeLibrary(handle);
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl HostModulePlatform {
+        fn open_flags(bind_lazy: bool, bind_local: bool) -> i32 {
+            let mode = if bind_lazy {
+                dl::RTLD_LAZY
+            } else {
+                dl::RTLD_NOW
+            };
+            let scope = if bind_local {
+                dl::RTLD_LOCAL
+            } else {
+                dl::RTLD_GLOBAL
+            };
+            mode | scope
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl ModulePlatform for HostModulePlatform {
+        fn supported() -> bool {
+            true
+        }
+
+        fn open(
+            file_name: &str,
+            bind_lazy: bool,
+            bind_local: bool,
+        ) -> Result<ModuleHandle, String> {
+            let c_path =
+                std::ffi::CString::new(file_name).map_err(|_| "path contains NUL".to_owned())?;
+            // SAFETY: `c_path` is NUL-terminated; flags match GLib's dlopen usage.
+            let handle =
+                unsafe { dl::dlopen(c_path.as_ptr(), Self::open_flags(bind_lazy, bind_local)) };
+            if handle.is_null() {
+                return Err(dl::dl_error_message());
+            }
+            Ok(handle)
+        }
+
+        fn self_handle() -> Result<ModuleHandle, String> {
+            // SAFETY: NULL filename opens the main program, matching gmodule-dl.c.
+            let handle = unsafe { dl::dlopen(core::ptr::null(), dl::RTLD_GLOBAL | dl::RTLD_LAZY) };
+            if handle.is_null() {
+                return Err(dl::dl_error_message());
+            }
+            Ok(handle)
+        }
+
+        fn symbol(handle: ModuleHandle, symbol_name: &str) -> Result<*mut c_void, String> {
+            let c_name = std::ffi::CString::new(symbol_name)
+                .map_err(|_| "symbol contains NUL".to_owned())?;
+            // SAFETY: valid handle; clear stale dlerror state first like upstream.
+            unsafe {
+                let _ = dl::dlerror();
+                let ptr = dl::dlsym(handle, c_name.as_ptr());
+                let err = dl::dlerror();
+                if !err.is_null() {
+                    return Err(dl::c_str_to_string(err));
+                }
+                Ok(ptr)
+            }
+        }
+
+        fn close(handle: ModuleHandle) {
+            if !handle.is_null() {
+                // SAFETY: handle came from dlopen.
+                unsafe {
+                    let _ = dl::dlclose(handle);
+                }
+            }
+        }
+
+        fn build_path(directory: Option<&str>, module_name: &str) -> String {
+            let has_lib_prefix = module_name.starts_with("lib");
+            #[cfg(target_os = "macos")]
+            let suffix = "dylib";
+            #[cfg(not(target_os = "macos"))]
+            let suffix = "so";
+            match directory {
+                Some(dir) if !dir.is_empty() => {
+                    if has_lib_prefix {
+                        format!("{dir}/{module_name}")
+                    } else {
+                        format!("{dir}/lib{module_name}.{suffix}")
+                    }
+                }
+                _ => {
+                    if has_lib_prefix {
+                        module_name.to_owned()
+                    } else {
+                        format!("lib{module_name}.{suffix}")
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    impl ModulePlatform for HostModulePlatform {
+        fn supported() -> bool {
+            true
+        }
+
+        fn open(
+            file_name: &str,
+            bind_lazy: bool,
+            bind_local: bool,
+        ) -> Result<ModuleHandle, String> {
+            let _ = (bind_lazy, bind_local);
+            dl::open(file_name, bind_lazy, bind_local)
+        }
+
+        fn self_handle() -> Result<ModuleHandle, String> {
+            dl::self_handle()
+        }
+
+        fn symbol(handle: ModuleHandle, symbol_name: &str) -> Result<*mut c_void, String> {
+            dl::symbol(handle, symbol_name)
+        }
+
+        fn close(handle: ModuleHandle) {
+            dl::close(handle)
+        }
+
+        fn build_path(directory: Option<&str>, module_name: &str) -> String {
+            match directory {
+                Some(dir) if !dir.is_empty() => format!("{dir}\\{module_name}.dll"),
+                _ => format!("{module_name}.dll"),
+            }
+        }
+    }
+}
+
+/// Reset module registry state and enable host-platform tests.
+///
+/// Call from `#[cfg(test)]` setup before exercising [`HostModulePlatform`].
+#[cfg(test)]
+pub fn register_host_module_platform_for_tests() {
+    reset_module_registry_for_tests();
+}
+
+#[cfg(test)]
+fn reset_module_registry_for_tests() {
+    MODULES.write().clear();
+    *MAIN_MODULE.lock() = None;
+    *LAST_ERROR.lock() = None;
+}
+
 // ───────────────────────────── GModule ────────────────────────────────────
 
 /// A dynamically loaded module (`GModule`).
@@ -281,6 +680,25 @@ static MAIN_MODULE: Mutex<Option<Arc<GModule>>> = Mutex::new(None);
 /// practice.
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
+const CHECK_INIT_ERROR_MAX: usize = 4096;
+
+unsafe fn c_char_ptr_to_string(ptr: *const c_char) -> String {
+    let mut bytes = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < CHECK_INIT_ERROR_MAX {
+        // SAFETY: caller provides a C string pointer returned by module init.
+        let byte = unsafe { *ptr.add(offset) as u8 };
+        if byte == 0 {
+            break;
+        }
+        bytes.push(byte);
+        offset += 1;
+    }
+
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn set_error(msg: Option<String>) {
     *LAST_ERROR.lock() = msg;
 }
@@ -334,13 +752,8 @@ fn post_open_init<P: ModulePlatform>(module: &Arc<GModule>) -> Result<(), (GModu
             // platform stubs do not actually load modules.
             let err_ptr = unsafe { check_init(Arc::as_ptr(module) as *mut GModule) };
             if !err_ptr.is_null() {
-                let err_str = unsafe { core::ffi::CStr::from_ptr(err_ptr) }
-                    .to_string_lossy()
-                    .into_owned();
-                return Err((
-                    GModuleError::CheckFailed,
-                    err_str,
-                ));
+                let err_str = unsafe { c_char_ptr_to_string(err_ptr) };
+                return Err((GModuleError::CheckFailed, err_str));
             }
         }
         _ => {}
@@ -351,8 +764,7 @@ fn post_open_init<P: ModulePlatform>(module: &Arc<GModule>) -> Result<(), (GModu
     match P::symbol(handle, "g_module_unload") {
         Ok(ptr) if !ptr.is_null() => {
             // SAFETY: Caller asserts C ABI `fn(*mut GModule)`.
-            let unload: unsafe extern "C" fn(*mut GModule) =
-                unsafe { core::mem::transmute(ptr) };
+            let unload: unsafe extern "C" fn(*mut GModule) = unsafe { core::mem::transmute(ptr) };
             *module.unload.lock() = Some(unload);
         }
         _ => {}
@@ -454,7 +866,8 @@ pub fn module_open_full<P: ModulePlatform>(
                         // Drop the half-constructed module: close its
                         // handle and discard the Arc.
                         P::close(*module.handle.lock());
-                        let full_msg = format!("GModule ({name}) initialization check failed: {msg}");
+                        let full_msg =
+                            format!("GModule ({name}) initialization check failed: {msg}");
                         set_error(Some(full_msg.clone()));
                         Err((code, full_msg))
                     }
@@ -481,7 +894,9 @@ pub fn module_open<P: ModulePlatform>(
 /// (`g_module_close`).
 ///
 /// Returns `Ok(())` if no error was recorded, `Err` otherwise.
-pub fn module_close<P: ModulePlatform>(module: &Arc<GModule>) -> Result<(), (GModuleError, String)> {
+pub fn module_close<P: ModulePlatform>(
+    module: &Arc<GModule>,
+) -> Result<(), (GModuleError, String)> {
     if !P::supported() {
         set_error(Some(
             "dynamic modules are not supported by this system".to_owned(),
@@ -550,10 +965,7 @@ pub fn module_symbol<P: ModulePlatform>(
 ///
 /// Deprecated upstream since 2.76 but still part of the API surface; we
 /// keep it for completeness. Delegates to `P::build_path`.
-pub fn module_build_path<P: ModulePlatform>(
-    directory: Option<&str>,
-    module_name: &str,
-) -> String {
+pub fn module_build_path<P: ModulePlatform>(directory: Option<&str>, module_name: &str) -> String {
     P::build_path(directory, module_name)
 }
 
@@ -582,7 +994,10 @@ mod tests {
         // NONE is 0 so contains(NONE) is trivially true for any flags;
         // verify the mask covers both bits instead.
         assert_eq!(GModuleFlags::BIND_MASK.0, 0x03);
-        assert_eq!((flags.0 & GModuleFlags::BIND_MASK.0), GModuleFlags::BIND_MASK.0);
+        assert_eq!(
+            (flags.0 & GModuleFlags::BIND_MASK.0),
+            GModuleFlags::BIND_MASK.0
+        );
     }
 
     #[test]
@@ -720,5 +1135,79 @@ mod tests {
         assert_eq!(module.ref_count(), 2);
         assert_eq!(module.dec_ref(), 1);
         assert_eq!(module.ref_count(), 1);
+    }
+
+    #[test]
+    fn parse_libtool_archive_extracts_core_fields() {
+        let content = "\
+# libfoo.la - a libtool library file
+dlname='libfoo.so.0'
+library_names='libfoo.so.0.1.2 libfoo.so.0 libfoo.so'
+dependency_libs=' -lbar -lz'
+libdir='/usr/lib'
+installed='yes'
+";
+        let archive = parse_libtool_archive(content, Some("/usr/lib/libfoo.la")).unwrap();
+        assert_eq!(archive.dlname.as_deref(), Some("libfoo.so.0"));
+        assert_eq!(
+            archive.library_names.as_deref(),
+            Some("libfoo.so.0.1.2 libfoo.so.0 libfoo.so")
+        );
+        assert_eq!(archive.dependency_libs.as_deref(), Some(" -lbar -lz"));
+        assert_eq!(
+            archive
+                .resolve_dlname_path(Some("/usr/lib/libfoo.la"))
+                .unwrap(),
+            "/usr/lib/libfoo.so.0"
+        );
+    }
+
+    #[test]
+    fn parse_libtool_archive_uninstalled_uses_dot_libs() {
+        let content = "\
+dlname='libfoo.so.0'
+libdir='/build/libfoo'
+installed='no'
+";
+        let archive = parse_libtool_archive(content, Some("/build/libfoo.la")).unwrap();
+        assert_eq!(
+            archive
+                .resolve_dlname_path(Some("/build/libfoo.la"))
+                .unwrap(),
+            "/build/.libs/libfoo.so.0"
+        );
+    }
+
+    #[test]
+    fn parse_libtool_archive_missing_dlname_fails() {
+        let content = "libdir='/usr/lib'\ninstalled='yes'\n";
+        let err = parse_libtool_archive(content, Some("/usr/lib/libfoo.la")).unwrap_err();
+        assert!(err.contains("dlname"));
+    }
+
+    #[cfg(all(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    mod host {
+        use super::*;
+
+        #[test]
+        fn host_platform_opens_main_module_and_resolves_symbol() {
+            register_host_module_platform_for_tests();
+            assert!(HostModulePlatform::supported());
+
+            let module = module_open_full::<HostModulePlatform>(None, GModuleFlags::NONE).unwrap();
+            assert_eq!(module.name(), "main");
+            assert!(module.is_resident());
+
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let ptr = module_symbol::<HostModulePlatform>(&module, "malloc").unwrap();
+                assert!(!ptr.is_null());
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let ptr = module_symbol::<HostModulePlatform>(&module, "GetModuleHandleA").unwrap();
+                assert!(!ptr.is_null());
+            }
+        }
     }
 }

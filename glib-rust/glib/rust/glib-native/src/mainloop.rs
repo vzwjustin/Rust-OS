@@ -4,9 +4,9 @@
 //! poll/dispatch mechanism requires OS support and is abstracted via
 //! a platform trait. Fully `no_std` compatible using `alloc` and `spin`.
 
+use crate::poll::{g_poll, PollFD};
 use crate::prelude::*;
-use crate::poll::PollFD;
-use crate::thread::GMutex;
+use crate::timer::monotonic_time_us;
 use alloc::collections::BTreeMap;
 
 /// Source continue/remove constants.
@@ -71,6 +71,14 @@ pub struct SourceFuncs {
     pub finalize: Option<SourceFinalizeFunc>,
 }
 
+/// Source kind for built-in dispatch logic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceKind {
+    Generic,
+    Timeout,
+    Idle,
+}
+
 /// An event source (`GSource`).
 pub struct Source {
     pub id: u32,
@@ -78,6 +86,7 @@ pub struct Source {
     pub flags: SourceFlags,
     pub name: String,
     pub ready_time: Option<i64>,
+    kind: SourceKind,
     funcs: SourceFuncs,
     callback: Option<SourceFunc>,
     poll_fds: Vec<PollFD>,
@@ -92,10 +101,61 @@ impl Source {
             flags: SourceFlags::NONE,
             name: String::new(),
             ready_time: None,
+            kind: SourceKind::Generic,
             funcs,
             callback: None,
             poll_fds: Vec::new(),
         }
+    }
+
+    /// Create a timeout source that fires after `interval_ms` from attach time.
+    pub fn new_timeout(interval_ms: u32) -> Self {
+        Self {
+            id: 0,
+            priority: 0,
+            flags: SourceFlags::NONE,
+            name: "timeout".to_owned(),
+            ready_time: None,
+            kind: SourceKind::Timeout,
+            funcs: SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+            callback: None,
+            poll_fds: Vec::new(),
+        }
+        .with_deadline(monotonic_time_ms() + interval_ms as i64)
+    }
+
+    /// Create an idle source (always ready when iterated).
+    pub fn new_idle() -> Self {
+        Self {
+            id: 0,
+            priority: 0,
+            flags: SourceFlags::NONE,
+            name: "idle".to_owned(),
+            ready_time: None,
+            kind: SourceKind::Idle,
+            funcs: SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+            callback: None,
+            poll_fds: Vec::new(),
+        }
+    }
+
+    fn with_deadline(mut self, deadline_ms: i64) -> Self {
+        self.ready_time = Some(deadline_ms);
+        self
+    }
+
+    fn monotonic_deadline_ms(&self) -> Option<i64> {
+        self.ready_time
     }
 
     /// Set the callback (`g_source_set_callback`).
@@ -160,6 +220,20 @@ impl Source {
 
     /// Check if source is ready (calls prepare + check).
     pub fn check(&self) -> bool {
+        if self.kind == SourceKind::Timeout {
+            return timeout_is_ready(self);
+        }
+        if self.kind == SourceKind::Idle {
+            return true;
+        }
+        if !self.poll_fds.is_empty()
+            && self
+                .poll_fds
+                .iter()
+                .any(|pfd| pfd.revents & pfd.events != 0)
+        {
+            return true;
+        }
         if let Some(check_fn) = self.funcs.check {
             return check_fn(self);
         }
@@ -179,6 +253,12 @@ impl Source {
 
     /// Prepare the source.
     pub fn prepare(&self) -> (bool, i32) {
+        if self.kind == SourceKind::Timeout {
+            return timeout_prepare(self);
+        }
+        if self.kind == SourceKind::Idle {
+            return (true, 0);
+        }
         if let Some(prepare_fn) = self.funcs.prepare {
             return prepare_fn(self);
         }
@@ -189,6 +269,24 @@ impl Source {
     pub fn get_poll_fds(&self) -> &[PollFD] {
         &self.poll_fds
     }
+}
+
+fn monotonic_time_ms() -> i64 {
+    monotonic_time_us() / 1000
+}
+
+fn timeout_prepare(source: &Source) -> (bool, i32) {
+    let deadline = source.monotonic_deadline_ms().unwrap_or(0);
+    let now = monotonic_time_ms();
+    if now >= deadline {
+        return (true, 0);
+    }
+    (false, (deadline - now) as i32)
+}
+
+fn timeout_is_ready(source: &Source) -> bool {
+    let deadline = source.monotonic_deadline_ms().unwrap_or(0);
+    monotonic_time_ms() >= deadline
 }
 
 /// A main context (`GMainContext`).
@@ -250,28 +348,49 @@ impl MainContext {
         self.sources.len()
     }
 
-    /// Check if any source is ready.
-    pub fn check(&self) -> bool {
-        self.sources.values().any(|s| s.check())
+    /// Add a timeout source and return its ID.
+    pub fn timeout_add(&mut self, interval_ms: u32, callback: SourceFunc) -> u32 {
+        let mut source = Source::new_timeout(interval_ms);
+        source.set_callback(callback);
+        self.attach(source)
+    }
+
+    /// Add an idle source and return its ID.
+    pub fn idle_add(&mut self, callback: SourceFunc) -> u32 {
+        let mut source = Source::new_idle();
+        source.set_callback(callback);
+        self.attach(source)
+    }
+
+    /// Check if any source is pending dispatch (`g_main_context_pending`).
+    pub fn pending(&self) -> bool {
+        self.prepare().0 || self.sources.values().any(|s| s.check())
     }
 
     /// Dispatch all ready sources.
     ///
     /// Returns the number of sources dispatched.
     pub fn dispatch(&mut self) -> usize {
-        let mut dispatched = 0;
-        let to_remove: Vec<u32> = self.sources.iter()
-            .filter(|(_, s)| s.check())
-            .map(|(id, s)| {
-                dispatched += 1;
-                if s.dispatch() == SOURCE_REMOVE {
-                    *id
-                } else {
-                    0
-                }
-            })
-            .filter(|&id| id != 0)
+        let ready_ids: Vec<u32> = self
+            .sources
+            .iter()
+            .filter(|(_, s)| s.prepare().0 || s.check())
+            .map(|(id, _)| *id)
             .collect();
+
+        let mut dispatched = 0;
+        let mut to_remove = Vec::new();
+        for id in ready_ids {
+            if let Some(source) = self.sources.get(&id) {
+                if !(source.prepare().0 || source.check()) {
+                    continue;
+                }
+                dispatched += 1;
+                if source.dispatch() == SOURCE_REMOVE {
+                    to_remove.push(id);
+                }
+            }
+        }
 
         for id in to_remove {
             self.sources.remove(&id);
@@ -301,12 +420,41 @@ impl MainContext {
     ///
     /// Returns `true` if any sources were dispatched.
     pub fn iteration(&mut self, may_block: bool) -> bool {
-        let (ready, _timeout) = self.prepare();
+        let (ready, timeout) = self.prepare();
         if !ready && !may_block {
             return false;
         }
-        let dispatched = self.dispatch();
-        dispatched > 0
+        if !ready && may_block {
+            let (mut poll_fds, poll_map) = self.gather_poll_fds();
+            let has_poll_fds = !poll_fds.is_empty();
+            if has_poll_fds || timeout >= 0 {
+                g_poll(&mut poll_fds, timeout);
+                self.scatter_poll_results(&poll_fds, &poll_map);
+            }
+        }
+        self.dispatch() > 0
+    }
+
+    fn gather_poll_fds(&self) -> (Vec<PollFD>, Vec<(u32, usize)>) {
+        let mut fds = Vec::new();
+        let mut map = Vec::new();
+        for (id, source) in &self.sources {
+            for (idx, pfd) in source.poll_fds.iter().enumerate() {
+                map.push((*id, idx));
+                fds.push(pfd.clone());
+            }
+        }
+        (fds, map)
+    }
+
+    fn scatter_poll_results(&mut self, fds: &[PollFD], map: &[(u32, usize)]) {
+        for (pfd, (id, idx)) in fds.iter().zip(map.iter()) {
+            if let Some(source) = self.sources.get_mut(id) {
+                if *idx < source.poll_fds.len() {
+                    source.poll_fds[*idx].revents = pfd.revents;
+                }
+            }
+        }
     }
 
     /// Get all source IDs.
@@ -381,59 +529,39 @@ impl MainLoop {
 /// Default main context (global, for convenience).
 static DEFAULT_CONTEXT: spin::Mutex<Option<MainContext>> = spin::Mutex::new(None);
 
-/// Get the default main context (`g_main_context_default`).
-pub fn default_context() -> MainContext {
+fn with_default_context_mut<R>(f: impl FnOnce(&mut MainContext) -> R) -> R {
     let mut guard = DEFAULT_CONTEXT.lock();
     if guard.is_none() {
         *guard = Some(MainContext::new());
     }
-    // Return a clone-like new context since we can't clone MainContext
-    // In practice, callers should use the global context directly
+    f(guard.as_mut().unwrap())
+}
+
+/// Get the default main context (`g_main_context_default`).
+///
+/// Returns a new empty context; global sources use the internal default
+/// context via [`timeout_add`] and [`idle_add`].
+pub fn default_context() -> MainContext {
     MainContext::new()
 }
 
 /// Add a timeout source (`g_timeout_add`).
 ///
 /// Returns a source ID. The callback will be called after `interval` ms.
-/// In no_std, timing requires platform support.
 pub fn timeout_add(interval_ms: u32, callback: SourceFunc) -> u32 {
-    let mut ctx = default_context();
-    fn timeout_prepare(s: &Source) -> (bool, i32) {
-        let interval = s.ready_time.unwrap_or(0) as i32;
-        (false, interval)
-    }
-    let mut source = Source::new(0, SourceFuncs {
-        prepare: Some(timeout_prepare),
-        check: None,
-        dispatch: None,
-        finalize: None,
-    });
-    source.set_ready_time(interval_ms as i64);
-    source.set_callback(callback);
-    source.set_name("timeout");
-    ctx.attach(source)
+    with_default_context_mut(|ctx| ctx.timeout_add(interval_ms, callback))
 }
 
 /// Add an idle source (`g_idle_add`).
 ///
 /// Returns a source ID. The callback will be called when the loop is idle.
 pub fn idle_add(callback: SourceFunc) -> u32 {
-    let mut ctx = default_context();
-    let mut source = Source::new(0, SourceFuncs {
-        prepare: Some(|_s| (true, 0)),
-        check: Some(|_s| true),
-        dispatch: None,
-        finalize: None,
-    });
-    source.set_callback(callback);
-    source.set_name("idle");
-    ctx.attach(source)
+    with_default_context_mut(|ctx| ctx.idle_add(callback))
 }
 
 /// Remove a source by ID (`g_source_remove`).
 pub fn source_remove(source_id: u32) -> bool {
-    let mut ctx = default_context();
-    ctx.remove(source_id)
+    with_default_context_mut(|ctx| ctx.remove(source_id))
 }
 
 #[cfg(test)]
@@ -449,9 +577,15 @@ mod tests {
     #[test]
     fn attach_and_remove_source() {
         let mut ctx = MainContext::new();
-        let source = Source::new(0, SourceFuncs {
-            prepare: None, check: None, dispatch: None, finalize: None,
-        });
+        let source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
         let id = ctx.attach(source);
         assert_eq!(ctx.source_count(), 1);
         assert!(ctx.remove(id));
@@ -461,9 +595,15 @@ mod tests {
     #[test]
     fn find_source_by_id() {
         let mut ctx = MainContext::new();
-        let mut source = Source::new(0, SourceFuncs {
-            prepare: None, check: None, dispatch: None, finalize: None,
-        });
+        let mut source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
         source.set_name("test");
         let id = ctx.attach(source);
         let found = ctx.find_source_by_id(id);
@@ -474,9 +614,15 @@ mod tests {
     #[test]
     fn find_source_by_name() {
         let mut ctx = MainContext::new();
-        let mut source = Source::new(0, SourceFuncs {
-            prepare: None, check: None, dispatch: None, finalize: None,
-        });
+        let mut source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
         source.set_name("my-source");
         ctx.attach(source);
         assert!(ctx.find_source_by_name("my-source").is_some());
@@ -493,9 +639,15 @@ mod tests {
 
     #[test]
     fn source_ready_time() {
-        let mut source = Source::new(1, SourceFuncs {
-            prepare: None, check: None, dispatch: None, finalize: None,
-        });
+        let mut source = Source::new(
+            1,
+            SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
         assert_eq!(source.get_ready_time(), None);
         source.set_ready_time(12345);
         assert_eq!(source.get_ready_time(), Some(12345));
@@ -503,9 +655,15 @@ mod tests {
 
     #[test]
     fn source_priority() {
-        let mut source = Source::new(1, SourceFuncs {
-            prepare: None, check: None, dispatch: None, finalize: None,
-        });
+        let mut source = Source::new(
+            1,
+            SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
         source.set_priority(-10);
         assert_eq!(source.get_priority(), -10);
     }
@@ -521,12 +679,15 @@ mod tests {
     #[test]
     fn idle_source() {
         let mut ctx = MainContext::new();
-        let source = Source::new(0, SourceFuncs {
-            prepare: Some(|_s| (true, 0)),
-            check: Some(|_s| true),
-            dispatch: None,
-            finalize: None,
-        });
+        let source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: Some(|_s| (true, 0)),
+                check: Some(|_s| true),
+                dispatch: None,
+                finalize: None,
+            },
+        );
         ctx.attach(source);
         let (ready, timeout) = ctx.prepare();
         assert!(ready);
@@ -537,5 +698,277 @@ mod tests {
     fn iteration_no_sources() {
         let mut ctx = MainContext::new();
         assert!(!ctx.iteration(false));
+    }
+
+    #[test]
+    fn pending_idle_source() {
+        let mut ctx = MainContext::new();
+        ctx.idle_add(|| SOURCE_REMOVE);
+        assert!(ctx.pending());
+    }
+
+    #[test]
+    fn idle_dispatches_on_iteration() {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static CALLED: AtomicU32 = AtomicU32::new(0);
+        fn on_idle() -> bool {
+            CALLED.fetch_add(1, Ordering::Relaxed);
+            SOURCE_REMOVE
+        }
+        let mut ctx = MainContext::new();
+        ctx.idle_add(on_idle);
+        assert!(ctx.iteration(false));
+        assert_eq!(CALLED.load(Ordering::Relaxed), 1);
+        assert_eq!(ctx.source_count(), 0);
+    }
+
+    #[test]
+    fn timeout_not_pending_before_deadline() {
+        use crate::timer::set_clock;
+        use core::sync::atomic::{AtomicI64, Ordering};
+        static NOW_MS: AtomicI64 = AtomicI64::new(0);
+        fn mock_clock() -> i64 {
+            NOW_MS.load(Ordering::Relaxed) * 1000
+        }
+        NOW_MS.store(0, Ordering::Relaxed);
+        set_clock(mock_clock);
+        let mut ctx = MainContext::new();
+        ctx.timeout_add(100, || SOURCE_REMOVE);
+        assert!(!ctx.pending());
+        NOW_MS.store(50, Ordering::Relaxed);
+        assert!(!ctx.pending());
+    }
+
+    #[test]
+    fn timeout_pending_at_deadline() {
+        use crate::timer::set_clock;
+        use core::sync::atomic::{AtomicI64, Ordering};
+        static NOW_MS: AtomicI64 = AtomicI64::new(0);
+        fn mock_clock() -> i64 {
+            NOW_MS.load(Ordering::Relaxed) * 1000
+        }
+        NOW_MS.store(0, Ordering::Relaxed);
+        set_clock(mock_clock);
+        let mut ctx = MainContext::new();
+        ctx.timeout_add(100, || SOURCE_REMOVE);
+        NOW_MS.store(100, Ordering::Relaxed);
+        assert!(ctx.pending());
+    }
+
+    #[test]
+    fn timeout_dispatches_callback() {
+        use crate::timer::set_clock;
+        use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+        static NOW_MS: AtomicI64 = AtomicI64::new(0);
+        static CALLED: AtomicU32 = AtomicU32::new(0);
+        fn mock_clock() -> i64 {
+            NOW_MS.load(Ordering::Relaxed) * 1000
+        }
+        fn on_timeout() -> bool {
+            CALLED.fetch_add(1, Ordering::Relaxed);
+            SOURCE_REMOVE
+        }
+        NOW_MS.store(0, Ordering::Relaxed);
+        set_clock(mock_clock);
+        let mut ctx = MainContext::new();
+        ctx.timeout_add(100, on_timeout);
+        NOW_MS.store(100, Ordering::Relaxed);
+        assert!(ctx.iteration(false));
+        assert_eq!(CALLED.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn timeout_iteration_false_before_ready() {
+        use crate::timer::set_clock;
+        use core::sync::atomic::{AtomicI64, Ordering};
+        static NOW_MS: AtomicI64 = AtomicI64::new(0);
+        fn mock_clock() -> i64 {
+            NOW_MS.load(Ordering::Relaxed) * 1000
+        }
+        NOW_MS.store(0, Ordering::Relaxed);
+        set_clock(mock_clock);
+        let mut ctx = MainContext::new();
+        ctx.timeout_add(100, || SOURCE_REMOVE);
+        assert!(!ctx.iteration(false));
+        assert_eq!(ctx.source_count(), 1);
+    }
+
+    #[test]
+    fn timeout_removed_after_dispatch() {
+        use crate::timer::set_clock;
+        use core::sync::atomic::{AtomicI64, Ordering};
+        static NOW_MS: AtomicI64 = AtomicI64::new(0);
+        fn mock_clock() -> i64 {
+            NOW_MS.load(Ordering::Relaxed) * 1000
+        }
+        NOW_MS.store(0, Ordering::Relaxed);
+        set_clock(mock_clock);
+        let mut ctx = MainContext::new();
+        ctx.timeout_add(50, || SOURCE_REMOVE);
+        NOW_MS.store(50, Ordering::Relaxed);
+        assert!(ctx.iteration(false));
+        assert_eq!(ctx.source_count(), 0);
+        assert!(!ctx.pending());
+    }
+
+    #[test]
+    fn poll_fd_source_dispatches_after_poll() {
+        use crate::poll::{
+            register_poll_platform, test_poll_clear_fds, test_poll_register_fd, IOCondition,
+            PollFD, TestPollPlatform,
+        };
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static DISPATCHED: AtomicU32 = AtomicU32::new(0);
+        fn on_poll_ready() -> bool {
+            DISPATCHED.fetch_add(1, Ordering::Relaxed);
+            SOURCE_REMOVE
+        }
+        fn poll_check(source: &Source) -> bool {
+            source
+                .get_poll_fds()
+                .iter()
+                .any(|pfd| pfd.revents & pfd.events != 0)
+        }
+
+        register_poll_platform(&TestPollPlatform);
+        test_poll_clear_fds();
+        test_poll_register_fd(7);
+
+        let mut ctx = MainContext::new();
+        let mut source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: Some(|_| (false, -1)),
+                check: Some(poll_check),
+                dispatch: None,
+                finalize: None,
+            },
+        );
+        source.set_callback(on_poll_ready);
+        source.add_poll(PollFD::new(7, IOCondition::In.bits()));
+        ctx.attach(source);
+
+        assert!(ctx.iteration(true));
+        assert_eq!(DISPATCHED.load(Ordering::Relaxed), 1);
+        assert_eq!(ctx.source_count(), 0);
+        register_poll_platform(&crate::poll::NoPollPlatform);
+        test_poll_clear_fds();
+    }
+
+    #[test]
+    fn poll_fd_not_ready_without_revents() {
+        use crate::poll::{
+            register_poll_platform, test_poll_clear_fds, IOCondition, PollFD, TestPollPlatform,
+        };
+
+        register_poll_platform(&TestPollPlatform);
+        test_poll_clear_fds();
+
+        let mut ctx = MainContext::new();
+        let mut source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: Some(|_| (false, 0)),
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
+        source.add_poll(PollFD::new(11, IOCondition::In.bits()));
+        ctx.attach(source);
+
+        assert!(!ctx.iteration(true));
+        assert_eq!(ctx.source_count(), 1);
+        register_poll_platform(&crate::poll::NoPollPlatform);
+    }
+
+    #[test]
+    fn iteration_blocks_until_timeout_expires() {
+        use crate::poll::register_poll_platform;
+        use crate::timer::set_clock;
+        use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+        static NOW_US: AtomicI64 = AtomicI64::new(0);
+        static CALLED: AtomicU32 = AtomicU32::new(0);
+        fn mock_clock() -> i64 {
+            NOW_US.fetch_add(500, Ordering::Relaxed)
+        }
+        fn on_timeout() -> bool {
+            CALLED.fetch_add(1, Ordering::Relaxed);
+            SOURCE_REMOVE
+        }
+
+        NOW_US.store(0, Ordering::Relaxed);
+        set_clock(mock_clock);
+        register_poll_platform(&crate::poll::TimerPollPlatform);
+
+        let mut ctx = MainContext::new();
+        ctx.timeout_add(20, on_timeout);
+        assert!(ctx.iteration(true));
+        assert_eq!(CALLED.load(Ordering::Relaxed), 1);
+        register_poll_platform(&crate::poll::NoPollPlatform);
+    }
+
+    #[test]
+    fn poll_fd_check_without_custom_check_fn() {
+        use crate::poll::{
+            register_poll_platform, test_poll_clear_fds, test_poll_register_fd, IOCondition,
+            PollFD, TestPollPlatform,
+        };
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static DISPATCHED: AtomicU32 = AtomicU32::new(0);
+        fn on_ready() -> bool {
+            DISPATCHED.fetch_add(1, Ordering::Relaxed);
+            SOURCE_REMOVE
+        }
+
+        register_poll_platform(&TestPollPlatform);
+        test_poll_clear_fds();
+        test_poll_register_fd(3);
+
+        let mut ctx = MainContext::new();
+        let mut source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: None,
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
+        source.set_callback(on_ready);
+        source.add_poll(PollFD::new(3, IOCondition::In.bits()));
+        ctx.attach(source);
+
+        assert!(ctx.iteration(true));
+        assert_eq!(DISPATCHED.load(Ordering::Relaxed), 1);
+        register_poll_platform(&crate::poll::NoPollPlatform);
+        test_poll_clear_fds();
+    }
+
+    #[test]
+    fn iteration_may_block_false_skips_poll_wait() {
+        use crate::poll::{
+            register_poll_platform, test_poll_clear_fds, IOCondition, PollFD, TestPollPlatform,
+        };
+
+        register_poll_platform(&TestPollPlatform);
+        test_poll_clear_fds();
+
+        let mut ctx = MainContext::new();
+        let mut source = Source::new(
+            0,
+            SourceFuncs {
+                prepare: Some(|_| (false, 100)),
+                check: None,
+                dispatch: None,
+                finalize: None,
+            },
+        );
+        source.add_poll(PollFD::new(5, IOCondition::In.bits()));
+        ctx.attach(source);
+
+        assert!(!ctx.iteration(false));
+        assert_eq!(ctx.source_count(), 1);
+        register_poll_platform(&crate::poll::NoPollPlatform);
     }
 }

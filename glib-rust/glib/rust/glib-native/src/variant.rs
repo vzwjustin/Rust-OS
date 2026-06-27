@@ -4,8 +4,8 @@
 //! Uses `Clone` for cheap copying. Fully `no_std` compatible using `alloc`.
 
 use crate::prelude::*;
-use crate::varianttype::VariantType;
 use crate::varianttype::VariantClass;
+use crate::varianttype::VariantType;
 
 /// The inner value stored in a GVariant.
 #[derive(Clone, Debug)]
@@ -53,8 +53,7 @@ impl Variant {
 
     /// Classify the variant (`g_variant_classify`).
     pub fn classify(&self) -> VariantClass {
-        VariantClass::from_byte(self.type_string.as_bytes()[0])
-            .unwrap_or(VariantClass::Variant)
+        VariantClass::from_byte(self.type_string.as_bytes()[0]).unwrap_or(VariantClass::Variant)
     }
 
     /// Check if the variant is of a given type (`g_variant_is_of_type`).
@@ -219,7 +218,10 @@ impl Variant {
     pub fn new_tuple(children: Vec<Variant>) -> Self {
         let type_string = format!(
             "({})",
-            children.iter().map(|c| c.type_string().to_owned()).collect::<String>()
+            children
+                .iter()
+                .map(|c| c.type_string().to_owned())
+                .collect::<String>()
         );
         Self {
             type_string,
@@ -229,11 +231,7 @@ impl Variant {
 
     /// Create a dict entry variant (`g_variant_new_dict_entry`).
     pub fn new_dict_entry(key: Variant, value: Variant) -> Self {
-        let type_string = format!(
-            "{{{}{}}}",
-            key.type_string(),
-            value.type_string()
-        );
+        let type_string = format!("{{{}{}}}", key.type_string(), value.type_string());
         Self {
             type_string,
             value: VariantValue::DictEntry(Box::new(key), Box::new(value)),
@@ -325,9 +323,7 @@ impl Variant {
     /// Get string value (`g_variant_get_string`).
     pub fn get_string(&self) -> &str {
         match &self.value {
-            VariantValue::String(s) | VariantValue::ObjectPath(s) | VariantValue::Signature(s) => {
-                s
-            }
+            VariantValue::String(s) | VariantValue::ObjectPath(s) | VariantValue::Signature(s) => s,
             _ => "",
         }
     }
@@ -408,37 +404,81 @@ impl Variant {
                 }
             }
             VariantValue::Int16(v) => {
-                if type_annotate { format!("n<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("n<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Uint16(v) => {
-                if type_annotate { format!("q<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("q<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Int32(v) => {
-                if type_annotate { format!("i<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("i<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Uint32(v) => {
-                if type_annotate { format!("u<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("u<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Int64(v) => {
-                if type_annotate { format!("x<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("x<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Uint64(v) => {
-                if type_annotate { format!("t<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("t<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Handle(v) => {
-                if type_annotate { format!("h<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("h<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::Double(v) => {
-                if type_annotate { format!("d<{}>", v) } else { format!("{}", v) }
+                if type_annotate {
+                    format!("d<{}>", v)
+                } else {
+                    format!("{}", v)
+                }
             }
             VariantValue::String(s) => {
-                if type_annotate { format!("s<'{}'>", s) } else { format!("'{}'", s) }
+                if type_annotate {
+                    format!("s<'{}'>", s)
+                } else {
+                    format!("'{}'", s)
+                }
             }
             VariantValue::ObjectPath(s) => {
-                if type_annotate { format!("o<{}>", s) } else { format!("'{}'", s) }
+                if type_annotate {
+                    format!("o<{}>", s)
+                } else {
+                    format!("'{}'", s)
+                }
             }
             VariantValue::Signature(s) => {
-                if type_annotate { format!("g<'{}'>", s) } else { format!("'{}'", s) }
+                if type_annotate {
+                    format!("g<'{}'>", s)
+                } else {
+                    format!("'{}'", s)
+                }
             }
             VariantValue::Variant(v) => {
                 format!("<{}>", v.print(type_annotate))
@@ -576,9 +616,17 @@ impl VariantBuilder {
             let child_type = VariantType::new(&self.type_string[1..]).unwrap_or(VariantType::any());
             Variant::new_maybe(&child_type, self.children.into_iter().next())
         } else if self.type_string == "v" {
-            Variant::new_variant(self.children.into_iter().next().unwrap_or(Variant::new_boolean(false)))
+            Variant::new_variant(
+                self.children
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Variant::new_boolean(false)),
+            )
         } else {
-            self.children.into_iter().next().unwrap_or(Variant::new_boolean(false))
+            self.children
+                .into_iter()
+                .next()
+                .unwrap_or(Variant::new_boolean(false))
         }
     }
 }
@@ -671,11 +719,7 @@ fn parse_value(type_: &VariantType, text: &str) -> Result<Variant, VariantParseE
         let s = trimmed
             .strip_prefix('\'')
             .and_then(|s| s.strip_suffix('\''))
-            .or_else(|| {
-                trimmed
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-            })
+            .or_else(|| trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
             .ok_or(VariantParseError::UnterminatedStringConstant)?;
         if ts == "s" {
             Ok(Variant::new_string(s))
@@ -692,8 +736,7 @@ fn parse_value(type_: &VariantType, text: &str) -> Result<Variant, VariantParseE
         let inner_v = parse_value(&VariantType::any(), inner)?;
         Ok(Variant::new_variant(inner_v))
     } else if ts.starts_with('a') && !ts.starts_with("a{") {
-        let child_type = VariantType::new(&ts[1..])
-            .ok_or(VariantParseError::InvalidTypeString)?;
+        let child_type = VariantType::new(&ts[1..]).ok_or(VariantParseError::InvalidTypeString)?;
         let inner = trimmed
             .strip_prefix('[')
             .and_then(|s| s.strip_suffix(']'))
@@ -722,11 +765,11 @@ fn parse_value(type_: &VariantType, text: &str) -> Result<Variant, VariantParseE
         let children: Vec<Variant> = items
             .iter()
             .enumerate()
-        .map(|(i, s)| {
-            let fallback = VariantType::any();
-            let ct = child_types.get(i).unwrap_or(&fallback);
-            parse_value(ct, s.trim())
-        })
+            .map(|(i, s)| {
+                let fallback = VariantType::any();
+                let ct = child_types.get(i).unwrap_or(&fallback);
+                parse_value(ct, s.trim())
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Variant::new_tuple(children))
     } else if ts == "*" || ts == "?" {
@@ -842,15 +885,15 @@ mod tests {
         let v = Variant::new_strv(&["a", "b", "c"]);
         assert_eq!(v.classify(), VariantClass::Array);
         assert_eq!(v.n_children(), 3);
-        assert_eq!(v.get_strv(), vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
+        assert_eq!(
+            v.get_strv(),
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+        );
     }
 
     #[test]
     fn tuple_variant() {
-        let v = Variant::new_tuple(vec![
-            Variant::new_string("hello"),
-            Variant::new_int32(42),
-        ]);
+        let v = Variant::new_tuple(vec![Variant::new_string("hello"), Variant::new_int32(42)]);
         assert_eq!(v.classify(), VariantClass::Tuple);
         assert_eq!(v.n_children(), 2);
         assert_eq!(v.get_child_value(0).unwrap().get_string(), "hello");
@@ -859,10 +902,7 @@ mod tests {
 
     #[test]
     fn dict_entry_variant() {
-        let v = Variant::new_dict_entry(
-            Variant::new_string("key"),
-            Variant::new_int32(42),
-        );
+        let v = Variant::new_dict_entry(Variant::new_string("key"), Variant::new_int32(42));
         assert_eq!(v.classify(), VariantClass::DictEntry);
         assert_eq!(v.n_children(), 2);
         assert_eq!(v.get_child_value(0).unwrap().get_string(), "key");
@@ -974,7 +1014,10 @@ mod tests {
     fn parse_array() {
         let v = parse(&VariantType::new("as").unwrap(), "['a', 'b', 'c']").unwrap();
         assert_eq!(v.n_children(), 3);
-        assert_eq!(v.get_strv(), vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
+        assert_eq!(
+            v.get_strv(),
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+        );
     }
 
     #[test]

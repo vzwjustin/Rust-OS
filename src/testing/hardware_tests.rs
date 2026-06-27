@@ -11,10 +11,7 @@
 //! - Timer and clock hardware validation
 
 use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
-use alloc::{
-    string::ToString,
-    vec,
-};
+use alloc::{string::ToString, vec};
 
 /// Create hardware test suite
 pub fn create_hardware_test_suite() -> TestSuite {

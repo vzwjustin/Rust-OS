@@ -259,7 +259,8 @@ impl PtrArray {
         index_out: Option<&mut u32>,
     ) -> bool {
         let len = self.len();
-        let equal = equal_func.unwrap_or(&|element, target| core::ptr::eq(element as *const (), target));
+        let equal =
+            equal_func.unwrap_or(&|element, target| core::ptr::eq(element as *const (), target));
 
         for i in 0..len {
             // SAFETY: i < len.

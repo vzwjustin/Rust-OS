@@ -511,7 +511,15 @@ pub fn timer_tick(_delta_ms: u64) {
 /// Yield the CPU to the next process (cooperative multitasking)
 /// This is the missing function that was referenced in interrupts.rs
 pub fn yield_cpu() {
-    // Get the process manager and trigger a scheduling decision
+    crate::user_sched::service_pending(yield_cpu_sched_tail as *const () as u64);
+    yield_cpu_sched_tail();
+}
+
+extern "C" fn yield_cpu_sched_tail() {
+    yield_cpu_tail();
+}
+
+fn yield_cpu_tail() {
     let process_manager = super::get_process_manager();
 
     // Schedule the next process

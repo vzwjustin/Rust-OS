@@ -1,10 +1,11 @@
 //! Thread primitives matching `gthread.h` / `gthread.c`.
 //!
 //! Uses `spin` crate for mutex, RW lock, and once initialization.
-//! Thread creation/joining requires OS support and is deferred.
+//! Thread creation/joining is abstracted via [`ThreadPlatform`].
 //! Fully `no_std` compatible using `spin`.
 
-use spin::{Mutex, RwLock, Once as SpinOnce};
+use alloc::collections::BTreeMap;
+use spin::{Mutex, Once as SpinOnce, RwLock};
 
 /// Thread error (`GThreadError`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -12,12 +13,97 @@ pub enum ThreadError {
     Again,
 }
 
+/// Opaque thread handle returned by [`ThreadPlatform::spawn`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ThreadHandle(u64);
+
 /// Once status (`GOnceStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OnceStatus {
     NotCalled,
     Progress,
     Ready,
+}
+
+/// Platform trait for OS thread creation and joining.
+pub trait ThreadPlatform: Sync {
+    /// Spawn a new thread with the given name and entry function.
+    fn spawn(&self, name: &str, func: fn()) -> Result<ThreadHandle, ThreadError>;
+
+    /// Block until the thread identified by `handle` has finished.
+    fn join(&self, handle: ThreadHandle) -> Result<(), ThreadError>;
+}
+
+/// A no-op thread platform: always returns [`ThreadError::Again`].
+pub struct NoThreadPlatform;
+
+impl ThreadPlatform for NoThreadPlatform {
+    fn spawn(&self, _name: &str, _func: fn()) -> Result<ThreadHandle, ThreadError> {
+        Err(ThreadError::Again)
+    }
+
+    fn join(&self, _handle: ThreadHandle) -> Result<(), ThreadError> {
+        Err(ThreadError::Again)
+    }
+}
+
+#[cfg(test)]
+mod host_thread {
+    use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+    static HOST_THREADS: Mutex<BTreeMap<u64, std::thread::JoinHandle<()>>> =
+        Mutex::new(BTreeMap::new());
+
+    /// Host thread platform using `std::thread` (tests only).
+    pub struct HostThreadPlatform;
+
+    impl ThreadPlatform for HostThreadPlatform {
+        fn spawn(&self, _name: &str, func: fn()) -> Result<ThreadHandle, ThreadError> {
+            let handle_id = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+            let join_handle = std::thread::spawn(func);
+            HOST_THREADS.lock().insert(handle_id, join_handle);
+            Ok(ThreadHandle(handle_id))
+        }
+
+        fn join(&self, handle: ThreadHandle) -> Result<(), ThreadError> {
+            let join_handle = HOST_THREADS
+                .lock()
+                .remove(&handle.0)
+                .ok_or(ThreadError::Again)?;
+            join_handle.join().map_err(|_| ThreadError::Again)
+        }
+    }
+
+    pub fn reset_host_threads() {
+        HOST_THREADS.lock().clear();
+    }
+}
+
+#[cfg(test)]
+pub use host_thread::{reset_host_threads, HostThreadPlatform};
+
+static THREAD_PLATFORM: RwLock<&'static dyn ThreadPlatform> = RwLock::new(&NoThreadPlatform);
+
+/// Installs the platform thread implementation.
+pub fn register_thread_platform(platform: &'static dyn ThreadPlatform) {
+    *THREAD_PLATFORM.write() = platform;
+}
+
+/// Thread creation wrapper (`GThread::spawn` / `g_thread_new`).
+pub struct GThread;
+
+impl GThread {
+    /// Spawn a new thread with the given name and entry function.
+    pub fn spawn(name: &str, func: fn()) -> Result<ThreadHandle, ThreadError> {
+        THREAD_PLATFORM.read().spawn(name, func)
+    }
+
+    /// Join a thread, blocking until it completes.
+    pub fn join(handle: ThreadHandle) -> Result<(), ThreadError> {
+        THREAD_PLATFORM.read().join(handle)
+    }
 }
 
 /// A once-initialized value (`GOnce`).
@@ -71,7 +157,6 @@ impl<T> GMutex<T> {
     pub fn try_lock(&self) -> Option<spin::MutexGuard<T>> {
         self.inner.try_lock()
     }
-
 }
 
 impl GMutex<()> {
@@ -223,6 +308,12 @@ pub fn thread_error_quark() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    fn reset_thread_platform() {
+        register_thread_platform(&NoThreadPlatform);
+        reset_host_threads();
+    }
 
     #[test]
     fn mutex_lock_unlock() {
@@ -279,5 +370,39 @@ mod tests {
     fn cond_signal() {
         let c = GCond::new();
         c.signal();
+    }
+
+    #[test]
+    fn no_thread_platform_spawn_fails() {
+        reset_thread_platform();
+        assert_eq!(GThread::spawn("worker", || {}), Err(ThreadError::Again));
+    }
+
+    #[test]
+    fn no_thread_platform_join_fails() {
+        reset_thread_platform();
+        assert_eq!(GThread::join(ThreadHandle(1)), Err(ThreadError::Again));
+    }
+
+    #[test]
+    fn host_thread_platform_spawn_and_join() {
+        reset_thread_platform();
+        static RAN: AtomicU32 = AtomicU32::new(0);
+        fn worker() {
+            RAN.fetch_add(1, Ordering::Relaxed);
+        }
+        register_thread_platform(&HostThreadPlatform);
+        let handle = GThread::spawn("test-worker", worker).unwrap();
+        GThread::join(handle).unwrap();
+        assert_eq!(RAN.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn register_thread_platform_switches_implementation() {
+        reset_thread_platform();
+        assert!(GThread::spawn("x", || {}).is_err());
+        register_thread_platform(&HostThreadPlatform);
+        let handle = GThread::spawn("y", || {}).unwrap();
+        GThread::join(handle).unwrap();
     }
 }

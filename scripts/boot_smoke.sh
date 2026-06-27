@@ -40,7 +40,7 @@ cmd = [
     "-display", "none",
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     "-machine", "pc,accel=tcg",
-    "-cpu", "qemu64,+apic",
+    "-cpu", os.environ.get("RUSTOS_QEMU_CPU", "qemu64,+apic,+rdrand"),
     "-no-reboot",
     "-no-shutdown",
 ]

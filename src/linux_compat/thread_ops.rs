@@ -3,7 +3,6 @@
 //! This module implements Linux threading operations including
 //! futex, clone, thread-local storage, and pthread-compatible functions.
 
-
 extern crate alloc;
 
 use alloc::collections::BTreeMap;

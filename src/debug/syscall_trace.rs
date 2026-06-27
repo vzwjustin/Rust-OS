@@ -42,7 +42,15 @@ pub fn trace_syscall(
     let pid = process::current_pid();
     let tid = pid;
     let name = syscall_name(SyscallNumber::from_u64(num));
-    let args = decode_args(SyscallNumber::from_u64(num), arg1, arg2, arg3, arg4, arg5, arg6);
+    let args = decode_args(
+        SyscallNumber::from_u64(num),
+        arg1,
+        arg2,
+        arg3,
+        arg4,
+        arg5,
+        arg6,
+    );
     let ret = format_result(SyscallNumber::from_u64(num), result);
 
     crate::serial_println!(
@@ -76,21 +84,26 @@ fn should_dump_fds(syscall: SyscallNumber) -> bool {
 
 fn dump_open_fds() {
     let table = crate::vfs::get_vfs().open_fd_snapshot();
-  if table.is_empty() {
-      crate::serial_println!("  fd-table: (no tracked fds >= 3)");
-      return;
-  }
-  for (fd, kind) in table {
-      crate::serial_println!("  fd-table: fd={} kind={:?}", fd, kind);
-  }
+    if table.is_empty() {
+        crate::serial_println!("  fd-table: (no tracked fds >= 3)");
+        return;
+    }
+    for (fd, kind) in table {
+        crate::serial_println!("  fd-table: fd={} kind={:?}", fd, kind);
+    }
 }
 
 fn format_result(syscall: SyscallNumber, result: i64) -> String {
     if result >= 0 {
         match syscall {
-            SyscallNumber::Open | SyscallNumber::Openat | SyscallNumber::Socket
-            | SyscallNumber::Pipe | SyscallNumber::Pipe2 | SyscallNumber::EpollCreate1
-            | SyscallNumber::Accept | SyscallNumber::Accept4 => {
+            SyscallNumber::Open
+            | SyscallNumber::Openat
+            | SyscallNumber::Socket
+            | SyscallNumber::Pipe
+            | SyscallNumber::Pipe2
+            | SyscallNumber::EpollCreate1
+            | SyscallNumber::Accept
+            | SyscallNumber::Accept4 => {
                 return format!("fd={result}");
             }
             SyscallNumber::Mmap => return format!("addr=0x{result:x}"),
@@ -179,12 +192,7 @@ fn decode_args(
             a3
         ),
         SyscallNumber::Exit => format!("status={}", a1 as i32),
-        SyscallNumber::Wait4 => format!(
-            "pid={}, status=0x{:x}, options=0x{:x}",
-            a1 as i32,
-            a2,
-            a3
-        ),
+        SyscallNumber::Wait4 => format!("pid={}, status=0x{:x}, options=0x{:x}", a1 as i32, a2, a3),
         SyscallNumber::Socket => format!("domain={}, type={}, proto={}", a1, a2, a3),
         SyscallNumber::Connect | SyscallNumber::Bind => {
             format!("fd={}, addr=0x{:x}, addrlen={}", a1 as i32, a2, a3)

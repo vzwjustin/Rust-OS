@@ -48,12 +48,7 @@ pub fn quark_try_string(string: Option<&str>) -> Quark {
         return 0;
     };
 
-    global()
-        .read()
-        .ht
-        .get(string)
-        .copied()
-        .unwrap_or(0)
+    global().read().ht.get(string).copied().unwrap_or(0)
 }
 
 /// Returns the quark for `string`, interning a copy when needed (`g_quark_from_string`).

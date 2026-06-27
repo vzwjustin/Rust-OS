@@ -268,12 +268,13 @@ pub fn unichar_isspace(c: Unichar) -> bool {
         0x85 | // Next line (NEL)
         0xA0 | // No-break space
         0x1680 | // Ogham space mark
-        0x2000..=0x200A | // Various spaces
+        0x2000
+            ..=0x200A | // Various spaces
         0x2028 | // Line separator
         0x2029 | // Paragraph separator
         0x202F | // Narrow no-break space
         0x205F | // Medium mathematical space
-        0x3000   // Ideographic space
+        0x3000 // Ideographic space
     )
 }
 

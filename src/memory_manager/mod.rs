@@ -13,9 +13,7 @@ pub use page_table::{PageTable, PageTableFlags};
 pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
 
 use spin::Mutex;
-use x86_64::{
-    PhysAddr, VirtAddr,
-};
+use x86_64::{PhysAddr, VirtAddr};
 
 /// Global virtual memory manager instance
 static VIRTUAL_MEMORY_MANAGER: Mutex<Option<VirtualMemoryManager>> = Mutex::new(None);

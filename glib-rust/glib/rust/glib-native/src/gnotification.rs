@@ -23,8 +23,8 @@
 use crate::prelude::*;
 use crate::variant::Variant;
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 // ─────────────────────── GNotificationPriority ────────────────────────────
 
@@ -171,12 +171,7 @@ impl Notification {
 
     /// Add a button with an action name and a `Variant` target
     /// (`g_notification_add_button_with_target_value`).
-    pub fn add_button_with_target_value(
-        &mut self,
-        label: &str,
-        action: &str,
-        target: Variant,
-    ) {
+    pub fn add_button_with_target_value(&mut self, label: &str, action: &str, target: Variant) {
         self.buttons.push(NotificationButton {
             label: label.to_owned(),
             action_name: action.to_owned(),
@@ -192,11 +187,7 @@ impl Notification {
 
     /// Set the default action with a `Variant` target
     /// (`g_notification_set_default_action_and_target_value`).
-    pub fn set_default_action_with_target_value(
-        &mut self,
-        action: &str,
-        target: Variant,
-    ) {
+    pub fn set_default_action_with_target_value(&mut self, action: &str, target: Variant) {
         self.default_action = Some(action.to_owned());
         self.default_action_target = Some(target);
     }
@@ -266,7 +257,10 @@ mod tests {
 
     #[test]
     fn priority_default_is_normal() {
-        assert_eq!(NotificationPriority::default(), NotificationPriority::Normal);
+        assert_eq!(
+            NotificationPriority::default(),
+            NotificationPriority::Normal
+        );
     }
 
     #[test]

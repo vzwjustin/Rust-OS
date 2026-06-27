@@ -95,7 +95,10 @@ impl<T> AsyncQueue<T> {
     /// Push sorted (`g_async_queue_push_sorted`).
     pub fn push_sorted(&self, data: T, mut cmp: impl FnMut(&T, &T) -> core::cmp::Ordering) {
         let mut inner = self.inner.lock();
-        let pos = inner.queue.iter().position(|item| cmp(item, &data) == core::cmp::Ordering::Greater);
+        let pos = inner
+            .queue
+            .iter()
+            .position(|item| cmp(item, &data) == core::cmp::Ordering::Greater);
         match pos {
             Some(p) => {
                 let mut items: Vec<T> = inner.queue.drain(..).collect();

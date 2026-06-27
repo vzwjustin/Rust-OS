@@ -167,8 +167,16 @@ fn attach(dev_dir: &Arc<dyn InodeOps>, name: &str, inode: Arc<dyn InodeOps>) -> 
 /// Populate `/dev` with standard Linux device nodes.
 pub fn install_dev(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     let dev = root.lookup("dev")?;
-    attach(&dev, "null", DevInode::new(alloc_dev_ino(), DevKind::Null, 0o666))?;
-    attach(&dev, "zero", DevInode::new(alloc_dev_ino(), DevKind::Zero, 0o666))?;
+    attach(
+        &dev,
+        "null",
+        DevInode::new(alloc_dev_ino(), DevKind::Null, 0o666),
+    )?;
+    attach(
+        &dev,
+        "zero",
+        DevInode::new(alloc_dev_ino(), DevKind::Zero, 0o666),
+    )?;
     attach(
         &dev,
         "random",
@@ -179,12 +187,20 @@ pub fn install_dev(root: Arc<dyn InodeOps>) -> VfsResult<()> {
         "urandom",
         DevInode::new(alloc_dev_ino(), DevKind::URandom, 0o644),
     )?;
-    attach(&dev, "full", DevInode::new(alloc_dev_ino(), DevKind::Full, 0o666))?;
+    attach(
+        &dev,
+        "full",
+        DevInode::new(alloc_dev_ino(), DevKind::Full, 0o666),
+    )?;
     attach(
         &dev,
         "console",
         DevInode::new(alloc_dev_ino(), DevKind::Console, 0o600),
     )?;
-    attach(&dev, "tty", DevInode::new(alloc_dev_ino(), DevKind::Console, 0o666))?;
+    attach(
+        &dev,
+        "tty",
+        DevInode::new(alloc_dev_ino(), DevKind::Console, 0o666),
+    )?;
     Ok(())
 }

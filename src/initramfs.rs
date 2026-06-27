@@ -74,7 +74,6 @@ fn is_gzipped(data: &[u8]) -> bool {
 /// (entry_point, stack_pointer) tuple
 pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsError> {
     use crate::elf_loader::{elf_load, elf_validate};
-    
 
     // Validate ELF binary format
     elf_validate(binary_data).map_err(|_| InitramfsError::InvalidFormat)?;
@@ -168,7 +167,6 @@ where
     A: x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
 {
     use crate::elf_loader::{elf_create_stack, elf_load, elf_map_segments, elf_validate};
-    
 
     // Validate ELF binary format
     elf_validate(binary_data).map_err(|_| InitramfsError::InvalidFormat)?;

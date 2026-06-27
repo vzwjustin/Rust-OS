@@ -24,20 +24,16 @@ use core::fmt;
 // Re-export display driver functionality
 
 // Re-export PCI functionality
-pub use pci::{
-    get_pci_stats, init as init_pci,
-};
+pub use pci::{get_pci_stats, init as init_pci};
 
 // Re-export hot-plug functionality
 pub use hotplug::{
-    get_hotplug_stats, init as init_hotplug,
-    process_events as process_hotplug_events,
+    get_hotplug_stats, init as init_hotplug, process_events as process_hotplug_events,
 };
 
 // Re-export input functionality
 pub use input_manager::{
-    get_cursor_position, get_event as get_input_event, set_cursor_bounds, InputEvent,
-    MouseButton,
+    get_cursor_position, get_event as get_input_event, set_cursor_bounds, InputEvent, MouseButton,
 };
 
 // Re-export storage functionality

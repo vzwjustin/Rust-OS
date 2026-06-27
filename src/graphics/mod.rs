@@ -747,14 +747,24 @@ pub fn draw_text(text: &str, x: usize, y: usize, color: Color, font: &BitmapFont
 
 /// Draw a single character using bitmap font
 pub fn draw_char(ch: char, x: usize, y: usize, color: Color, font: &BitmapFont) {
-    let char_code = ch as usize;
-    if char_code >= 256 {
-        return; // Character not in font
+    if font.char_width == 0 || font.char_height == 0 || font.data.is_empty() {
+        return;
     }
 
-    let char_data_offset = char_code * font.char_height;
+    let char_code = ch as usize;
+    if char_code >= 256 {
+        return;
+    }
 
-    for row in 0..font.char_height {
+    let char_data_offset = char_code.saturating_mul(font.char_height);
+    if char_data_offset >= font.data.len() {
+        return;
+    }
+
+    let available_rows = font.data.len() - char_data_offset;
+    let rows = core::cmp::min(font.char_height, available_rows);
+
+    for row in 0..rows {
         let byte = font.data[char_data_offset + row];
 
         for col in 0..font.char_width {

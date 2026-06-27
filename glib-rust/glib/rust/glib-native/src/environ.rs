@@ -62,10 +62,7 @@ pub fn listenv() -> Vec<String> {
 /// Returns all environment variables as `KEY=VALUE` strings (`g_get_environ`).
 pub fn get_environ() -> Vec<String> {
     let env = global_environ().lock();
-    env.vars
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect()
+    env.vars.iter().map(|(k, v)| format!("{k}={v}")).collect()
 }
 
 /// Looks up `variable` in `envp` (`g_environ_getenv`).
@@ -85,7 +82,12 @@ pub fn environ_getenv(envp: &[String], variable: &str) -> Option<String> {
 ///
 /// Returns a new envp with the variable set. If `overwrite` is `false` and
 /// the variable already exists, the original envp is returned unchanged.
-pub fn environ_setenv(envp: Vec<String>, variable: &str, value: &str, overwrite: bool) -> Vec<String> {
+pub fn environ_setenv(
+    envp: Vec<String>,
+    variable: &str,
+    value: &str,
+    overwrite: bool,
+) -> Vec<String> {
     let prefix = format!("{variable}=");
     let mut result = Vec::new();
     let mut found = false;
@@ -116,7 +118,9 @@ pub fn environ_setenv(envp: Vec<String>, variable: &str, value: &str, overwrite:
 /// Returns a new envp with the variable removed.
 pub fn environ_unsetenv(envp: Vec<String>, variable: &str) -> Vec<String> {
     let prefix = format!("{variable}=");
-    envp.into_iter().filter(|e| !e.starts_with(&prefix)).collect()
+    envp.into_iter()
+        .filter(|e| !e.starts_with(&prefix))
+        .collect()
 }
 
 #[cfg(test)]
@@ -177,17 +181,20 @@ mod tests {
 
     #[test]
     fn environ_setenv_in_array() {
-        let envp = vec![
-            "PATH=/usr/bin".to_owned(),
-            "HOME=/root".to_owned(),
-        ];
+        let envp = vec!["PATH=/usr/bin".to_owned(), "HOME=/root".to_owned()];
         let result = environ_setenv(envp, "PATH", "/usr/local/bin", true);
-        assert_eq!(environ_getenv(&result, "PATH"), Some("/usr/local/bin".to_owned()));
+        assert_eq!(
+            environ_getenv(&result, "PATH"),
+            Some("/usr/local/bin".to_owned())
+        );
         assert_eq!(result.len(), 2);
 
         let envp2 = vec!["PATH=/usr/bin".to_owned()];
         let result2 = environ_setenv(envp2, "PATH", "/new", false);
-        assert_eq!(environ_getenv(&result2, "PATH"), Some("/usr/bin".to_owned()));
+        assert_eq!(
+            environ_getenv(&result2, "PATH"),
+            Some("/usr/bin".to_owned())
+        );
 
         let envp3 = vec!["PATH=/usr/bin".to_owned()];
         let result3 = environ_setenv(envp3, "NEW", "value", true);

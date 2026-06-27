@@ -222,7 +222,9 @@ mod tests {
     fn test_case_basic() {
         static mut CALLED: bool = false;
         fn test_fn() {
-            unsafe { CALLED = true; }
+            unsafe {
+                CALLED = true;
+            }
         }
         let case = TestCase::new("my-test", test_fn);
         assert_eq!(case.name, "my-test");

@@ -34,7 +34,6 @@
 //! - Handles page faults and demand paging
 //! - Implements NUMA policy management (single-node)
 
-
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -357,21 +356,23 @@ pub fn mmap(
 
     // Call memory manager to perform the mapping
     let result = if (flags & map::MAP_ANONYMOUS) == 0 && fd >= 0 {
-        vm_mmap_file(addr_val, length, protection, mmap_flags, fd, offset as usize)
-            .map_err(vm_error_to_linux)?
+        vm_mmap_file(
+            addr_val,
+            length,
+            protection,
+            mmap_flags,
+            fd,
+            offset as usize,
+        )
+        .map_err(vm_error_to_linux)?
     } else {
         vm_mmap(addr_val, length, protection, mmap_flags).map_err(vm_error_to_linux)?
     };
 
     // File-backed mmap: populate mapped pages from the backing fd.
     if (flags & map::MAP_ANONYMOUS) == 0 && fd >= 0 {
-        crate::memory::populate_user_mapping_from_vfs(
-            result as usize,
-            length,
-            fd,
-            offset as u64,
-        )
-        .map_err(|_| LinuxError::EIO)?;
+        crate::memory::populate_user_mapping_from_vfs(result as usize, length, fd, offset as u64)
+            .map_err(|_| LinuxError::EIO)?;
     }
 
     // Handle MAP_POPULATE - touch pages to ensure they're allocated
@@ -1259,16 +1260,16 @@ pub fn memfd_create(name: *const u8, _flags: u32) -> LinuxResult<Fd> {
     inc_ops();
 
     let name_str = unsafe { c_str_to_string(name)? };
-    
+
     // Generate a unique filename using an atomic counter
     static MEMFD_COUNTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     let id = MEMFD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    
+
     let path = alloc::format!("/tmp/memfd_{}_{}", name_str, id);
-    
+
     // Open the file with CREAT and RDWR flags
     let vfs_flags = vfs::OpenFlags::CREAT | vfs::OpenFlags::RDWR;
-    
+
     match vfs::vfs_open(&path, vfs_flags, 0o600) {
         Ok(fd) => {
             // Optionally unlink so it's anonymous

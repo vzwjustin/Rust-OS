@@ -3,9 +3,7 @@
 //! This module provides a comprehensive Linux/POSIX API compatibility layer
 //! for RustOS, enabling Linux applications to run with minimal modifications.
 
-
 extern crate alloc;
-
 
 pub mod advanced_io;
 pub mod file_ops;
@@ -16,8 +14,8 @@ pub mod memory_ops;
 pub mod process_ops;
 pub mod resource_ops;
 pub mod signal_ops;
-pub mod special_fd;
 pub mod socket_ops;
+pub mod special_fd;
 pub mod sysinfo_ops;
 pub mod thread_ops;
 pub mod time_ops;
@@ -146,7 +144,6 @@ pub enum LinuxError {
     /// Transport endpoint is not connected
     ENOTCONN = 107,
 }
-
 
 // Linux compatibility aliases - these errno values are intentionally the same
 /// Operation would block (alias for EAGAIN)

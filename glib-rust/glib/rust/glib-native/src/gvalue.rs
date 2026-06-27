@@ -5,6 +5,7 @@
 
 use crate::gtype::*;
 use crate::prelude::*;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 /// A polymorphic value container (`GValue`).
@@ -178,9 +179,10 @@ impl GValue {
         self.data.v_pointer = Some(Arc::new(String::from(v)));
     }
     pub fn get_string(&self) -> Option<&str> {
-        self.data.v_pointer.as_ref().and_then(|p| {
-            p.downcast_ref::<String>().map(|s| s.as_str())
-        })
+        self.data
+            .v_pointer
+            .as_ref()
+            .and_then(|p| p.downcast_ref::<String>().map(|s| s.as_str()))
     }
 
     // ── Pointer ───────────────────────────────────────────────────
@@ -214,9 +216,10 @@ impl GValue {
         self.data.v_pointer = Some(v);
     }
     pub fn get_object<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
-        self.data.v_pointer.as_ref().and_then(|p| {
-            p.clone().downcast::<T>().ok()
-        })
+        self.data
+            .v_pointer
+            .as_ref()
+            .and_then(|p| p.clone().downcast::<T>().ok())
     }
 
     // ── Boxed ─────────────────────────────────────────────────────
@@ -225,9 +228,10 @@ impl GValue {
         self.data.v_pointer = Some(v);
     }
     pub fn get_boxed<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
-        self.data.v_pointer.as_ref().and_then(|p| {
-            p.clone().downcast::<T>().ok()
-        })
+        self.data
+            .v_pointer
+            .as_ref()
+            .and_then(|p| p.clone().downcast::<T>().ok())
     }
 }
 
@@ -329,32 +333,111 @@ pub fn value_new_boxed(v: Arc<dyn core::any::Any + Send + Sync>) -> GValue {
     val
 }
 
-/// Value transform function signature.
+/// Value transform function signature (`GValueTransform` in C).
+///
+/// Reads from `src` and writes a converted representation into `dest`.
 pub type TransformFunc = fn(&GValue, &mut GValue);
+
+// ── Global transform registry ─────────────────────────────────────────
+//
+// Mirrors GLib's `static ... transform_func_LT` lookup table keyed by
+// `(src_type, dest_type)`. Lazily initialised under `spin::Once` so the
+// kernel never pays for it unless transforms are actually used.
+
+static TRANSFORM_REGISTRY: spin::Once<spin::Mutex<BTreeMap<(GType, GType), TransformFunc>>> =
+    spin::Once::new();
+
+fn transform_registry() -> &'static spin::Mutex<BTreeMap<(GType, GType), TransformFunc>> {
+    TRANSFORM_REGISTRY.call_once(|| spin::Mutex::new(BTreeMap::new()))
+}
+
+/// Register a transform function between two `GType`s (`g_value_register_transform_func`).
+///
+/// Subsequent registrations for the same `(src_type, dest_type)` pair replace
+/// the previous one, matching upstream behaviour.
+pub fn value_register_transform_func(src_type: GType, dest_type: GType, func: TransformFunc) {
+    let mut reg = transform_registry().lock();
+    reg.insert((src_type, dest_type), func);
+}
+
+/// Check whether a transform is possible between two types
+/// (`g_value_type_transformable`).
+///
+/// Returns `true` when `src_type == dest_type` (identity) or when a transform
+/// function has been registered for the pair.
+pub fn value_can_transform(src_type: GType, dest_type: GType) -> bool {
+    if src_type == dest_type {
+        return true;
+    }
+    transform_registry()
+        .lock()
+        .contains_key(&(src_type, dest_type))
+}
+
+/// Transform `src_value` into `dest_value` (`g_value_transform`).
+///
+/// Looks up a registered transform for `(src_value.value_type(),
+/// dest_value.value_type())`. On a hit the function is invoked and `true` is
+/// returned. When source and destination types are equal the value is copied
+/// directly (identity transform). Otherwise `false` is returned — this never
+/// panics, mirroring upstream's `gboolean` return.
+///
+/// Note: GLib's `GTypeValueTable` carries a `value_vc_peek`/transform hook that
+/// we defer (the native `GTypeValueTable` does not model it yet); only the
+/// explicit registry plus identity copy are consulted here.
+pub fn value_transform(src_value: &GValue, dest_value: &mut GValue) -> bool {
+    let src_type = src_value.value_type();
+    let dest_type = dest_value.value_type();
+
+    if src_type == dest_type {
+        dest_value.copy_from(src_value);
+        return true;
+    }
+
+    let func = {
+        let reg = transform_registry().lock();
+        reg.get(&(src_type, dest_type)).copied()
+    };
+
+    match func {
+        Some(f) => {
+            f(src_value, dest_value);
+            true
+        }
+        None => false,
+    }
+}
 
 /// Default value table for basic types.
 pub fn default_value_table_for(type_id: GType) -> Option<GTypeValueTable> {
     match type_id {
-        G_TYPE_BOOLEAN | G_TYPE_CHAR | G_TYPE_UCHAR |
-        G_TYPE_INT | G_TYPE_UINT | G_TYPE_LONG | G_TYPE_ULONG |
-        G_TYPE_INT64 | G_TYPE_UINT64 | G_TYPE_ENUM | G_TYPE_FLAGS => Some(GTypeValueTable {
-            value_init: |_| {},
-            value_free: |_| {},
-            value_copy: |src, dst| { *dst = src.clone(); },
-            collect_format: "i",
-            lcopy_format: "p",
-        }),
+        G_TYPE_BOOLEAN | G_TYPE_CHAR | G_TYPE_UCHAR | G_TYPE_INT | G_TYPE_UINT | G_TYPE_LONG
+        | G_TYPE_ULONG | G_TYPE_INT64 | G_TYPE_UINT64 | G_TYPE_ENUM | G_TYPE_FLAGS => {
+            Some(GTypeValueTable {
+                value_init: |_| {},
+                value_free: |_| {},
+                value_copy: |src, dst| {
+                    *dst = src.clone();
+                },
+                collect_format: "i",
+                lcopy_format: "p",
+            })
+        }
         G_TYPE_FLOAT | G_TYPE_DOUBLE => Some(GTypeValueTable {
             value_init: |_| {},
             value_free: |_| {},
-            value_copy: |src, dst| { *dst = src.clone(); },
+            value_copy: |src, dst| {
+                *dst = src.clone();
+            },
             collect_format: "d",
             lcopy_format: "p",
         }),
         G_TYPE_STRING | G_TYPE_POINTER | G_TYPE_OBJECT | G_TYPE_BOXED => Some(GTypeValueTable {
             value_init: |_| {},
             value_free: |_| {},
-            value_copy: |src, dst| { *dst = src.clone(); },
+            value_copy: |src, dst| {
+                *dst = src.clone();
+            },
             collect_format: "p",
             lcopy_format: "p",
         }),
@@ -457,5 +540,55 @@ mod tests {
         let mut v = GValue::for_type(G_TYPE_UINT64);
         v.set_uint64(u64::MAX);
         assert_eq!(v.get_uint64(), u64::MAX);
+    }
+
+    #[test]
+    fn transform_register_and_apply() {
+        type_init();
+        // int -> double: cast numerically.
+        value_register_transform_func(G_TYPE_INT, G_TYPE_DOUBLE, |src, dst| {
+            dst.set_double(src.get_int() as f64);
+        });
+        assert!(value_can_transform(G_TYPE_INT, G_TYPE_DOUBLE));
+
+        let src = value_new_int(7);
+        let mut dst = GValue::for_type(G_TYPE_DOUBLE);
+        assert!(value_transform(&src, &mut dst));
+        assert!((dst.get_double() - 7.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn transform_identity() {
+        type_init();
+        let src = value_new_int(42);
+        let mut dst = GValue::for_type(G_TYPE_INT);
+        // No registered func, but src_type == dest_type -> identity copy.
+        assert!(value_transform(&src, &mut dst));
+        assert_eq!(dst.get_int(), 42);
+    }
+
+    #[test]
+    fn transform_missing_returns_false() {
+        type_init();
+        // No int -> string transform registered.
+        assert!(!value_can_transform(G_TYPE_INT, G_TYPE_STRING));
+        let src = value_new_int(5);
+        let mut dst = GValue::for_type(G_TYPE_STRING);
+        assert!(!value_transform(&src, &mut dst));
+    }
+
+    #[test]
+    fn transform_replaces_existing() {
+        type_init();
+        value_register_transform_func(G_TYPE_UINT, G_TYPE_DOUBLE, |_, dst| {
+            dst.set_double(1.0);
+        });
+        value_register_transform_func(G_TYPE_UINT, G_TYPE_DOUBLE, |src, dst| {
+            dst.set_double(src.get_uint() as f64 * 10.0);
+        });
+        let src = value_new_uint(3);
+        let mut dst = GValue::for_type(G_TYPE_DOUBLE);
+        assert!(value_transform(&src, &mut dst));
+        assert!((dst.get_double() - 30.0).abs() < f64::EPSILON);
     }
 }

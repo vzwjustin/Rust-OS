@@ -824,6 +824,12 @@ static RNG_STATE: RwLock<RngState> = RwLock::new(RngState {
     entropy_estimate: 0,
     last_reseed: 0,
 });
+static RNG_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Returns true after `init_rng()` has seeded the kernel RNG.
+pub fn is_rng_initialized() -> bool {
+    RNG_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
+}
 
 /// Initialize secure random number generator
 pub fn init_rng() -> Result<(), &'static str> {
@@ -832,6 +838,7 @@ pub fn init_rng() -> Result<(), &'static str> {
     // Seed from hardware sources
     collect_entropy(&mut state)?;
     state.last_reseed = get_time_ms();
+    RNG_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
 
     Ok(())
 }

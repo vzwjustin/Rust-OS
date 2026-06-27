@@ -3,7 +3,6 @@
 //! This module provides data structures that match Linux kernel types
 //! for binary compatibility with Linux applications.
 
-
 /// File descriptor type
 pub type Fd = i32;
 
@@ -506,4 +505,3 @@ pub struct OpenHow {
     /// Resolve flags (RESOLVE_* constants)
     pub resolve: u64,
 }
-

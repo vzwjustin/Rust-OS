@@ -4,8 +4,9 @@
 //! requires OS support (mmap) and is deferred to a platform layer.
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::prelude::*;
 use crate::bytes::Bytes;
+use crate::prelude::*;
+use spin::RwLock;
 
 /// A memory-mapped file (`GMappedFile`).
 ///
@@ -56,12 +57,12 @@ impl MappedFile {
 }
 
 /// Platform trait for mapping files.
-pub trait MappedFilePlatform {
+pub trait MappedFilePlatform: Sync {
     /// Open and map a file (`g_mapped_file_new`).
-    fn open(path: &str, writable: bool) -> Result<MappedFile, MappedFileError>;
+    fn open(&self, path: &str, writable: bool) -> Result<MappedFile, MappedFileError>;
 
     /// Map from a file descriptor (`g_mapped_file_new_from_fd`).
-    fn open_from_fd(fd: i32, writable: bool) -> Result<MappedFile, MappedFileError>;
+    fn open_from_fd(&self, fd: i32, writable: bool) -> Result<MappedFile, MappedFileError>;
 }
 
 /// Mapped file errors.
@@ -79,13 +80,31 @@ pub enum MappedFileError {
 pub struct NoMappedFilePlatform;
 
 impl MappedFilePlatform for NoMappedFilePlatform {
-    fn open(_path: &str, _writable: bool) -> Result<MappedFile, MappedFileError> {
+    fn open(&self, _path: &str, _writable: bool) -> Result<MappedFile, MappedFileError> {
         Err(MappedFileError::Other)
     }
 
-    fn open_from_fd(_fd: i32, _writable: bool) -> Result<MappedFile, MappedFileError> {
+    fn open_from_fd(&self, _fd: i32, _writable: bool) -> Result<MappedFile, MappedFileError> {
         Err(MappedFileError::InvalidFd)
     }
+}
+
+static MAPPED_FILE_PLATFORM: RwLock<&'static dyn MappedFilePlatform> =
+    RwLock::new(&NoMappedFilePlatform);
+
+/// Installs the platform mapped-file implementation.
+pub fn register_mapped_file_platform(platform: &'static dyn MappedFilePlatform) {
+    *MAPPED_FILE_PLATFORM.write() = platform;
+}
+
+/// Maps a file from path (`g_mapped_file_new`).
+pub fn mapped_file_new(path: &str, writable: bool) -> Result<MappedFile, MappedFileError> {
+    MAPPED_FILE_PLATFORM.read().open(path, writable)
+}
+
+/// Maps a file from an open file descriptor (`g_mapped_file_new_from_fd`).
+pub fn mapped_file_new_from_fd(fd: i32, writable: bool) -> Result<MappedFile, MappedFileError> {
+    MAPPED_FILE_PLATFORM.read().open_from_fd(fd, writable)
 }
 
 #[cfg(test)]
@@ -128,7 +147,36 @@ mod tests {
 
     #[test]
     fn no_platform_fails() {
-        assert!(NoMappedFilePlatform::open("/tmp/test", false).is_err());
-        assert!(NoMappedFilePlatform::open_from_fd(0, false).is_err());
+        let platform = NoMappedFilePlatform;
+        assert!(platform.open("/tmp/test", false).is_err());
+        assert!(platform.open_from_fd(0, false).is_err());
+    }
+
+    struct MockMappedFilePlatform;
+    impl MappedFilePlatform for MockMappedFilePlatform {
+        fn open(&self, path: &str, writable: bool) -> Result<MappedFile, MappedFileError> {
+            if path == "/mock/data" {
+                Ok(MappedFile::from_contents(b"mock-data".to_vec(), writable))
+            } else {
+                Err(MappedFileError::NotFound)
+            }
+        }
+        fn open_from_fd(&self, fd: i32, writable: bool) -> Result<MappedFile, MappedFileError> {
+            if fd == 7 {
+                Ok(MappedFile::from_contents(b"fd-data".to_vec(), writable))
+            } else {
+                Err(MappedFileError::InvalidFd)
+            }
+        }
+    }
+
+    #[test]
+    fn mapped_file_via_platform() {
+        register_mapped_file_platform(&MockMappedFilePlatform);
+        let mf = mapped_file_new("/mock/data", false).unwrap();
+        assert_eq!(mf.get_contents(), b"mock-data");
+        let mf_fd = mapped_file_new_from_fd(7, false).unwrap();
+        assert_eq!(mf_fd.get_contents(), b"fd-data");
+        register_mapped_file_platform(&NoMappedFilePlatform);
     }
 }

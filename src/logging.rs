@@ -423,7 +423,6 @@ macro_rules! log_fatal {
 pub mod profiling {
     use super::*;
     use alloc::collections::BTreeMap;
-    
 
     /// Performance counter
     #[derive(Debug, Clone)]
@@ -708,7 +707,6 @@ pub mod debug {
 
 /// Kernel debugging utilities
 pub mod kernel_debug {
-    
 
     /// Dump kernel state for debugging
     pub fn dump_kernel_state() {

@@ -116,7 +116,10 @@ impl<T> NTree<T> {
         let pos = match sibling {
             Some(s) => {
                 let p = self.get_node_mut(parent);
-                p.children.iter().position(|&c| c == s).unwrap_or(p.children.len())
+                p.children
+                    .iter()
+                    .position(|&c| c == s)
+                    .unwrap_or(p.children.len())
             }
             None => self.get_node(parent).children.len(),
         };
@@ -132,7 +135,11 @@ impl<T> NTree<T> {
         let pos = match sibling {
             Some(s) => {
                 let p = self.get_node_mut(parent);
-                p.children.iter().position(|&c| c == s).map(|i| i + 1).unwrap_or(p.children.len())
+                p.children
+                    .iter()
+                    .position(|&c| c == s)
+                    .map(|i| i + 1)
+                    .unwrap_or(p.children.len())
             }
             None => 0,
         };
@@ -239,7 +246,13 @@ impl<T> NTree<T> {
     }
 
     /// Find a node by data (`g_node_find`).
-    pub fn find(&self, root: usize, order: TraverseType, flags: TraverseFlags, pred: impl Fn(&T) -> bool) -> Option<usize> {
+    pub fn find(
+        &self,
+        root: usize,
+        order: TraverseType,
+        flags: TraverseFlags,
+        pred: impl Fn(&T) -> bool,
+    ) -> Option<usize> {
         match order {
             TraverseType::PreOrder => self.find_pre_order(root, flags, &pred),
             TraverseType::PostOrder => self.find_post_order(root, flags, &pred),
@@ -248,7 +261,12 @@ impl<T> NTree<T> {
         }
     }
 
-    fn find_pre_order(&self, id: usize, flags: TraverseFlags, pred: &impl Fn(&T) -> bool) -> Option<usize> {
+    fn find_pre_order(
+        &self,
+        id: usize,
+        flags: TraverseFlags,
+        pred: &impl Fn(&T) -> bool,
+    ) -> Option<usize> {
         let node = self.get_node(id);
         let is_leaf = node.children.is_empty();
         if flags.matches(is_leaf) && pred(&node.data) {
@@ -262,7 +280,12 @@ impl<T> NTree<T> {
         None
     }
 
-    fn find_post_order(&self, id: usize, flags: TraverseFlags, pred: &impl Fn(&T) -> bool) -> Option<usize> {
+    fn find_post_order(
+        &self,
+        id: usize,
+        flags: TraverseFlags,
+        pred: &impl Fn(&T) -> bool,
+    ) -> Option<usize> {
         let node = self.get_node(id);
         for &child in &node.children {
             if let Some(found) = self.find_post_order(child, flags, pred) {
@@ -277,7 +300,12 @@ impl<T> NTree<T> {
         }
     }
 
-    fn find_in_order(&self, id: usize, flags: TraverseFlags, pred: &impl Fn(&T) -> bool) -> Option<usize> {
+    fn find_in_order(
+        &self,
+        id: usize,
+        flags: TraverseFlags,
+        pred: &impl Fn(&T) -> bool,
+    ) -> Option<usize> {
         let node = self.get_node(id);
         let children = &node.children;
         if !children.is_empty() {
@@ -297,7 +325,12 @@ impl<T> NTree<T> {
         None
     }
 
-    fn find_level_order(&self, root: usize, flags: TraverseFlags, pred: &impl Fn(&T) -> bool) -> Option<usize> {
+    fn find_level_order(
+        &self,
+        root: usize,
+        flags: TraverseFlags,
+        pred: &impl Fn(&T) -> bool,
+    ) -> Option<usize> {
         let mut queue = vec![root];
         while !queue.is_empty() {
             let id = queue.remove(0);
@@ -312,7 +345,13 @@ impl<T> NTree<T> {
     }
 
     /// Traverse all nodes (`g_node_traverse`).
-    pub fn traverse(&self, root: usize, order: TraverseType, flags: TraverseFlags, mut func: impl FnMut(usize, &T)) {
+    pub fn traverse(
+        &self,
+        root: usize,
+        order: TraverseType,
+        flags: TraverseFlags,
+        mut func: impl FnMut(usize, &T),
+    ) {
         match order {
             TraverseType::PreOrder => self.traverse_pre_order(root, flags, &mut func),
             TraverseType::PostOrder => self.traverse_post_order(root, flags, &mut func),
@@ -321,7 +360,12 @@ impl<T> NTree<T> {
         }
     }
 
-    fn traverse_pre_order(&self, id: usize, flags: TraverseFlags, func: &mut impl FnMut(usize, &T)) {
+    fn traverse_pre_order(
+        &self,
+        id: usize,
+        flags: TraverseFlags,
+        func: &mut impl FnMut(usize, &T),
+    ) {
         let node = self.get_node(id);
         let is_leaf = node.children.is_empty();
         if flags.matches(is_leaf) {
@@ -332,7 +376,12 @@ impl<T> NTree<T> {
         }
     }
 
-    fn traverse_post_order(&self, id: usize, flags: TraverseFlags, func: &mut impl FnMut(usize, &T)) {
+    fn traverse_post_order(
+        &self,
+        id: usize,
+        flags: TraverseFlags,
+        func: &mut impl FnMut(usize, &T),
+    ) {
         let node = self.get_node(id);
         for &child in &node.children {
             self.traverse_post_order(child, flags, func);
@@ -358,7 +407,12 @@ impl<T> NTree<T> {
         }
     }
 
-    fn traverse_level_order(&self, root: usize, flags: TraverseFlags, func: &mut impl FnMut(usize, &T)) {
+    fn traverse_level_order(
+        &self,
+        root: usize,
+        flags: TraverseFlags,
+        func: &mut impl FnMut(usize, &T),
+    ) {
         let mut queue = vec![root];
         while !queue.is_empty() {
             let id = queue.remove(0);
@@ -459,11 +513,15 @@ mod tests {
         tree.append(root, 3);
         tree.append(root, 4);
 
-        let found = tree.find(root, TraverseType::PreOrder, TraverseFlags::ALL, |d| *d == 3);
+        let found = tree.find(root, TraverseType::PreOrder, TraverseFlags::ALL, |d| {
+            *d == 3
+        });
         assert!(found.is_some());
         assert_eq!(tree.get(found.unwrap()), &3);
 
-        let not_found = tree.find(root, TraverseType::PreOrder, TraverseFlags::ALL, |d| *d == 99);
+        let not_found = tree.find(root, TraverseType::PreOrder, TraverseFlags::ALL, |d| {
+            *d == 99
+        });
         assert!(not_found.is_none());
     }
 
@@ -477,9 +535,14 @@ mod tests {
         tree.append(c1, 5);
 
         let mut visited = Vec::new();
-        tree.traverse(root, TraverseType::PreOrder, TraverseFlags::ALL, |_, data| {
-            visited.push(*data);
-        });
+        tree.traverse(
+            root,
+            TraverseType::PreOrder,
+            TraverseFlags::ALL,
+            |_, data| {
+                visited.push(*data);
+            },
+        );
         assert_eq!(visited, vec![1, 2, 3, 4, 5]);
     }
 
@@ -493,9 +556,14 @@ mod tests {
         tree.append(c1, 5);
 
         let mut visited = Vec::new();
-        tree.traverse(root, TraverseType::PostOrder, TraverseFlags::ALL, |_, data| {
-            visited.push(*data);
-        });
+        tree.traverse(
+            root,
+            TraverseType::PostOrder,
+            TraverseFlags::ALL,
+            |_, data| {
+                visited.push(*data);
+            },
+        );
         assert_eq!(visited, vec![2, 3, 5, 4, 1]);
     }
 
@@ -518,7 +586,11 @@ mod tests {
         tree.append(root, 1);
         tree.append(root, 3);
         tree.insert(root, 1, 2);
-        let children: Vec<i32> = tree.children(root).iter().map(|&id| *tree.get(id)).collect();
+        let children: Vec<i32> = tree
+            .children(root)
+            .iter()
+            .map(|&id| *tree.get(id))
+            .collect();
         assert_eq!(children, vec![1, 2, 3]);
     }
 }

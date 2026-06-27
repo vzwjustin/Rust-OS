@@ -4,10 +4,7 @@
 
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{
-        FrameAllocator, Page, PageTableFlags as X64Flags,
-        PhysFrame, Size4KiB,
-    },
+    structures::paging::{FrameAllocator, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
 };
 
