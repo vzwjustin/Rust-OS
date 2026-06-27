@@ -386,6 +386,9 @@ pub use glib_native::{
     InetAddress,
     InetAddrBytes,
     SocketFamily,
+    // GIO IP address mask (subnet)
+    InetAddressMask,
+    InetAddressMaskError,
     // URI functions
     escape_string,
     is_valid,
@@ -2190,6 +2193,69 @@ pub fn smoke_check() -> Result<(), &'static str> {
     // new_from_bytes with wrong size fails.
     if InetAddress::new_from_bytes(&[1, 2, 3], SocketFamily::Ipv4).is_some() {
         return Err("GInet wrong byte count");
+    }
+
+    // GIO IP address mask (Phase 11). Exercise construction, parsing,
+    // to_string, matching, and equality.
+    // IPv4 /24 mask.
+    let mask_v4 = InetAddressMask::new_from_string("192.168.1.0/24")
+        .map_err(|_| "GInetMask v4 parse")?;
+    if mask_v4.family() != SocketFamily::Ipv4 || mask_v4.length() != 24
+        || mask_v4.address().to_string() != "192.168.1.0"
+        || mask_v4.to_string() != "192.168.1.0/24"
+    {
+        return Err("GInetMask v4 fields");
+    }
+    // Matches within /24.
+    if !mask_v4.matches(&InetAddress::new_from_string("192.168.1.1").unwrap())
+        || !mask_v4.matches(&InetAddress::new_from_string("192.168.1.255").unwrap())
+        || mask_v4.matches(&InetAddress::new_from_string("192.168.2.1").unwrap())
+    {
+        return Err("GInetMask v4 matches");
+    }
+    // Different family doesn't match.
+    if mask_v4.matches(&InetAddress::new_from_string("::1").unwrap()) {
+        return Err("GInetMask v4 vs v6");
+    }
+    // Full-length mask (no /prefix) → 32 for IPv4.
+    let full_v4 = InetAddressMask::new_from_string("192.168.1.1")
+        .map_err(|_| "GInetMask v4 full parse")?;
+    if full_v4.length() != 32 || full_v4.to_string() != "192.168.1.1" {
+        return Err("GInetMask v4 full");
+    }
+    // IPv6 /32 mask.
+    let mask_v6 = InetAddressMask::new_from_string("2001:db8::/32")
+        .map_err(|_| "GInetMask v6 parse")?;
+    if mask_v6.family() != SocketFamily::Ipv6 || mask_v6.length() != 32 {
+        return Err("GInetMask v6 fields");
+    }
+    if !mask_v6.matches(&InetAddress::new_from_string("2001:db8::1").unwrap())
+        || !mask_v6.matches(&InetAddress::new_from_string("2001:db8:abcd::1").unwrap())
+        || mask_v6.matches(&InetAddress::new_from_string("2001:db9::1").unwrap())
+    {
+        return Err("GInetMask v6 matches");
+    }
+    // Error cases.
+    if InetAddressMask::new_from_string("not-an-ip").is_ok() {
+        return Err("GInetMask parse error");
+    }
+    if InetAddressMask::new_from_string("192.168.1.0/33").is_ok() {
+        return Err("GInetMask length too long");
+    }
+    if InetAddressMask::new_from_string("192.168.1.1/24").is_ok() {
+        return Err("GInetMask bits beyond prefix");
+    }
+    // Constructor with BitsBeyondPrefix.
+    let addr_with_bits = InetAddress::new_from_string("192.168.1.1").unwrap();
+    if let Ok(_) = InetAddressMask::new(addr_with_bits, 24) {
+        return Err("GInetMask new bits beyond prefix");
+    }
+    // Equal masks.
+    let m1 = InetAddressMask::new_from_string("192.168.1.0/24").unwrap();
+    let m2 = InetAddressMask::new_from_string("192.168.1.0/24").unwrap();
+    let m3 = InetAddressMask::new_from_string("192.168.1.0/25").unwrap();
+    if !m1.equal(&m2) || m1.equal(&m3) {
+        return Err("GInetMask equal");
     }
 
     Ok(())

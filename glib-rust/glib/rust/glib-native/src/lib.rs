@@ -68,6 +68,7 @@ pub mod gioerror;
 pub mod gnotification;
 pub mod gsrvtarget;
 pub mod ginetaddress;
+pub mod ginetaddressmask;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -425,6 +426,7 @@ pub use gnotification::{
 };
 pub use gsrvtarget::{SrvTarget, srv_target_list_sort};
 pub use ginetaddress::{InetAddress, InetAddrBytes, SocketFamily};
+pub use ginetaddressmask::{InetAddressMask, InetAddressMaskError};
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,
