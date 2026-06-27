@@ -379,6 +379,9 @@ pub use glib_native::{
     NotificationPriority,
     NotificationButton,
     NotificationIcon,
+    // GIO SRV record target
+    SrvTarget,
+    srv_target_list_sort,
     // URI functions
     escape_string,
     is_valid,
@@ -2042,6 +2045,54 @@ pub fn smoke_check() -> Result<(), &'static str> {
     let downcasted = stored_icon.downcast_ref::<u32>();
     if downcasted != Some(&0xDEADBEEF) {
         return Err("GNotification icon downcast");
+    }
+
+    // GIO SRV record target (Phase 11). Exercise construction,
+    // accessors, and RFC 2782 list sorting.
+    let srv = SrvTarget::new("xmpp.example.com", 5222, 10, 60);
+    if srv.hostname() != "xmpp.example.com"
+        || srv.port() != 5222
+        || srv.priority() != 10
+        || srv.weight() != 60
+    {
+        return Err("GSrvTarget accessors");
+    }
+    // Empty list sorts to empty.
+    let empty_sorted = srv_target_list_sort(alloc::vec::Vec::new());
+    if !empty_sorted.is_empty() {
+        return Err("GSrvTarget sort empty");
+    }
+    // Single "." hostname means service not available -> empty.
+    let dot_sorted = srv_target_list_sort(alloc::vec![SrvTarget::new(".", 0, 0, 0)]);
+    if !dot_sorted.is_empty() {
+        return Err("GSrvTarget sort dot hostname");
+    }
+    // Sort by priority ascending.
+    let prio_sorted = srv_target_list_sort(alloc::vec![
+        SrvTarget::new("c.example.com", 80, 30, 0),
+        SrvTarget::new("a.example.com", 80, 10, 0),
+        SrvTarget::new("b.example.com", 80, 20, 0),
+    ]);
+    if prio_sorted.len() != 3
+        || prio_sorted[0].priority() != 10
+        || prio_sorted[1].priority() != 20
+        || prio_sorted[2].priority() != 30
+    {
+        return Err("GSrvTarget sort by priority");
+    }
+    // All targets survive weighted-random selection within a group.
+    let group_sorted = srv_target_list_sort(alloc::vec![
+        SrvTarget::new("h1.example.com", 80, 10, 100),
+        SrvTarget::new("h2.example.com", 80, 10, 50),
+        SrvTarget::new("h3.example.com", 80, 10, 0),
+    ]);
+    if group_sorted.len() != 3 {
+        return Err("GSrvTarget sort preserves all");
+    }
+    for t in &group_sorted {
+        if t.priority() != 10 {
+            return Err("GSrvTarget sort same priority");
+        }
     }
 
     Ok(())

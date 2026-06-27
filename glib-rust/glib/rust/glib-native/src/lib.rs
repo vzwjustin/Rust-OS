@@ -66,6 +66,7 @@ pub mod gdbusintrospection;
 pub mod gdbuserror;
 pub mod gioerror;
 pub mod gnotification;
+pub mod gsrvtarget;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -421,6 +422,7 @@ pub use fileutils::file_error_from_errno;
 pub use gnotification::{
     Notification, NotificationPriority, NotificationButton, NotificationIcon,
 };
+pub use gsrvtarget::{SrvTarget, srv_target_list_sort};
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,
