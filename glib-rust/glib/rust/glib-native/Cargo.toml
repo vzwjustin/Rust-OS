@@ -1,0 +1,11 @@
+[package]
+name = "glib-native"
+version = "0.1.0"
+description = "Native Rust reimplementation of GLib (phased migration)"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+
+[dependencies]
+spin = { version = "0.9", default-features = false, features = ["spin_mutex", "rwlock", "once"] }
+
+[dev-dependencies]
