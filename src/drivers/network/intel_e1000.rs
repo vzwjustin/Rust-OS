@@ -4,7 +4,7 @@
 //! and other Intel Gigabit Ethernet controllers (E1000 and E1000E series).
 
 use super::{EnhancedNetworkStats, ExtendedNetworkCapabilities, PowerState, WakeOnLanConfig};
-use crate::net::{MacAddress, NetworkAddress, NetworkError};
+use crate::net::{MacAddress, NetworkError};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -868,7 +868,7 @@ pub enum E1000Reg {
     Wus = 0x05810,
 }
 
-/// E1000 control register bits
+// E1000 control register bits
 bitflags::bitflags! {
     pub struct E1000Ctrl: u32 {
         const FD = 1 << 0;       // Full Duplex
@@ -888,7 +888,7 @@ bitflags::bitflags! {
     }
 }
 
-/// E1000 status register bits
+// E1000 status register bits
 bitflags::bitflags! {
     pub struct E1000Status: u32 {
         const FD = 1 << 0;       // Full Duplex
@@ -909,7 +909,7 @@ bitflags::bitflags! {
     }
 }
 
-/// E1000 receive control register bits
+// E1000 receive control register bits
 bitflags::bitflags! {
     pub struct E1000Rctl: u32 {
         const EN = 1 << 1;       // Enable
@@ -936,7 +936,7 @@ bitflags::bitflags! {
     }
 }
 
-/// E1000 transmit control register bits
+// E1000 transmit control register bits
 bitflags::bitflags! {
     pub struct E1000Tctl: u32 {
         const EN = 1 << 1;       // Enable

@@ -4,7 +4,6 @@
 //! Uses a virtqueue for read/write/flush requests with scatter-gather DMA.
 
 use super::*;
-use alloc::vec::Vec;
 use spin::Mutex;
 
 /// virtio-blk feature bits
@@ -186,7 +185,7 @@ impl VirtioBlk {
         );
 
         // Set up status descriptor (write)
-        let mut status = 0xFFu8;
+        let status = 0xFFu8;
         let status_phys = super::virt_to_phys(&status as *const _ as usize);
         queue.set_desc(desc_status, status_phys, 1, desc_flags::WRITE, 0);
 
@@ -198,7 +197,7 @@ impl VirtioBlk {
         let mut timeout = 1_000_000u32;
         loop {
             if queue.has_used() {
-                let (id, _len) = queue.pop_used().unwrap();
+                let (_id, _len) = queue.pop_used().unwrap();
                 // Free descriptors
                 queue.free_desc(desc_hdr);
                 queue.free_desc(desc_data);
@@ -266,7 +265,7 @@ impl VirtioBlk {
             desc_status,
         );
 
-        let mut status = 0xFFu8;
+        let status = 0xFFu8;
         let status_phys = super::virt_to_phys(&status as *const _ as usize);
         queue.set_desc(desc_status, status_phys, 1, desc_flags::WRITE, 0);
 
@@ -277,7 +276,7 @@ impl VirtioBlk {
         let mut timeout = 1_000_000u32;
         loop {
             if queue.has_used() {
-                let (id, _len) = queue.pop_used().unwrap();
+                let (_id, _len) = queue.pop_used().unwrap();
                 queue.free_desc(desc_hdr);
                 queue.free_desc(desc_data);
                 queue.free_desc(desc_status);
@@ -324,7 +323,7 @@ impl VirtioBlk {
             desc_status,
         );
 
-        let mut status = 0xFFu8;
+        let status = 0xFFu8;
         let status_phys = super::virt_to_phys(&status as *const _ as usize);
         queue.set_desc(desc_status, status_phys, 1, desc_flags::WRITE, 0);
 
@@ -334,7 +333,7 @@ impl VirtioBlk {
         let mut timeout = 1_000_000u32;
         loop {
             if queue.has_used() {
-                let (id, _len) = queue.pop_used().unwrap();
+                let (_id, _len) = queue.pop_used().unwrap();
                 queue.free_desc(desc_hdr);
                 queue.free_desc(desc_status);
 

@@ -3,7 +3,7 @@
 //! Provides a unified interface between storage drivers and filesystem layers.
 //! Supports block-level operations, partition management, and filesystem detection.
 
-use super::{StorageDeviceInfo, StorageDriver, StorageError};
+use super::StorageError;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -589,7 +589,7 @@ impl FilesystemInterface {
     pub fn mount_filesystem(
         &mut self,
         device_id: u32,
-        partition_num: Option<u8>,
+        _partition_num: Option<u8>,
         mount_point: String,
         _fs_type: Option<FilesystemType>,
     ) -> Result<(), StorageError> {

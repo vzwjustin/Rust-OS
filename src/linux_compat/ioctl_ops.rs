@@ -3,7 +3,6 @@
 //! This module implements device control and file control operations
 //! including ioctl, fcntl, and related system calls.
 
-#![no_std]
 
 extern crate alloc;
 

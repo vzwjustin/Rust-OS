@@ -1113,7 +1113,7 @@ impl SwapManager {
                         return Err("Incomplete swap write operation");
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     self.deallocate_slot(slot);
                     return Err("Storage write failed during swap out");
                 }
@@ -1151,7 +1151,7 @@ impl SwapManager {
                         return Err("Incomplete swap read operation");
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     return Err("Storage read failed during swap in");
                 }
             }
@@ -1533,7 +1533,7 @@ impl PageTableManager {
         }
 
         // Unmap old page
-        let old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
+        let _old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
 
         // Map new page with write permissions
         let flags =
@@ -1651,7 +1651,7 @@ pub struct MemoryManager {
 
 /// Security features configuration
 #[derive(Debug, Clone)]
-struct SecurityFeatures {
+pub struct SecurityFeatures {
     aslr_enabled: bool,
     stack_canaries_enabled: bool,
     nx_bit_enabled: bool,
@@ -2105,7 +2105,7 @@ impl MemoryManager {
                         core::ptr::copy_nonoverlapping(page_data.as_ptr(), page_ptr, PAGE_SIZE);
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     // Failed to read from swap - zero the page as fallback
                     unsafe {
                         let page_ptr = (self.physical_memory_offset
@@ -3012,7 +3012,7 @@ pub fn adjust_heap(new_size: usize) -> Result<usize, &'static str> {
             Ok(aligned_size)
         } else if aligned_size < current_heap_size {
             // Shrinking heap - ensure it's safe to do so
-            let shrink_size = current_heap_size - aligned_size;
+            let _shrink_size = current_heap_size - aligned_size;
 
             // Check if shrinking would compromise system stability
             if stats.allocated_memory > aligned_size {
@@ -3352,7 +3352,7 @@ pub fn unmap_page(addr: usize) -> Result<(), &'static str> {
 pub fn check_memory_access(
     addr: usize,
     size: usize,
-    write: bool,
+    _write: bool,
     privilege_level: u8,
 ) -> Result<bool, &'static str> {
     // Basic validation

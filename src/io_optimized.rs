@@ -119,8 +119,9 @@ impl IoScheduler {
         let count = queue.len();
 
         // Process all pending requests (simplified - just mark as complete)
-        while let Some(mut request) = queue.pop_front() {
-            request.completion_status = IoCompletionStatus::Success;
+        while let Some(mut req) = queue.pop_front() {
+            req.completion_status = IoCompletionStatus::Success;
+            let _ = &req;
             let mut completed = self.completed_requests.lock();
             *completed += 1;
         }
@@ -560,8 +561,9 @@ pub fn process_requests_limited(max_requests: usize) -> usize {
     let to_process = core::cmp::min(queue.len(), max_requests);
 
     for _ in 0..to_process {
-        if let Some(mut request) = queue.pop_front() {
-            request.completion_status = IoCompletionStatus::Success;
+        if let Some(mut req) = queue.pop_front() {
+            req.completion_status = IoCompletionStatus::Success;
+            let _ = &req;
             *completed += 1;
         }
     }

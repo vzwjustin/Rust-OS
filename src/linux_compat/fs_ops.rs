@@ -3,7 +3,6 @@
 //! This module implements Linux filesystem operations including
 //! mount, umount, statfs, and filesystem-level operations.
 
-#![no_std]
 
 extern crate alloc;
 
@@ -176,11 +175,11 @@ pub mod fstype {
 
 /// mount - mount filesystem
 pub fn mount(
-    source: *const u8,
+    _source: *const u8,
     target: *const u8,
-    filesystemtype: *const u8,
+    _filesystemtype: *const u8,
     mountflags: u64,
-    data: *const u8,
+    _data: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -341,7 +340,7 @@ pub fn fstatfs(fd: Fd, buf: *mut StatFs) -> LinuxResult<i32> {
 }
 
 /// ustat - get filesystem statistics (obsolete, use statfs)
-pub fn ustat(dev: Dev, ubuf: *mut u8) -> LinuxResult<i32> {
+pub fn ustat(_dev: Dev, ubuf: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     if ubuf.is_null() {
@@ -382,7 +381,7 @@ pub fn syncfs(fd: Fd) -> LinuxResult<i32> {
 // ============================================================================
 
 /// quotactl - manipulate disk quotas
-pub fn quotactl(cmd: i32, special: *const u8, id: i32, addr: *mut u8) -> LinuxResult<i32> {
+pub fn quotactl(cmd: i32, _special: *const u8, _id: i32, _addr: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Quota commands
@@ -484,7 +483,7 @@ pub fn setns(fd: Fd, nstype: i32) -> LinuxResult<i32> {
 // ============================================================================
 
 /// swapon - start swapping to file/device
-pub fn swapon(path: *const u8, swapflags: i32) -> LinuxResult<i32> {
+pub fn swapon(path: *const u8, _swapflags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -541,7 +540,7 @@ pub fn inotify_init1(flags: i32) -> LinuxResult<Fd> {
 }
 
 /// inotify_add_watch - add watch to inotify instance
-pub fn inotify_add_watch(fd: Fd, pathname: *const u8, mask: u32) -> LinuxResult<i32> {
+pub fn inotify_add_watch(fd: Fd, pathname: *const u8, _mask: u32) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {
@@ -558,7 +557,7 @@ pub fn inotify_add_watch(fd: Fd, pathname: *const u8, mask: u32) -> LinuxResult<
 }
 
 /// inotify_rm_watch - remove watch from inotify instance
-pub fn inotify_rm_watch(fd: Fd, wd: i32) -> LinuxResult<i32> {
+pub fn inotify_rm_watch(fd: Fd, _wd: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {

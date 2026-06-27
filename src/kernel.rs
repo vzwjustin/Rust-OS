@@ -169,7 +169,7 @@ pub fn init_all_subsystems() -> Result<(), &'static str> {
             "arch" => crate::arch::init(),
             "smp" => crate::smp::init(),
             "scheduler" => {
-                crate::scheduler::init();
+                let _ = crate::scheduler::init();
                 Ok(())
             }
             "security" => crate::security::init(),

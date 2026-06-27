@@ -955,19 +955,19 @@ fn is_rdrand_supported() -> bool {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         {
-            let mut eax = 1u32;
-            let mut ebx = 0u32;
+            let mut _eax = 1u32;
+            let mut _ebx = 0u32;
             let mut ecx = 0u32;
-            let mut edx = 0u32;
+            let mut _edx = 0u32;
 
             core::arch::asm!(
                 "mov {tmp:e}, ebx",
                 "cpuid",
                 "xchg {tmp:e}, ebx",
-                tmp = inout(reg) ebx,
-                inout("eax") eax,
+                tmp = inout(reg) _ebx,
+                inout("eax") _eax,
                 inout("ecx") ecx,
-                inout("edx") edx,
+                inout("edx") _edx,
             );
 
             // RDRAND support is indicated by ECX bit 30
@@ -1032,19 +1032,19 @@ fn is_rdseed_supported() -> bool {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         {
-            let mut eax = 7u32;
+            let mut _eax = 7u32;
             let mut ebx = 0u32;
-            let mut ecx = 0u32;
-            let mut edx = 0u32;
+            let mut _ecx = 0u32;
+            let mut _edx = 0u32;
 
             core::arch::asm!(
                 "mov {tmp:e}, ebx",
                 "cpuid",
                 "xchg {tmp:e}, ebx",
                 tmp = inout(reg) ebx,
-                inout("eax") eax,
-                inout("ecx") ecx,
-                inout("edx") edx,
+                inout("eax") _eax,
+                inout("ecx") _ecx,
+                inout("edx") _edx,
             );
 
             // RDSEED support is indicated by EBX bit 18

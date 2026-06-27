@@ -16,90 +16,32 @@ pub mod vbe_io;
 pub mod virtio;
 
 // Removed unused imports
-use alloc::format;
 use alloc::string::String;
 use core::fmt;
 
 // Re-export VBE driver functionality
-pub use vbe::{
-    driver as vbe_driver, get_current_framebuffer_info, init as init_vbe, set_desktop_mode,
-    VbeDriver, VbeStatus, VideoMode,
-};
 
 // Re-export display driver functionality
-pub use display::{
-    change_mode, clear, controller, dimensions, driver_info, fill_rect, init as init_display,
-    init_from_bootloader as init_display_from_bootloader, is_ready as is_display_ready,
-    is_text_mode as is_display_text_mode, mode as display_mode, present, set_pixel,
-    status as display_status, DisplayControllerInfo, DisplayDriver, DisplayDriverInfo, DisplayMode,
-    DisplayStatus,
-};
 
 // Re-export PCI functionality
 pub use pci::{
-    get_pci_stats, init as init_pci, list_devices as list_pci_devices, pci_bus,
-    scan_devices as scan_pci_devices, PciAddress, PciDevice,
+    get_pci_stats, init as init_pci,
 };
 
 // Re-export hot-plug functionality
 pub use hotplug::{
-    add_device as add_hotplug_device, get_hotplug_stats, hotplug_manager, init as init_hotplug,
-    process_events as process_hotplug_events, remove_device as remove_hotplug_device, DeviceState,
-    HotplugDevice, HotplugEvent,
+    get_hotplug_stats, init as init_hotplug,
+    process_events as process_hotplug_events,
 };
 
 // Re-export input functionality
 pub use input_manager::{
-    get_cursor_position, get_event as get_input_event, handle_keyboard_event, handle_mouse_packet,
-    init as init_input_manager, set_cursor_bounds, set_cursor_position, CursorBounds, InputEvent,
+    get_cursor_position, get_event as get_input_event, set_cursor_bounds, InputEvent,
     MouseButton,
 };
-pub use ps2_controller::{init as init_ps2_controller, Ps2DeviceType, Ps2Port};
-pub use ps2_mouse::{init as init_ps2_mouse, MouseButtons, MousePacket, MouseProtocol};
 
 // Re-export storage functionality
-pub use storage::{
-    flush_storage,
-    get_default_device,
-    get_device_by_type,
-    get_device_smart_data,
-    get_storage_device_list,
-    get_subsystem_status,
-    init_storage_manager,
-    init_storage_subsystem,
-    is_gpt_device,
-    list_block_devices,
-    read_mbr_partitions,
-    // Unified interface (uses default device)
-    read_sectors,
-    // Device-specific read/write with device_id
-    read_storage_sectors,
-    reset_device,
-    set_default_device,
-    standby_device,
-    wake_device,
-    with_storage_manager,
-    write_sectors,
-    write_storage_sectors,
-    // Block device abstraction
-    BlockDevice,
-    // Partition support
-    PartitionInfo,
-    PartitionType,
-    StorageCapabilities,
-    StorageDevice,
-    StorageDeviceInfo,
-    StorageDeviceState,
-    StorageDeviceType,
-    StorageDriver,
-    StorageDriverManager,
-    // Core types
-    StorageError,
-    StorageManagerStats,
-    StorageStats,
-    // Subsystem control
-    StorageSubsystemStatus,
-};
+pub use storage::StorageDriver;
 
 /// Driver types supported by RustOS
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,7 +256,7 @@ impl DriverManager {
 
     /// Detect hardware devices by scanning PCI bus
     fn detect_devices(&mut self) -> Result<(), &'static str> {
-        use crate::pci::{list_devices, PciClass};
+        use crate::pci::list_devices;
 
         let devices = list_devices();
         self.device_count = devices.len();

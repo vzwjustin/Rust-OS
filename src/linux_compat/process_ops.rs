@@ -17,7 +17,7 @@ pub use super::types::Rusage;
 
 // Import process management infrastructure
 use crate::process::Pid as KernelPid;
-use crate::process::{self, Priority, ProcessState};
+use crate::process::{self, Priority};
 use crate::process_manager;
 
 /// Operation counter for statistics
@@ -1054,7 +1054,7 @@ pub fn getrusage(who: i32, usage: *mut Rusage) -> LinuxResult<i32> {
 //
 
 /// prctl - process control operations
-pub fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> LinuxResult<i32> {
+pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> LinuxResult<i32> {
     inc_ops();
 
     // Common prctl options
@@ -1112,7 +1112,7 @@ pub fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> LinuxRe
 //
 
 /// capget - get process capabilities
-pub fn capget(hdrp: *mut u8, datap: *mut u8) -> LinuxResult<i32> {
+pub fn capget(hdrp: *mut u8, _datap: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     if hdrp.is_null() {
@@ -1125,7 +1125,7 @@ pub fn capget(hdrp: *mut u8, datap: *mut u8) -> LinuxResult<i32> {
 }
 
 /// capset - set process capabilities
-pub fn capset(hdrp: *const u8, datap: *const u8) -> LinuxResult<i32> {
+pub fn capset(hdrp: *const u8, _datap: *const u8) -> LinuxResult<i32> {
     inc_ops();
 
     if hdrp.is_null() {
@@ -1171,7 +1171,7 @@ pub fn execveat(
     pathname: *const u8,
     argv: *const *const u8,
     envp: *const *const u8,
-    flags: i32,
+    _flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 

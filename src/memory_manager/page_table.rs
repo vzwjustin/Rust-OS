@@ -2,12 +2,10 @@
 //!
 //! Implements x86_64 4-level paging with PML4, PDPT, PD, and PT structures.
 
-use alloc::boxed::Box;
-use core::ptr::NonNull;
 use spin::Mutex;
 use x86_64::{
     structures::paging::{
-        FrameAllocator, Mapper, Page, PageTable as X64PageTable, PageTableFlags as X64Flags,
+        FrameAllocator, Page, PageTableFlags as X64Flags,
         PhysFrame, Size4KiB,
     },
     PhysAddr, VirtAddr,
@@ -213,9 +211,9 @@ impl PageTable {
 
     /// Map a virtual address to a physical address
     pub fn map(&mut self, virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) -> VmResult<()> {
-        let page = Page::<Size4KiB>::containing_address(virt);
-        let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
-        let x64_flags = flags.to_x64_flags();
+        let _page = Page::<Size4KiB>::containing_address(virt);
+        let _frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
+        let _x64_flags = flags.to_x64_flags();
 
         // In a real implementation, this would use the x86_64 Mapper trait
         // For now, we simulate the mapping
@@ -224,7 +222,7 @@ impl PageTable {
 
     /// Unmap a virtual address
     pub fn unmap(&mut self, virt: VirtAddr) -> VmResult<()> {
-        let page = Page::<Size4KiB>::containing_address(virt);
+        let _page = Page::<Size4KiB>::containing_address(virt);
 
         // In a real implementation, this would use the x86_64 Mapper trait
         // For now, we simulate the unmapping
@@ -232,7 +230,7 @@ impl PageTable {
     }
 
     /// Translate virtual address to physical address
-    pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
+    pub fn translate(&self, _virt: VirtAddr) -> Option<PhysAddr> {
         // In a real implementation, this would walk the page table
         // For now, we return a simulated translation
         None
@@ -240,8 +238,8 @@ impl PageTable {
 
     /// Update flags for a page
     pub fn update_flags(&mut self, virt: VirtAddr, flags: PageTableFlags) -> VmResult<()> {
-        let page = Page::<Size4KiB>::containing_address(virt);
-        let x64_flags = flags.to_x64_flags();
+        let _page = Page::<Size4KiB>::containing_address(virt);
+        let _x64_flags = flags.to_x64_flags();
 
         // In a real implementation, this would update the page table entry
         Ok(())
@@ -300,9 +298,9 @@ impl PageTableManager {
     }
 
     /// Switch to a different page table
-    pub fn switch_table(&self, root_phys: PhysAddr) {
+    pub fn switch_table(&self, _root_phys: PhysAddr) {
         // In a real implementation, this would load CR3
-        unsafe {
+        {
             // x86_64::instructions::tlb::flush_all();
         }
     }
@@ -310,17 +308,13 @@ impl PageTableManager {
     /// Flush TLB for a specific address
     pub fn flush_tlb(&self, virt: VirtAddr) {
         use x86_64::instructions::tlb;
-        unsafe {
-            tlb::flush(virt);
-        }
+        tlb::flush(virt);
     }
 
     /// Flush entire TLB
     pub fn flush_tlb_all(&self) {
         use x86_64::instructions::tlb;
-        unsafe {
-            tlb::flush_all();
-        }
+        tlb::flush_all();
     }
 }
 

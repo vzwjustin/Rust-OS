@@ -413,7 +413,7 @@ pub fn dup2(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
 }
 
 /// dup3 - duplicate file descriptor with flags
-pub fn dup3(oldfd: Fd, newfd: Fd, flags: i32) -> LinuxResult<Fd> {
+pub fn dup3(oldfd: Fd, newfd: Fd, _flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
     if oldfd < 0 || newfd < 0 || oldfd == newfd {
@@ -554,7 +554,7 @@ pub fn fchmod(fd: Fd, mode: Mode) -> LinuxResult<i32> {
 }
 
 /// fchmodat - change file permissions relative to directory fd
-pub fn fchmodat(dirfd: Fd, path: *const u8, mode: Mode, flags: i32) -> LinuxResult<i32> {
+pub fn fchmodat(_dirfd: Fd, path: *const u8, mode: Mode, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
@@ -964,7 +964,7 @@ pub fn statx(
     dirfd: Fd,
     pathname: *const u8,
     flags: i32,
-    mask: u32,
+    _mask: u32,
     statxbuf: *mut Statx,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -1012,7 +1012,7 @@ pub fn statx(
 }
 
 /// faccessat2 - check file accessibility relative to directory fd with flags
-pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
+pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {

@@ -11,8 +11,7 @@ use spin::RwLock;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
 use crate::process::current_pid;
-use crate::process::ipc::{get_ipc_manager, IpcId, Message, SharedMemoryPermissions};
-use crate::vfs::{get_vfs, InodeType, OpenFlags};
+use crate::process::ipc::{get_ipc_manager, IpcId, SharedMemoryPermissions};
 
 /// Operation counter for statistics
 static IPC_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -171,7 +170,7 @@ pub fn msgget(key: Key, msgflg: i32) -> LinuxResult<MsqId> {
 }
 
 /// msgsnd - send message to message queue
-pub fn msgsnd(msqid: MsqId, msgp: *const u8, msgsz: usize, msgflg: i32) -> LinuxResult<i32> {
+pub fn msgsnd(msqid: MsqId, msgp: *const u8, msgsz: usize, _msgflg: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if msgp.is_null() {
@@ -207,7 +206,7 @@ pub fn msgrcv(
     msgp: *mut u8,
     msgsz: usize,
     msgtyp: i64,
-    msgflg: i32,
+    _msgflg: i32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -243,7 +242,7 @@ pub fn msgrcv(
 }
 
 /// msgctl - message queue control operations
-pub fn msgctl(msqid: MsqId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
+pub fn msgctl(msqid: MsqId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Command constants
@@ -515,7 +514,7 @@ pub fn shmget(key: Key, size: usize, shmflg: i32) -> LinuxResult<ShmId> {
 static SHM_ATTACH_TABLE: RwLock<BTreeMap<u64, IpcId>> = RwLock::new(BTreeMap::new());
 
 /// shmat - attach shared memory segment
-pub fn shmat(shmid: ShmId, shmaddr: *const u8, shmflg: i32) -> LinuxResult<*mut u8> {
+pub fn shmat(shmid: ShmId, _shmaddr: *const u8, _shmflg: i32) -> LinuxResult<*mut u8> {
     inc_ops();
 
     let ipc_manager = get_ipc_manager();
@@ -559,7 +558,7 @@ pub fn shmdt(shmaddr: *const u8) -> LinuxResult<i32> {
 }
 
 /// shmctl - shared memory control operations
-pub fn shmctl(shmid: ShmId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
+pub fn shmctl(shmid: ShmId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Command constants

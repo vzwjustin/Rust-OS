@@ -5,8 +5,7 @@
 
 use crate::package::adapters::PackageAdapter;
 use crate::package::{ExtractedPackage, PackageError, PackageMetadata, PackageResult};
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 /// Alpine APK package adapter
 pub struct ApkAdapter;

@@ -41,7 +41,7 @@ pub enum IdeCtrlReg {
     DriveAddress = 1, // Drive address
 }
 
-/// IDE status register bits
+// IDE status register bits
 bitflags::bitflags! {
     pub struct IdeStatus: u8 {
         const ERR = 1 << 0;     // Error
@@ -55,7 +55,7 @@ bitflags::bitflags! {
     }
 }
 
-/// IDE error register bits
+// IDE error register bits
 bitflags::bitflags! {
     pub struct IdeError: u8 {
         const AMNF = 1 << 0;    // Address mark not found
@@ -69,7 +69,7 @@ bitflags::bitflags! {
     }
 }
 
-/// IDE device control register bits
+// IDE device control register bits
 bitflags::bitflags! {
     pub struct IdeDevCtrl: u8 {
         const NIEN = 1 << 1;    // Disable interrupts

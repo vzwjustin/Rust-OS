@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use super::{InodeOps, InodeType, VfsError, VfsResult};
+use super::{InodeOps, InodeType, VfsResult};
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;

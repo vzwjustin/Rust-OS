@@ -197,7 +197,7 @@ impl PerCpuAllocator {
                         }
                     }
                 }
-                drop(free_list); // Release the mutable borrow
+                let _ = free_list; // Release the mutable borrow
                 global.total_allocated += 1;
 
                 // Now add cached pages to per-CPU cache
@@ -438,9 +438,7 @@ impl CacheOptimizer {
     /// CPU pause hint for spin loops
     #[inline(always)]
     pub fn cpu_pause() {
-        unsafe {
-            core::arch::x86_64::_mm_pause();
-        }
+        core::arch::x86_64::_mm_pause();
     }
 
     /// Calculate optimal loop unrolling factor

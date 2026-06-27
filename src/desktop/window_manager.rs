@@ -1250,32 +1250,6 @@ impl WindowManager {
                 self.needs_redraw = true;
                 true
             }
-            32..=126 => {
-                // Printable character
-                if self.te_cursor_row < self.text_editor_lines.len() {
-                    let line = &mut self.text_editor_lines[self.te_cursor_row];
-                    if line.len() < 95 {
-                        let col = self.te_cursor_col.min(line.len());
-                        let before = &line.as_str()[..col];
-                        let after = &line.as_str()[col..];
-                        let mut new_line = HString::new();
-                        let _ = new_line.push_str(before);
-                        let _ = new_line.push(key as char);
-                        let _ = new_line.push_str(after);
-                        *line = new_line;
-                        self.te_cursor_col += 1;
-                    }
-                } else {
-                    // Create new line
-                    let mut new_line = HString::new();
-                    let _ = new_line.push(key as char);
-                    let _ = self.text_editor_lines.push(new_line);
-                    self.te_cursor_row = self.text_editor_lines.len() - 1;
-                    self.te_cursor_col = 1;
-                }
-                self.needs_redraw = true;
-                true
-            }
             38 => {
                 // Up arrow
                 if self.te_cursor_row > 0 {
@@ -1318,6 +1292,32 @@ impl WindowManager {
                         self.te_cursor_row += 1;
                         self.te_cursor_col = 0;
                     }
+                }
+                self.needs_redraw = true;
+                true
+            }
+            32..=126 => {
+                // Printable character
+                if self.te_cursor_row < self.text_editor_lines.len() {
+                    let line = &mut self.text_editor_lines[self.te_cursor_row];
+                    if line.len() < 95 {
+                        let col = self.te_cursor_col.min(line.len());
+                        let before = &line.as_str()[..col];
+                        let after = &line.as_str()[col..];
+                        let mut new_line = HString::new();
+                        let _ = new_line.push_str(before);
+                        let _ = new_line.push(key as char);
+                        let _ = new_line.push_str(after);
+                        *line = new_line;
+                        self.te_cursor_col += 1;
+                    }
+                } else {
+                    // Create new line
+                    let mut new_line = HString::new();
+                    let _ = new_line.push(key as char);
+                    let _ = self.text_editor_lines.push(new_line);
+                    self.te_cursor_row = self.text_editor_lines.len() - 1;
+                    self.te_cursor_col = 1;
                 }
                 self.needs_redraw = true;
                 true
@@ -1661,7 +1661,7 @@ impl WindowManager {
             return None;
         }
 
-        let header_rows = 2;
+        let _header_rows = 2;
         let first_row_y = window.client_area.y + 8 + FM_ROW_HEIGHT + 4 + FM_ROW_HEIGHT;
         if y < first_row_y {
             return None;

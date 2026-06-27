@@ -103,10 +103,8 @@ pub fn get_apic_id() -> u32 {
         unsafe { read_apic(base, apic_regs::APIC_ID) >> 24 }
     } else {
         // Fallback to CPUID
-        unsafe {
-            let result = core::arch::x86_64::__cpuid(1);
-            (result.ebx >> 24) as u32
-        }
+        let result = core::arch::x86_64::__cpuid(1);
+        (result.ebx >> 24) as u32
     }
 }
 

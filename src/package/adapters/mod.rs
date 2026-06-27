@@ -1,8 +1,6 @@
 //! Package adapter implementations for different package formats
 
-use crate::package::{ExtractedPackage, PackageError, PackageMetadata, PackageResult};
-use alloc::string::String;
-use alloc::vec::Vec;
+use crate::package::{ExtractedPackage, PackageMetadata, PackageResult};
 
 /// Trait for package format adapters
 pub trait PackageAdapter {

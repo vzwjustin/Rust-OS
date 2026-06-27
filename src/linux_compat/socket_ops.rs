@@ -567,7 +567,7 @@ pub fn select(
         return Ok(0);
     }
 
-    let n = super::special_fd::poll(pollfds.as_mut_ptr(), count as u64, timeout_ms)?;
+    let _n = super::special_fd::poll(pollfds.as_mut_ptr(), count as u64, timeout_ms)?;
 
     // Clear fd_sets and set revents
     if !readfds.is_null() {

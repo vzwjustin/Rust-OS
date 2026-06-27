@@ -320,7 +320,7 @@ impl<K: Eq + core::hash::Hash, V> CacheFriendlyHashTable<K, V> {
 
     /// Insert a key-value pair
     pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
-        use core::hash::{Hash, Hasher};
+        use core::hash::Hasher;
 
         // Simple FNV-1a hasher for no_std environment
         struct SimpleHasher {

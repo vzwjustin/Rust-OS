@@ -4,7 +4,6 @@
 
 use crate::process::{CpuContext, MemoryInfo, Pid, Priority};
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 
 /// Process states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

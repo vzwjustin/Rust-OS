@@ -3,12 +3,9 @@
 //! This module provides a comprehensive Linux/POSIX API compatibility layer
 //! for RustOS, enabling Linux applications to run with minimal modifications.
 
-#![no_std]
 
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec::Vec;
 
 pub mod advanced_io;
 pub mod file_ops;

@@ -190,10 +190,8 @@ pub fn has_avx() -> bool {
 
 /// Get current CPU ID (APIC ID)
 pub fn current_cpu_id() -> u32 {
-    unsafe {
-        let cpuid = __cpuid(1);
-        (cpuid.ebx >> 24) as u32
-    }
+    let cpuid = __cpuid(1);
+    (cpuid.ebx >> 24) as u32
 }
 
 /// CPU relax hint (PAUSE instruction)

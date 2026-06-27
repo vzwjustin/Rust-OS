@@ -4,11 +4,10 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use spin::Mutex;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
 use super::memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
-use super::page_table::{PageTable, PageTableFlags, PageTableManager};
+use super::page_table::PageTableManager;
 use super::{MemoryStats, MmapFlags};
 
 /// Virtual memory error types
@@ -452,7 +451,7 @@ impl VirtualMemoryManager {
     }
 
     /// Handle copy-on-write page fault
-    fn handle_cow_fault(&self, addr: VirtAddr, region: &MemoryRegion) -> VmResult<()> {
+    fn handle_cow_fault(&self, _addr: VirtAddr, _region: &MemoryRegion) -> VmResult<()> {
         // Allocate new physical frame
         // Copy old page contents to new frame
         // Update page table entry to point to new frame and mark writable

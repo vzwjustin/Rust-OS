@@ -709,7 +709,7 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
         let base_addr = (bar0 & 0xFFFF_FFF0) as u64;
         let irq = 0u8;
 
-        if let Some((mut driver, caps)) =
+        if let Some((mut driver, _caps)) =
             create_network_driver_from_pci(device.vendor_id, device.device_id, base_addr, irq)
         {
             let name = driver.name().to_string();

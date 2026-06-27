@@ -84,6 +84,7 @@ impl AMDGPUContext {
         }
     }
 
+    #[allow(unreachable_patterns)]
     fn detect_family(device_id: u16) -> AMDGPUFamily {
         match device_id {
             // Southern Islands (GCN 1.0)

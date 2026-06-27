@@ -3,7 +3,6 @@
 //! A simple in-memory filesystem implementation that serves as the default
 //! filesystem for RustOS. All data is stored in RAM and lost on shutdown.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;

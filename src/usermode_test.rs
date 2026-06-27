@@ -3,8 +3,7 @@
 //! This module provides test functions to validate user/kernel mode switching.
 
 use crate::serial_println;
-use crate::usermode::{is_valid_user_address, switch_to_user_mode, UserContext};
-use x86_64::VirtAddr;
+use crate::usermode::{is_valid_user_address, UserContext};
 
 /// Allocate a simple user stack for testing
 const USER_STACK_SIZE: usize = 4096 * 4; // 16KB stack

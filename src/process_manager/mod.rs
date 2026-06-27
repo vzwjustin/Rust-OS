@@ -3,7 +3,6 @@
 //! Provides high-level process management APIs including fork, exec, wait, exit.
 //! This module wraps the core process management system with POSIX-like APIs.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -16,7 +15,6 @@ pub mod table;
 #[cfg(any())]
 mod tests;
 
-pub use operations::{exec, exit, fork, getpid, getppid, wait, waitpid};
 pub use pcb::{FileDescriptor, FileDescriptorType, ProcessControlBlock, ProcessState};
 pub use table::ProcessTable;
 

@@ -256,7 +256,7 @@ pub fn rt_sigsuspend(mask: *const SigSet, sigsetsize: usize) -> LinuxResult<i32>
 }
 
 /// sigaltstack - set/get signal stack context
-pub fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
+pub fn sigaltstack(_ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // TODO: Set alternate signal stack
@@ -273,8 +273,8 @@ pub fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
 /// sigtimedwait - wait for queued signals
 pub fn sigtimedwait(
     set: *const SigSet,
-    info: *mut u8, // siginfo_t
-    timeout: *const TimeSpec,
+    _info: *mut u8, // siginfo_t
+    _timeout: *const TimeSpec,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -295,7 +295,7 @@ pub fn sigwaitinfo(set: *const SigSet, info: *mut u8) -> LinuxResult<i32> {
 }
 
 /// sigqueue - queue a signal and data to a process
-pub fn sigqueue(pid: Pid, sig: i32, value: i32) -> LinuxResult<i32> {
+pub fn sigqueue(pid: Pid, sig: i32, _value: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if sig < 0 || sig > 64 {

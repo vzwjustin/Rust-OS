@@ -621,7 +621,7 @@ impl BroadcomDriver {
         self.write_reg(BCM_TXBD_CONS_INDEX, 0);
 
         // Configure transmit mode
-        let mut tx_mode = 0x02; // Enable transmit
+        let tx_mode = 0x02; // Enable transmit
         self.write_reg(BCM_TX_MODE, tx_mode);
 
         Ok(())

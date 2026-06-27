@@ -7,11 +7,9 @@ use super::{
     DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats, FileSystemType,
     FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
-use crate::drivers::storage::{read_storage_sectors, write_storage_sectors, StorageError};
+use crate::drivers::storage::{read_storage_sectors, write_storage_sectors};
 use alloc::{
-    boxed::Box,
     collections::BTreeMap,
-    format,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -30,7 +28,7 @@ const EXT4_MAX_BLOCK_SIZE: u32 = 65536;
 const EXT4_GOOD_OLD_INODE_SIZE: u16 = 128;
 const EXT4_INODE_SIZE_DEFAULT: u16 = 256;
 
-/// EXT4 feature flags
+// EXT4 feature flags
 bitflags::bitflags! {
     pub struct Ext4FeatureCompat: u32 {
         const DIR_PREALLOC = 0x0001;

@@ -75,7 +75,7 @@ fn should_dump_fds(syscall: SyscallNumber) -> bool {
 }
 
 fn dump_open_fds() {
-  let table = crate::vfs::get_vfs().open_fd_snapshot();
+    let table = crate::vfs::get_vfs().open_fd_snapshot();
   if table.is_empty() {
       crate::serial_println!("  fd-table: (no tracked fds >= 3)");
       return;

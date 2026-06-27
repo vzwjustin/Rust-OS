@@ -11,7 +11,6 @@ use crate::testing_framework::{TestExecutionResult, TestFramework, TestResult, T
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 
@@ -298,7 +297,7 @@ impl ComprehensiveTestRunner {
     }
 
     /// Collect failed tests from framework
-    fn collect_failed_tests(&self, failed_tests: &mut Vec<TestExecutionResult>, category: &str) {
+    fn collect_failed_tests(&self, failed_tests: &mut Vec<TestExecutionResult>, _category: &str) {
         let results = self.framework.get_results();
         for result in results {
             if result.result == TestResult::Fail || result.result == TestResult::Timeout {

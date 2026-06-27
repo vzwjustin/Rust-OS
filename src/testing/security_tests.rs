@@ -10,9 +10,8 @@
 use crate::syscall::{SyscallContext, SyscallNumber};
 use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
 use alloc::{
-    string::{String, ToString},
+    string::ToString,
     vec,
-    vec::Vec,
 };
 
 /// Create security test suite

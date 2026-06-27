@@ -458,7 +458,7 @@ impl GraphicsAccelerationEngine {
     fn map_gpu_memory_regions(
         &self,
         gpu_id: u32,
-        gpu: &GPUCapabilities,
+        _gpu: &GPUCapabilities,
     ) -> Result<u64, &'static str> {
         // Read GPU BAR (Base Address Register) from PCI configuration
         let pci_address = self.get_gpu_pci_address(gpu_id)?;
@@ -493,7 +493,6 @@ impl GraphicsAccelerationEngine {
             GPUVendor::Intel => self.init_intel_command_submission(gpu_memory_base),
             GPUVendor::AMD => self.init_amd_command_submission(gpu_memory_base),
             GPUVendor::NVIDIA => self.init_nvidia_command_submission(gpu_memory_base),
-            _ => Err("Unsupported GPU vendor for command submission"),
         }
     }
 
@@ -585,7 +584,6 @@ impl GraphicsAccelerationEngine {
             GPUVendor::Intel => {
                 // Intel GPUs typically don't require separate firmware loading
             }
-            _ => {}
         }
 
         Ok(())
@@ -738,7 +736,6 @@ impl GraphicsAccelerationEngine {
             GPUVendor::Intel => self.test_intel_command_submission(gpu_id),
             GPUVendor::AMD => self.test_amd_command_submission(gpu_id),
             GPUVendor::NVIDIA => Ok(true), // Skip test for NVIDIA (requires Nouveau)
-            _ => Ok(false),
         }
     }
 
@@ -798,7 +795,7 @@ impl GraphicsAccelerationEngine {
     fn map_physical_to_virtual(
         &self,
         physical_addr: u64,
-        size: usize,
+        _size: usize,
     ) -> Result<u64, &'static str> {
         // In production, this would use the memory manager to map physical to virtual
         // For now, return a direct mapping (assuming identity mapping in kernel space)
@@ -1862,7 +1859,7 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Write to GPU control/status register
-    fn write_gpu_csr(&mut self, register_offset: u32, value: u32) -> Result<(), &'static str> {
+    fn write_gpu_csr(&mut self, register_offset: u32, _value: u32) -> Result<(), &'static str> {
         // In a real implementation, this would write to memory-mapped GPU registers
         // For now, validate register access bounds
         if register_offset > 0x10000 {

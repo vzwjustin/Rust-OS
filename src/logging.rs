@@ -5,9 +5,9 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::fmt::{self, Write};
+use core::fmt;
 use lazy_static::lazy_static;
-use spin::{Mutex, RwLock};
+use spin::Mutex;
 
 /// Log levels for structured logging
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -423,7 +423,7 @@ macro_rules! log_fatal {
 pub mod profiling {
     use super::*;
     use alloc::collections::BTreeMap;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    
 
     /// Performance counter
     #[derive(Debug, Clone)]
@@ -708,7 +708,7 @@ pub mod debug {
 
 /// Kernel debugging utilities
 pub mod kernel_debug {
-    use super::*;
+    
 
     /// Dump kernel state for debugging
     pub fn dump_kernel_state() {

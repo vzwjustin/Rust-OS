@@ -472,7 +472,7 @@ impl ErrorRecoveryManager {
         //               device registry with state tracking, subsystem notification system
     }
 
-    fn save_crash_dump(&mut self, context: &ErrorContext) {
+    fn save_crash_dump(&mut self, _context: &ErrorContext) {
         crate::serial_println!("Saving crash dump information");
 
         // Note: Crash dump saving is not yet implemented.

@@ -9,14 +9,13 @@
 //! - Robust error handling
 
 use crate::memory::{
-    align_up, allocate_memory, allocate_memory_with_guards, protect_memory, translate_addr,
-    MemoryError, MemoryProtection, MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE,
+    align_up, allocate_memory, allocate_memory_with_guards, translate_addr, MemoryProtection, MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE,
     USER_SPACE_END, USER_SPACE_START,
 };
 use crate::process::Pid;
 use alloc::vec::Vec;
 use core::fmt;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
 /// ELF64 Header (64 bytes)
 #[repr(C)]
@@ -355,7 +354,7 @@ impl ElfLoader {
     }
 
     /// Calculate base address with optional ASLR
-    fn calculate_base_address(&self, elf_type: u16) -> VirtAddr {
+    fn calculate_base_address(&self, _elf_type: u16) -> VirtAddr {
         let base = VirtAddr::new(USER_SPACE_START as u64);
 
         if self.enable_aslr {
@@ -375,7 +374,7 @@ impl ElfLoader {
         base_address: VirtAddr,
     ) -> Result<VirtualMemoryRegion, ElfLoaderError> {
         // Calculate load address (base + virtual address)
-        let load_vaddr = VirtAddr::new(base_address.as_u64() + phdr.p_vaddr);
+        let _load_vaddr = VirtAddr::new(base_address.as_u64() + phdr.p_vaddr);
 
         // Determine protection and region type
         let protection = self.flags_to_protection(phdr.p_flags);
@@ -529,4 +528,3 @@ impl ElfLoader {
 }
 
 // Expose generate_aslr_offset from memory module
-pub use crate::memory::generate_aslr_offset;

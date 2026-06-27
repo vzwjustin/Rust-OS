@@ -224,7 +224,7 @@ impl FileSystem for RamFs {
         let used_inodes = inodes.len() as u64;
 
         // Calculate total size used
-        let total_size: u64 = inodes
+        let _total_size: u64 = inodes
             .values()
             .map(|inode| inode.content.len() as u64)
             .sum();

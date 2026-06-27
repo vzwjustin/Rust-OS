@@ -10,11 +10,8 @@
 pub mod blk;
 pub mod net;
 
-use crate::pci::{get_devices_by_class, list_devices, PciClass, PciDevice};
-use alloc::format;
-use alloc::string::{String, ToString};
+use crate::pci::{list_devices, PciDevice};
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// VirtIO PCI vendor ID
 pub const VIRTIO_VENDOR_ID: u16 = 0x1AF4;

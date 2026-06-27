@@ -4,7 +4,7 @@
 //! initialization, and management for the RustOS kernel.
 
 use super::ahci::{AhciDriver, AHCI_DEVICE_IDS};
-use super::ide::{create_ide_drivers, IdeDriver};
+use super::ide::create_ide_drivers;
 use super::nvme::NvmeDriver;
 use super::pci_scan::{scan_pci_devices, PciDevice};
 use super::{StorageDeviceType, StorageDriver, StorageDriverManager, StorageError};
@@ -251,7 +251,7 @@ impl StorageDetector {
                 let firmware = "1.0".to_string();
 
                 // Register the device
-                let device_id = self.manager.register_device(
+                let _device_id = self.manager.register_device(
                     driver,
                     model,
                     serial,
@@ -326,7 +326,7 @@ impl StorageDetector {
                 let firmware = "1.0".to_string();
 
                 // Register the device
-                let device_id = self.manager.register_device(
+                let _device_id = self.manager.register_device(
                     driver,
                     model,
                     serial,
