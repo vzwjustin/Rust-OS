@@ -368,6 +368,12 @@ pub use glib_native::{
     dbus_error_strip_remote_error,
     dbus_error_new_for_dbus_error,
     dbus_error_encode_gerror,
+    // GIO error codes (errno / FileError -> IOErrorEnum)
+    IOErrorEnum,
+    io_error_quark,
+    io_error_from_errno,
+    io_error_from_file_error,
+    file_error_from_errno,
     // URI functions
     escape_string,
     is_valid,
@@ -1892,6 +1898,55 @@ pub fn smoke_check() -> Result<(), &'static str> {
         .ok_or("GDBus parse_remote_prefix")?;
     if name != "org.test.X" || rest != "error: with: colons" {
         return Err("GDBus parse_remote_prefix content");
+    }
+
+    // GIO error codes (Phase 11). Exercise the enum, quark, and the
+    // errno / FileError -> IOErrorEnum conversions.
+    if IOErrorEnum::Failed as i32 != 0
+        || IOErrorEnum::NotFound as i32 != 1
+        || IOErrorEnum::BrokenPipe as i32 != 44
+        || IOErrorEnum::NoSuchDevice as i32 != 47
+        || IOErrorEnum::DestinationUnset as i32 != 48
+    {
+        return Err("GIOErrorEnum values");
+    }
+    if IOErrorEnum::CONNECTION_CLOSED != IOErrorEnum::BrokenPipe {
+        return Err("GIOErrorEnum CONNECTION_CLOSED alias");
+    }
+    if io_error_quark() == 0 {
+        return Err("GIO error quark");
+    }
+    // io_error_from_file_error mappings.
+    if io_error_from_file_error(glib_native::FileError::Exist) != IOErrorEnum::Exists
+        || io_error_from_file_error(glib_native::FileError::NoEnt) != IOErrorEnum::NotFound
+        || io_error_from_file_error(glib_native::FileError::Acces) != IOErrorEnum::PermissionDenied
+        || io_error_from_file_error(glib_native::FileError::NoSpc) != IOErrorEnum::NoSpace
+        || io_error_from_file_error(glib_native::FileError::Pipe) != IOErrorEnum::BrokenPipe
+        || io_error_from_file_error(glib_native::FileError::Failed) != IOErrorEnum::Failed
+    {
+        return Err("GIO from_file_error");
+    }
+    // io_error_from_errno: via FileError + additional codes.
+    if io_error_from_errno(2) != IOErrorEnum::NotFound
+        || io_error_from_errno(17) != IOErrorEnum::Exists
+        || io_error_from_errno(13) != IOErrorEnum::PermissionDenied
+        || io_error_from_errno(28) != IOErrorEnum::NoSpace
+        || io_error_from_errno(125) != IOErrorEnum::Cancelled
+        || io_error_from_errno(110) != IOErrorEnum::TimedOut
+        || io_error_from_errno(98) != IOErrorEnum::AddressInUse
+        || io_error_from_errno(111) != IOErrorEnum::ConnectionRefused
+        || io_error_from_errno(104) != IOErrorEnum::CONNECTION_CLOSED
+        || io_error_from_errno(107) != IOErrorEnum::NotConnected
+        || io_error_from_errno(9999) != IOErrorEnum::Failed
+    {
+        return Err("GIO from_errno");
+    }
+    // file_error_from_errno (added to fileutils for gioerror).
+    if file_error_from_errno(2) != glib_native::FileError::NoEnt
+        || file_error_from_errno(17) != glib_native::FileError::Exist
+        || file_error_from_errno(9999) != glib_native::FileError::Failed
+    {
+        return Err("GFileError from_errno");
     }
 
     Ok(())

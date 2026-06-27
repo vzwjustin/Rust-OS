@@ -52,7 +52,7 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **8** | Main loop & threading | `gmain.*`, `gsource.*`, `gthread.*`, `gasyncqueue.*`, `gpoll.*`, `giochannel.*`, `gthreadpool.*` | **Partial** (async queue, thread primitives, poll types, I/O channel types, main loop types (MainContext/MainLoop/Source), timeout_add/idle_add, thread pool task queue done, actual thread creation/poll-based event loop needs OS support) |
 | **9** | GObject core | `gobject/*` (types, signals, properties, values) | **Partial** (GType registry with 21 fundamental types, type registration/lookup/query, GValue polymorphic container for all basic types, GParamSpec with typed constructors, GSignal with connect/emit/disconnect, GObject base class with ref counting, properties, weak refs, user data, property binding) |
 | **10** | GModule and platform runtime integration | `gmodule/*`, `gthread/*` | **Partial** (gmodule ported: `GModule` ref-counted handle, `ModulePlatform` trait for OS-specific dlopen/dlsym/dlclose, `NoModulePlatform` stub for bare metal, registry with name/handle dedup, `module_open_full`/`module_open`/`module_close`/`module_symbol`/`module_make_resident`/`module_build_path`/`module_error`/`module_error_quark`, 20 unit tests passing) |
-| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; gdbuserror ported: `DBusError` enum (44 well-known `org.freedesktop.DBus.Error.*` codes), `DBusErrorEntry` struct, `dbus_error_quark` (lazily registers all 44 well-known entries), `dbus_error_register_error`/`_unregister_error`/`_register_error_domain` global registry (BTreeMap-backed), `dbus_error_is_remote_error`/`_get_remote_error`/`_strip_remote_error` remote-error prefix parsing, `dbus_error_new_for_dbus_error` (registered + `org.gtk.GDBus.UnmappedGError.Quark._*` fallback), `dbus_error_encode_gerror` (with hex-escaped `_XX` unmapped form), 23 unit tests passing; remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
+| **11** | GIO (split into sub-phases: streams, sockets, D-Bus, settings, …) | `gio/*` | **Partial** (gfileattribute ported: `FileAttributeType` enum (10 types), `FileAttributeInfoFlags` (COPY_WITH_FILE/COPY_WHEN_MOVED), `FileAttributeInfo` struct, `FileAttributeInfoList` ref-counted sorted-by-name list with binary-search `lookup`/`add`/`dup`/`ref_`/`n_infos`/`infos`, 14 unit tests passing; gdbusintrospection ported: 7 ref-counted info structs (Annotation/Arg/Method/Signal/Property/Interface/Node) with `Arc<T>` ref counting, `DBusPropertyInfoFlags` (READABLE/WRITABLE), lookup helpers (`dbus_annotation_info_lookup`/`dbus_interface_info_lookup_method`/`_signal`/`_property`/`dbus_node_info_lookup_interface`), 12 unit tests passing; gdbuserror ported: `DBusError` enum (44 well-known `org.freedesktop.DBus.Error.*` codes), `DBusErrorEntry` struct, `dbus_error_quark` (lazily registers all 44 well-known entries), `dbus_error_register_error`/`_unregister_error`/`_register_error_domain` global registry (BTreeMap-backed), `dbus_error_is_remote_error`/`_get_remote_error`/`_strip_remote_error` remote-error prefix parsing, `dbus_error_new_for_dbus_error` (registered + `org.gtk.GDBus.UnmappedGError.Quark._*` fallback), `dbus_error_encode_gerror` (with hex-escaped `_XX` unmapped form), 23 unit tests passing; gioerror ported: `IOErrorEnum` enum (49 codes; `CONNECTION_CLOSED` const-aliased to `BrokenPipe` since Rust forbids duplicate discriminants), `io_error_quark`, `io_error_from_errno` (errno→IOErrorEnum via file_error_from_errno + additional socket/network codes), `io_error_from_file_error` (FileError→IOErrorEnum), 8 unit tests passing; fileutils gained `file_error_from_errno` (errno→FileError, needed by gioerror); remaining GIO submodules — streams, sockets, D-Bus connection, settings, GFile, GIcon, GCancellable, GAsyncResult, etc. — planned; XML parse/generate for introspection info deferred) |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | Planned |
 | **13** | Remove C implementations; expose stable C ABI from Rust via `extern "C"` | all | Planned |
 
@@ -205,6 +205,42 @@ re-export list for documentation and name resolution.
     unmapped + fallback), encode round-trip with hex escapes,
     parse with colons in message — all passing.
 
+- **`gioerror`** — GIO error codes. Mirrors `gio/gioerror.h` /
+  `gio/gioerror.c`:
+  - `IOErrorEnum` enum (49 codes: Failed, NotFound, Exists, ...,
+    BrokenPipe, NotConnected, MessageTooLarge, NoSuchDevice,
+    DestinationUnset) with `#[repr(i32)]` so discriminant values
+    match the upstream C enum. `CONNECTION_CLOSED` is exposed as a
+    `pub const` alias for `BrokenPipe` (upstream has
+    `G_IO_ERROR_CONNECTION_CLOSED = G_IO_ERROR_BROKEN_PIPE`, but
+    Rust forbids duplicate enum discriminants). `to_code()` accessor.
+  - `io_error_quark()` — the `G_IO_ERROR` quark.
+  - `io_error_from_file_error()` — `FileError` → `IOErrorEnum`
+    mapping matching the upstream `switch` (including the
+    `NoSpc`/`NoMem` → `NoSpace` and `MFile`/`NFile` →
+    `TooManyOpenFiles` collapses, and the `BadF`/`Failed`/`Fault`/
+    `Intr`/`Io` → `Failed` group).
+  - `io_error_from_errno()` — errno → `IOErrorEnum` via
+    `file_error_from_errno` + `io_error_from_file_error`, then a
+    second-pass `switch` for socket/network errnos that don't have a
+    `FileError` counterpart (ECANCELED, ENOTEMPTY, ETIMEDOUT, EBUSY,
+    EWOULDBLOCK/EAGAIN, EADDRINUSE, EHOSTUNREACH, ENETUNREACH,
+    ECONNREFUSED, EADDRNOTAVAIL, ECONNRESET, ENOTCONN, EMSGSIZE,
+    ENOTSOCK, EPROTONOSUPPORT, EDESTADDRREQ, ENOMSG/ENODATA/EBADMSG,
+    EMLINK, etc.). Unknown errnos return `Failed`.
+  - 8 unit tests covering enum values, CONNECTION_CLOSED alias,
+    to_code, quark, from_file_error mappings (all branches),
+    from_errno via file_error, from_errno additional codes, unknown
+    errno fallback — all passing.
+
+- **`fileutils` (addition)** — added `file_error_from_errno(err_no)`
+  matching upstream `g_file_error_from_errno`. Maps 25 well-known
+  errno values (EEXIST, EISDIR, EACCES, ENAMETOOLONG, ENOENT, ENOTDIR,
+  ENXIO, ENODEV, EROFS, ETXTBSY, EFAULT, ELOOP, ENOSPC, ENOMEM,
+  EMFILE, ENFILE, EBADF, EINVAL, EPIPE, EAGAIN, EINTR, EIO, EPERM,
+  ENOSYS) to `FileError` variants; unknown errnos return `Failed`.
+  Needed by `gioerror::io_error_from_errno`.
+
 ### Deferred
 
 - Remaining GIO submodules: GInputStream / GOutputStream, GFile,
@@ -217,9 +253,9 @@ re-export list for documentation and name resolution.
   phase requires the deferred GObject interface system (Phase 9
   deferred: GInterface vtable init + dispatch). The current ports
   pick leaf boxed types (`GFileAttributeInfoList`, the
-  `GDBus*Info` structs, and the `GDBusError` registry are all
-  `G_DEFINE_BOXED_TYPE` or pure data/registry code) that don't
-  depend on the interface system.
+  `GDBus*Info` structs, the `GDBusError` registry, and `GIOErrorEnum`
+  are all `G_DEFINE_BOXED_TYPE` / `G_DEFINE_QUARK` / pure data) that
+  don't depend on the interface system.
 - `g_dbus_node_info_new_for_xml` (XML parsing of introspection data)
   and `g_dbus_interface_info_generate_xml` / `_node_info_generate_xml`
   (XML generation) — deferred; need GMarkup parser integration and
@@ -229,6 +265,8 @@ re-export list for documentation and name resolution.
 - `g_dbus_error_set_dbus_error` / `_valist` (printf-style error
   construction) — deferred; need printf-style formatting which is
   already partially ported in `printf.rs` but not wired here.
+- `g_io_error_from_win32_error` (Windows error → IOErrorEnum) —
+  deferred; not applicable to bare-metal RustOS.
 
 ## Phase 10 detail (partial)
 
@@ -454,7 +492,7 @@ re-export list for documentation and name resolution.
 
 ## Running total
 
-**55 modules** ported across Phases 1–11, all wired into RustOS:
+**56 modules** ported across Phases 1–11, all wired into RustOS:
 
 | Phase | Modules | Status |
 |-------|---------|--------|
@@ -463,12 +501,12 @@ re-export list for documentation and name resolution.
 | 3 | array, list, queue, ptr_array, node, sequence, completion, qsort, primes | Done (9) |
 | 4 | hash, tree, dataset, quark, relation, cache | Done (6) |
 | 5 | error, messages, option | Done (3) |
-| 6 | fileutils, convert, charset, checksum, base64, hmac, hostutils, environ, keyfile, bitlock, hook, pattern, shell, uri, markup, stringchunk, strvbuilder, version, scanner, timer, utils, pathbuf, uuid, regex, testutils + dir/mappedfile/spawn/stdio (stubs) | Partial (29) |
+| 6 | fileutils (+ file_error_from_errno), convert, charset, checksum, base64, hmac, hostutils, environ, keyfile, bitlock, hook, pattern, shell, uri, markup, stringchunk, strvbuilder, version, scanner, timer, utils, pathbuf, uuid, regex, testutils + dir/mappedfile/spawn/stdio (stubs) | Partial (29) |
 | 7 | date, datetime, timezone, varianttype, variant, unicode, utf8 | Partial (7) |
 | 8 | asyncqueue, thread, poll, iochannel, mainloop, threadpool | Partial (6) |
 | 9 | gtype, gvalue, gparamspec, gsignal, gobject | Partial (5) |
 | 10 | gmodule | Partial (1) |
-| 11 | gfileattribute, gdbusintrospection, gdbuserror | Partial (3) |
+| 11 | gfileattribute, gdbusintrospection, gdbuserror, gioerror | Partial (4) |
 
 ### RustOS smoke test coverage
 
@@ -525,6 +563,17 @@ The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
   suffix), unmapped-form round-trip (encode → new_for_dbus_error
   recovers domain + code), custom register/unregister semantics,
   `parse_remote_prefix` with colons in the message body
+- **GIOErrorEnum** — enum values (Failed=0, NotFound=1, BrokenPipe=44,
+  NoSuchDevice=47, DestinationUnset=48), `CONNECTION_CLOSED` const
+  alias for `BrokenPipe`, `io_error_quark` non-zero,
+  `io_error_from_file_error` (Exist→Exists, NoEnt→NotFound, Acces→
+  PermissionDenied, NoSpc→NoSpace, Pipe→BrokenPipe, Failed→Failed),
+  `io_error_from_errno` (ENOENT→NotFound, EEXIST→Exists, EACCES→
+  PermissionDenied, ENOSPC→NoSpace, EINVAL→InvalidArgument, ECANCELED→
+  Cancelled, ETIMEDOUT→TimedOut, EADDRINUSE→AddressInUse, ECONNREFUSED→
+  ConnectionRefused, ECONNRESET→CONNECTION_CLOSED, ENOTCONN→
+  NotConnected, unknown→Failed), `file_error_from_errno` (ENOENT→
+  NoEnt, EEXIST→Exist, unknown→Failed)
 
 ## Running Rust tests
 

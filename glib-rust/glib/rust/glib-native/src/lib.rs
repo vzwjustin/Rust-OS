@@ -64,6 +64,7 @@ pub mod gvalue;
 pub mod gfileattribute;
 pub mod gdbusintrospection;
 pub mod gdbuserror;
+pub mod gioerror;
 pub mod hash;
 pub mod hook;
 pub mod hmac;
@@ -412,6 +413,10 @@ pub use gdbuserror::{
     dbus_error_get_remote_error, dbus_error_strip_remote_error,
     dbus_error_new_for_dbus_error, dbus_error_encode_gerror,
 };
+pub use gioerror::{
+    IOErrorEnum, io_error_quark, io_error_from_errno, io_error_from_file_error,
+};
+pub use fileutils::file_error_from_errno;
 pub use thread::{
     GMutex, GRecMutex, GRWLock, GCond, Once, OnceStatus, ThreadError,
     thread_error_quark,

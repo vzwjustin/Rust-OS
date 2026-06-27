@@ -71,6 +71,68 @@ pub fn file_error_quark() -> Quark {
     quark_from_static_string(Some("g-file-error-quark"))
 }
 
+/// Convert an `errno` value into a `FileError` (`g_file_error_from_errno`).
+///
+/// Mirrors the upstream `switch` over `E*` macros. Errno constants
+/// are taken from `core::ffi` / Linux headers; on bare metal the
+/// well-known values still match (Linux/glibc numbering). Unknown
+/// errnos return `FileError::Failed`, matching the upstream default.
+pub fn file_error_from_errno(err_no: i32) -> FileError {
+    // Errno values from <errno.h> (Linux/glibc). Bare-metal RustOS
+    // uses the same numbering for the well-known codes.
+    const EEXIST: i32 = 17;
+    const EISDIR: i32 = 21;
+    const EACCES: i32 = 13;
+    const ENAMETOOLONG: i32 = 36;
+    const ENOENT: i32 = 2;
+    const ENOTDIR: i32 = 20;
+    const ENXIO: i32 = 6;
+    const ENODEV: i32 = 19;
+    const EROFS: i32 = 30;
+    const ETXTBSY: i32 = 26;
+    const EFAULT: i32 = 14;
+    const ELOOP: i32 = 40;
+    const ENOSPC: i32 = 28;
+    const ENOMEM: i32 = 12;
+    const EMFILE: i32 = 24;
+    const ENFILE: i32 = 23;
+    const EBADF: i32 = 9;
+    const EINVAL: i32 = 22;
+    const EPIPE: i32 = 32;
+    const EAGAIN: i32 = 11;
+    const EINTR: i32 = 4;
+    const EIO: i32 = 5;
+    const EPERM: i32 = 1;
+    const ENOSYS: i32 = 38;
+    match err_no {
+        EEXIST => FileError::Exist,
+        EISDIR => FileError::IsDir,
+        EACCES => FileError::Acces,
+        ENAMETOOLONG => FileError::NameTooLong,
+        ENOENT => FileError::NoEnt,
+        ENOTDIR => FileError::NotDir,
+        ENXIO => FileError::Nxio,
+        ENODEV => FileError::NoDev,
+        EROFS => FileError::RoFs,
+        ETXTBSY => FileError::TxtBsy,
+        EFAULT => FileError::Fault,
+        ELOOP => FileError::Loop,
+        ENOSPC => FileError::NoSpc,
+        ENOMEM => FileError::NoMem,
+        EMFILE => FileError::MFile,
+        ENFILE => FileError::NFile,
+        EBADF => FileError::BadF,
+        EINVAL => FileError::Inval,
+        EPIPE => FileError::Pipe,
+        EAGAIN => FileError::Again,
+        EINTR => FileError::Intr,
+        EIO => FileError::Io,
+        EPERM => FileError::Perm,
+        ENOSYS => FileError::NoSys,
+        _ => FileError::Failed,
+    }
+}
+
 /// Flags for `g_file_test` (`GFileTest`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
