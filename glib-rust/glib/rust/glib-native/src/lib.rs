@@ -15,6 +15,20 @@ extern crate alloc;
 #[cfg(all(not(test), not(target_os = "none")))]
 extern crate std;
 
+// GObject compatibility source-split modules.
+pub mod gatomicarray;
+pub mod gbinding;
+pub mod gbindinggroup;
+pub mod gclosure;
+pub mod gmarshal;
+pub mod gobject_query;
+pub mod gobjectnotifyqueue;
+pub mod gsignalgroup;
+pub mod gsourceclosure;
+pub mod gtypemodule;
+pub mod gtypeplugin;
+pub mod gvaluetypes;
+
 // When compiling for a no_std target, provide a delegating allocator and panic
 // handler so the crate type-checks and links. The kernel binary calls
 // `set_allocator` and `set_panic_handler` during early boot to register its
@@ -58,7 +72,8 @@ mod standalone_support {
                 return core::ptr::null_mut();
             }
             // SAFETY: f was stored from a valid function pointer via set_allocator.
-            let f: unsafe fn(*mut u8, Layout, usize) -> *mut u8 = unsafe { core::mem::transmute(f) };
+            let f: unsafe fn(*mut u8, Layout, usize) -> *mut u8 =
+                unsafe { core::mem::transmute(f) };
             unsafe { f(ptr, layout, new_size) }
         }
 
@@ -154,6 +169,7 @@ pub mod dir;
 pub mod endian;
 pub mod environ;
 pub mod error;
+#[cfg(any(test, feature = "c-abi"))]
 pub mod ffi;
 #[cfg(test)]
 pub mod ffi_parity;
@@ -302,7 +318,9 @@ pub mod gnullsettingsbackend;
 pub mod gobject;
 pub mod gopenuriportal;
 pub mod goutputstream;
+pub mod gparam;
 pub mod gparamspec;
+pub mod gparamspecs;
 pub mod gpermission;
 pub mod gpollableinputstream;
 pub mod gpollableoutputstream;
@@ -385,6 +403,7 @@ pub mod gunixsocketaddress;
 pub mod gunixvolume;
 pub mod gunixvolumemonitor;
 pub mod gvalue;
+pub mod gvaluearray;
 pub mod gvaluetransform;
 pub mod gvfs;
 pub mod gvolume;
@@ -856,7 +875,7 @@ pub use gnetworkmonitornetlink::NetworkMonitorNetlink;
 pub use gnetworkmonitornm::{NMConnectivity, NetworkMonitorNM};
 pub use gnetworkmonitorportal::NetworkMonitorPortal;
 pub use gnetworkservice::NetworkService;
-pub use gnotification::{Notification, NotificationButton, NotificationIcon, NotificationPriority};
+pub use gnotification::{Notification, NotificationButton, NotificationPriority};
 pub use gnotificationbackend::NotificationBackend;
 pub use gobject::{
     object_new, object_new_with_params, GObject, ObjectFlags, PropertyBinding, WeakRefCallback,

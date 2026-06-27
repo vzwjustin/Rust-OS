@@ -45,7 +45,11 @@ pub fn slice_alloc0(block_size: usize) -> *mut u8 {
 }
 
 /// Copy a block (`g_slice_copy`). Deprecated.
-pub fn slice_copy(block_size: usize, mem_block: *const u8) -> *mut u8 {
+///
+/// # Safety
+///
+/// `mem_block` must point to at least `block_size` readable bytes.
+pub unsafe fn slice_copy(block_size: usize, mem_block: *const u8) -> *mut u8 {
     if block_size == 0 || mem_block.is_null() {
         return ptr::null_mut();
     }
@@ -59,7 +63,12 @@ pub fn slice_copy(block_size: usize, mem_block: *const u8) -> *mut u8 {
 }
 
 /// Free a block (`g_slice_free1`). Deprecated.
-pub fn slice_free1(block_size: usize, mem_block: *mut u8) {
+///
+/// # Safety
+///
+/// `mem_block` must have been allocated by `slice_alloc` or `slice_alloc0` with
+/// the same `block_size`.
+pub unsafe fn slice_free1(block_size: usize, mem_block: *mut u8) {
     if block_size == 0 || mem_block.is_null() {
         return;
     }
@@ -90,7 +99,7 @@ mod tests {
     fn alloc_and_free() {
         let p = slice_alloc(64);
         assert!(!p.is_null());
-        slice_free1(64, p);
+        unsafe { slice_free1(64, p) };
     }
 
     #[test]
@@ -100,7 +109,7 @@ mod tests {
         for i in 0..32 {
             assert_eq!(unsafe { *p.add(i) }, 0);
         }
-        slice_free1(32, p);
+        unsafe { slice_free1(32, p) };
     }
 
     #[test]
@@ -112,13 +121,15 @@ mod tests {
                 *src.add(i) = i as u8;
             }
         }
-        let dst = slice_copy(16, src);
+        let dst = unsafe { slice_copy(16, src) };
         assert!(!dst.is_null());
         for i in 0..16 {
             assert_eq!(unsafe { *dst.add(i) }, i as u8);
         }
-        slice_free1(16, src);
-        slice_free1(16, dst);
+        unsafe {
+            slice_free1(16, src);
+            slice_free1(16, dst);
+        }
     }
 
     #[test]

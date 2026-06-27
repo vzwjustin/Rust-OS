@@ -2,17 +2,15 @@
 //! `gio/gnotification.c`.
 //!
 //! Upstream `GNotification` is a `GObject` subclass. We port it as a
-//! plain `pub struct` with the same fields and API, since the GObject
-//! interface system that `GIcon` (used by `set_icon`) depends on is
-//! deferred (Phase 9). `set_icon` is included as a signature stub that
-//! stores an opaque icon description; real icon support lands when
-//! GIcon is ported.
+//! plain `pub struct` with the same fields and API rather than a
+//! registered GObject subclass, mirroring upstream semantics with
+//! idiomatic Rust. Icons use [`Icon`](crate::gicon::Icon).
 //!
 //! Provides:
 //! - `NotificationPriority` enum (Normal / Low / High / Urgent).
 //! - `Notification` struct with title, body, priority, category,
 //!   buttons (label + action + optional `Variant` target), default
-//!   action + optional `Variant` target, and an opaque icon slot.
+//!   action + optional `Variant` target, and an optional [`Icon`].
 //! - Full setter API matching upstream: `set_title`, `set_body`,
 //!   `set_priority`, `set_urgent` (deprecated wrapper), `set_category`,
 //!   `add_button`, `add_button_with_target_value`, `set_default_action`,
@@ -20,10 +18,10 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
+use crate::gicon::Icon;
 use crate::prelude::*;
 use crate::variant::Variant;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 // ─────────────────────── GNotificationPriority ────────────────────────────
@@ -66,14 +64,6 @@ pub struct NotificationButton {
     pub target: Option<Variant>,
 }
 
-// ──────────────────────── opaque icon slot ────────────────────────────────
-
-/// Opaque icon representation. Real `GIcon` support lands when the
-/// GObject interface system is ported (Phase 9 deferred). For now we
-/// store an `Arc<dyn Any + Send + Sync>` so callers can stash any
-/// icon-like value and retrieve it later.
-pub type NotificationIcon = Arc<dyn core::any::Any + Send + Sync>;
-
 // ────────────────────────── GNotification ─────────────────────────────────
 
 /// A desktop notification (`GNotification`).
@@ -87,7 +77,7 @@ pub type NotificationIcon = Arc<dyn core::any::Any + Send + Sync>;
 pub struct Notification {
     title: String,
     body: String,
-    icon: Option<NotificationIcon>,
+    icon: Option<Icon>,
     priority: NotificationPriority,
     category: Option<String>,
     buttons: Vec<NotificationButton>,
@@ -122,12 +112,7 @@ impl Notification {
     }
 
     /// Set the icon (`g_notification_set_icon`).
-    ///
-    /// Real `GIcon` support is deferred until the GObject interface
-    /// system is ported. For now the icon is stored as an opaque
-    /// `NotificationIcon` (`Arc<dyn Any + Send + Sync>`) so callers can
-    /// stash any icon-like value.
-    pub fn set_icon(&mut self, icon: NotificationIcon) {
+    pub fn set_icon(&mut self, icon: Icon) {
         self.icon = Some(icon);
     }
 
@@ -235,8 +220,8 @@ impl Notification {
         self.default_action_target.as_ref()
     }
 
-    /// Borrow the opaque icon, if set.
-    pub fn icon(&self) -> Option<&NotificationIcon> {
+    /// Borrow the icon, if set.
+    pub fn icon(&self) -> Option<&Icon> {
         self.icon.as_ref()
     }
 }
@@ -361,13 +346,14 @@ mod tests {
     }
 
     #[test]
-    fn set_icon_stores_opaque_value() {
+    fn set_icon_stores_icon() {
+        use crate::gthemedicon::ThemedIcon;
+
         let mut n = Notification::new("Hello");
-        let icon: NotificationIcon = Arc::new(42i32);
-        n.set_icon(icon);
+        let icon = Icon::Themed(ThemedIcon::new("folder"));
+        n.set_icon(icon.clone());
         let stored = n.icon().unwrap();
-        let v = stored.downcast_ref::<i32>();
-        assert_eq!(v, Some(&42));
+        assert!(stored.equal(&icon));
     }
 
     #[test]

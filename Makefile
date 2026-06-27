@@ -55,7 +55,7 @@ help:
 	@echo "  $(GREEN)test-glib-native$(NC) - Run glib-native host unit tests"
 	@echo "  $(GREEN)check-glib-native$(NC) - Check glib-native on host (no kernel target)"
 	@echo "  $(GREEN)build-glib-static$(NC) - Build glib-native C static library (host)"
-	@echo "  $(GREEN)check$(NC)           - Check compilation without building"
+	@echo "  $(GREEN)check$(NC)           - Compile and link debug kernel (catches link errors)"
 	@echo "  $(GREEN)clean$(NC)           - Clean build artifacts"
 	@echo "  $(GREEN)install-deps$(NC)    - Install build dependencies"
 	@echo ""
@@ -82,10 +82,10 @@ install-deps:
 	@echo "$(BLUE)[INFO]$(NC) Installing build dependencies..."
 	@$(BUILD_SCRIPT) --install-deps
 
-# Check compilation without building
+# Full compile + link (cargo check via --check-only misses linker failures)
 check:
-	@echo "$(BLUE)[INFO]$(NC) Checking kernel compilation..."
-	@$(BUILD_SCRIPT) --check-only
+	@echo "$(BLUE)[INFO]$(NC) Checking kernel compilation and link..."
+	@$(BUILD_SCRIPT)
 
 # Build debug kernel
 build:

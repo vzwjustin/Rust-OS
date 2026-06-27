@@ -4,21 +4,33 @@
 //! must uphold the documented pointer/lifetime contracts; all exported
 //! functions are `unsafe` at the Rust boundary because C cannot enforce them.
 
+use crate::bytes::Bytes;
 use crate::error::{set_error_literal, Error};
-use crate::gobject::GObject;
+use crate::gobject::{closure_new, object_new, Closure, GObject};
 use crate::gparamspec::ParamSpec;
-use crate::gsignal::{signal_connect_by_name, ConnectFlags, SignalCallback};
+use crate::gsignal::{
+    signal_connect_by_name, signal_emit as rust_signal_emit,
+    signal_emit_by_name as rust_signal_emit_by_name,
+    signal_handler_disconnect as rust_signal_handler_disconnect,
+    signal_lookup as rust_signal_lookup, signal_name as rust_signal_name,
+    signal_new as rust_signal_new, ConnectFlags, SignalCallback, SignalFlags,
+};
 use crate::gtype::{
     type_from_name as rust_type_from_name, type_init, type_is_a, type_name as rust_type_name,
+    type_register_static as rust_type_register_static,
+    type_register_static_simple as rust_type_register_static_simple, GTypeFlags, GTypeInfo,
     ParamFlags, G_TYPE_BOOLEAN, G_TYPE_CHAR, G_TYPE_DOUBLE, G_TYPE_ENUM, G_TYPE_FLAGS,
     G_TYPE_FLOAT, G_TYPE_INT, G_TYPE_INT64, G_TYPE_INVALID, G_TYPE_LONG, G_TYPE_POINTER,
     G_TYPE_STRING, G_TYPE_UCHAR, G_TYPE_UINT, G_TYPE_UINT64, G_TYPE_ULONG,
 };
 use crate::gvalue::GValue as RustGValue;
+use crate::hash::str_hash as rust_str_hash;
 use crate::prelude::*;
+pub use crate::quark::Quark;
 use crate::quark::{
-    quark_from_static_string, quark_from_string, quark_to_string, quark_try_string, Quark,
+    quark_from_static_string, quark_from_string, quark_to_string, quark_try_string,
 };
+use crate::strfuncs::{str_has_prefix, str_has_suffix, strcmp as rust_strcmp};
 use alloc::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -1387,6 +1399,821 @@ pub unsafe extern "C" fn g_type_fundamental(type_id: CGType) -> CGType {
 #[no_mangle]
 pub unsafe extern "C" fn g_type_get_type_registration_serial() -> u32 {
     crate::gtype::type_get_type_registration_serial()
+}
+
+// ── GObject: construction + properties ─────────────────────────────────
+
+/// Create a new GObject of `type_` (`g_object_new`).
+///
+/// Returns a pointer that must be released with [`g_object_unref`].
+///
+/// # Safety
+///
+/// `type_` must be a valid registered GType (typically `G_TYPE_OBJECT` or a
+/// subclass).
+#[no_mangle]
+pub unsafe extern "C" fn g_object_new(type_: CGType) -> gpointer {
+    type_init();
+    let obj = object_new(type_);
+    Arc::into_raw(obj) as gpointer
+}
+
+/// Get a property value from `object` (`g_object_get_property`).
+///
+/// Writes the property value into `value`. The caller must initialise `value`
+/// with [`g_value_init`] for the correct type before calling.
+///
+/// # Safety
+///
+/// `object` must point to a live [`GObject`]. `property_name` must be a valid
+/// NUL-terminated C string. `value` must point to initialised `GValue` storage.
+#[no_mangle]
+pub unsafe extern "C" fn g_object_get_property(
+    object: gpointer,
+    property_name: *const c_char,
+    value: *mut GValue,
+) {
+    if object.is_null() || property_name.is_null() || value.is_null() {
+        return;
+    }
+    let name = match unsafe { core::ffi::CStr::from_ptr(property_name).to_str() } {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let obj = unsafe { &*(object.cast::<GObject>()) };
+    if let Some(val) = obj.get_property(name) {
+        unsafe {
+            value_as_rust_mut(value).copy_from(&val);
+        }
+    }
+}
+
+/// Set a property value on `object` (`g_object_set_property`).
+///
+/// # Safety
+///
+/// `object` must point to a live [`GObject`]. `property_name` must be a valid
+/// NUL-terminated C string. `value` must point to an initialised `GValue`.
+#[no_mangle]
+pub unsafe extern "C" fn g_object_set_property(
+    object: gpointer,
+    property_name: *const c_char,
+    value: *const GValue,
+) {
+    if object.is_null() || property_name.is_null() || value.is_null() {
+        return;
+    }
+    let name = match unsafe { core::ffi::CStr::from_ptr(property_name).to_str() } {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let obj = unsafe { &*(object.cast::<GObject>()) };
+    let val = unsafe { value_as_rust(value) };
+    obj.set_property(name, val.clone());
+}
+
+/// Check whether `object` has a floating reference (`g_object_is_floating`).
+///
+/// # Safety
+///
+/// `object` must point to a live [`GObject`] or be null (returns 0).
+#[no_mangle]
+pub unsafe extern "C" fn g_object_is_floating(object: gpointer) -> i32 {
+    if object.is_null() {
+        return 0;
+    }
+    let obj = unsafe { &*(object.cast::<GObject>()) };
+    i32::from(obj.is_floating())
+}
+
+/// Force `object` into the floating state (`g_object_force_floating`).
+///
+/// # Safety
+///
+/// `object` must point to a live [`GObject`].
+#[no_mangle]
+pub unsafe extern "C" fn g_object_force_floating(object: gpointer) {
+    if object.is_null() {
+        return;
+    }
+    let obj = unsafe { &*(object.cast::<GObject>()) };
+    obj.force_floating();
+}
+
+// ── GSignal ────────────────────────────────────────────────────────────
+
+/// Register a new signal (`g_signal_new`).
+///
+/// Returns the signal ID (0 on failure).
+///
+/// # Safety
+///
+/// `signal_name` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn g_signal_new(
+    signal_name: *const c_char,
+    owner_type: CGType,
+    flags: u32,
+    return_type: CGType,
+    n_params: u32,
+    param_types: *const CGType,
+) -> u32 {
+    if signal_name.is_null() {
+        return 0;
+    }
+    let name = match unsafe { core::ffi::CStr::from_ptr(signal_name).to_str() } {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let params: Vec<CGType> = if n_params == 0 || param_types.is_null() {
+        Vec::new()
+    } else {
+        unsafe { core::slice::from_raw_parts(param_types, n_params as usize) }.to_vec()
+    };
+    rust_signal_new(name, owner_type, SignalFlags(flags), return_type, &params)
+}
+
+/// Look up a signal ID by name and type (`g_signal_lookup`).
+///
+/// # Safety
+///
+/// `name` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn g_signal_lookup(name: *const c_char, owner_type: CGType) -> u32 {
+    if name.is_null() {
+        return 0;
+    }
+    let s = match unsafe { core::ffi::CStr::from_ptr(name).to_str() } {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    rust_signal_lookup(s, owner_type)
+}
+
+/// Get the name of `signal_id` (`g_signal_name`).
+///
+/// Returns a pointer to a process-lifetime string, or null.
+///
+/// # Safety
+///
+/// The returned pointer is valid for the process lifetime and must not be
+/// freed.
+#[no_mangle]
+pub unsafe extern "C" fn g_signal_name(signal_id: u32) -> *const c_char {
+    match rust_signal_name(signal_id) {
+        Some(name) => leak_type_name(&name),
+        None => ptr::null(),
+    }
+}
+
+/// Emit a signal by ID (`g_signal_emit`).
+///
+/// # Safety
+///
+/// `instance` must point to a live [`GObject`]. `args` must point to an array
+/// of `n_args` initialised `GValue` slots, or be null when `n_args` is 0.
+#[no_mangle]
+pub unsafe extern "C" fn g_signal_emit(
+    instance: gpointer,
+    signal_id: u32,
+    _detail: u32,
+    args: *const GValue,
+    n_args: u32,
+) {
+    if instance.is_null() || signal_id == 0 {
+        return;
+    }
+    let obj = unsafe { &*(instance.cast::<GObject>()) };
+    let arg_vec: Vec<RustGValue> = if n_args == 0 || args.is_null() {
+        Vec::new()
+    } else {
+        unsafe { core::slice::from_raw_parts(args.cast::<RustGValue>(), n_args as usize) }
+            .iter()
+            .cloned()
+            .collect()
+    };
+    rust_signal_emit(obj.type_id(), signal_id, &arg_vec);
+}
+
+/// Emit a signal by name (`g_signal_emit_by_name`).
+///
+/// # Safety
+///
+/// `instance` must point to a live [`GObject`]. `detailed_signal` must be a
+/// valid NUL-terminated C string. `args` must point to an array of `n_args`
+/// initialised `GValue` slots, or be null when `n_args` is 0.
+#[no_mangle]
+pub unsafe extern "C" fn g_signal_emit_by_name(
+    instance: gpointer,
+    detailed_signal: *const c_char,
+    args: *const GValue,
+    n_args: u32,
+) {
+    if instance.is_null() || detailed_signal.is_null() {
+        return;
+    }
+    let sig_name = match unsafe { core::ffi::CStr::from_ptr(detailed_signal).to_str() } {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let obj = unsafe { &*(instance.cast::<GObject>()) };
+    let arg_vec: Vec<RustGValue> = if n_args == 0 || args.is_null() {
+        Vec::new()
+    } else {
+        unsafe { core::slice::from_raw_parts(args.cast::<RustGValue>(), n_args as usize) }
+            .iter()
+            .cloned()
+            .collect()
+    };
+    rust_signal_emit_by_name(obj.type_id(), sig_name, &arg_vec);
+}
+
+/// Disconnect a signal handler (`g_signal_handler_disconnect`).
+///
+/// # Safety
+///
+/// `handler_id` must be a valid handler ID returned by
+/// [`g_signal_connect_data`].
+#[no_mangle]
+pub unsafe extern "C" fn g_signal_handler_disconnect(handler_id: u64) -> i32 {
+    i32::from(rust_signal_handler_disconnect(handler_id as u32))
+}
+
+// ── GBytes ─────────────────────────────────────────────────────────────
+
+/// Opaque `GBytes*` pointer type.
+pub type GBytesPtr = *mut Bytes;
+
+/// Allocate a new `GBytes` from `data` (`g_bytes_new`).
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when `size`
+/// is 0. The returned pointer must be released with [`g_bytes_unref`].
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_new(data: *const c_void, size: usize) -> GBytesPtr {
+    if data.is_null() || size == 0 {
+        return Box::into_raw(Box::new(Bytes::new(&[] as &[u8])));
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+    Box::into_raw(Box::new(Bytes::new(slice)))
+}
+
+/// Create a `GBytes` that takes ownership of `data` (`g_bytes_new_take`).
+///
+/// The data is copied into an owned buffer and `data` is released via
+/// [`g_free`].
+///
+/// # Safety
+///
+/// `data` must be a pointer from [`g_malloc`] / [`g_malloc0`] (or null when
+/// `size` is 0). Ownership is taken.
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_new_take(data: *mut c_void, size: usize) -> GBytesPtr {
+    if data.is_null() || size == 0 {
+        return Box::into_raw(Box::new(Bytes::new(&[] as &[u8])));
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+    let bytes = Bytes::new(slice);
+    unsafe { g_free(data) };
+    Box::into_raw(Box::new(bytes))
+}
+
+/// Get a pointer to the byte data (`g_bytes_get_data`).
+///
+/// The returned pointer is valid as long as `bytes` is alive.
+///
+/// # Safety
+///
+/// `bytes` must be a valid `GBytes*` from [`g_bytes_new`].
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_get_data(bytes: GBytesPtr, size: *mut usize) -> *const c_void {
+    if bytes.is_null() {
+        return ptr::null();
+    }
+    let b = unsafe { &*bytes };
+    if !size.is_null() {
+        unsafe { *size = b.len() };
+    }
+    b.data().as_ptr() as *const c_void
+}
+
+/// Get the size of `bytes` (`g_bytes_get_size`).
+///
+/// # Safety
+///
+/// `bytes` must be a valid `GBytes*`.
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_get_size(bytes: GBytesPtr) -> usize {
+    if bytes.is_null() {
+        return 0;
+    }
+    unsafe { (&*bytes).len() }
+}
+
+/// Increment the reference count of `bytes` (`g_bytes_ref`).
+///
+/// # Safety
+///
+/// `bytes` must be a valid `GBytes*`. The returned pointer must be released
+/// with [`g_bytes_unref`].
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_ref(bytes: GBytesPtr) -> GBytesPtr {
+    if bytes.is_null() {
+        return ptr::null_mut();
+    }
+    let b = unsafe { &*bytes };
+    Box::into_raw(Box::new(b.clone()))
+}
+
+/// Decrement the reference count of `bytes` (`g_bytes_unref`).
+///
+/// # Safety
+///
+/// `bytes` must be a valid `GBytes*` from [`g_bytes_new`] / [`g_bytes_ref`],
+/// or null (no-op).
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_unref(bytes: GBytesPtr) {
+    if bytes.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(bytes)) };
+}
+
+/// Compare two `GBytes` for equality (`g_bytes_equal`).
+///
+/// # Safety
+///
+/// Both pointers must be valid `GBytes*` or null (null != non-null).
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_equal(bytes1: GBytesPtr, bytes2: GBytesPtr) -> i32 {
+    if bytes1.is_null() || bytes2.is_null() {
+        return i32::from(bytes1 == bytes2);
+    }
+    let b1 = unsafe { &*bytes1 };
+    let b2 = unsafe { &*bytes2 };
+    i32::from(b1.equal(b2))
+}
+
+/// Compute a hash for `bytes` (`g_bytes_hash`).
+///
+/// # Safety
+///
+/// `bytes` must be a valid `GBytes*`.
+#[no_mangle]
+pub unsafe extern "C" fn g_bytes_hash(bytes: GBytesPtr) -> u32 {
+    if bytes.is_null() {
+        return 0;
+    }
+    unsafe { (&*bytes).hash() }
+}
+
+// ── GError: construction + inspection ──────────────────────────────────
+
+/// Allocate a new `GError` (`g_error_new`).
+///
+/// This stub accepts a literal message pointer (no `printf` varargs).
+///
+/// # Safety
+///
+/// `message` must be a valid NUL-terminated C string. The returned pointer
+/// must be released with [`g_error_free`] or [`g_clear_error`].
+#[no_mangle]
+pub unsafe extern "C" fn g_error_new(
+    domain: Quark,
+    code: i32,
+    message: *const c_char,
+) -> *mut GError {
+    if message.is_null() {
+        return error_to_gerror(Error::new_literal(domain, code, ""));
+    }
+    let msg = unsafe {
+        core::ffi::CStr::from_ptr(message)
+            .to_string_lossy()
+            .into_owned()
+    };
+    error_to_gerror(Error::new_literal(domain, code, &msg))
+}
+
+/// Allocate a new `GError` with a literal message (`g_error_new_literal`).
+///
+/// # Safety
+///
+/// `message` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn g_error_new_literal(
+    domain: Quark,
+    code: i32,
+    message: *const c_char,
+) -> *mut GError {
+    if message.is_null() {
+        return error_to_gerror(Error::new_literal(domain, code, ""));
+    }
+    let msg = unsafe {
+        core::ffi::CStr::from_ptr(message)
+            .to_string_lossy()
+            .into_owned()
+    };
+    error_to_gerror(Error::new_literal(domain, code, &msg))
+}
+
+/// Copy a `GError` (`g_error_copy`).
+///
+/// # Safety
+///
+/// `error` must be a valid `GError*` allocated by this FFI layer.
+/// The returned pointer must be released with [`g_error_free`] or
+/// [`g_clear_error`].
+#[no_mangle]
+pub unsafe extern "C" fn g_error_copy(error: *const GError) -> *mut GError {
+    if error.is_null() {
+        return ptr::null_mut();
+    }
+    let gerr = unsafe { &*error };
+    let msg = if gerr.message.is_null() {
+        String::new()
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(gerr.message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    error_to_gerror(Error::new_literal(gerr.domain, gerr.code, &msg))
+}
+
+/// Check whether `error` matches `domain` and `code` (`g_error_matches`).
+///
+/// # Safety
+///
+/// `error` must be a valid `GError*` or null (returns 0).
+#[no_mangle]
+pub unsafe extern "C" fn g_error_matches(error: *const GError, domain: Quark, code: i32) -> i32 {
+    if error.is_null() {
+        return 0;
+    }
+    let gerr = unsafe { &*error };
+    i32::from(gerr.domain == domain && gerr.code == code)
+}
+
+// ── GParamSpec: boolean / string / uint ────────────────────────────────
+
+/// Create a boolean [`ParamSpec`] (`g_param_spec_boolean`).
+///
+/// # Ownership
+///
+/// Returns an opaque pointer retained for the process lifetime.
+///
+/// # Safety
+///
+/// `name`, `nick`, and `blurb` must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn g_param_spec_boolean(
+    name: *const c_char,
+    nick: *const c_char,
+    blurb: *const c_char,
+    default_value: i32,
+    flags: u32,
+) -> gpointer {
+    let Some(name) = cstr_to_owned(name) else {
+        return ptr::null_mut();
+    };
+    let Some(nick) = cstr_to_owned(nick) else {
+        return ptr::null_mut();
+    };
+    let Some(blurb) = cstr_to_owned(blurb) else {
+        return ptr::null_mut();
+    };
+    leak_param_spec(ParamSpec::boolean(
+        &name,
+        &nick,
+        &blurb,
+        default_value != 0,
+        ParamFlags(flags),
+    ))
+}
+
+/// Create a string [`ParamSpec`] (`g_param_spec_string`).
+///
+/// # Safety
+///
+/// `name`, `nick`, `blurb`, and `default_value` must be valid NUL-terminated C
+/// strings (or null for `default_value`).
+#[no_mangle]
+pub unsafe extern "C" fn g_param_spec_string(
+    name: *const c_char,
+    nick: *const c_char,
+    blurb: *const c_char,
+    default_value: *const c_char,
+    flags: u32,
+) -> gpointer {
+    let Some(name) = cstr_to_owned(name) else {
+        return ptr::null_mut();
+    };
+    let Some(nick) = cstr_to_owned(nick) else {
+        return ptr::null_mut();
+    };
+    let Some(blurb) = cstr_to_owned(blurb) else {
+        return ptr::null_mut();
+    };
+    let default = if default_value.is_null() {
+        String::new()
+    } else {
+        unsafe {
+            core::ffi::CStr::from_ptr(default_value)
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    leak_param_spec(ParamSpec::string(
+        &name,
+        &nick,
+        &blurb,
+        &default,
+        ParamFlags(flags),
+    ))
+}
+
+/// Create a uint [`ParamSpec`] (`g_param_spec_uint`).
+///
+/// # Safety
+///
+/// `name`, `nick`, and `blurb` must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn g_param_spec_uint(
+    name: *const c_char,
+    nick: *const c_char,
+    blurb: *const c_char,
+    minimum: u32,
+    maximum: u32,
+    default_value: u32,
+    flags: u32,
+) -> gpointer {
+    let Some(name) = cstr_to_owned(name) else {
+        return ptr::null_mut();
+    };
+    let Some(nick) = cstr_to_owned(nick) else {
+        return ptr::null_mut();
+    };
+    let Some(blurb) = cstr_to_owned(blurb) else {
+        return ptr::null_mut();
+    };
+    leak_param_spec(ParamSpec::uint(
+        &name,
+        &nick,
+        &blurb,
+        minimum,
+        maximum,
+        default_value,
+        ParamFlags(flags),
+    ))
+}
+
+// ── GType: registration ────────────────────────────────────────────────
+
+/// C-compatible `GTypeInfo` struct for FFI callers.
+///
+/// Function-pointer fields are stubbed — real class/instance init must be done
+/// from Rust code via `type_register_static_simple` with `fn` pointers.
+#[repr(C)]
+pub struct CGTypeInfo {
+    pub class_size: u16,
+    pub instance_size: u16,
+    pub class_init: Option<extern "C" fn(*mut c_void)>,
+    pub instance_init: Option<extern "C" fn(*mut c_void)>,
+}
+
+/// Register a static derived type (`g_type_register_static`).
+///
+/// # Safety
+///
+/// `type_name` must be a valid NUL-terminated C string. `info` must point to a
+/// valid `CGTypeInfo` struct or null.
+#[no_mangle]
+pub unsafe extern "C" fn g_type_register_static(
+    parent_type: CGType,
+    type_name: *const c_char,
+    info: *const CGTypeInfo,
+    flags: u32,
+) -> CGType {
+    if type_name.is_null() {
+        return G_TYPE_INVALID;
+    }
+    let name = match unsafe { core::ffi::CStr::from_ptr(type_name).to_str() } {
+        Ok(s) => s,
+        Err(_) => return G_TYPE_INVALID,
+    };
+    let rust_info = GTypeInfo {
+        class_size: if info.is_null() {
+            0
+        } else {
+            unsafe { (*info).class_size }
+        },
+        instance_size: if info.is_null() {
+            0
+        } else {
+            unsafe { (*info).instance_size }
+        },
+        class_init: None,
+        instance_init: None,
+        value_table: None,
+    };
+    rust_type_register_static(parent_type, name, &rust_info, GTypeFlags(flags))
+}
+
+/// Register a static type with simplified parameters
+/// (`g_type_register_static_simple`).
+///
+/// # Safety
+///
+/// `type_name` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn g_type_register_static_simple(
+    parent_type: CGType,
+    type_name: *const c_char,
+    class_size: u16,
+    _class_init: Option<extern "C" fn(*mut c_void)>,
+    instance_size: u16,
+    _instance_init: Option<extern "C" fn(*mut c_void)>,
+    flags: u32,
+) -> CGType {
+    if type_name.is_null() {
+        return G_TYPE_INVALID;
+    }
+    let name = match unsafe { core::ffi::CStr::from_ptr(type_name).to_str() } {
+        Ok(s) => s,
+        Err(_) => return G_TYPE_INVALID,
+    };
+    rust_type_register_static_simple(
+        parent_type,
+        name,
+        class_size,
+        None,
+        instance_size,
+        None,
+        GTypeFlags(flags),
+    )
+}
+
+// ── String helpers ─────────────────────────────────────────────────────
+
+/// Compare two C strings, null-safe (`g_strcmp0`).
+///
+/// Returns -1, 0, or 1. Null is treated as less than any non-null string.
+///
+/// # Safety
+///
+/// Both pointers may be null or valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn g_strcmp0(str1: *const c_char, str2: *const c_char) -> i32 {
+    if str1.is_null() && str2.is_null() {
+        return 0;
+    }
+    if str1.is_null() {
+        return -1;
+    }
+    if str2.is_null() {
+        return 1;
+    }
+    let s1 = unsafe { core::ffi::CStr::from_ptr(str1).to_string_lossy() };
+    let s2 = unsafe { core::ffi::CStr::from_ptr(str2).to_string_lossy() };
+    rust_strcmp(&s1, &s2)
+}
+
+/// Check whether `str` begins with `prefix` (`g_str_has_prefix`).
+///
+/// # Safety
+///
+/// Both pointers must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn g_str_has_prefix(str: *const c_char, prefix: *const c_char) -> i32 {
+    if str.is_null() || prefix.is_null() {
+        return 0;
+    }
+    let s = unsafe { core::ffi::CStr::from_ptr(str).to_string_lossy() };
+    let p = unsafe { core::ffi::CStr::from_ptr(prefix).to_string_lossy() };
+    i32::from(str_has_prefix(&s, &p))
+}
+
+/// Check whether `str` ends with `suffix` (`g_str_has_suffix`).
+///
+/// # Safety
+///
+/// Both pointers must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn g_str_has_suffix(str: *const c_char, suffix: *const c_char) -> i32 {
+    if str.is_null() || suffix.is_null() {
+        return 0;
+    }
+    let s = unsafe { core::ffi::CStr::from_ptr(str).to_string_lossy() };
+    let sf = unsafe { core::ffi::CStr::from_ptr(suffix).to_string_lossy() };
+    i32::from(str_has_suffix(&s, &sf))
+}
+
+/// Compute a hash for `str` (`g_str_hash`).
+///
+/// # Safety
+///
+/// `str` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn g_str_hash(str: *const c_char) -> u32 {
+    rust_str_hash(str as *const ())
+}
+
+// ── GClosure ───────────────────────────────────────────────────────────
+
+/// Opaque `GClosure*` pointer type.
+pub type GClosurePtr = *mut Closure;
+
+/// Create a C closure (`g_cclosure_new`).
+///
+/// The `callback` is invoked as `callback(data, null)` when the closure is
+/// invoked. The `destroy_data` notify is stored but not yet dispatched.
+///
+/// # Safety
+///
+/// `callback` must be a valid function pointer when non-null. The returned
+/// pointer must be released with [`g_closure_unref`].
+#[no_mangle]
+pub unsafe extern "C" fn g_cclosure_new(
+    callback: GSignalCMarshaller,
+    data: gpointer,
+    _destroy_data: GWeakNotify,
+) -> GClosurePtr {
+    let Some(cb) = callback else {
+        return ptr::null_mut();
+    };
+    let data_addr = data as usize;
+    let closure = closure_new(move |_args| {
+        cb(data_addr as gpointer, ptr::null_mut());
+        None
+    });
+    Arc::into_raw(closure) as GClosurePtr
+}
+
+/// Invoke a closure (`g_closure_invoke`).
+///
+/// # Safety
+///
+/// `closure` must be a valid `GClosure*` from [`g_cclosure_new`]. `args` must
+/// point to an array of `n_args` initialised `GValue` slots, or be null when
+/// `n_args` is 0.
+#[no_mangle]
+pub unsafe extern "C" fn g_closure_invoke(closure: GClosurePtr, args: *const GValue, n_args: u32) {
+    if closure.is_null() {
+        return;
+    }
+    let c = unsafe { &*closure };
+    let arg_vec: Vec<RustGValue> = if n_args == 0 || args.is_null() {
+        Vec::new()
+    } else {
+        unsafe { core::slice::from_raw_parts(args.cast::<RustGValue>(), n_args as usize) }
+            .iter()
+            .cloned()
+            .collect()
+    };
+    let _ = c.invoke(&arg_vec);
+}
+
+/// Increment the reference count of `closure` (`g_closure_ref`).
+///
+/// # Safety
+///
+/// `closure` must be a valid `GClosure*`.
+#[no_mangle]
+pub unsafe extern "C" fn g_closure_ref(closure: GClosurePtr) -> GClosurePtr {
+    if closure.is_null() {
+        return ptr::null_mut();
+    }
+    let c = unsafe { &*closure };
+    let _new_arc = c.ref_();
+    closure
+}
+
+/// Sink a floating closure reference (`g_closure_sink`).
+///
+/// # Safety
+///
+/// `closure` must be a valid `GClosure*`.
+#[no_mangle]
+pub unsafe extern "C" fn g_closure_sink(closure: GClosurePtr) {
+    if closure.is_null() {
+        return;
+    }
+    let c = unsafe { &*closure };
+    c.sink();
+}
+
+/// Decrement the reference count of `closure` (`g_closure_unref`).
+///
+/// # Safety
+///
+/// `closure` must be a valid `GClosure*` from [`g_cclosure_new`] or
+/// [`g_closure_ref`], or null (no-op).
+#[no_mangle]
+pub unsafe extern "C" fn g_closure_unref(closure: GClosurePtr) {
+    if closure.is_null() {
+        return;
+    }
+    unsafe { drop(Arc::from_raw(closure)) };
 }
 
 #[cfg(test)]
