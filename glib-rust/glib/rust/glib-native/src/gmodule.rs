@@ -334,12 +334,12 @@ fn post_open_init<P: ModulePlatform>(module: &Arc<GModule>) -> Result<(), (GModu
             // platform stubs do not actually load modules.
             let err_ptr = unsafe { check_init(Arc::as_ptr(module) as *mut GModule) };
             if !err_ptr.is_null() {
-                // We can't reliably turn a `*mut c_char` into a Rust String
-                // without knowing its encoding or how to free it; report a
-                // generic check-failed message.
+                let err_str = unsafe { core::ffi::CStr::from_ptr(err_ptr) }
+                    .to_string_lossy()
+                    .into_owned();
                 return Err((
                     GModuleError::CheckFailed,
-                    "module check_init returned an error".to_owned(),
+                    err_str,
                 ));
             }
         }
