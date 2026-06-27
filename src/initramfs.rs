@@ -239,19 +239,36 @@ pub fn start_init() -> Result<(), InitramfsError> {
 
 /// Execute the init process (transitions to user mode)
 ///
-/// This is the final step that actually jumps to user mode and starts executing /init.
-/// It should only be called after start_init() has successfully loaded the binary.
-///
 /// # Safety
-/// This function is unsafe because it transitions to user mode and never returns.
-/// The caller must ensure:
-/// - The ELF binary has been loaded and validated
-/// - Page tables are set up for user mode access
-/// - Interrupts and syscall handlers are configured
+/// Never returns on success.
 #[allow(dead_code)]
 pub unsafe fn execute_init(entry_point: u64, stack_pointer: u64) -> ! {
-    // Switch to user mode and jump to /init entry point
     crate::usermode::switch_to_user_mode(entry_point, stack_pointer)
+}
+
+/// Try to exec `/bin/init` or `/init` and enter user mode.
+///
+/// # Safety
+/// Never returns on success.
+#[allow(dead_code)]
+pub unsafe fn try_exec_init() -> ! {
+    use crate::linux_compat::process_ops;
+
+    for path in [c"/bin/init", c"/init"] {
+        let path_ptr = path.as_ptr() as *const u8;
+        let argv: [*const u8; 2] = [path_ptr, core::ptr::null()];
+        let envp: [*const u8; 1] = [core::ptr::null()];
+        if process_ops::execve_and_enter_user_mode(path_ptr, argv.as_ptr(), envp.as_ptr())
+            .is_ok()
+        {
+            unreachable!("switch_to_user_mode returns !");
+        }
+    }
+
+    crate::serial_println!("init: /bin/init and /init not found");
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 /// Load initramfs at kernel boot

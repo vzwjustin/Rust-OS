@@ -4,8 +4,17 @@
 //! for RustOS, enabling execution of userspace programs.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::VirtAddr;
+
+/// Sentinel: no pending user-mode entry after execve.
+const PENDING_USER_ENTRY_NONE: u64 = u64::MAX;
+
+/// After a successful execve from user mode, the syscall epilogue jumps here
+/// instead of returning to the pre-exec instruction pointer.
+static PENDING_USER_ENTRY_RIP: AtomicU64 = AtomicU64::new(PENDING_USER_ENTRY_NONE);
+static PENDING_USER_ENTRY_RSP: AtomicU64 = AtomicU64::new(PENDING_USER_ENTRY_NONE);
 
 /// Switch from kernel mode (Ring 0) to user mode (Ring 3)
 ///
@@ -143,6 +152,46 @@ pub unsafe fn execute_in_user_mode(entry_point: u64, user_stack: u64) -> ! {
 
     // Perform the switch
     switch_to_user_mode(entry_point, user_stack);
+}
+
+/// Queue a user-mode entry point for the next INT 0x80 return (successful execve).
+pub fn schedule_user_entry(entry_point: u64, user_stack: u64) {
+    PENDING_USER_ENTRY_RIP.store(entry_point, Ordering::Release);
+    PENDING_USER_ENTRY_RSP.store(user_stack, Ordering::Release);
+}
+
+/// Take a pending execve redirect, if any.
+pub fn take_pending_user_entry() -> Option<(u64, u64)> {
+    let rip = PENDING_USER_ENTRY_RIP.swap(PENDING_USER_ENTRY_NONE, Ordering::AcqRel);
+    if rip == PENDING_USER_ENTRY_NONE {
+        return None;
+    }
+    let rsp = PENDING_USER_ENTRY_RSP.swap(PENDING_USER_ENTRY_NONE, Ordering::AcqRel);
+    Some((rip, rsp))
+}
+
+/// Patch the CPU interrupt frame below the saved INT 0x80 GPR block.
+///
+/// `saved_regs` must point at the top of the 15 pushed registers (r15).
+///
+/// # Safety
+/// Must only be called from the INT 0x80 handler with a valid stack frame.
+pub unsafe fn patch_syscall_return_to_user(
+    saved_regs: *mut u8,
+    entry_point: u64,
+    user_stack: u64,
+) {
+    let user_code = crate::gdt::get_user_code_selector().0 as u64;
+    let user_data = crate::gdt::get_user_data_selector().0 as u64;
+    let rflags: u64 = 0x202;
+
+    // Layout below saved GPRs: RIP, CS, RFLAGS, RSP, SS (iretq pop order).
+    let iretq_frame = saved_regs.add(120);
+    core::ptr::write(iretq_frame as *mut u64, entry_point);
+    core::ptr::write(iretq_frame.add(8) as *mut u64, user_code);
+    core::ptr::write(iretq_frame.add(16) as *mut u64, rflags);
+    core::ptr::write(iretq_frame.add(24) as *mut u64, user_stack);
+    core::ptr::write(iretq_frame.add(32) as *mut u64, user_data);
 }
 
 /// Return from user mode to kernel mode (called from syscall handler)

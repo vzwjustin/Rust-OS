@@ -112,6 +112,21 @@ pub mod api {
         manager.mmap(addr, length, prot, flags)
     }
 
+    /// Map a file-backed region (pages mapped, then populated by the caller).
+    pub fn vm_mmap_file(
+        addr: usize,
+        length: usize,
+        prot: ProtectionFlags,
+        flags: MmapFlags,
+        fd: i32,
+        offset: usize,
+    ) -> VmResult<*mut u8> {
+        let manager_guard = VIRTUAL_MEMORY_MANAGER.lock();
+        let manager = manager_guard.as_ref().ok_or(VmError::NotInitialized)?;
+
+        manager.mmap_file(addr, length, prot, flags, fd as usize, offset)
+    }
+
     /// Unmap virtual memory region (munmap syscall)
     ///
     /// # Arguments

@@ -48,7 +48,7 @@ use crate::vfs;
 
 // Import memory management components
 use crate::memory_manager::{
-    api::{get_memory_stats, vm_brk, vm_mmap, vm_mprotect, vm_munmap, vm_sbrk},
+    api::{get_memory_stats, vm_brk, vm_mmap, vm_mmap_file, vm_mprotect, vm_munmap, vm_sbrk},
     MmapFlags, ProtectionFlags, VmError,
 };
 
@@ -358,7 +358,23 @@ pub fn mmap(
     let mmap_flags = map_to_mmap_flags(flags);
 
     // Call memory manager to perform the mapping
-    let result = vm_mmap(addr_val, length, protection, mmap_flags).map_err(vm_error_to_linux)?;
+    let result = if (flags & map::MAP_ANONYMOUS) == 0 && fd >= 0 {
+        vm_mmap_file(addr_val, length, protection, mmap_flags, fd, offset as usize)
+            .map_err(vm_error_to_linux)?
+    } else {
+        vm_mmap(addr_val, length, protection, mmap_flags).map_err(vm_error_to_linux)?
+    };
+
+    // File-backed mmap: populate mapped pages from the backing fd.
+    if (flags & map::MAP_ANONYMOUS) == 0 && fd >= 0 {
+        crate::memory::populate_user_mapping_from_vfs(
+            result as usize,
+            length,
+            fd,
+            offset as u64,
+        )
+        .map_err(|_| LinuxError::EIO)?;
+    }
 
     // Handle MAP_POPULATE - touch pages to ensure they're allocated
     if flags & map::MAP_POPULATE != 0 {
