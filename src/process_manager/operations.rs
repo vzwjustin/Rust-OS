@@ -41,6 +41,7 @@ pub fn exec(
     pid: Pid,
     program: &[u8],
     args: &[&str],
+    envp: &[&str],
     process_table: &Mutex<ProcessTable>,
 ) -> Result<(), &'static str> {
     let mut table = process_table.lock();
@@ -58,7 +59,7 @@ pub fn exec(
         .load_elf_binary(program, pid)
         .map_err(map_elf_loader_error)?;
 
-    let rsp = build_argv_stack(loaded_binary.stack_top.as_u64(), args)?;
+    let rsp = build_argv_stack(loaded_binary.stack_top.as_u64(), args, envp)?;
 
     pcb.memory.code_start = loaded_binary.base_address.as_u64();
     pcb.memory.code_size = loaded_binary
@@ -86,14 +87,11 @@ pub fn exec(
 
     pcb.set_entry_point(loaded_binary.entry_point.as_u64());
     pcb.set_args(args);
-    pcb.context.rsp = rsp;
-    pcb.context.rbp = rsp;
-    pcb.context.rax = 0;
-    pcb.context.rbx = 0;
-    pcb.context.rcx = 0;
-    pcb.context.rdx = 0;
-    pcb.context.rsi = 0;
-    pcb.context.rdi = 0;
+    crate::usermode::configure_user_cpu_context(
+        &mut pcb.context,
+        loaded_binary.entry_point.as_u64(),
+        rsp,
+    );
 
     pcb.fd_table.retain(|&fd, _| fd <= 2);
 
@@ -273,9 +271,22 @@ fn map_elf_loader_error(err: ElfLoaderError) -> &'static str {
     }
 }
 
-/// Build a minimal argc/argv stack for process_manager exec().
-fn build_argv_stack(stack_top: u64, args: &[&str]) -> Result<u64, &'static str> {
+/// Build a minimal argc/argv/envp stack for process_manager exec().
+fn build_argv_stack(stack_top: u64, args: &[&str], envp: &[&str]) -> Result<u64, &'static str> {
     let mut sp = stack_top & !0xF;
+
+    let mut env_addrs = Vec::with_capacity(envp.len());
+    for env in envp.iter().rev() {
+        let bytes = env.as_bytes();
+        sp = sp.wrapping_sub((bytes.len() + 1) as u64);
+        let addr = sp;
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+            (addr as *mut u8).add(bytes.len()).write(0);
+        }
+        env_addrs.push(addr);
+    }
+    env_addrs.reverse();
 
     let mut arg_addrs = Vec::with_capacity(args.len());
     for arg in args.iter().rev() {
@@ -290,10 +301,29 @@ fn build_argv_stack(stack_top: u64, args: &[&str]) -> Result<u64, &'static str> 
     }
     arg_addrs.reverse();
 
+    sp &= !0xF;
+    let pointer_slots = args.len() + envp.len() + 3;
+    if pointer_slots % 2 == 1 {
+        sp = sp.wrapping_sub(8);
+    }
+
     sp = sp.wrapping_sub(8);
     unsafe {
         (sp as *mut u64).write(0);
     }
+
+    for &addr in env_addrs.iter().rev() {
+        sp = sp.wrapping_sub(8);
+        unsafe {
+            (sp as *mut u64).write(addr);
+        }
+    }
+
+    sp = sp.wrapping_sub(8);
+    unsafe {
+        (sp as *mut u64).write(0);
+    }
+
     for &addr in arg_addrs.iter().rev() {
         sp = sp.wrapping_sub(8);
         unsafe {

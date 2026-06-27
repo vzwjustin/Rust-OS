@@ -37,8 +37,7 @@ pub fn check_version(
     if GLIB_MAJOR_VERSION < required_major {
         return Some(format!(
             "GLib version too old ({}.{}, required {}.{})",
-            GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION,
-            required_major, required_minor
+            GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION, required_major, required_minor
         ));
     }
     // Major versions match
@@ -48,8 +47,7 @@ pub fn check_version(
     if GLIB_MINOR_VERSION < required_minor {
         return Some(format!(
             "GLib version too old ({}.{}, required {}.{})",
-            GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION,
-            required_major, required_minor
+            GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION, required_major, required_minor
         ));
     }
     // Minor versions match
@@ -58,8 +56,12 @@ pub fn check_version(
     } else {
         Some(format!(
             "GLib version too old ({}.{}.{}, required {}.{}.{})",
-            GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION, GLIB_MICRO_VERSION,
-            required_major, required_minor, required_micro
+            GLIB_MAJOR_VERSION,
+            GLIB_MINOR_VERSION,
+            GLIB_MICRO_VERSION,
+            required_major,
+            required_minor,
+            required_micro
         ))
     }
 }
@@ -67,11 +69,7 @@ pub fn check_version(
 /// Check if the current version is at least the given version
 /// (`GLIB_CHECK_VERSION` macro).
 #[allow(clippy::absurd_extreme_comparisons)]
-pub fn check_version_bool(
-    major: u32,
-    minor: u32,
-    micro: u32,
-) -> bool {
+pub fn check_version_bool(major: u32, minor: u32, micro: u32) -> bool {
     GLIB_MAJOR_VERSION > major
         || (GLIB_MAJOR_VERSION == major && GLIB_MINOR_VERSION > minor)
         || (GLIB_MAJOR_VERSION == major

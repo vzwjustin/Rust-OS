@@ -246,13 +246,21 @@ fn parse_uri(uri_string: &str, _flags: UriFlags) -> Result<Uri, UriError> {
         let authority = &s[authority_start..authority_end];
 
         // Split userinfo@host:port
-        let (auth_host_part, auth_userinfo) = if let Some(at_pos) = authority.iter().position(|&b| b == b'@') {
-            let ui = &authority[..at_pos];
-            let rest = &authority[at_pos + 1..];
-            (rest, Some(core::str::from_utf8(ui).map_err(|_| UriError::BadUserInfo)?.to_owned()))
-        } else {
-            (authority, None)
-        };
+        let (auth_host_part, auth_userinfo) =
+            if let Some(at_pos) = authority.iter().position(|&b| b == b'@') {
+                let ui = &authority[..at_pos];
+                let rest = &authority[at_pos + 1..];
+                (
+                    rest,
+                    Some(
+                        core::str::from_utf8(ui)
+                            .map_err(|_| UriError::BadUserInfo)?
+                            .to_owned(),
+                    ),
+                )
+            } else {
+                (authority, None)
+            };
         userinfo = auth_userinfo;
 
         // Split host:port
@@ -264,8 +272,8 @@ fn parse_uri(uri_string: &str, _flags: UriFlags) -> Result<Uri, UriError> {
                     .to_owned();
                 let after = &auth_host_part[bracket_end + 1..];
                 if !after.is_empty() && after[0] == b':' {
-                    let port_str = core::str::from_utf8(&after[1..])
-                        .map_err(|_| UriError::BadPort)?;
+                    let port_str =
+                        core::str::from_utf8(&after[1..]).map_err(|_| UriError::BadPort)?;
                     port = Some(port_str.parse::<u16>().map_err(|_| UriError::BadPort)?);
                 }
             } else {
@@ -358,7 +366,10 @@ pub fn peek_scheme(uri: &str) -> Option<String> {
     }
     let end = s.iter().position(|&b| b == b':')?;
     let scheme = core::str::from_utf8(&s[..end]).ok()?;
-    if scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') {
+    if scheme
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.')
+    {
         Some(scheme.to_ascii_lowercase())
     } else {
         None
@@ -389,7 +400,10 @@ pub fn is_valid(uri_string: &str, flags: UriFlags) -> bool {
 pub fn escape_string(s: &str, allow: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || allow.as_bytes().contains(&b) || matches!(b, b'-' | b'_' | b'.' | b'~') {
+        if b.is_ascii_alphanumeric()
+            || allow.as_bytes().contains(&b)
+            || matches!(b, b'-' | b'_' | b'.' | b'~')
+        {
             result.push(b as char);
         } else {
             let _ = write!(result, "%{:02X}", b);
@@ -496,7 +510,10 @@ mod tests {
 
     #[test]
     fn peek_scheme() {
-        assert_eq!(super::peek_scheme("http://example.com"), Some("http".to_owned()));
+        assert_eq!(
+            super::peek_scheme("http://example.com"),
+            Some("http".to_owned())
+        );
         assert_eq!(super::peek_scheme("mailto:test"), Some("mailto".to_owned()));
         assert_eq!(super::peek_scheme("not a uri"), None);
     }

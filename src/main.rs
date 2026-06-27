@@ -11,12 +11,27 @@ extern crate alloc;
 
 use alloc::string::ToString;
 use bootloader::{entry_point, BootInfo};
+use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use linked_list_allocator::LockedHeap;
 
-// Global allocator for heap memory
-#[global_allocator]
+// Heap allocator — registered with glib-native's delegating #[global_allocator]
+// via `glib_native::set_allocator` during early boot.
 pub static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+// Allocator wrapper functions for glib-native delegation.
+unsafe fn k_alloc(layout: Layout) -> *mut u8 {
+    unsafe { ALLOCATOR.alloc(layout) }
+}
+unsafe fn k_dealloc(ptr: *mut u8, layout: Layout) {
+    unsafe { ALLOCATOR.dealloc(ptr, layout) }
+}
+unsafe fn k_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    unsafe { ALLOCATOR.realloc(ptr, layout, new_size) }
+}
+unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
+    unsafe { ALLOCATOR.alloc_zeroed(layout) }
+}
 
 // Include compiler intrinsics for missing symbols
 mod intrinsics;
@@ -126,6 +141,9 @@ mod usermode;
 mod usermode_test;
 // Include GLib compatibility layer
 mod glib;
+mod glib_platform;
+mod glib_spawn;
+mod user_sched;
 
 // VGA_WRITER is now used via macros in print module
 
@@ -361,8 +379,22 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // ========================================================================
-    // CRITICAL: Initialize heap allocator BEFORE any alloc usage
+    // CRITICAL: Register allocator and panic handler with glib-native, then
+    // initialize heap allocator BEFORE any alloc usage
     // ========================================================================
+    // SAFETY: Raw I/O to COM1 for early logging. See docs/SAFETY.md#io-port-access.
+    unsafe {
+        early_serial_write_str("RustOS: Registering allocator with glib-native...\r\n");
+    }
+
+    // Register the kernel's allocator and panic handler with glib-native's
+    // delegating #[global_allocator] and #[panic_handler].
+    glib_native::set_allocator(k_alloc, k_dealloc, k_realloc, k_alloc_zeroed);
+    #[cfg(not(test))]
+    glib_native::set_panic_handler(kernel_panic);
+    #[cfg(test)]
+    glib_native::set_panic_handler(test_panic);
+
     // SAFETY: Raw I/O to COM1 for early logging. See docs/SAFETY.md#io-port-access.
     unsafe {
         early_serial_write_str("RustOS: Initializing heap allocator from memory map...\r\n");
@@ -392,8 +424,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         early_serial_write_str("RustOS: Heap allocator ready\r\n");
     }
 
-    // Initialize GLib logging to route through serial output
+    // Initialize syscall VFS then GLib (platform hooks need VFS)
+    let _ = crate::vfs::init();
     glib::init_glib_logging();
+    glib::init_glib_platform();
     unsafe {
         early_serial_write_str("RustOS: GLib logging initialized\r\n");
     }
@@ -410,6 +444,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     #[cfg(test)]
     {
+        let _ = security::init_rng();
         test_main();
         loop {
             unsafe {
@@ -777,6 +812,30 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("\r\n");
         },
     }
+    match process_manager::init() {
+        Ok(()) => {
+            process_manager::get_process_manager().set_current_pid(process::current_pid());
+            crate::glib_spawn::mark_spawn_runtime_ready();
+            unsafe {
+                early_serial_write_str("RustOS: POSIX process manager initialized\r\n");
+            }
+        }
+        Err(e) => unsafe {
+            early_serial_write_str("RustOS: POSIX process manager init FAILED: ");
+            early_serial_write_str(e);
+            early_serial_write_str("\r\n");
+        },
+    }
+    match glib::smoke_check_spawn() {
+        Ok(()) => unsafe {
+            early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
+        },
+        Err(e) => unsafe {
+            early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
+            early_serial_write_str(e);
+            early_serial_write_str("\r\n");
+        },
+    }
     unsafe {
         early_serial_write_str("RustOS: Initializing scheduler...\r\n");
     }
@@ -873,7 +932,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // PHASE 9: Graphics Initialization (already done early — mark complete)
     // ========================================================================
     let mut graphics_result = early_graphics_result;
-    let mut display_driver_ready = early_display_ready;
+    let display_driver_ready = early_display_ready;
 
     if display_driver_ready {
         boot_ui::begin_stage(boot_ui::BootStage::GraphicsInit, 1);
@@ -1516,6 +1575,8 @@ fn pixel_desktop_main_loop() -> ! {
 /// - Mouse cursor rendering and movement
 /// - Window focus, dragging, and interaction
 /// - Periodic desktop updates and rendering
+extern "C" fn modern_desktop_idle_resume() {}
+
 fn modern_desktop_main_loop() -> ! {
     // Desktop state
     let mut update_counter: u64 = 0;
@@ -1654,6 +1715,8 @@ fn modern_desktop_main_loop() -> ! {
         }
 
         update_counter = update_counter.wrapping_add(1);
+
+        crate::user_sched::service_pending(modern_desktop_idle_resume as *const () as u64);
 
         // Halt CPU until next interrupt to save power
         // SAFETY: Idle loop halts CPU until next interrupt. See docs/SAFETY.md#halt-loop.
@@ -1905,8 +1968,7 @@ pub extern "C" fn rust_main() -> ! {
 }
 
 #[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn kernel_panic(info: &PanicInfo) -> ! {
     // Write to serial first — this works without heap or any initialization.
     // SAFETY: Raw I/O to COM1 for panic diagnostics. See docs/SAFETY.md#io-port-access.
     unsafe {
@@ -1966,8 +2028,7 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 #[cfg(test)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn test_panic(info: &PanicInfo) -> ! {
     serial_println!("[failed]\nError: {}", info);
     exit_qemu(QemuExitCode::Failed);
     loop {

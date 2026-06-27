@@ -6,6 +6,7 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::prelude::*;
+use spin::RwLock;
 
 /// Spawn error codes (`GSpawnError`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,22 +63,22 @@ impl SpawnError {
     /// Get the errno equivalent.
     pub fn to_errno(self) -> i32 {
         match self {
-            SpawnError::Acces => 13,      // EACCES
-            SpawnError::Perm => 1,        // EPERM
-            SpawnError::TooBig => 7,      // E2BIG
-            SpawnError::Noexec => 8,      // ENOEXEC
+            SpawnError::Acces => 13,       // EACCES
+            SpawnError::Perm => 1,         // EPERM
+            SpawnError::TooBig => 7,       // E2BIG
+            SpawnError::Noexec => 8,       // ENOEXEC
             SpawnError::Nametoolong => 36, // ENAMETOOLONG
-            SpawnError::Noent => 2,       // ENOENT
-            SpawnError::Nomem => 12,      // ENOMEM
-            SpawnError::Notdir => 20,     // ENOTDIR
-            SpawnError::Loop => 40,       // ELOOP
-            SpawnError::Txtbusy => 26,    // ETXTBSY
-            SpawnError::Io => 5,          // EIO
-            SpawnError::Nfile => 23,      // ENFILE
-            SpawnError::Mfile => 24,      // EMFILE
-            SpawnError::Inval => 22,      // EINVAL
-            SpawnError::Isdir => 21,      // EISDIR
-            SpawnError::Libbad => 80,     // ELIBBAD
+            SpawnError::Noent => 2,        // ENOENT
+            SpawnError::Nomem => 12,       // ENOMEM
+            SpawnError::Notdir => 20,      // ENOTDIR
+            SpawnError::Loop => 40,        // ELOOP
+            SpawnError::Txtbusy => 26,     // ETXTBSY
+            SpawnError::Io => 5,           // EIO
+            SpawnError::Nfile => 23,       // ENFILE
+            SpawnError::Mfile => 24,       // EMFILE
+            SpawnError::Inval => 22,       // EINVAL
+            SpawnError::Isdir => 21,       // EISDIR
+            SpawnError::Libbad => 80,      // ELIBBAD
             _ => -1,
         }
     }
@@ -139,9 +140,10 @@ pub struct SpawnResult {
 }
 
 /// Platform trait for spawning processes.
-pub trait SpawnPlatform {
+pub trait SpawnPlatform: Sync {
     /// Spawn a process asynchronously.
     fn spawn_async(
+        &self,
         working_directory: Option<&str>,
         argv: &[&str],
         envp: Option<&[&str]>,
@@ -151,6 +153,7 @@ pub trait SpawnPlatform {
 
     /// Spawn a process synchronously, capturing stdout/stderr.
     fn spawn_sync(
+        &self,
         working_directory: Option<&str>,
         argv: &[&str],
         envp: Option<&[&str]>,
@@ -159,7 +162,7 @@ pub trait SpawnPlatform {
     ) -> Result<SpawnResult, SpawnError>;
 
     /// Check wait status (`g_spawn_check_wait_status`).
-    fn check_wait_status(wait_status: i32) -> Result<(), SpawnError>;
+    fn check_wait_status(&self, wait_status: i32) -> Result<(), SpawnError>;
 }
 
 /// A no-op platform implementation.
@@ -167,6 +170,7 @@ pub struct NoSpawnPlatform;
 
 impl SpawnPlatform for NoSpawnPlatform {
     fn spawn_async(
+        &self,
         _working_directory: Option<&str>,
         _argv: &[&str],
         _envp: Option<&[&str]>,
@@ -177,6 +181,7 @@ impl SpawnPlatform for NoSpawnPlatform {
     }
 
     fn spawn_sync(
+        &self,
         _working_directory: Option<&str>,
         _argv: &[&str],
         _envp: Option<&[&str]>,
@@ -186,7 +191,54 @@ impl SpawnPlatform for NoSpawnPlatform {
         Err(SpawnError::Failed)
     }
 
-    fn check_wait_status(_wait_status: i32) -> Result<(), SpawnError> {
+    fn check_wait_status(&self, _wait_status: i32) -> Result<(), SpawnError> {
+        Err(SpawnError::Failed)
+    }
+}
+
+static SPAWN_PLATFORM: RwLock<&'static dyn SpawnPlatform> = RwLock::new(&NoSpawnPlatform);
+
+/// Installs the platform spawn implementation.
+pub fn register_spawn_platform(platform: &'static dyn SpawnPlatform) {
+    *SPAWN_PLATFORM.write() = platform;
+}
+
+/// Spawns a process asynchronously (`g_spawn_async`).
+pub fn spawn_async(
+    working_directory: Option<&str>,
+    argv: &[&str],
+    envp: Option<&[&str]>,
+    flags: SpawnFlags,
+    child_setup: Option<SpawnChildSetupFunc>,
+) -> Result<Pid, SpawnError> {
+    SPAWN_PLATFORM
+        .read()
+        .spawn_async(working_directory, argv, envp, flags, child_setup)
+}
+
+/// Spawns a process synchronously (`g_spawn_sync`).
+pub fn spawn_sync(
+    working_directory: Option<&str>,
+    argv: &[&str],
+    envp: Option<&[&str]>,
+    flags: SpawnFlags,
+    child_setup: Option<SpawnChildSetupFunc>,
+) -> Result<SpawnResult, SpawnError> {
+    SPAWN_PLATFORM
+        .read()
+        .spawn_sync(working_directory, argv, envp, flags, child_setup)
+}
+
+/// Checks a `waitpid` status (`g_spawn_check_wait_status`).
+pub fn spawn_check_wait_status(wait_status: i32) -> Result<(), SpawnError> {
+    SPAWN_PLATFORM.read().check_wait_status(wait_status)
+}
+
+/// Checks an exit status (`g_spawn_check_exit_status`).
+pub fn spawn_check_exit_status(exit_status: i32) -> Result<(), SpawnError> {
+    if (exit_status & 0x7f) == 0 {
+        Ok(())
+    } else {
         Err(SpawnError::Failed)
     }
 }
@@ -223,8 +275,61 @@ mod tests {
 
     #[test]
     fn no_spawn_platform_fails() {
-        let result = NoSpawnPlatform::spawn_async(None, &["ls"], None, SpawnFlags::DEFAULT, None);
+        let platform = NoSpawnPlatform;
+        let result = platform.spawn_async(None, &["ls"], None, SpawnFlags::DEFAULT, None);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), SpawnError::Failed);
+    }
+
+    struct MockSpawnPlatform;
+    impl SpawnPlatform for MockSpawnPlatform {
+        fn spawn_async(
+            &self,
+            _working_directory: Option<&str>,
+            _argv: &[&str],
+            _envp: Option<&[&str]>,
+            _flags: SpawnFlags,
+            _child_setup: Option<SpawnChildSetupFunc>,
+        ) -> Result<Pid, SpawnError> {
+            Ok(4242)
+        }
+        fn spawn_sync(
+            &self,
+            _working_directory: Option<&str>,
+            argv: &[&str],
+            _envp: Option<&[&str]>,
+            _flags: SpawnFlags,
+            _child_setup: Option<SpawnChildSetupFunc>,
+        ) -> Result<SpawnResult, SpawnError> {
+            Ok(SpawnResult {
+                pid: 4242,
+                stdout: Some(argv.join(" ").into_bytes()),
+                stderr: None,
+                exit_status: 0,
+            })
+        }
+        fn check_wait_status(&self, wait_status: i32) -> Result<(), SpawnError> {
+            if wait_status == 0 {
+                Ok(())
+            } else {
+                Err(SpawnError::Failed)
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_via_platform() {
+        register_spawn_platform(&MockSpawnPlatform);
+        let pid = spawn_async(None, &["echo"], None, SpawnFlags::DEFAULT, None).unwrap();
+        assert_eq!(pid, 4242);
+        let result = spawn_sync(None, &["hello"], None, SpawnFlags::DEFAULT, None).unwrap();
+        assert_eq!(result.stdout.as_deref(), Some(&b"hello"[..]));
+        register_spawn_platform(&NoSpawnPlatform);
+    }
+
+    #[test]
+    fn spawn_check_exit_status_ok() {
+        assert!(spawn_check_exit_status(0).is_ok());
+        assert!(spawn_check_exit_status(1).is_err());
     }
 }

@@ -7,10 +7,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
-use super::{LinuxError, LinuxResult};
 use super::types::PollFd;
-use crate::process::ipc::get_ipc_manager;
+use super::{LinuxError, LinuxResult};
 use crate::process;
+use crate::process::ipc::get_ipc_manager;
 use crate::time;
 use crate::vfs::{self, FdKind, OpenFlags};
 
@@ -308,9 +308,12 @@ pub fn poll(fds: *mut PollFd, nfds: u64, timeout_ms: i32) -> LinuxResult<i32> {
 /// epoll_create1 - create epoll instance
 pub fn epoll_create1(_flags: i32) -> LinuxResult<i32> {
     let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::SeqCst);
-    EPOLL_BY_ID
-        .write()
-        .insert(id, EpollState { entries: Vec::new() });
+    EPOLL_BY_ID.write().insert(
+        id,
+        EpollState {
+            entries: Vec::new(),
+        },
+    );
     register_special(FdKind::Epoll(id), OpenFlags::RDONLY)
 }
 

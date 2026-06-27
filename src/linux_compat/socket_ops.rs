@@ -7,8 +7,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::net::socket::{SocketAddress, SocketOption, SocketOptionType, SocketType};
 use crate::net::{self, NetworkAddress, NetworkError, Protocol};
-use crate::net::socket::{SocketType, SocketAddress, SocketOption, SocketOptionType};
 use crate::vfs::{self, FdKind};
 
 /// Operation counter for statistics
@@ -110,7 +110,9 @@ fn write_sockaddr(addr: *mut SockAddr, addrlen: *mut u32, sa: &SocketAddress) ->
             let needed = 16u32; // sizeof(sockaddr_in)
             let avail = unsafe { *addrlen };
             if avail < needed {
-                unsafe { *addrlen = needed; }
+                unsafe {
+                    *addrlen = needed;
+                }
                 return Err(LinuxError::EINVAL);
             }
             unsafe {
@@ -148,7 +150,9 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         .ok_or(LinuxError::EBADF)?;
 
     let _ = flags; // MSG_NOSIGNAL etc. not yet handled
-    sock.send(data).map_err(net_err_to_linux).map(|n| n as isize)
+    sock.send(data)
+        .map_err(net_err_to_linux)
+        .map(|n| n as isize)
 }
 
 /// sendto - send message to specific destination
@@ -175,14 +179,19 @@ pub fn sendto(
         let mut sock = net::network_stack()
             .get_socket(socket_id)
             .ok_or(LinuxError::EBADF)?;
-        return sock.send(data).map_err(net_err_to_linux).map(|n| n as isize);
+        return sock
+            .send(data)
+            .map_err(net_err_to_linux)
+            .map(|n| n as isize);
     }
 
     let dest = parse_sockaddr(dest_addr, addrlen)?;
     let mut sock = net::network_stack()
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
-    sock.send_to(data, dest).map_err(net_err_to_linux).map(|n| n as isize)
+    sock.send_to(data, dest)
+        .map_err(net_err_to_linux)
+        .map(|n| n as isize)
 }
 
 /// sendmsg - send message using message structure
@@ -346,10 +355,10 @@ pub fn getsockopt(
 
     // Map common socket options
     let opt_type = match optname {
-        2 => SocketOptionType::ReuseAddr,   // SO_REUSEADDR
-        15 => SocketOptionType::ReusePort,  // SO_REUSEPORT
-        9 => SocketOptionType::KeepAlive,   // SO_KEEPALIVE
-        1 => SocketOptionType::NoDelay,     // SO_NODELAY (approx)
+        2 => SocketOptionType::ReuseAddr,      // SO_REUSEADDR
+        15 => SocketOptionType::ReusePort,     // SO_REUSEPORT
+        9 => SocketOptionType::KeepAlive,      // SO_KEEPALIVE
+        1 => SocketOptionType::NoDelay,        // SO_NODELAY (approx)
         8 => SocketOptionType::RecvBufferSize, // SO_RCVBUF
         7 => SocketOptionType::SendBufferSize, // SO_SNDBUF
         20 => SocketOptionType::RecvTimeout,   // SO_RCVTIMEO
@@ -359,9 +368,10 @@ pub fn getsockopt(
 
     let opt = sock.get_option(opt_type).map_err(net_err_to_linux)?;
     let (bytes, len) = match opt {
-        SocketOption::ReuseAddr(v) | SocketOption::ReusePort(v) | SocketOption::KeepAlive(v) | SocketOption::NoDelay(v) => {
-            ((v as i32).to_ne_bytes(), 4)
-        }
+        SocketOption::ReuseAddr(v)
+        | SocketOption::ReusePort(v)
+        | SocketOption::KeepAlive(v)
+        | SocketOption::NoDelay(v) => ((v as i32).to_ne_bytes(), 4),
         SocketOption::RecvBufferSize(s) | SocketOption::SendBufferSize(s) => {
             ((s as i32).to_ne_bytes(), 4)
         }
@@ -410,10 +420,10 @@ pub fn setsockopt(
     };
 
     let opt = match optname {
-        2 => SocketOption::ReuseAddr(val != 0),   // SO_REUSEADDR
-        15 => SocketOption::ReusePort(val != 0),  // SO_REUSEPORT
-        9 => SocketOption::KeepAlive(val != 0),   // SO_KEEPALIVE
-        1 => SocketOption::NoDelay(val != 0),     // SO_NODELAY (approx)
+        2 => SocketOption::ReuseAddr(val != 0),  // SO_REUSEADDR
+        15 => SocketOption::ReusePort(val != 0), // SO_REUSEPORT
+        9 => SocketOption::KeepAlive(val != 0),  // SO_KEEPALIVE
+        1 => SocketOption::NoDelay(val != 0),    // SO_NODELAY (approx)
         8 => SocketOption::RecvBufferSize(val as usize), // SO_RCVBUF
         7 => SocketOption::SendBufferSize(val as usize), // SO_SNDBUF
         20 => SocketOption::RecvTimeout(if val > 0 { Some(val as u32) } else { None }), // SO_RCVTIMEO
@@ -521,14 +531,22 @@ pub fn select(
     } else {
         let tv = unsafe { &*timeout };
         let ms = tv.tv_sec as i32 * 1000 + tv.tv_usec as i32 / 1000;
-        if ms < 0 { 0 } else { ms }
+        if ms < 0 {
+            0
+        } else {
+            ms
+        }
     };
 
     // FD_SETSIZE is typically 1024, each fd_set is 1024/64 = 16 u64s
     const FD_SETSIZE_DWORDS: usize = 16;
 
     // Build pollfd array from fd_sets
-    let mut pollfds: [PollFd; 128] = [PollFd { fd: -1, events: 0, revents: 0 }; 128];
+    let mut pollfds: [PollFd; 128] = [PollFd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    }; 128];
     let mut count = 0usize;
 
     for fd in 0..nfds {
@@ -558,7 +576,11 @@ pub fn select(
         let _ = exceptfds;
 
         if events != 0 && count < pollfds.len() {
-            pollfds[count] = PollFd { fd, events, revents: 0 };
+            pollfds[count] = PollFd {
+                fd,
+                events,
+                revents: 0,
+            };
             count += 1;
         }
     }
@@ -594,10 +616,14 @@ pub fn select(
                 let bit = fd as usize % 64;
                 if word < FD_SETSIZE_DWORDS {
                     if !readfds.is_null() && pollfds[i].revents & 0x001 != 0 {
-                        unsafe { *readfds.add(word) |= 1u64 << bit; }
+                        unsafe {
+                            *readfds.add(word) |= 1u64 << bit;
+                        }
                     }
                     if !writefds.is_null() && pollfds[i].revents & 0x004 != 0 {
-                        unsafe { *writefds.add(word) |= 1u64 << bit; }
+                        unsafe {
+                            *writefds.add(word) |= 1u64 << bit;
+                        }
                     }
                 }
                 ready += 1;
@@ -627,7 +653,10 @@ pub fn pselect(
 
     // Convert timespec to timeval for select
     let tv = if timeout.is_null() {
-        TimeVal { tv_sec: 0, tv_usec: 0 }
+        TimeVal {
+            tv_sec: 0,
+            tv_usec: 0,
+        }
     } else {
         let ts = unsafe { &*timeout };
         TimeVal {
@@ -837,12 +866,7 @@ pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult
 }
 
 /// accept4 - accept a connection on a socket with flags
-pub fn accept4(
-    sockfd: Fd,
-    addr: *mut SockAddr,
-    addrlen: *mut u32,
-    flags: i32,
-) -> LinuxResult<Fd> {
+pub fn accept4(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
     // SOCK_NONBLOCK (2048) and SOCK_CLOEXEC (524288) flags

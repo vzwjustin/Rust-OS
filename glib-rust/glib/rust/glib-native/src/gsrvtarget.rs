@@ -10,7 +10,7 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::prelude::*;
-use crate::rand::{Rand, random_int_range};
+use crate::rand::{random_int_range, Rand};
 use alloc::string::String;
 use alloc::vec::Vec;
 

@@ -3,8 +3,8 @@
 //! [`OptionContext`] collects [`OptionGroup`]s and their [`OptionEntry`] tables,
 //! then parses `argv`-style argument vectors in place.
 
-use crate::prelude::*;
 use crate::error::Error;
+use crate::prelude::*;
 use crate::quark::{quark_from_static_string, Quark};
 use core::ffi::c_void;
 use core::ptr;

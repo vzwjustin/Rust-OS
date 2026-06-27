@@ -96,9 +96,15 @@ codegen-units = 1
 # Bootimage configuration
 [package.metadata.bootimage]
 test-args = [
+    "-machine", "pc,accel=tcg",
+    "-cpu", "qemu64,+apic,+rdrand",
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     "-serial", "stdio",
-    "-display", "none"
+    "-display", "none",
+]
+run-args = [
+    "-machine", "pc,accel=tcg",
+    "-cpu", "qemu64,+apic,+rdrand",
 ]
 test-success-exit-code = 33
 

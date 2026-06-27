@@ -63,16 +63,8 @@ pub unsafe fn switch_to_user_mode(entry_point: u64, user_stack: u64) -> ! {
     // - Other bits: cleared or default values
     let rflags: u64 = 0x202; // IF=1, IOPL=0, reserved bit 1 set
 
-    // Set up all data segments to user data segment before switching
-    asm!(
-        // Load user data segment into all data segment registers
-        "mov ds, {0:x}",
-        "mov es, {0:x}",
-        "mov fs, {0:x}",
-        "mov gs, {0:x}",
-        in(reg) user_data_selector.0,
-        options(nostack, preserves_flags)
-    );
+    // `iretq` loads user CS/SS from the frame below. Keep kernel data segments
+    // active until the privilege transition completes.
 
     // Perform the privilege level switch using iretq
     // We build the iretq stack frame manually:
@@ -111,10 +103,10 @@ pub unsafe fn switch_to_user_mode(entry_point: u64, user_stack: u64) -> ! {
         // 6. Continue execution in Ring 3 at entry_point
         "iretq",
 
-        user_ss = in(reg) user_data_selector.0 as u64,
+        user_ss = in(reg) (user_data_selector.0 | 3) as u64,
         user_rsp = in(reg) user_stack,
         rflags = in(reg) rflags,
-        user_cs = in(reg) user_code_selector.0 as u64,
+        user_cs = in(reg) (user_code_selector.0 | 3) as u64,
         entry_point = in(reg) entry_point,
         options(noreturn)
     );
@@ -168,19 +160,59 @@ pub fn take_pending_user_entry() -> Option<(u64, u64)> {
     Some((rip, rsp))
 }
 
+/// Patch the CPU interrupt frame below the saved INT 0x80 GPR block to return to kernel mode.
+///
+/// # Safety
+/// Must only be called from the INT 0x80 handler with a valid stack frame.
+pub unsafe fn patch_syscall_return_to_kernel(
+    saved_regs: *mut u8,
+    kernel_rip: u64,
+    kernel_rsp: u64,
+) {
+    let kernel_code = crate::gdt::get_kernel_code_selector().0 as u64;
+    let kernel_data = crate::gdt::get_kernel_data_selector().0 as u64;
+    let rflags: u64 = 0x202;
+
+    let iretq_frame = saved_regs.add(120);
+    core::ptr::write(iretq_frame as *mut u64, kernel_rip);
+    core::ptr::write(iretq_frame.add(8) as *mut u64, kernel_code);
+    core::ptr::write(iretq_frame.add(16) as *mut u64, rflags);
+    core::ptr::write(iretq_frame.add(24) as *mut u64, kernel_rsp);
+    core::ptr::write(iretq_frame.add(32) as *mut u64, kernel_data);
+}
+
+/// Configure a `CpuContext` for first execution in user mode (Ring 3).
+pub fn configure_user_cpu_context(context: &mut crate::process::CpuContext, entry: u64, rsp: u64) {
+    let user_code = crate::gdt::get_user_code_selector().0 | 3;
+    let user_data = crate::gdt::get_user_data_selector().0 | 3;
+
+    context.rip = entry;
+    context.rsp = rsp;
+    context.rbp = rsp;
+    context.rax = 0;
+    context.rbx = 0;
+    context.rcx = 0;
+    context.rdx = 0;
+    context.rsi = 0;
+    context.rdi = 0;
+    context.rflags = 0x202;
+    context.cs = user_code;
+    context.ss = user_data;
+    context.ds = user_data;
+    context.es = user_data;
+    context.fs = user_data;
+    context.gs = user_data;
+}
+
 /// Patch the CPU interrupt frame below the saved INT 0x80 GPR block.
 ///
 /// `saved_regs` must point at the top of the 15 pushed registers (r15).
 ///
 /// # Safety
 /// Must only be called from the INT 0x80 handler with a valid stack frame.
-pub unsafe fn patch_syscall_return_to_user(
-    saved_regs: *mut u8,
-    entry_point: u64,
-    user_stack: u64,
-) {
-    let user_code = crate::gdt::get_user_code_selector().0 as u64;
-    let user_data = crate::gdt::get_user_data_selector().0 as u64;
+pub unsafe fn patch_syscall_return_to_user(saved_regs: *mut u8, entry_point: u64, user_stack: u64) {
+    let user_code = (crate::gdt::get_user_code_selector().0 | 3) as u64;
+    let user_data = (crate::gdt::get_user_data_selector().0 | 3) as u64;
     let rflags: u64 = 0x202;
 
     // Layout below saved GPRs: RIP, CS, RFLAGS, RSP, SS (iretq pop order).

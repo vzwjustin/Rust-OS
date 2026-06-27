@@ -4,8 +4,8 @@
 //! crate the same roles are filled by [`Vec<u8>`] (and [`AlignedBuffer`] for
 //! aligned allocations): dropping the value is equivalent to `g_free`.
 
-use crate::prelude::*;
 use crate::checked::checked_mul_size;
+use crate::prelude::*;
 use crate::Size;
 use alloc::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use core::ops::{Deref, DerefMut};

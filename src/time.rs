@@ -735,9 +735,8 @@ pub fn timer_tick() {
     update_timer_statistics();
 
     // Call process timer integration if available
-    if let Some(new_pid) = crate::process::integration::timer_interrupt_handler() {
-        // Process scheduling occurred, new_pid is the scheduled process
-        let _ = new_pid;
+    if crate::process::integration::timer_interrupt_handler().is_some() {
+        crate::user_sched::note_schedule_tick();
     }
 
     // Process any scheduled software timers

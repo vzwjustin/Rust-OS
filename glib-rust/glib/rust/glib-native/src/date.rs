@@ -159,8 +159,13 @@ pub fn is_leap_year(year: DateYear) -> bool {
 /// Returns the number of days in `month` of `year`.
 pub fn get_days_in_month(month: DateMonth, year: DateYear) -> u8 {
     match month {
-        DateMonth::January | DateMonth::March | DateMonth::May | DateMonth::July
-        | DateMonth::August | DateMonth::October | DateMonth::December => 31,
+        DateMonth::January
+        | DateMonth::March
+        | DateMonth::May
+        | DateMonth::July
+        | DateMonth::August
+        | DateMonth::October
+        | DateMonth::December => 31,
         DateMonth::April | DateMonth::June | DateMonth::September | DateMonth::November => 30,
         DateMonth::February => {
             if is_leap_year(year) {
@@ -478,20 +483,16 @@ fn dmy_to_julian(day: DateDay, month: DateMonth, year: DateYear) -> u32 {
     let y = year as i64;
     let d = day as i64;
 
-    let (adj_y, adj_m) = if m <= 2 {
-        (y - 1, m + 12)
-    } else {
-        (y, m)
-    };
+    let (adj_y, adj_m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
 
     // Gregorian correction — must be i64 to avoid underflow (b is negative for years > 200)
     let a = adj_y / 100;
     let b = 2 - a + a / 4;
 
     // Meeus "Astronomical Algorithms" formula for astronomical JDN
-    let jd = (365.25 * (adj_y + 4716) as f64) as i64
-        + (30.6001 * (adj_m + 1) as f64) as i64
-        + d + b - 1524;
+    let jd =
+        (365.25 * (adj_y + 4716) as f64) as i64 + (30.6001 * (adj_m + 1) as f64) as i64 + d + b
+            - 1524;
 
     // GLib day 1 = Jan 1, AD 1 = astronomical JDN 1721426
     (jd - 1721425) as u32

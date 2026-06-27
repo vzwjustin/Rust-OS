@@ -10,7 +10,7 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::VirtAddr;
+use x86_64::{PrivilegeLevel, VirtAddr};
 
 /// Hardware interrupt offsets for the PIC (Programmable Interrupt Controller)
 pub const PIC_1_OFFSET: u8 = 32;
@@ -80,7 +80,9 @@ lazy_static! {
         idt[InterruptIndex::SpuriousInterrupt.as_usize()].set_handler_fn(spurious_interrupt_handler);
 
         // Linux syscall handler (INT 0x80)
-        idt[0x80].set_handler_fn(crate::syscall_handler::syscall_0x80_handler);
+        idt[0x80]
+            .set_handler_fn(crate::syscall_handler::syscall_0x80_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
 
         idt
     };
@@ -698,8 +700,9 @@ extern "x86-interrupt" fn alignment_check_handler(
 // ========== HARDWARE INTERRUPT HANDLERS ==========
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Absolute minimum handler - just send EOI
-    // Any more than this causes issues
+    TIMER_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::time::timer_tick();
+
     unsafe {
         // Send EOI directly to PIC port 0x20
         core::arch::asm!(

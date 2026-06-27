@@ -91,7 +91,9 @@ impl InetAddress {
                 }
                 let mut arr = [0u8; 4];
                 arr.copy_from_slice(bytes);
-                Some(Self { bytes: InetAddrBytes::Ipv4(arr) })
+                Some(Self {
+                    bytes: InetAddrBytes::Ipv4(arr),
+                })
             }
             SocketFamily::Ipv6 => {
                 if bytes.len() != 16 {
@@ -99,7 +101,9 @@ impl InetAddress {
                 }
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(bytes);
-                Some(Self { bytes: InetAddrBytes::Ipv6(arr) })
+                Some(Self {
+                    bytes: InetAddrBytes::Ipv6(arr),
+                })
             }
             _ => None,
         }
@@ -216,9 +220,7 @@ impl InetAddress {
     pub fn is_site_local(&self) -> bool {
         match &self.bytes {
             InetAddrBytes::Ipv4(b) => {
-                b[0] == 10
-                    || (b[0] == 172 && (b[1] & 0xf0) == 16)
-                    || (b[0] == 192 && b[1] == 168)
+                b[0] == 10 || (b[0] == 172 && (b[1] & 0xf0) == 16) || (b[0] == 192 && b[1] == 168)
             }
             InetAddrBytes::Ipv6(b) => (b[0] & 0xff) == 0xfe && (b[1] & 0xc0) == 0xc0,
         }
@@ -242,9 +244,7 @@ impl InetAddress {
                 // is link-local, and 239.x which is org-local).
                 self.is_multicast() && !(b[0] == 224 && b[1] == 0 && b[2] == 0) && b[0] != 239
             }
-            InetAddrBytes::Ipv6(b) => {
-                self.is_multicast() && (b[1] & 0x0f) == 0x0e
-            }
+            InetAddrBytes::Ipv6(b) => self.is_multicast() && (b[1] & 0x0f) == 0x0e,
         }
     }
 
@@ -316,7 +316,9 @@ fn parse_ipv4(s: &str) -> Option<InetAddress> {
         }
         bytes[i] = n as u8;
     }
-    Some(InetAddress { bytes: InetAddrBytes::Ipv4(bytes) })
+    Some(InetAddress {
+        bytes: InetAddrBytes::Ipv4(bytes),
+    })
 }
 
 // ──────────────────────────── IPv6 parser ─────────────────────────────────
@@ -370,7 +372,8 @@ fn parse_ipv6(s: &str) -> Option<InetAddress> {
     };
 
     // Total groups: left + (2 for embedded IPv4) + right + (zeros from ::).
-    let explicit_groups = left_groups.len() + right_groups_no_v4.len()
+    let explicit_groups = left_groups.len()
+        + right_groups_no_v4.len()
         + if embedded_ipv4_bytes.is_some() { 2 } else { 0 };
 
     if !has_compress && explicit_groups != 8 {
@@ -381,11 +384,7 @@ fn parse_ipv6(s: &str) -> Option<InetAddress> {
         return None;
     }
 
-    let zeros_to_insert = if has_compress {
-        8 - explicit_groups
-    } else {
-        0
-    };
+    let zeros_to_insert = if has_compress { 8 - explicit_groups } else { 0 };
 
     // Assemble the 16-byte address.
     let mut bytes = [0u8; 16];
@@ -426,7 +425,9 @@ fn parse_ipv6(s: &str) -> Option<InetAddress> {
         return None;
     }
 
-    Some(InetAddress { bytes: InetAddrBytes::Ipv6(bytes) })
+    Some(InetAddress {
+        bytes: InetAddrBytes::Ipv6(bytes),
+    })
 }
 
 /// Parse a single 4-hex-digit IPv6 group into a `u16`.
@@ -450,9 +451,8 @@ fn parse_hex_group(s: &str) -> Option<u16> {
 /// the run is at least 2 groups).
 fn format_ipv6(b: &[u8; 16]) -> String {
     // View as 8 u16 groups (big-endian).
-    let groups: [u16; 8] = core::array::from_fn(|i| {
-        ((b[i * 2] as u16) << 8) | (b[i * 2 + 1] as u16)
-    });
+    let groups: [u16; 8] =
+        core::array::from_fn(|i| ((b[i * 2] as u16) << 8) | (b[i * 2 + 1] as u16));
 
     // Find the longest run of zero groups (at least 2 long) for ::
     // compression. RFC 5952: ties go to the first run.
@@ -559,27 +559,61 @@ mod tests {
     #[test]
     fn ipv4_classification() {
         // Loopback 127.0.0.0/8.
-        assert!(InetAddress::new_from_string("127.0.0.1").unwrap().is_loopback());
-        assert!(InetAddress::new_from_string("127.255.255.254").unwrap().is_loopback());
-        assert!(!InetAddress::new_from_string("128.0.0.1").unwrap().is_loopback());
+        assert!(InetAddress::new_from_string("127.0.0.1")
+            .unwrap()
+            .is_loopback());
+        assert!(InetAddress::new_from_string("127.255.255.254")
+            .unwrap()
+            .is_loopback());
+        assert!(!InetAddress::new_from_string("128.0.0.1")
+            .unwrap()
+            .is_loopback());
         // Link-local 169.254.0.0/16.
-        assert!(InetAddress::new_from_string("169.254.1.1").unwrap().is_link_local());
-        assert!(!InetAddress::new_from_string("169.253.1.1").unwrap().is_link_local());
+        assert!(InetAddress::new_from_string("169.254.1.1")
+            .unwrap()
+            .is_link_local());
+        assert!(!InetAddress::new_from_string("169.253.1.1")
+            .unwrap()
+            .is_link_local());
         // Site-local 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16.
-        assert!(InetAddress::new_from_string("10.1.2.3").unwrap().is_site_local());
-        assert!(InetAddress::new_from_string("172.16.0.1").unwrap().is_site_local());
-        assert!(InetAddress::new_from_string("172.31.255.255").unwrap().is_site_local());
-        assert!(!InetAddress::new_from_string("172.15.0.1").unwrap().is_site_local());
-        assert!(InetAddress::new_from_string("192.168.1.1").unwrap().is_site_local());
-        assert!(!InetAddress::new_from_string("11.0.0.0").unwrap().is_site_local());
+        assert!(InetAddress::new_from_string("10.1.2.3")
+            .unwrap()
+            .is_site_local());
+        assert!(InetAddress::new_from_string("172.16.0.1")
+            .unwrap()
+            .is_site_local());
+        assert!(InetAddress::new_from_string("172.31.255.255")
+            .unwrap()
+            .is_site_local());
+        assert!(!InetAddress::new_from_string("172.15.0.1")
+            .unwrap()
+            .is_site_local());
+        assert!(InetAddress::new_from_string("192.168.1.1")
+            .unwrap()
+            .is_site_local());
+        assert!(!InetAddress::new_from_string("11.0.0.0")
+            .unwrap()
+            .is_site_local());
         // Multicast 224.0.0.0/4.
-        assert!(InetAddress::new_from_string("224.0.0.1").unwrap().is_multicast());
-        assert!(InetAddress::new_from_string("239.255.255.255").unwrap().is_multicast());
-        assert!(!InetAddress::new_from_string("223.255.255.255").unwrap().is_multicast());
+        assert!(InetAddress::new_from_string("224.0.0.1")
+            .unwrap()
+            .is_multicast());
+        assert!(InetAddress::new_from_string("239.255.255.255")
+            .unwrap()
+            .is_multicast());
+        assert!(!InetAddress::new_from_string("223.255.255.255")
+            .unwrap()
+            .is_multicast());
         // Multicast scopes.
-        assert!(InetAddress::new_from_string("224.0.0.1").unwrap().is_mc_link_local());
-        assert!(InetAddress::new_from_string("239.255.0.1").unwrap().is_mc_site_local());
-        assert!(InetAddress::new_from_string("239.192.0.1").unwrap().is_mc_org_local());
+        assert!(InetAddress::new_from_string("224.0.0.1")
+            .unwrap()
+            .is_mc_link_local());
+        assert!(InetAddress::new_from_string("239.255.0.1")
+            .unwrap()
+            .is_mc_site_local());
+        assert!(InetAddress::new_from_string("239.192.0.1")
+            .unwrap()
+            .is_mc_org_local());
     }
 
     #[test]
@@ -612,7 +646,10 @@ mod tests {
     #[test]
     fn ipv6_new_loopback_and_any() {
         let lo = InetAddress::new_loopback(SocketFamily::Ipv6).unwrap();
-        assert_eq!(lo.to_bytes(), &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(
+            lo.to_bytes(),
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        );
         assert!(lo.is_loopback());
         let any = InetAddress::new_any(SocketFamily::Ipv6).unwrap();
         assert!(any.is_any());
@@ -631,21 +668,45 @@ mod tests {
     #[test]
     fn ipv6_classification() {
         // Link-local fe80::/10.
-        assert!(InetAddress::new_from_string("fe80::1").unwrap().is_link_local());
-        assert!(InetAddress::new_from_string("febf::1").unwrap().is_link_local());
-        assert!(!InetAddress::new_from_string("fec0::1").unwrap().is_link_local());
+        assert!(InetAddress::new_from_string("fe80::1")
+            .unwrap()
+            .is_link_local());
+        assert!(InetAddress::new_from_string("febf::1")
+            .unwrap()
+            .is_link_local());
+        assert!(!InetAddress::new_from_string("fec0::1")
+            .unwrap()
+            .is_link_local());
         // Site-local fec0::/10 (deprecated).
-        assert!(InetAddress::new_from_string("fec0::1").unwrap().is_site_local());
-        assert!(!InetAddress::new_from_string("fe80::1").unwrap().is_site_local());
+        assert!(InetAddress::new_from_string("fec0::1")
+            .unwrap()
+            .is_site_local());
+        assert!(!InetAddress::new_from_string("fe80::1")
+            .unwrap()
+            .is_site_local());
         // Multicast ff00::/8.
-        assert!(InetAddress::new_from_string("ff02::1").unwrap().is_multicast());
-        assert!(!InetAddress::new_from_string("fe02::1").unwrap().is_multicast());
+        assert!(InetAddress::new_from_string("ff02::1")
+            .unwrap()
+            .is_multicast());
+        assert!(!InetAddress::new_from_string("fe02::1")
+            .unwrap()
+            .is_multicast());
         // Multicast scopes.
-        assert!(InetAddress::new_from_string("ff02::1").unwrap().is_mc_link_local());
-        assert!(InetAddress::new_from_string("ff01::1").unwrap().is_mc_node_local());
-        assert!(InetAddress::new_from_string("ff05::1").unwrap().is_mc_site_local());
-        assert!(InetAddress::new_from_string("ff08::1").unwrap().is_mc_org_local());
-        assert!(InetAddress::new_from_string("ff0e::1").unwrap().is_mc_global());
+        assert!(InetAddress::new_from_string("ff02::1")
+            .unwrap()
+            .is_mc_link_local());
+        assert!(InetAddress::new_from_string("ff01::1")
+            .unwrap()
+            .is_mc_node_local());
+        assert!(InetAddress::new_from_string("ff05::1")
+            .unwrap()
+            .is_mc_site_local());
+        assert!(InetAddress::new_from_string("ff08::1")
+            .unwrap()
+            .is_mc_org_local());
+        assert!(InetAddress::new_from_string("ff0e::1")
+            .unwrap()
+            .is_mc_global());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! - `io_error_quark()` — the `G_IO_ERROR` quark.
 //! - `io_error_from_errno()` — errno → `IOErrorEnum` mapping.
 //! - `io_error_from_file_error()` — `FileError` → `IOErrorEnum` mapping.
+//! - `io_error_from_win32_error()` — Win32/WSA error code → `IOErrorEnum` mapping.
 //!
 //! Fully `no_std` compatible using `alloc`.
 
@@ -226,8 +227,9 @@ pub fn io_error_from_errno(err_no: i32) -> IOErrorEnum {
         ENOMSG | ENODATA | EBADMSG => IOErrorEnum::InvalidData,
         ECANCELED => IOErrorEnum::Cancelled,
         ENOTEMPTY => IOErrorEnum::NotEmpty,
-        ENOTSUP | EOPNOTSUPP | EPROTONOSUPPORT | ESOCKTNOSUPPORT | EPFNOSUPPORT
-        | EAFNOSUPPORT => IOErrorEnum::NotSupported,
+        ENOTSUP | EOPNOTSUPP | EPROTONOSUPPORT | ESOCKTNOSUPPORT | EPFNOSUPPORT | EAFNOSUPPORT => {
+            IOErrorEnum::NotSupported
+        }
         ETIMEDOUT => IOErrorEnum::TimedOut,
         EBUSY => IOErrorEnum::Busy,
         EWOULDBLOCK | EAGAIN => IOErrorEnum::WouldBlock,
@@ -240,6 +242,131 @@ pub fn io_error_from_errno(err_no: i32) -> IOErrorEnum {
         EDESTADDRREQ => IOErrorEnum::DestinationUnset,
         EMSGSIZE => IOErrorEnum::MessageTooLarge,
         ENOTSOCK => IOErrorEnum::InvalidArgument,
+        _ => IOErrorEnum::Failed,
+    }
+}
+
+// ─────────────────────── from_win32_error ─────────────────────────────────
+
+/// Common Win32 error codes (`winerror.h`).
+pub mod win32_error {
+    pub const ERROR_FILE_NOT_FOUND: u32 = 2;
+    pub const ERROR_PATH_NOT_FOUND: u32 = 3;
+    pub const ERROR_ACCESS_DENIED: u32 = 5;
+    pub const ERROR_INVALID_HANDLE: u32 = 6;
+    pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+    pub const ERROR_INVALID_PARAMETER: u32 = 87;
+    pub const ERROR_ALREADY_EXISTS: u32 = 183;
+    pub const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
+    pub const ERROR_PIPE_LISTENING: u32 = 536;
+    pub const ERROR_OPERATION_ABORTED: u32 = 995;
+    pub const WSA_INVALID_HANDLE: u32 = 6;
+    pub const WSA_INVALID_PARAMETER: u32 = 87;
+    pub const WSAEINTR: u32 = 10004;
+    pub const WSAEBADF: u32 = 10009;
+    pub const WSAEACCES: u32 = 10013;
+    pub const WSAEFAULT: u32 = 10014;
+    pub const WSAEINVAL: u32 = 10022;
+    pub const WSAEMFILE: u32 = 10024;
+    pub const WSAEWOULDBLOCK: u32 = 10035;
+    pub const WSAEINPROGRESS: u32 = 10036;
+    pub const WSAEALREADY: u32 = 10037;
+    pub const WSAENOTSOCK: u32 = 10038;
+    pub const WSAEDESTADDRREQ: u32 = 10039;
+    pub const WSAEMSGSIZE: u32 = 10040;
+    pub const WSAEPROTOTYPE: u32 = 10041;
+    pub const WSAENOPROTOOPT: u32 = 10042;
+    pub const WSAEPROTONOSUPPORT: u32 = 10043;
+    pub const WSAESOCKTNOSUPPORT: u32 = 10044;
+    pub const WSAEOPNOTSUPP: u32 = 10045;
+    pub const WSAEPFNOSUPPORT: u32 = 10046;
+    pub const WSAEAFNOSUPPORT: u32 = 10047;
+    pub const WSAEADDRINUSE: u32 = 10048;
+    pub const WSAEADDRNOTAVAIL: u32 = 10049;
+    pub const WSAENETDOWN: u32 = 10050;
+    pub const WSAENETUNREACH: u32 = 10051;
+    pub const WSAENETRESET: u32 = 10052;
+    pub const WSAECONNABORTED: u32 = 10053;
+    pub const WSAECONNRESET: u32 = 10054;
+    pub const WSAENOBUFS: u32 = 10055;
+    pub const WSAEISCONN: u32 = 10056;
+    pub const WSAENOTCONN: u32 = 10057;
+    pub const WSAESHUTDOWN: u32 = 10058;
+    pub const WSAETOOMANYREFS: u32 = 10059;
+    pub const WSAETIMEDOUT: u32 = 10060;
+    pub const WSAECONNREFUSED: u32 = 10061;
+    pub const WSAELOOP: u32 = 10062;
+    pub const WSAENAMETOOLONG: u32 = 10063;
+    pub const WSAEHOSTDOWN: u32 = 10064;
+    pub const WSAEHOSTUNREACH: u32 = 10065;
+    pub const WSAENOTEMPTY: u32 = 10066;
+    pub const WSAECANCELLED: u32 = 10103;
+}
+
+/// Convert a Win32 or Winsock error code into an `IOErrorEnum`
+/// (`g_io_error_from_win32_error`).
+///
+/// Maps the same codes handled by upstream GLib on Windows. Unknown codes
+/// return `IOErrorEnum::Failed`. The mapping table is platform-independent
+/// so callers can translate stored Win32 codes on any host.
+pub fn io_error_from_win32_error(error_code: u32) -> IOErrorEnum {
+    use win32_error::*;
+
+    match error_code {
+        WSAEADDRINUSE => IOErrorEnum::AddressInUse,
+        WSAEWOULDBLOCK | WSAEINPROGRESS | WSAEALREADY => IOErrorEnum::WouldBlock,
+
+        WSAEACCES | ERROR_ACCESS_DENIED => IOErrorEnum::PermissionDenied,
+
+        WSA_INVALID_PARAMETER
+        | WSAEINVAL
+        | WSAEBADF
+        | WSAENOTSOCK
+        | ERROR_INVALID_HANDLE
+        | ERROR_INVALID_PARAMETER => IOErrorEnum::InvalidArgument,
+
+        WSAEPROTONOSUPPORT => IOErrorEnum::NotSupported,
+
+        WSAECANCELLED | ERROR_OPERATION_ABORTED => IOErrorEnum::Cancelled,
+
+        WSAESOCKTNOSUPPORT | WSAEOPNOTSUPP | WSAEPFNOSUPPORT | WSAEAFNOSUPPORT => {
+            IOErrorEnum::NotSupported
+        }
+
+        WSAECONNRESET | WSAENETRESET | WSAESHUTDOWN | ERROR_PIPE_NOT_CONNECTED => {
+            IOErrorEnum::CONNECTION_CLOSED
+        }
+
+        WSAEHOSTUNREACH | WSAEHOSTDOWN => IOErrorEnum::HostUnreachable,
+
+        WSAENETUNREACH | WSAENETDOWN => IOErrorEnum::NetworkUnreachable,
+
+        WSAECONNREFUSED | WSAEADDRNOTAVAIL => IOErrorEnum::ConnectionRefused,
+
+        WSAETIMEDOUT => IOErrorEnum::TimedOut,
+
+        WSAENOTCONN | ERROR_PIPE_LISTENING => IOErrorEnum::NotConnected,
+
+        WSAEMSGSIZE => IOErrorEnum::MessageTooLarge,
+
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => IOErrorEnum::NotFound,
+
+        ERROR_ALREADY_EXISTS => IOErrorEnum::Exists,
+
+        WSAENOTEMPTY => IOErrorEnum::NotEmpty,
+
+        WSAENAMETOOLONG => IOErrorEnum::FilenameTooLong,
+
+        WSAELOOP => IOErrorEnum::TooManyLinks,
+
+        WSAENOBUFS | ERROR_NOT_ENOUGH_MEMORY => IOErrorEnum::NoSpace,
+
+        WSAEMFILE => IOErrorEnum::TooManyOpenFiles,
+
+        WSAEDESTADDRREQ => IOErrorEnum::DestinationUnset,
+
+        WSAEFAULT | WSAEINTR => IOErrorEnum::Failed,
+
         _ => IOErrorEnum::Failed,
     }
 }
@@ -279,31 +406,103 @@ mod tests {
 
     #[test]
     fn from_file_error_mappings() {
-        assert_eq!(io_error_from_file_error(FileError::Exist), IOErrorEnum::Exists);
-        assert_eq!(io_error_from_file_error(FileError::IsDir), IOErrorEnum::IsDirectory);
-        assert_eq!(io_error_from_file_error(FileError::Acces), IOErrorEnum::PermissionDenied);
-        assert_eq!(io_error_from_file_error(FileError::NameTooLong), IOErrorEnum::FilenameTooLong);
-        assert_eq!(io_error_from_file_error(FileError::NoEnt), IOErrorEnum::NotFound);
-        assert_eq!(io_error_from_file_error(FileError::NotDir), IOErrorEnum::NotDirectory);
-        assert_eq!(io_error_from_file_error(FileError::Nxio), IOErrorEnum::NotRegularFile);
-        assert_eq!(io_error_from_file_error(FileError::NoDev), IOErrorEnum::NoSuchDevice);
-        assert_eq!(io_error_from_file_error(FileError::RoFs), IOErrorEnum::ReadOnly);
-        assert_eq!(io_error_from_file_error(FileError::TxtBsy), IOErrorEnum::Busy);
-        assert_eq!(io_error_from_file_error(FileError::Loop), IOErrorEnum::TooManyLinks);
-        assert_eq!(io_error_from_file_error(FileError::NoSpc), IOErrorEnum::NoSpace);
-        assert_eq!(io_error_from_file_error(FileError::NoMem), IOErrorEnum::NoSpace);
-        assert_eq!(io_error_from_file_error(FileError::MFile), IOErrorEnum::TooManyOpenFiles);
-        assert_eq!(io_error_from_file_error(FileError::NFile), IOErrorEnum::TooManyOpenFiles);
-        assert_eq!(io_error_from_file_error(FileError::Inval), IOErrorEnum::InvalidArgument);
-        assert_eq!(io_error_from_file_error(FileError::Pipe), IOErrorEnum::BrokenPipe);
-        assert_eq!(io_error_from_file_error(FileError::Again), IOErrorEnum::WouldBlock);
-        assert_eq!(io_error_from_file_error(FileError::Perm), IOErrorEnum::PermissionDenied);
-        assert_eq!(io_error_from_file_error(FileError::NoSys), IOErrorEnum::NotSupported);
+        assert_eq!(
+            io_error_from_file_error(FileError::Exist),
+            IOErrorEnum::Exists
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::IsDir),
+            IOErrorEnum::IsDirectory
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Acces),
+            IOErrorEnum::PermissionDenied
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NameTooLong),
+            IOErrorEnum::FilenameTooLong
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NoEnt),
+            IOErrorEnum::NotFound
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NotDir),
+            IOErrorEnum::NotDirectory
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Nxio),
+            IOErrorEnum::NotRegularFile
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NoDev),
+            IOErrorEnum::NoSuchDevice
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::RoFs),
+            IOErrorEnum::ReadOnly
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::TxtBsy),
+            IOErrorEnum::Busy
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Loop),
+            IOErrorEnum::TooManyLinks
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NoSpc),
+            IOErrorEnum::NoSpace
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NoMem),
+            IOErrorEnum::NoSpace
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::MFile),
+            IOErrorEnum::TooManyOpenFiles
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NFile),
+            IOErrorEnum::TooManyOpenFiles
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Inval),
+            IOErrorEnum::InvalidArgument
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Pipe),
+            IOErrorEnum::BrokenPipe
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Again),
+            IOErrorEnum::WouldBlock
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Perm),
+            IOErrorEnum::PermissionDenied
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::NoSys),
+            IOErrorEnum::NotSupported
+        );
         // Failed-mapping group.
-        assert_eq!(io_error_from_file_error(FileError::BadF), IOErrorEnum::Failed);
-        assert_eq!(io_error_from_file_error(FileError::Failed), IOErrorEnum::Failed);
-        assert_eq!(io_error_from_file_error(FileError::Fault), IOErrorEnum::Failed);
-        assert_eq!(io_error_from_file_error(FileError::Intr), IOErrorEnum::Failed);
+        assert_eq!(
+            io_error_from_file_error(FileError::BadF),
+            IOErrorEnum::Failed
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Failed),
+            IOErrorEnum::Failed
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Fault),
+            IOErrorEnum::Failed
+        );
+        assert_eq!(
+            io_error_from_file_error(FileError::Intr),
+            IOErrorEnum::Failed
+        );
         assert_eq!(io_error_from_file_error(FileError::Io), IOErrorEnum::Failed);
     }
 
@@ -364,5 +563,121 @@ mod tests {
     fn from_errno_unknown_returns_failed() {
         assert_eq!(io_error_from_errno(9999), IOErrorEnum::Failed);
         assert_eq!(io_error_from_errno(0), IOErrorEnum::Failed);
+    }
+
+    #[test]
+    fn from_win32_error_common_codes() {
+        use super::win32_error::*;
+
+        assert_eq!(
+            io_error_from_win32_error(ERROR_FILE_NOT_FOUND),
+            IOErrorEnum::NotFound
+        );
+        assert_eq!(
+            io_error_from_win32_error(ERROR_ACCESS_DENIED),
+            IOErrorEnum::PermissionDenied
+        );
+        assert_eq!(
+            io_error_from_win32_error(ERROR_ALREADY_EXISTS),
+            IOErrorEnum::Exists
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEADDRINUSE),
+            IOErrorEnum::AddressInUse
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEWOULDBLOCK),
+            IOErrorEnum::WouldBlock
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEACCES),
+            IOErrorEnum::PermissionDenied
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSA_INVALID_HANDLE),
+            IOErrorEnum::InvalidArgument
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSA_INVALID_PARAMETER),
+            IOErrorEnum::InvalidArgument
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEINVAL),
+            IOErrorEnum::InvalidArgument
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEBADF),
+            IOErrorEnum::InvalidArgument
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAENOTSOCK),
+            IOErrorEnum::InvalidArgument
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEPROTONOSUPPORT),
+            IOErrorEnum::NotSupported
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAECANCELLED),
+            IOErrorEnum::Cancelled
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAESOCKTNOSUPPORT),
+            IOErrorEnum::NotSupported
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEOPNOTSUPP),
+            IOErrorEnum::NotSupported
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEPFNOSUPPORT),
+            IOErrorEnum::NotSupported
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEAFNOSUPPORT),
+            IOErrorEnum::NotSupported
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAECONNRESET),
+            IOErrorEnum::CONNECTION_CLOSED
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAENETRESET),
+            IOErrorEnum::CONNECTION_CLOSED
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAESHUTDOWN),
+            IOErrorEnum::CONNECTION_CLOSED
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEHOSTUNREACH),
+            IOErrorEnum::HostUnreachable
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAENETUNREACH),
+            IOErrorEnum::NetworkUnreachable
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAECONNREFUSED),
+            IOErrorEnum::ConnectionRefused
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAETIMEDOUT),
+            IOErrorEnum::TimedOut
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAENOTCONN),
+            IOErrorEnum::NotConnected
+        );
+        assert_eq!(
+            io_error_from_win32_error(ERROR_PIPE_LISTENING),
+            IOErrorEnum::NotConnected
+        );
+        assert_eq!(
+            io_error_from_win32_error(WSAEMSGSIZE),
+            IOErrorEnum::MessageTooLarge
+        );
+        assert_eq!(io_error_from_win32_error(u32::MAX), IOErrorEnum::Failed);
+        assert_eq!(io_error_from_win32_error(0), IOErrorEnum::Failed);
     }
 }

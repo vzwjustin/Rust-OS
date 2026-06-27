@@ -1320,9 +1320,7 @@ pub fn init_pixel_desktop() {
 
 /// Draw limited diagnostic desktop.
 fn draw_pixel_desktop() {
-    use crate::vga_mode13h::{
-        clear_screen, colors,
-    };
+    use crate::vga_mode13h::{clear_screen, colors};
 
     // Clear screen with diagnostic fallback color.
     clear_screen(colors::DESKTOP_TEAL);

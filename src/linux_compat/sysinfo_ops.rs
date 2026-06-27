@@ -370,21 +370,18 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
         return Err(LinuxError::EINVAL);
     }
 
-    // Get random bytes from kernel security RNG
+    // Get random bytes from kernel security RNG when initialized.
     let buffer = unsafe { core::slice::from_raw_parts_mut(buf, buflen) };
-    if crate::security::secure_random_bytes(buffer).is_err() {
-        // Fallback: use RDRAND if available, else TSC-based PRNG
-        for byte in buffer.iter_mut() {
-            let mut val: u32 = 0;
-            unsafe {
-                if core::arch::x86_64::_rdrand32_step(&mut val) == 1 {
-                    *byte = val as u8;
-                } else {
-                    let tsc = core::arch::x86_64::_rdtsc() as u32;
-                    *byte = (tsc.wrapping_mul(1103515245).wrapping_add(12345) >> 16) as u8;
-                }
-            }
+    if crate::security::is_rng_initialized() {
+        if crate::security::secure_random_bytes(buffer).is_ok() {
+            return Ok(buflen as isize);
         }
+    }
+
+    // Early boot / test fallback: TSC-based PRNG (safe in QEMU without RDRAND).
+    for (i, byte) in buffer.iter_mut().enumerate() {
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        *byte = (tsc.wrapping_shr((i % 8) as u32) as u8).wrapping_add(i as u8);
     }
 
     Ok(buflen as isize)
@@ -505,7 +502,12 @@ pub fn get_nprocs() -> i32 {
 /// get_nprocs_conf - get configured number of processors
 pub fn get_nprocs_conf() -> i32 {
     inc_ops();
-    crate::smp::cpu_count() as i32
+    let configured = crate::smp::cpu_count();
+    if configured > 0 {
+        configured as i32
+    } else {
+        crate::smp::online_cpus() as i32
+    }
 }
 
 // ============================================================================

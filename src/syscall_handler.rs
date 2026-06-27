@@ -159,9 +159,13 @@ pub fn dispatch_syscall(
         SyscallNumber::Setreuid => syscall_setreuid(arg1 as u32, arg2 as u32),
         SyscallNumber::Setregid => syscall_setregid(arg1 as u32, arg2 as u32),
         SyscallNumber::Setresuid => syscall_setresuid(arg1 as u32, arg2 as u32, arg3 as u32),
-        SyscallNumber::Getresuid => syscall_getresuid(arg1 as *mut u32, arg2 as *mut u32, arg3 as *mut u32),
+        SyscallNumber::Getresuid => {
+            syscall_getresuid(arg1 as *mut u32, arg2 as *mut u32, arg3 as *mut u32)
+        }
         SyscallNumber::Setresgid => syscall_setresgid(arg1 as u32, arg2 as u32, arg3 as u32),
-        SyscallNumber::Getresgid => syscall_getresgid(arg1 as *mut u32, arg2 as *mut u32, arg3 as *mut u32),
+        SyscallNumber::Getresgid => {
+            syscall_getresgid(arg1 as *mut u32, arg2 as *mut u32, arg3 as *mut u32)
+        }
         SyscallNumber::Getgroups => syscall_getgroups(arg1 as i32, arg2 as *mut u32),
         SyscallNumber::Setgroups => syscall_setgroups(arg1 as i32, arg2 as *const u32),
         SyscallNumber::Setpgid => syscall_setpgid(arg1 as i32, arg2 as i32),
@@ -175,7 +179,9 @@ pub fn dispatch_syscall(
         // ── Resource limits / usage (category 16) ──
         SyscallNumber::Getrlimit => syscall_getrlimit(arg1 as i32, arg2 as *mut u8),
         SyscallNumber::Setrlimit => syscall_setrlimit(arg1 as i32, arg2 as *const u8),
-        SyscallNumber::Prlimit64 => syscall_prlimit64(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8),
+        SyscallNumber::Prlimit64 => {
+            syscall_prlimit64(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8)
+        }
         SyscallNumber::Getrusage => syscall_getrusage(arg1 as i32, arg2 as *mut u8),
         SyscallNumber::Times => syscall_times(arg1 as *mut u8),
         SyscallNumber::Sysinfo => syscall_sysinfo(arg1 as *mut u8),
@@ -185,37 +191,90 @@ pub fn dispatch_syscall(
 
         // ── Scheduling (category 5) ──
         SyscallNumber::SchedYield => syscall_sched_yield(),
-        SyscallNumber::SchedGetaffinity => syscall_sched_getaffinity(arg1 as i32, arg2 as usize, arg3 as *mut u8),
-        SyscallNumber::SchedSetaffinity => syscall_sched_setaffinity(arg1 as i32, arg2 as usize, arg3 as *const u8),
-        SyscallNumber::SchedSetscheduler => syscall_sched_setscheduler(arg1 as i32, arg2 as i32, arg3 as *const u8),
+        SyscallNumber::SchedGetaffinity => {
+            syscall_sched_getaffinity(arg1 as i32, arg2 as usize, arg3 as *mut u8)
+        }
+        SyscallNumber::SchedSetaffinity => {
+            syscall_sched_setaffinity(arg1 as i32, arg2 as usize, arg3 as *const u8)
+        }
+        SyscallNumber::SchedSetscheduler => {
+            syscall_sched_setscheduler(arg1 as i32, arg2 as i32, arg3 as *const u8)
+        }
         SyscallNumber::SchedGetscheduler => syscall_sched_getscheduler(arg1 as i32),
         SyscallNumber::SchedSetparam => syscall_sched_setparam(arg1 as i32, arg2 as *const u8),
         SyscallNumber::SchedGetparam => syscall_sched_getparam(arg1 as i32, arg2 as *mut u8),
         SyscallNumber::SchedGetPriorityMax => syscall_sched_get_priority_max(arg1 as i32),
         SyscallNumber::SchedGetPriorityMin => syscall_sched_get_priority_min(arg1 as i32),
-        SyscallNumber::SchedRrGetInterval => syscall_sched_rr_get_interval(arg1 as i32, arg2 as *mut u8),
+        SyscallNumber::SchedRrGetInterval => {
+            syscall_sched_rr_get_interval(arg1 as i32, arg2 as *mut u8)
+        }
 
         // ── Extended file ops (category 3, 4) ──
-        SyscallNumber::Pread64 => syscall_pread64(arg1 as i32, arg2 as *mut u8, arg3 as usize, arg4 as i64),
-        SyscallNumber::Pwrite64 => syscall_pwrite64(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i64),
+        SyscallNumber::Pread64 => {
+            syscall_pread64(arg1 as i32, arg2 as *mut u8, arg3 as usize, arg4 as i64)
+        }
+        SyscallNumber::Pwrite64 => {
+            syscall_pwrite64(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i64)
+        }
         SyscallNumber::Readv => syscall_readv(arg1 as i32, arg2 as *const u8, arg3 as usize),
         SyscallNumber::Writev => syscall_writev(arg1 as i32, arg2 as *const u8, arg3 as usize),
-        SyscallNumber::Preadv => syscall_preadv(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i64),
-        SyscallNumber::Pwritev => syscall_pwritev(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i64),
+        SyscallNumber::Preadv => {
+            syscall_preadv(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i64)
+        }
+        SyscallNumber::Pwritev => {
+            syscall_pwritev(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i64)
+        }
         SyscallNumber::Dup3 => syscall_dup3(arg1 as i32, arg2 as i32, arg3 as i32),
         SyscallNumber::Pipe2 => syscall_pipe2(arg1 as *mut i32, arg2 as i32),
         SyscallNumber::Faccessat => syscall_faccessat(arg1 as i32, arg2 as *const u8, arg3 as i32),
-        SyscallNumber::Faccessat2 => syscall_faccessat2(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as i32),
-        SyscallNumber::Readlinkat => syscall_readlinkat(arg1 as i32, arg2 as *const u8, arg3 as *mut u8, arg4 as usize),
+        SyscallNumber::Faccessat2 => {
+            syscall_faccessat2(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as i32)
+        }
+        SyscallNumber::Readlinkat => syscall_readlinkat(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as *mut u8,
+            arg4 as usize,
+        ),
         SyscallNumber::Fchmodat => syscall_fchmodat(arg1 as i32, arg2 as *const u8, arg3 as u32),
         SyscallNumber::Mkdirat => syscall_mkdirat(arg1 as i32, arg2 as *const u8, arg3 as u32),
         SyscallNumber::Unlinkat => syscall_unlinkat(arg1 as i32, arg2 as *const u8, arg3 as i32),
-        SyscallNumber::Renameat => syscall_renameat(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as *const u8),
-        SyscallNumber::Renameat2 => syscall_renameat2(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as *const u8, arg5 as i32),
-        SyscallNumber::Linkat => syscall_linkat(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as *const u8, arg5 as i32),
-        SyscallNumber::Symlinkat => syscall_symlinkat(arg1 as *const u8, arg2 as i32, arg3 as *const u8),
-        SyscallNumber::Fchownat => syscall_fchownat(arg1 as i32, arg2 as *const u8, arg3 as u32, arg4 as u32, arg5 as i32),
-        SyscallNumber::Utimensat => syscall_utimensat(arg1 as i32, arg2 as *const u8, arg3 as *const u8, arg4 as i32),
+        SyscallNumber::Renameat => syscall_renameat(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as i32,
+            arg4 as *const u8,
+        ),
+        SyscallNumber::Renameat2 => syscall_renameat2(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as i32,
+            arg4 as *const u8,
+            arg5 as i32,
+        ),
+        SyscallNumber::Linkat => syscall_linkat(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as i32,
+            arg4 as *const u8,
+            arg5 as i32,
+        ),
+        SyscallNumber::Symlinkat => {
+            syscall_symlinkat(arg1 as *const u8, arg2 as i32, arg3 as *const u8)
+        }
+        SyscallNumber::Fchownat => syscall_fchownat(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as u32,
+            arg4 as u32,
+            arg5 as i32,
+        ),
+        SyscallNumber::Utimensat => syscall_utimensat(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as *const u8,
+            arg4 as i32,
+        ),
         SyscallNumber::Rename => syscall_rename(arg1 as *const u8, arg2 as *const u8),
         SyscallNumber::Rmdir => syscall_rmdir(arg1 as *const u8),
         SyscallNumber::Symlink => syscall_symlink(arg1 as *const u8, arg2 as *const u8),
@@ -233,13 +292,32 @@ pub fn dispatch_syscall(
         SyscallNumber::Fstatfs => syscall_fstatfs(arg1 as i32, arg2 as *mut u8),
         SyscallNumber::Sync => syscall_sync(),
         SyscallNumber::Syncfs => syscall_syncfs(arg1 as i32),
-        SyscallNumber::Statx => syscall_statx(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as u32, arg5 as *mut u8),
-        SyscallNumber::Openat2 => syscall_openat2(arg1 as i32, arg2 as *const u8, arg3 as *const u8, arg4 as usize),
+        SyscallNumber::Statx => syscall_statx(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as i32,
+            arg4 as u32,
+            arg5 as *mut u8,
+        ),
+        SyscallNumber::Openat2 => syscall_openat2(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as *const u8,
+            arg4 as usize,
+        ),
 
         // ── Memory extensions (category 2) ──
-        SyscallNumber::Mremap => syscall_mremap(arg1 as *mut u8, arg2 as usize, arg3 as usize, arg4 as i32, arg5 as *mut u8),
+        SyscallNumber::Mremap => syscall_mremap(
+            arg1 as *mut u8,
+            arg2 as usize,
+            arg3 as usize,
+            arg4 as i32,
+            arg5 as *mut u8,
+        ),
         SyscallNumber::Madvise => syscall_madvise(arg1 as *mut u8, arg2 as usize, arg3 as i32),
-        SyscallNumber::Mincore => syscall_mincore(arg1 as *const u8, arg2 as usize, arg3 as *mut u8),
+        SyscallNumber::Mincore => {
+            syscall_mincore(arg1 as *const u8, arg2 as usize, arg3 as *mut u8)
+        }
         SyscallNumber::Mlock => syscall_mlock(arg1 as *const u8, arg2 as usize),
         SyscallNumber::Munlock => syscall_munlock(arg1 as *const u8, arg2 as usize),
         SyscallNumber::Mlockall => syscall_mlockall(arg1 as i32),
@@ -253,66 +331,173 @@ pub fn dispatch_syscall(
         SyscallNumber::Connect => syscall_connect(arg1 as i32, arg2 as *const u8, arg3 as u32),
         SyscallNumber::Listen => syscall_listen(arg1 as i32, arg2 as i32),
         SyscallNumber::Accept => syscall_accept(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32),
-        SyscallNumber::Accept4 => syscall_accept4(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32, arg4 as i32),
-        SyscallNumber::Socketpair => syscall_socketpair(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut i32),
-        SyscallNumber::Sendto => syscall_sendto(arg1 as i32, arg2 as *const u8, arg3 as usize, arg4 as i32, arg5 as *const u8, arg6 as u32),
-        SyscallNumber::Recvfrom => syscall_recvfrom(arg1 as i32, arg2 as *mut u8, arg3 as usize, arg4 as i32, arg5 as *mut u8, arg6 as *mut u32),
+        SyscallNumber::Accept4 => {
+            syscall_accept4(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32, arg4 as i32)
+        }
+        SyscallNumber::Socketpair => {
+            syscall_socketpair(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut i32)
+        }
+        SyscallNumber::Sendto => syscall_sendto(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as usize,
+            arg4 as i32,
+            arg5 as *const u8,
+            arg6 as u32,
+        ),
+        SyscallNumber::Recvfrom => syscall_recvfrom(
+            arg1 as i32,
+            arg2 as *mut u8,
+            arg3 as usize,
+            arg4 as i32,
+            arg5 as *mut u8,
+            arg6 as *mut u32,
+        ),
         SyscallNumber::Sendmsg => syscall_sendmsg(arg1 as i32, arg2 as *const u8, arg3 as i32),
         SyscallNumber::Recvmsg => syscall_recvmsg(arg1 as i32, arg2 as *mut u8, arg3 as i32),
-        SyscallNumber::Sendmmsg => syscall_sendmmsg(arg1 as i32, arg2 as *mut u8, arg3 as u32, arg4 as i32),
-        SyscallNumber::Recvmmsg => syscall_recvmmsg(arg1 as i32, arg2 as *mut u8, arg3 as u32, arg4 as i32, arg5 as *const u8),
-        SyscallNumber::SetSockopt => syscall_setsockopt(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *const u8, arg5 as u32),
-        SyscallNumber::GetSockopt => syscall_getsockopt(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut u8, arg5 as *mut u32),
-        SyscallNumber::Getsockname => syscall_getsockname(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32),
-        SyscallNumber::Getpeername => syscall_getpeername(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32),
+        SyscallNumber::Sendmmsg => {
+            syscall_sendmmsg(arg1 as i32, arg2 as *mut u8, arg3 as u32, arg4 as i32)
+        }
+        SyscallNumber::Recvmmsg => syscall_recvmmsg(
+            arg1 as i32,
+            arg2 as *mut u8,
+            arg3 as u32,
+            arg4 as i32,
+            arg5 as *const u8,
+        ),
+        SyscallNumber::SetSockopt => syscall_setsockopt(
+            arg1 as i32,
+            arg2 as i32,
+            arg3 as i32,
+            arg4 as *const u8,
+            arg5 as u32,
+        ),
+        SyscallNumber::GetSockopt => syscall_getsockopt(
+            arg1 as i32,
+            arg2 as i32,
+            arg3 as i32,
+            arg4 as *mut u8,
+            arg5 as *mut u32,
+        ),
+        SyscallNumber::Getsockname => {
+            syscall_getsockname(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32)
+        }
+        SyscallNumber::Getpeername => {
+            syscall_getpeername(arg1 as i32, arg2 as *mut u8, arg3 as *mut u32)
+        }
         SyscallNumber::Shutdown => syscall_shutdown(arg1 as i32, arg2 as i32),
 
         // ── Event loop / poll (category 3, 6) ──
         SyscallNumber::Poll => syscall_poll(arg1 as *mut u8, arg2 as u64, arg3 as i32),
-        SyscallNumber::Ppoll => syscall_ppoll(arg1 as *mut u8, arg2 as u64, arg3 as *const u8, arg4 as *const u8),
-        SyscallNumber::Select => syscall_select(arg1 as i32, arg2 as *mut u64, arg3 as *mut u64, arg4 as *mut u64, arg5 as *const u8),
-        SyscallNumber::Pselect6 => syscall_pselect6(arg1 as i32, arg2 as *mut u64, arg3 as *mut u64, arg4 as *mut u64, arg5 as *const u8, arg6 as *const u8),
+        SyscallNumber::Ppoll => syscall_ppoll(
+            arg1 as *mut u8,
+            arg2 as u64,
+            arg3 as *const u8,
+            arg4 as *const u8,
+        ),
+        SyscallNumber::Select => syscall_select(
+            arg1 as i32,
+            arg2 as *mut u64,
+            arg3 as *mut u64,
+            arg4 as *mut u64,
+            arg5 as *const u8,
+        ),
+        SyscallNumber::Pselect6 => syscall_pselect6(
+            arg1 as i32,
+            arg2 as *mut u64,
+            arg3 as *mut u64,
+            arg4 as *mut u64,
+            arg5 as *const u8,
+            arg6 as *const u8,
+        ),
         SyscallNumber::EpollCreate1 => syscall_epoll_create1(arg1 as i32),
-        SyscallNumber::EpollCtl => syscall_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut u8),
-        SyscallNumber::EpollWait => syscall_epoll_wait(arg1 as i32, arg2 as *mut u8, arg3 as i32, arg4 as i32),
-        SyscallNumber::EpollPwait => syscall_epoll_pwait(arg1 as i32, arg2 as *mut u8, arg3 as i32, arg4 as i32, arg5 as *const u8),
-        SyscallNumber::EpollPwait2 => syscall_epoll_pwait2(arg1 as i32, arg2 as *mut u8, arg3 as i32, arg4 as *const u8, arg5 as *const u8),
+        SyscallNumber::EpollCtl => {
+            syscall_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut u8)
+        }
+        SyscallNumber::EpollWait => {
+            syscall_epoll_wait(arg1 as i32, arg2 as *mut u8, arg3 as i32, arg4 as i32)
+        }
+        SyscallNumber::EpollPwait => syscall_epoll_pwait(
+            arg1 as i32,
+            arg2 as *mut u8,
+            arg3 as i32,
+            arg4 as i32,
+            arg5 as *const u8,
+        ),
+        SyscallNumber::EpollPwait2 => syscall_epoll_pwait2(
+            arg1 as i32,
+            arg2 as *mut u8,
+            arg3 as i32,
+            arg4 as *const u8,
+            arg5 as *const u8,
+        ),
 
         // ── eventfd / timerfd / signalfd (category 6) ──
         SyscallNumber::Eventfd => syscall_eventfd(arg1 as u32),
         SyscallNumber::Eventfd2 => syscall_eventfd2(arg1 as u32, arg2 as i32),
         SyscallNumber::Signalfd => syscall_signalfd(arg1 as i32, arg2 as *const u8, arg3 as u32),
-        SyscallNumber::Signalfd4 => syscall_signalfd4(arg1 as i32, arg2 as *const u8, arg3 as u32, arg4 as i32),
+        SyscallNumber::Signalfd4 => {
+            syscall_signalfd4(arg1 as i32, arg2 as *const u8, arg3 as u32, arg4 as i32)
+        }
         SyscallNumber::TimerfdCreate => syscall_timerfd_create(arg1 as i32, arg2 as i32),
-        SyscallNumber::TimerfdSettime => syscall_timerfd_settime(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8),
+        SyscallNumber::TimerfdSettime => {
+            syscall_timerfd_settime(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8)
+        }
         SyscallNumber::TimerfdGettime => syscall_timerfd_gettime(arg1 as i32, arg2 as *mut u8),
 
         // ── inotify (category 6) ──
         SyscallNumber::InotifyInit1 => syscall_inotify_init1(arg1 as i32),
-        SyscallNumber::InotifyAddWatch => syscall_inotify_add_watch(arg1 as i32, arg2 as *const u8, arg3 as u32),
+        SyscallNumber::InotifyAddWatch => {
+            syscall_inotify_add_watch(arg1 as i32, arg2 as *const u8, arg3 as u32)
+        }
         SyscallNumber::InotifyRmWatch => syscall_inotify_rm_watch(arg1 as i32, arg2 as i32),
 
         // ── Thread ops (category 1, 5) ──
         SyscallNumber::Vfork => syscall_vfork(),
-        SyscallNumber::Waitid => syscall_waitid(arg1 as i32, arg2 as i32, arg3 as *mut u8, arg4 as i32, arg5 as *mut u8),
+        SyscallNumber::Waitid => syscall_waitid(
+            arg1 as i32,
+            arg2 as i32,
+            arg3 as *mut u8,
+            arg4 as i32,
+            arg5 as *mut u8,
+        ),
         SyscallNumber::Clone3 => syscall_clone3(arg1 as *const u8, arg2 as usize),
-        SyscallNumber::Execveat => syscall_execveat(arg1 as i32, arg2 as *const u8, arg3 as *const *const u8, arg4 as *const *const u8, arg5 as i32),
+        SyscallNumber::Execveat => syscall_execveat(
+            arg1 as i32,
+            arg2 as *const u8,
+            arg3 as *const *const u8,
+            arg4 as *const *const u8,
+            arg5 as i32,
+        ),
         SyscallNumber::SetRobustList => syscall_set_robust_list(arg1 as *mut u8, arg2 as usize),
-        SyscallNumber::GetRobustList => syscall_get_robust_list(arg1 as i32, arg2 as *mut *mut u8, arg3 as *mut usize),
+        SyscallNumber::GetRobustList => {
+            syscall_get_robust_list(arg1 as i32, arg2 as *mut *mut u8, arg3 as *mut usize)
+        }
         SyscallNumber::Tkill => syscall_tkill(arg1 as i32, arg2 as i32),
         SyscallNumber::Tgkill => syscall_tgkill(arg1 as i32, arg2 as i32, arg3 as i32),
         SyscallNumber::Membarrier => syscall_membarrier(arg1 as i32, arg2 as i32),
         SyscallNumber::RtSigreturn => 0,
         SyscallNumber::RtSigpending => syscall_rt_sigpending(arg1 as *mut u8, arg2 as usize),
-        SyscallNumber::RtSigtimedwait => syscall_rt_sigtimedwait(arg1 as *const u8, arg2 as *mut u8, arg3 as *const u8, arg4 as usize),
+        SyscallNumber::RtSigtimedwait => syscall_rt_sigtimedwait(
+            arg1 as *const u8,
+            arg2 as *mut u8,
+            arg3 as *const u8,
+            arg4 as usize,
+        ),
         SyscallNumber::RtSigsuspend => syscall_rt_sigsuspend(arg1 as *const u8, arg2 as usize),
         SyscallNumber::Sigaltstack => syscall_sigaltstack(arg1 as *const u8, arg2 as *mut u8),
 
         // ── Time extensions (category 6) ──
         SyscallNumber::ClockGetres => syscall_clock_getres(arg1 as i32, arg2 as *mut u8),
-        SyscallNumber::ClockNanosleep => syscall_clock_nanosleep(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8),
-        SyscallNumber::TimerCreate => syscall_timer_create(arg1 as i32, arg2 as *const u8, arg3 as *mut i32),
-        SyscallNumber::TimerSettime => syscall_timer_settime(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8),
+        SyscallNumber::ClockNanosleep => {
+            syscall_clock_nanosleep(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8)
+        }
+        SyscallNumber::TimerCreate => {
+            syscall_timer_create(arg1 as i32, arg2 as *const u8, arg3 as *mut i32)
+        }
+        SyscallNumber::TimerSettime => {
+            syscall_timer_settime(arg1 as i32, arg2 as i32, arg3 as *const u8, arg4 as *mut u8)
+        }
         SyscallNumber::TimerGettime => syscall_timer_gettime(arg1 as i32, arg2 as *mut u8),
         SyscallNumber::TimerDelete => syscall_timer_delete(arg1 as i32),
         SyscallNumber::TimerGetoverrun => syscall_timer_getoverrun(arg1 as i32),
@@ -322,20 +507,28 @@ pub fn dispatch_syscall(
         SyscallNumber::Sethostname => syscall_sethostname(arg1 as *const u8, arg2 as usize),
         SyscallNumber::Setdomainname => syscall_setdomainname(arg1 as *const u8, arg2 as usize),
         SyscallNumber::Syslog => syscall_syslog(arg1 as i32, arg2 as *mut u8, arg3 as i32),
-        SyscallNumber::Reboot => syscall_reboot(arg1 as i32, arg2 as i32, arg3 as u32, arg4 as *mut u8),
+        SyscallNumber::Reboot => {
+            syscall_reboot(arg1 as i32, arg2 as i32, arg3 as u32, arg4 as *mut u8)
+        }
 
         // ── Kill / signals ──
         SyscallNumber::Kill => syscall_kill(arg1 as i32, arg2 as i32),
 
         // ── Fsync/fdatasync already above, add sendfile ──
-        SyscallNumber::Sendfile => syscall_sendfile(arg1 as i32, arg2 as i32, arg3 as *mut i64, arg4 as usize),
+        SyscallNumber::Sendfile => {
+            syscall_sendfile(arg1 as i32, arg2 as i32, arg3 as *mut i64, arg4 as usize)
+        }
         SyscallNumber::Fadvise64 => 0, // advisory, always succeed
-        SyscallNumber::Fallocate => syscall_fallocate(arg1 as i32, arg2 as i32, arg3 as i64, arg4 as i64),
+        SyscallNumber::Fallocate => {
+            syscall_fallocate(arg1 as i32, arg2 as i32, arg3 as i64, arg4 as i64)
+        }
         SyscallNumber::Flock => 0, // stub - no file locking yet
         SyscallNumber::Pause => syscall_pause(),
         SyscallNumber::Alarm => syscall_alarm(arg1 as u32),
         SyscallNumber::Getitimer => syscall_getitimer(arg1 as i32, arg2 as *mut u8),
-        SyscallNumber::Setitimer => syscall_setitimer(arg1 as i32, arg2 as *const u8, arg3 as *mut u8),
+        SyscallNumber::Setitimer => {
+            syscall_setitimer(arg1 as i32, arg2 as *const u8, arg3 as *mut u8)
+        }
 
         _ => -38, // ENOSYS
     };
@@ -452,7 +645,11 @@ fn syscall_execve(filename: *const u8, argv: *const *const u8, envp: *const *con
     }
 }
 
-fn syscall_exit(status: i32) -> ! {
+fn syscall_exit(status: i32) -> i64 {
+    if crate::user_sched::user_bootstrap_active() {
+        crate::user_sched::complete_user_exit(status);
+        return 0;
+    }
     crate::linux_compat::process_ops::exit(status);
 }
 
@@ -745,277 +942,549 @@ fn syscall_getdents64(fd: i32, dirp: *mut u8, count: u32) -> i64 {
 
 // ── Credential syscalls ──
 
-fn syscall_getuid() -> i64 { crate::linux_compat::process_ops::getuid() as i64 }
-fn syscall_geteuid() -> i64 { crate::linux_compat::process_ops::geteuid() as i64 }
-fn syscall_getgid() -> i64 { crate::linux_compat::process_ops::getgid() as i64 }
-fn syscall_getegid() -> i64 { crate::linux_compat::process_ops::getegid() as i64 }
+fn syscall_getuid() -> i64 {
+    crate::linux_compat::process_ops::getuid() as i64
+}
+fn syscall_geteuid() -> i64 {
+    crate::linux_compat::process_ops::geteuid() as i64
+}
+fn syscall_getgid() -> i64 {
+    crate::linux_compat::process_ops::getgid() as i64
+}
+fn syscall_getegid() -> i64 {
+    crate::linux_compat::process_ops::getegid() as i64
+}
 fn syscall_setuid(uid: u32) -> i64 {
-    match crate::linux_compat::process_ops::setuid(uid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::setuid(uid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_setgid(gid: u32) -> i64 {
-    match crate::linux_compat::process_ops::setgid(gid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::setgid(gid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_setreuid(_ruid: u32, euid: u32) -> i64 {
-    match crate::linux_compat::process_ops::seteuid(euid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::seteuid(euid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_setregid(_rgid: u32, egid: u32) -> i64 {
-    match crate::linux_compat::process_ops::setegid(egid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::setegid(egid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_setresuid(_ruid: u32, euid: u32, _suid: u32) -> i64 {
-    match crate::linux_compat::process_ops::seteuid(euid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::seteuid(euid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> i64 {
     unsafe {
-        if !ruid.is_null() { *ruid = crate::linux_compat::process_ops::getuid(); }
-        if !euid.is_null() { *euid = crate::linux_compat::process_ops::geteuid(); }
-        if !suid.is_null() { *suid = crate::linux_compat::process_ops::geteuid(); }
+        if !ruid.is_null() {
+            *ruid = crate::linux_compat::process_ops::getuid();
+        }
+        if !euid.is_null() {
+            *euid = crate::linux_compat::process_ops::geteuid();
+        }
+        if !suid.is_null() {
+            *suid = crate::linux_compat::process_ops::geteuid();
+        }
     }
     0
 }
 fn syscall_setresgid(_rgid: u32, egid: u32, _sgid: u32) -> i64 {
-    match crate::linux_compat::process_ops::setegid(egid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::setegid(egid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> i64 {
     unsafe {
-        if !rgid.is_null() { *rgid = crate::linux_compat::process_ops::getgid(); }
-        if !egid.is_null() { *egid = crate::linux_compat::process_ops::getegid(); }
-        if !sgid.is_null() { *sgid = crate::linux_compat::process_ops::getegid(); }
+        if !rgid.is_null() {
+            *rgid = crate::linux_compat::process_ops::getgid();
+        }
+        if !egid.is_null() {
+            *egid = crate::linux_compat::process_ops::getegid();
+        }
+        if !sgid.is_null() {
+            *sgid = crate::linux_compat::process_ops::getegid();
+        }
     }
     0
 }
 fn syscall_getgroups(size: i32, list: *mut u32) -> i64 {
-    if size == 0 { return 1; }
-    if size < 1 { return -(crate::linux_compat::LinuxError::EINVAL as i64); }
-    unsafe { if !list.is_null() { *list = 0; } }
+    if size == 0 {
+        return 1;
+    }
+    if size < 1 {
+        return -(crate::linux_compat::LinuxError::EINVAL as i64);
+    }
+    unsafe {
+        if !list.is_null() {
+            *list = 0;
+        }
+    }
     1
 }
 fn syscall_setgroups(size: i32, _list: *const u32) -> i64 {
-    if size < 0 { return -(crate::linux_compat::LinuxError::EINVAL as i64); }
+    if size < 0 {
+        return -(crate::linux_compat::LinuxError::EINVAL as i64);
+    }
     0
 }
 fn syscall_setpgid(pid: i32, pgid: i32) -> i64 {
-    match crate::linux_compat::process_ops::setpgid(pid, pgid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::setpgid(pid, pgid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_getpgid(pid: i32) -> i64 {
-    match crate::linux_compat::process_ops::getpgid(pid) { Ok(p) => p as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::getpgid(pid) {
+        Ok(p) => p as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_getpgrp() -> i64 { crate::linux_compat::process_ops::getpgrp() as i64 }
+fn syscall_getpgrp() -> i64 {
+    crate::linux_compat::process_ops::getpgrp() as i64
+}
 fn syscall_setsid() -> i64 {
-    match crate::linux_compat::process_ops::setsid() { Ok(p) => p as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::setsid() {
+        Ok(p) => p as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_getsid(pid: i32) -> i64 {
-    match crate::linux_compat::process_ops::getsid(pid) { Ok(p) => p as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::getsid(pid) {
+        Ok(p) => p as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_umask(_mask: u32) -> i64 { 0o022 } // return previous umask (stub)
-fn syscall_chroot(_path: *const u8) -> i64 { 0 } // stub
+fn syscall_umask(_mask: u32) -> i64 {
+    0o022
+} // return previous umask (stub)
+fn syscall_chroot(_path: *const u8) -> i64 {
+    0
+} // stub
 
 // ── Resource limit syscalls ──
 
 fn syscall_getrlimit(resource: i32, rlim: *mut u8) -> i64 {
-    match crate::linux_compat::resource_ops::getrlimit(resource, rlim as *mut crate::linux_compat::resource_ops::RLimit) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::getrlimit(
+        resource,
+        rlim as *mut crate::linux_compat::resource_ops::RLimit,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_setrlimit(resource: i32, rlim: *const u8) -> i64 {
-    match crate::linux_compat::resource_ops::setrlimit(resource, rlim as *const crate::linux_compat::resource_ops::RLimit) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::setrlimit(
+        resource,
+        rlim as *const crate::linux_compat::resource_ops::RLimit,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_prlimit64(pid: i32, resource: i32, new_limit: *const u8, old_limit: *mut u8) -> i64 {
-    match crate::linux_compat::resource_ops::prlimit(pid, resource, new_limit as *const crate::linux_compat::resource_ops::RLimit, old_limit as *mut crate::linux_compat::resource_ops::RLimit) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::prlimit(
+        pid,
+        resource,
+        new_limit as *const crate::linux_compat::resource_ops::RLimit,
+        old_limit as *mut crate::linux_compat::resource_ops::RLimit,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_getrusage(who: i32, usage: *mut u8) -> i64 {
-    match crate::linux_compat::process_ops::getrusage(who, usage as *mut crate::linux_compat::process_ops::Rusage) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::process_ops::getrusage(
+        who,
+        usage as *mut crate::linux_compat::process_ops::Rusage,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_times(buf: *mut u8) -> i64 {
-    match crate::linux_compat::process_ops::times(buf) { Ok(v) => v, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::times(buf) {
+        Ok(v) => v,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sysinfo(info: *mut u8) -> i64 {
-    match crate::linux_compat::sysinfo_ops::sysinfo(info as *mut crate::linux_compat::sysinfo_ops::SysInfo) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::sysinfo_ops::sysinfo(
+        info as *mut crate::linux_compat::sysinfo_ops::SysInfo,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i64 {
     match crate::linux_compat::process_ops::prctl(option, arg2, arg3, arg4, arg5) {
-        Ok(v) => v as i64, Err(e) => -(e as i64)
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_capget(hdrp: *mut u8, datap: *mut u8) -> i64 {
-    match crate::linux_compat::process_ops::capget(hdrp, datap) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::capget(hdrp, datap) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_capset(hdrp: *const u8, datap: *const u8) -> i64 {
-    match crate::linux_compat::process_ops::capset(hdrp, datap) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::capset(hdrp, datap) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Scheduling syscalls ──
 
 fn syscall_sched_yield() -> i64 {
-    match crate::linux_compat::process_ops::sched_yield() { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::process_ops::sched_yield() {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sched_getaffinity(pid: i32, cpusetsize: usize, mask: *mut u8) -> i64 {
     match crate::linux_compat::process_ops::sched_getaffinity(pid, cpusetsize, mask) {
-        Ok(v) => v as i64, Err(e) => -(e as i64)
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u8) -> i64 {
     match crate::linux_compat::process_ops::sched_setaffinity(pid, cpusetsize, mask) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_sched_setscheduler(pid: i32, policy: i32, param: *const u8) -> i64 {
-    match crate::linux_compat::resource_ops::sched_setscheduler(pid, policy, param as *const crate::linux_compat::resource_ops::SchedParam) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::sched_setscheduler(
+        pid,
+        policy,
+        param as *const crate::linux_compat::resource_ops::SchedParam,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_sched_getscheduler(pid: i32) -> i64 {
-    match crate::linux_compat::resource_ops::sched_getscheduler(pid) { Ok(v) => v as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::resource_ops::sched_getscheduler(pid) {
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sched_setparam(pid: i32, param: *const u8) -> i64 {
-    match crate::linux_compat::resource_ops::sched_setparam(pid, param as *const crate::linux_compat::resource_ops::SchedParam) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::sched_setparam(
+        pid,
+        param as *const crate::linux_compat::resource_ops::SchedParam,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_sched_getparam(pid: i32, param: *mut u8) -> i64 {
-    match crate::linux_compat::resource_ops::sched_getparam(pid, param as *mut crate::linux_compat::resource_ops::SchedParam) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::sched_getparam(
+        pid,
+        param as *mut crate::linux_compat::resource_ops::SchedParam,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_sched_get_priority_max(policy: i32) -> i64 {
-    match crate::linux_compat::resource_ops::sched_get_priority_max(policy) { Ok(v) => v as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::resource_ops::sched_get_priority_max(policy) {
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sched_get_priority_min(policy: i32) -> i64 {
-    match crate::linux_compat::resource_ops::sched_get_priority_min(policy) { Ok(v) => v as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::resource_ops::sched_get_priority_min(policy) {
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sched_rr_get_interval(pid: i32, tp: *mut u8) -> i64 {
-    match crate::linux_compat::resource_ops::sched_rr_get_interval(pid, tp as *mut crate::linux_compat::TimeSpec) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::resource_ops::sched_rr_get_interval(
+        pid,
+        tp as *mut crate::linux_compat::TimeSpec,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 
 // ── Extended file syscalls ──
 
 fn syscall_pread64(fd: i32, buf: *mut u8, count: usize, offset: i64) -> i64 {
-    match crate::linux_compat::advanced_io::pread(fd, buf, count, offset) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::advanced_io::pread(fd, buf, count, offset) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -> i64 {
-    match crate::linux_compat::advanced_io::pwrite(fd, buf, count, offset) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::advanced_io::pwrite(fd, buf, count, offset) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_readv(fd: i32, iov: *const u8, iovcnt: usize) -> i64 {
-    match crate::linux_compat::advanced_io::readv(fd, iov as *const crate::linux_compat::advanced_io::IoVec, iovcnt as i32) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+    match crate::linux_compat::advanced_io::readv(
+        fd,
+        iov as *const crate::linux_compat::advanced_io::IoVec,
+        iovcnt as i32,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_writev(fd: i32, iov: *const u8, iovcnt: usize) -> i64 {
-    match crate::linux_compat::advanced_io::writev(fd, iov as *const crate::linux_compat::advanced_io::IoVec, iovcnt as i32) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+    match crate::linux_compat::advanced_io::writev(
+        fd,
+        iov as *const crate::linux_compat::advanced_io::IoVec,
+        iovcnt as i32,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_preadv(fd: i32, iov: *const u8, iovcnt: usize, offset: i64) -> i64 {
-    match crate::linux_compat::advanced_io::preadv(fd, iov as *const crate::linux_compat::advanced_io::IoVec, iovcnt as i32, offset) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+    match crate::linux_compat::advanced_io::preadv(
+        fd,
+        iov as *const crate::linux_compat::advanced_io::IoVec,
+        iovcnt as i32,
+        offset,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_pwritev(fd: i32, iov: *const u8, iovcnt: usize, offset: i64) -> i64 {
-    match crate::linux_compat::advanced_io::pwritev(fd, iov as *const crate::linux_compat::advanced_io::IoVec, iovcnt as i32, offset) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+    match crate::linux_compat::advanced_io::pwritev(
+        fd,
+        iov as *const crate::linux_compat::advanced_io::IoVec,
+        iovcnt as i32,
+        offset,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_dup3(oldfd: i32, newfd: i32, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::dup3(oldfd, newfd, flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::dup3(oldfd, newfd, flags) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_pipe2(pipefd: *mut i32, flags: i32) -> i64 {
-    match crate::linux_compat::special_fd::pipe2(pipefd as *mut [i32; 2], flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::pipe2(pipefd as *mut [i32; 2], flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_faccessat(dirfd: i32, path: *const u8, mode: i32) -> i64 {
-    match crate::linux_compat::file_ops::faccessat(dirfd, path, mode, 0) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::faccessat(dirfd, path, mode, 0) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_faccessat2(dirfd: i32, path: *const u8, mode: i32, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::faccessat(dirfd, path, mode, flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::faccessat(dirfd, path, mode, flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_readlinkat(dirfd: i32, path: *const u8, buf: *mut u8, bufsiz: usize) -> i64 {
-    match crate::linux_compat::file_ops::readlinkat(dirfd, path, buf, bufsiz) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::readlinkat(dirfd, path, buf, bufsiz) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fchmodat(dirfd: i32, path: *const u8, mode: u32) -> i64 {
-    match crate::linux_compat::file_ops::fchmodat(dirfd, path, mode, 0) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fchmodat(dirfd, path, mode, 0) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> i64 {
-    match crate::linux_compat::file_ops::mkdirat(dirfd, path, mode) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::mkdirat(dirfd, path, mode) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_unlinkat(dirfd: i32, path: *const u8, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::unlinkat(dirfd, path, flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::unlinkat(dirfd, path, flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_renameat(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8) -> i64 {
-    match crate::linux_compat::file_ops::renameat(olddirfd, oldpath, newdirfd, newpath) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::renameat(olddirfd, oldpath, newdirfd, newpath) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_renameat2(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::renameat2(olddirfd, oldpath, newdirfd, newpath, flags as u32) { Ok(_) => 0, Err(e) => -(e as i64) }
+fn syscall_renameat2(
+    olddirfd: i32,
+    oldpath: *const u8,
+    newdirfd: i32,
+    newpath: *const u8,
+    flags: i32,
+) -> i64 {
+    match crate::linux_compat::file_ops::renameat2(
+        olddirfd,
+        oldpath,
+        newdirfd,
+        newpath,
+        flags as u32,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_linkat(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::linkat(olddirfd, oldpath, newdirfd, newpath, flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+fn syscall_linkat(
+    olddirfd: i32,
+    oldpath: *const u8,
+    newdirfd: i32,
+    newpath: *const u8,
+    flags: i32,
+) -> i64 {
+    match crate::linux_compat::file_ops::linkat(olddirfd, oldpath, newdirfd, newpath, flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_symlinkat(target: *const u8, newdirfd: i32, linkpath: *const u8) -> i64 {
-    match crate::linux_compat::file_ops::symlinkat(target, newdirfd, linkpath) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::symlinkat(target, newdirfd, linkpath) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::fchownat(dirfd, path, uid, gid, flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fchownat(dirfd, path, uid, gid, flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_utimensat(dirfd: i32, path: *const u8, times: *const u8, flags: i32) -> i64 {
-    match crate::linux_compat::file_ops::utimensat(dirfd, path, times as *const [crate::linux_compat::TimeSpec; 2], flags) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::file_ops::utimensat(
+        dirfd,
+        path,
+        times as *const [crate::linux_compat::TimeSpec; 2],
+        flags,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_rename(oldpath: *const u8, newpath: *const u8) -> i64 {
-    match crate::linux_compat::file_ops::rename(oldpath, newpath) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::rename(oldpath, newpath) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_rmdir(path: *const u8) -> i64 {
-    match crate::linux_compat::file_ops::rmdir(path) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::rmdir(path) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_symlink(target: *const u8, linkpath: *const u8) -> i64 {
-    match crate::linux_compat::file_ops::symlink(target, linkpath) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::symlink(target, linkpath) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_link(oldpath: *const u8, newpath: *const u8) -> i64 {
-    match crate::linux_compat::file_ops::link(oldpath, newpath) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::link(oldpath, newpath) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_chmod(path: *const u8, mode: u32) -> i64 {
-    match crate::linux_compat::file_ops::chmod(path, mode) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::chmod(path, mode) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fchmod(fd: i32, mode: u32) -> i64 {
-    match crate::linux_compat::file_ops::fchmod(fd, mode) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fchmod(fd, mode) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_chown(path: *const u8, uid: u32, gid: u32) -> i64 {
-    match crate::linux_compat::file_ops::chown(path, uid, gid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::chown(path, uid, gid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fchown(fd: i32, uid: u32, gid: u32) -> i64 {
-    match crate::linux_compat::file_ops::fchown(fd, uid, gid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fchown(fd, uid, gid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_lchown(path: *const u8, uid: u32, gid: u32) -> i64 {
-    match crate::linux_compat::file_ops::lchown(path, uid, gid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::lchown(path, uid, gid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_truncate(path: *const u8, length: i64) -> i64 {
-    match crate::linux_compat::file_ops::truncate(path, length) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::truncate(path, length) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_ftruncate(fd: i32, length: i64) -> i64 {
-    match crate::linux_compat::file_ops::ftruncate(fd, length) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::ftruncate(fd, length) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fsync(fd: i32) -> i64 {
-    match crate::linux_compat::file_ops::fsync(fd) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fsync(fd) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fdatasync(fd: i32) -> i64 {
-    match crate::linux_compat::file_ops::fdatasync(fd) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fdatasync(fd) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_statfs(path: *const u8, buf: *mut u8) -> i64 {
-    match crate::linux_compat::fs_ops::statfs(path, buf as *mut crate::linux_compat::fs_ops::StatFs) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::fs_ops::statfs(path, buf as *mut crate::linux_compat::fs_ops::StatFs)
+    {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fstatfs(fd: i32, buf: *mut u8) -> i64 {
-    match crate::linux_compat::fs_ops::fstatfs(fd, buf as *mut crate::linux_compat::fs_ops::StatFs) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::fs_ops::fstatfs(fd, buf as *mut crate::linux_compat::fs_ops::StatFs)
+    {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_sync() -> i64 { crate::linux_compat::fs_ops::sync(); 0 }
+fn syscall_sync() -> i64 {
+    crate::linux_compat::fs_ops::sync();
+    0
+}
 fn syscall_syncfs(fd: i32) -> i64 {
-    match crate::linux_compat::fs_ops::syncfs(fd) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::fs_ops::syncfs(fd) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_statx(dirfd: i32, path: *const u8, flags: i32, mask: u32, statx_buf: *mut u8) -> i64 {
     match crate::linux_compat::file_ops::statx(
@@ -1043,170 +1512,429 @@ fn syscall_openat2(dirfd: i32, path: *const u8, how: *const u8, size: usize) -> 
 
 // ── Memory extension syscalls ──
 
-fn syscall_mremap(addr: *mut u8, old_size: usize, new_size: usize, flags: i32, new_addr: *mut u8) -> i64 {
+fn syscall_mremap(
+    addr: *mut u8,
+    old_size: usize,
+    new_size: usize,
+    flags: i32,
+    new_addr: *mut u8,
+) -> i64 {
     match crate::linux_compat::memory_ops::mremap(addr, old_size, new_size, flags, new_addr) {
-        Ok(ptr) => ptr as i64, Err(e) => -(e as i64)
+        Ok(ptr) => ptr as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_madvise(addr: *mut u8, length: usize, advice: i32) -> i64 {
-    match crate::linux_compat::memory_ops::madvise(addr, length, advice) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::madvise(addr, length, advice) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_mincore(addr: *const u8, length: usize, vec: *mut u8) -> i64 {
-    match crate::linux_compat::memory_ops::mincore(addr as *mut u8, length, vec) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::mincore(addr as *mut u8, length, vec) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_mlock(addr: *const u8, len: usize) -> i64 {
-    match crate::linux_compat::memory_ops::mlock(addr, len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::mlock(addr, len) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_munlock(addr: *const u8, len: usize) -> i64 {
-    match crate::linux_compat::memory_ops::munlock(addr, len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::munlock(addr, len) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_mlockall(flags: i32) -> i64 {
-    match crate::linux_compat::memory_ops::mlockall(flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::mlockall(flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_munlockall() -> i64 {
-    match crate::linux_compat::memory_ops::munlockall() { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::munlockall() {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_msync(addr: *mut u8, len: usize, flags: i32) -> i64 {
-    match crate::linux_compat::memory_ops::msync(addr, len, flags) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::memory_ops::msync(addr, len, flags) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_memfd_create(name: *const u8, flags: u32) -> i64 {
-    match crate::linux_compat::ipc_ops::memfd_create(name, flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::ipc_ops::memfd_create(name, flags) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Socket syscalls ──
 
 fn syscall_socket(domain: i32, sock_type: i32, protocol: i32) -> i64 {
-    match crate::linux_compat::socket_ops::socket(domain, sock_type, protocol) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
-}
-fn syscall_bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i64 {
-    match crate::linux_compat::socket_ops::bind(sockfd, addr as *const crate::linux_compat::SockAddr, addrlen) { Ok(_) => 0, Err(e) => -(e as i64) }
-}
-fn syscall_connect(sockfd: i32, addr: *const u8, addrlen: u32) -> i64 {
-    match crate::linux_compat::socket_ops::connect(sockfd, addr as *const crate::linux_compat::SockAddr, addrlen) { Ok(_) => 0, Err(e) => -(e as i64) }
-}
-fn syscall_listen(sockfd: i32, backlog: i32) -> i64 {
-    match crate::linux_compat::socket_ops::listen(sockfd, backlog) { Ok(_) => 0, Err(e) => -(e as i64) }
-}
-fn syscall_accept(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i64 {
-    match crate::linux_compat::socket_ops::accept(sockfd, addr as *mut crate::linux_compat::SockAddr, addrlen) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
-}
-fn syscall_accept4(sockfd: i32, addr: *mut u8, addrlen: *mut u32, flags: i32) -> i64 {
-    match crate::linux_compat::socket_ops::accept4(sockfd, addr as *mut crate::linux_compat::SockAddr, addrlen, flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
-}
-fn syscall_socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> i64 {
-    match crate::linux_compat::socket_ops::socketpair(domain, sock_type, protocol, sv) { Ok(_) => 0, Err(e) => -(e as i64) }
-}
-fn syscall_sendto(sockfd: i32, buf: *const u8, len: usize, flags: i32, dest_addr: *const u8, addrlen: u32) -> i64 {
-    match crate::linux_compat::socket_ops::sendto(sockfd, buf, len, flags, dest_addr as *const crate::linux_compat::SockAddr, addrlen) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+    match crate::linux_compat::socket_ops::socket(domain, sock_type, protocol) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
     }
 }
-fn syscall_recvfrom(sockfd: i32, buf: *mut u8, len: usize, flags: i32, src_addr: *mut u8, addrlen: *mut u32) -> i64 {
-    match crate::linux_compat::socket_ops::recvfrom(sockfd, buf, len, flags, src_addr as *mut crate::linux_compat::SockAddr, addrlen) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+fn syscall_bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i64 {
+    match crate::linux_compat::socket_ops::bind(
+        sockfd,
+        addr as *const crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_connect(sockfd: i32, addr: *const u8, addrlen: u32) -> i64 {
+    match crate::linux_compat::socket_ops::connect(
+        sockfd,
+        addr as *const crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_listen(sockfd: i32, backlog: i32) -> i64 {
+    match crate::linux_compat::socket_ops::listen(sockfd, backlog) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_accept(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i64 {
+    match crate::linux_compat::socket_ops::accept(
+        sockfd,
+        addr as *mut crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_accept4(sockfd: i32, addr: *mut u8, addrlen: *mut u32, flags: i32) -> i64 {
+    match crate::linux_compat::socket_ops::accept4(
+        sockfd,
+        addr as *mut crate::linux_compat::SockAddr,
+        addrlen,
+        flags,
+    ) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> i64 {
+    match crate::linux_compat::socket_ops::socketpair(domain, sock_type, protocol, sv) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_sendto(
+    sockfd: i32,
+    buf: *const u8,
+    len: usize,
+    flags: i32,
+    dest_addr: *const u8,
+    addrlen: u32,
+) -> i64 {
+    match crate::linux_compat::socket_ops::sendto(
+        sockfd,
+        buf,
+        len,
+        flags,
+        dest_addr as *const crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_recvfrom(
+    sockfd: i32,
+    buf: *mut u8,
+    len: usize,
+    flags: i32,
+    src_addr: *mut u8,
+    addrlen: *mut u32,
+) -> i64 {
+    match crate::linux_compat::socket_ops::recvfrom(
+        sockfd,
+        buf,
+        len,
+        flags,
+        src_addr as *mut crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_sendmsg(sockfd: i32, msg: *const u8, flags: i32) -> i64 {
-    match crate::linux_compat::socket_ops::sendmsg(sockfd, msg, flags) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::socket_ops::sendmsg(sockfd, msg, flags) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_recvmsg(sockfd: i32, msg: *mut u8, flags: i32) -> i64 {
-    match crate::linux_compat::socket_ops::recvmsg(sockfd, msg, flags) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::socket_ops::recvmsg(sockfd, msg, flags) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sendmmsg(sockfd: i32, msgvec: *mut u8, vlen: u32, flags: i32) -> i64 {
-    match crate::linux_compat::socket_ops::sendmmsg(sockfd, msgvec, vlen, flags) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::socket_ops::sendmmsg(sockfd, msgvec, vlen, flags) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_recvmmsg(sockfd: i32, msgvec: *mut u8, vlen: u32, flags: i32, timeout: *const u8) -> i64 {
-    match crate::linux_compat::socket_ops::recvmmsg(sockfd, msgvec, vlen, flags, timeout) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+fn syscall_recvmmsg(
+    sockfd: i32,
+    msgvec: *mut u8,
+    vlen: u32,
+    flags: i32,
+    timeout: *const u8,
+) -> i64 {
+    match crate::linux_compat::socket_ops::recvmmsg(sockfd, msgvec, vlen, flags, timeout) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_setsockopt(sockfd: i32, level: i32, optname: i32, optval: *const u8, optlen: u32) -> i64 {
-    match crate::linux_compat::socket_ops::setsockopt(sockfd, level, optname, optval, optlen) { Ok(_) => 0, Err(e) => -(e as i64) }
+fn syscall_setsockopt(
+    sockfd: i32,
+    level: i32,
+    optname: i32,
+    optval: *const u8,
+    optlen: u32,
+) -> i64 {
+    match crate::linux_compat::socket_ops::setsockopt(sockfd, level, optname, optval, optlen) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_getsockopt(sockfd: i32, level: i32, optname: i32, optval: *mut u8, optlen: *mut u32) -> i64 {
-    match crate::linux_compat::socket_ops::getsockopt(sockfd, level, optname, optval, optlen) { Ok(_) => 0, Err(e) => -(e as i64) }
+fn syscall_getsockopt(
+    sockfd: i32,
+    level: i32,
+    optname: i32,
+    optval: *mut u8,
+    optlen: *mut u32,
+) -> i64 {
+    match crate::linux_compat::socket_ops::getsockopt(sockfd, level, optname, optval, optlen) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_getsockname(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i64 {
-    match crate::linux_compat::socket_ops::getsockname(sockfd, addr as *mut crate::linux_compat::SockAddr, addrlen) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::socket_ops::getsockname(
+        sockfd,
+        addr as *mut crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_getpeername(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i64 {
-    match crate::linux_compat::socket_ops::getpeername(sockfd, addr as *mut crate::linux_compat::SockAddr, addrlen) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::socket_ops::getpeername(
+        sockfd,
+        addr as *mut crate::linux_compat::SockAddr,
+        addrlen,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_shutdown(sockfd: i32, how: i32) -> i64 {
-    match crate::linux_compat::socket_ops::shutdown(sockfd, how) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::socket_ops::shutdown(sockfd, how) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Event loop syscalls ──
 
 fn syscall_poll(fds: *mut u8, nfds: u64, timeout: i32) -> i64 {
-    match crate::linux_compat::special_fd::poll(fds as *mut crate::linux_compat::PollFd, nfds, timeout) { Ok(n) => n as i64, Err(e) => -(e as i64) }
-}
-fn syscall_ppoll(fds: *mut u8, nfds: u64, ts: *const u8, sigmask: *const u8) -> i64 {
-    let timeout_ms = if ts.is_null() { -1 } else {
-        unsafe { (*(ts as *const crate::linux_compat::TimeSpec)).tv_sec as i32 * 1000 + (*(ts as *const crate::linux_compat::TimeSpec)).tv_nsec as i32 / 1_000_000 }
-    };
-    let _ = sigmask;
-    match crate::linux_compat::special_fd::poll(fds as *mut crate::linux_compat::PollFd, nfds, timeout_ms) { Ok(n) => n as i64, Err(e) => -(e as i64) }
-}
-fn syscall_select(nfds: i32, readfds: *mut u64, writefds: *mut u64, exceptfds: *mut u64, timeout: *const u8) -> i64 {
-    match crate::linux_compat::socket_ops::select(nfds, readfds, writefds, exceptfds, timeout as *mut crate::linux_compat::TimeVal) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+    match crate::linux_compat::special_fd::poll(
+        fds as *mut crate::linux_compat::PollFd,
+        nfds,
+        timeout,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
-fn syscall_pselect6(nfds: i32, readfds: *mut u64, writefds: *mut u64, exceptfds: *mut u64, timeout: *const u8, sigmask: *const u8) -> i64 {
-    match crate::linux_compat::socket_ops::pselect(nfds, readfds, writefds, exceptfds, timeout as *const crate::linux_compat::TimeSpec, sigmask as *const crate::linux_compat::SigSet) {
-        Ok(n) => n as i64, Err(e) => -(e as i64)
+fn syscall_ppoll(fds: *mut u8, nfds: u64, ts: *const u8, sigmask: *const u8) -> i64 {
+    let timeout_ms = if ts.is_null() {
+        -1
+    } else {
+        unsafe {
+            (*(ts as *const crate::linux_compat::TimeSpec)).tv_sec as i32 * 1000
+                + (*(ts as *const crate::linux_compat::TimeSpec)).tv_nsec as i32 / 1_000_000
+        }
+    };
+    let _ = sigmask;
+    match crate::linux_compat::special_fd::poll(
+        fds as *mut crate::linux_compat::PollFd,
+        nfds,
+        timeout_ms,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_select(
+    nfds: i32,
+    readfds: *mut u64,
+    writefds: *mut u64,
+    exceptfds: *mut u64,
+    timeout: *const u8,
+) -> i64 {
+    match crate::linux_compat::socket_ops::select(
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        timeout as *mut crate::linux_compat::TimeVal,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_pselect6(
+    nfds: i32,
+    readfds: *mut u64,
+    writefds: *mut u64,
+    exceptfds: *mut u64,
+    timeout: *const u8,
+    sigmask: *const u8,
+) -> i64 {
+    match crate::linux_compat::socket_ops::pselect(
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        timeout as *const crate::linux_compat::TimeSpec,
+        sigmask as *const crate::linux_compat::SigSet,
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_epoll_create1(flags: i32) -> i64 {
-    match crate::linux_compat::special_fd::epoll_create1(flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::epoll_create1(flags) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut u8) -> i64 {
-    match crate::linux_compat::special_fd::epoll_ctl(epfd, op, fd, event) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::epoll_ctl(epfd, op, fd, event) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_epoll_wait(epfd: i32, events: *mut u8, maxevents: i32, timeout: i32) -> i64 {
-    match crate::linux_compat::special_fd::epoll_wait(epfd, events, maxevents, timeout) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::epoll_wait(epfd, events, maxevents, timeout) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_epoll_pwait(epfd: i32, events: *mut u8, maxevents: i32, timeout: i32, sigmask: *const u8) -> i64 {
+fn syscall_epoll_pwait(
+    epfd: i32,
+    events: *mut u8,
+    maxevents: i32,
+    timeout: i32,
+    sigmask: *const u8,
+) -> i64 {
     let _ = sigmask;
-    match crate::linux_compat::special_fd::epoll_wait(epfd, events, maxevents, timeout) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::epoll_wait(epfd, events, maxevents, timeout) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_epoll_pwait2(epfd: i32, events: *mut u8, maxevents: i32, timeout: *const u8, sigmask: *const u8) -> i64 {
-    let timeout_ms = if timeout.is_null() { -1 } else {
-        unsafe { (*(timeout as *const crate::linux_compat::TimeSpec)).tv_sec as i32 * 1000 + (*(timeout as *const crate::linux_compat::TimeSpec)).tv_nsec as i32 / 1_000_000 }
+fn syscall_epoll_pwait2(
+    epfd: i32,
+    events: *mut u8,
+    maxevents: i32,
+    timeout: *const u8,
+    sigmask: *const u8,
+) -> i64 {
+    let timeout_ms = if timeout.is_null() {
+        -1
+    } else {
+        unsafe {
+            (*(timeout as *const crate::linux_compat::TimeSpec)).tv_sec as i32 * 1000
+                + (*(timeout as *const crate::linux_compat::TimeSpec)).tv_nsec as i32 / 1_000_000
+        }
     };
     let _ = sigmask;
-    match crate::linux_compat::special_fd::epoll_wait(epfd, events, maxevents, timeout_ms) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::epoll_wait(epfd, events, maxevents, timeout_ms) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── eventfd / timerfd / signalfd ──
 
 fn syscall_eventfd(initval: u32) -> i64 {
-    match crate::linux_compat::special_fd::eventfd2(initval, 0) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::eventfd2(initval, 0) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_eventfd2(initval: u32, flags: i32) -> i64 {
-    match crate::linux_compat::special_fd::eventfd2(initval, flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::eventfd2(initval, flags) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_signalfd(_fd: i32, _mask: *const u8, _sizemask: u32) -> i64 { -38 }
-fn syscall_signalfd4(_fd: i32, _mask: *const u8, _sizemask: u32, _flags: i32) -> i64 { -38 }
+fn syscall_signalfd(_fd: i32, _mask: *const u8, _sizemask: u32) -> i64 {
+    -38
+}
+fn syscall_signalfd4(_fd: i32, _mask: *const u8, _sizemask: u32, _flags: i32) -> i64 {
+    -38
+}
 fn syscall_timerfd_create(clockid: i32, flags: i32) -> i64 {
-    match crate::linux_compat::special_fd::timerfd_create(clockid, flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::timerfd_create(clockid, flags) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_timerfd_settime(fd: i32, flags: i32, new_value: *const u8, old_value: *mut u8) -> i64 {
-    match crate::linux_compat::special_fd::timerfd_settime(fd, flags, new_value, old_value) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::timerfd_settime(fd, flags, new_value, old_value) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_timerfd_gettime(fd: i32, curr_value: *mut u8) -> i64 {
-    match crate::linux_compat::special_fd::timerfd_gettime(fd, curr_value) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::special_fd::timerfd_gettime(fd, curr_value) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── inotify ──
 
 fn syscall_inotify_init1(flags: i32) -> i64 {
-    match crate::linux_compat::fs_ops::inotify_init1(flags) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::fs_ops::inotify_init1(flags) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_inotify_add_watch(fd: i32, pathname: *const u8, mask: u32) -> i64 {
-    match crate::linux_compat::fs_ops::inotify_add_watch(fd, pathname, mask) { Ok(wd) => wd as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::fs_ops::inotify_add_watch(fd, pathname, mask) {
+        Ok(wd) => wd as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_inotify_rm_watch(fd: i32, wd: i32) -> i64 {
-    match crate::linux_compat::fs_ops::inotify_rm_watch(fd, wd) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::fs_ops::inotify_rm_watch(fd, wd) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Thread / process extension syscalls ──
@@ -1219,10 +1947,12 @@ fn syscall_vfork() -> i64 {
 }
 fn syscall_waitid(idtype: i32, id: i32, infop: *mut u8, options: i32, _rusage: *mut u8) -> i64 {
     // Map waitid to wait4 for now
-    if idtype == 0 { // P_ALL
+    if idtype == 0 {
+        // P_ALL
         return syscall_wait4(-1, infop as *mut i32, options, core::ptr::null_mut());
     }
-    if idtype == 1 && id > 0 { // P_PID
+    if idtype == 1 && id > 0 {
+        // P_PID
         return syscall_wait4(id, infop as *mut i32, options, core::ptr::null_mut());
     }
     -38
@@ -1236,96 +1966,197 @@ fn syscall_clone3(args: *const u8, size: usize) -> i64 {
         Err(e) => -(e as i64),
     }
 }
-fn syscall_execveat(dirfd: i32, pathname: *const u8, argv: *const *const u8, envp: *const *const u8, flags: i32) -> i64 {
+fn syscall_execveat(
+    dirfd: i32,
+    pathname: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+    flags: i32,
+) -> i64 {
     match crate::linux_compat::process_ops::execveat(dirfd, pathname, argv, envp, flags) {
         Ok(_) => 0,
         Err(e) => -(e as i64),
     }
 }
 fn syscall_set_robust_list(head: *mut u8, len: usize) -> i64 {
-    match crate::linux_compat::thread_ops::set_robust_list(head as *mut crate::linux_compat::thread_ops::RobustListHead, len) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::thread_ops::set_robust_list(
+        head as *mut crate::linux_compat::thread_ops::RobustListHead,
+        len,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_get_robust_list(pid: i32, head: *mut *mut u8, len: *mut usize) -> i64 {
-    match crate::linux_compat::thread_ops::get_robust_list(pid, head as *mut *mut crate::linux_compat::thread_ops::RobustListHead, len) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::thread_ops::get_robust_list(
+        pid,
+        head as *mut *mut crate::linux_compat::thread_ops::RobustListHead,
+        len,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_tkill(tid: i32, sig: i32) -> i64 {
-    match crate::linux_compat::thread_ops::tkill(tid, sig) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::thread_ops::tkill(tid, sig) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_tgkill(tgid: i32, tid: i32, sig: i32) -> i64 {
-    match crate::linux_compat::thread_ops::tgkill(tgid, tid, sig) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::thread_ops::tgkill(tgid, tid, sig) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_membarrier(cmd: i32, flags: i32) -> i64 {
-    match crate::linux_compat::thread_ops::membarrier(cmd, flags) { Ok(v) => v as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::thread_ops::membarrier(cmd, flags) {
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_rt_sigpending(_set: *mut u8, _sigsetsize: usize) -> i64 { 0 }
-fn syscall_rt_sigtimedwait(_set: *const u8, _info: *mut u8, _timeout: *const u8, _sigsetsize: usize) -> i64 { -38 }
-fn syscall_rt_sigsuspend(_mask: *const u8, _sigsetsize: usize) -> i64 { -38 }
-fn syscall_sigaltstack(_ss: *const u8, _old_ss: *mut u8) -> i64 { 0 }
+fn syscall_rt_sigpending(_set: *mut u8, _sigsetsize: usize) -> i64 {
+    0
+}
+fn syscall_rt_sigtimedwait(
+    _set: *const u8,
+    _info: *mut u8,
+    _timeout: *const u8,
+    _sigsetsize: usize,
+) -> i64 {
+    -38
+}
+fn syscall_rt_sigsuspend(_mask: *const u8, _sigsetsize: usize) -> i64 {
+    -38
+}
+fn syscall_sigaltstack(_ss: *const u8, _old_ss: *mut u8) -> i64 {
+    0
+}
 
 // ── Time extension syscalls ──
 
 fn syscall_clock_getres(clockid: i32, res: *mut u8) -> i64 {
-    match crate::linux_compat::time_ops::clock_getres(clockid, res as *mut crate::linux_compat::TimeSpec) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::time_ops::clock_getres(
+        clockid,
+        res as *mut crate::linux_compat::TimeSpec,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_clock_nanosleep(clockid: i32, flags: i32, req: *const u8, rem: *mut u8) -> i64 {
-    match crate::linux_compat::time_ops::clock_nanosleep(clockid, flags, req as *const crate::linux_compat::TimeSpec, rem as *mut crate::linux_compat::TimeSpec) {
-        Ok(_) => 0, Err(e) => -(e as i64)
+    match crate::linux_compat::time_ops::clock_nanosleep(
+        clockid,
+        flags,
+        req as *const crate::linux_compat::TimeSpec,
+        rem as *mut crate::linux_compat::TimeSpec,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
 }
 fn syscall_timer_create(clockid: i32, sevp: *const u8, timerid: *mut i32) -> i64 {
-    match crate::linux_compat::time_ops::timer_create(clockid, sevp, timerid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::time_ops::timer_create(clockid, sevp, timerid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_timer_settime(timerid: i32, flags: i32, new_value: *const u8, old_value: *mut u8) -> i64 {
-    match crate::linux_compat::time_ops::timer_settime(timerid, flags, new_value, old_value) { Ok(_) => 0, Err(e) => -(e as i64) }
+fn syscall_timer_settime(
+    timerid: i32,
+    flags: i32,
+    new_value: *const u8,
+    old_value: *mut u8,
+) -> i64 {
+    match crate::linux_compat::time_ops::timer_settime(timerid, flags, new_value, old_value) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_timer_gettime(timerid: i32, curr_value: *mut u8) -> i64 {
-    match crate::linux_compat::time_ops::timer_gettime(timerid, curr_value) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::time_ops::timer_gettime(timerid, curr_value) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_timer_delete(timerid: i32) -> i64 {
-    match crate::linux_compat::time_ops::timer_delete(timerid) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::time_ops::timer_delete(timerid) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_timer_getoverrun(timerid: i32) -> i64 {
-    match crate::linux_compat::time_ops::timer_getoverrun(timerid) { Ok(v) => v as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::time_ops::timer_getoverrun(timerid) {
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Sysinfo extension syscalls ──
 
 fn syscall_getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i64 {
-    match crate::linux_compat::sysinfo_ops::getrandom(buf, buflen, flags) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::sysinfo_ops::getrandom(buf, buflen, flags) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sethostname(name: *const u8, len: usize) -> i64 {
-    match crate::linux_compat::sysinfo_ops::sethostname(name, len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::sysinfo_ops::sethostname(name, len) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_setdomainname(name: *const u8, len: usize) -> i64 {
-    match crate::linux_compat::sysinfo_ops::setdomainname(name, len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::sysinfo_ops::setdomainname(name, len) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_syslog(log_type: i32, bufp: *mut u8, len: i32) -> i64 {
-    match crate::linux_compat::sysinfo_ops::syslog(log_type, bufp, len) { Ok(v) => v as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::sysinfo_ops::syslog(log_type, bufp, len) {
+        Ok(v) => v as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_reboot(magic1: i32, magic2: i32, cmd: u32, arg: *mut u8) -> i64 {
-    match crate::linux_compat::sysinfo_ops::reboot(magic1, magic2, cmd, arg) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::sysinfo_ops::reboot(magic1, magic2, cmd, arg) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Kill ──
 fn syscall_kill(pid: i32, sig: i32) -> i64 {
-    match crate::linux_compat::signal_ops::kill(pid, sig) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::signal_ops::kill(pid, sig) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── sendfile / fallocate ──
 fn syscall_sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> i64 {
-    match crate::linux_compat::advanced_io::sendfile(out_fd, in_fd, offset, count) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match crate::linux_compat::advanced_io::sendfile(out_fd, in_fd, offset, count) {
+        Ok(n) => n as i64,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_fallocate(fd: i32, mode: i32, offset: i64, len: i64) -> i64 {
-    match crate::linux_compat::file_ops::fallocate(fd, mode, offset, len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    match crate::linux_compat::file_ops::fallocate(fd, mode, offset, len) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_pause() -> i64 { 0 } // stub - would block until signal
-fn syscall_alarm(_seconds: u32) -> i64 { 0 } // stub
-fn syscall_getitimer(_which: i32, _curr_value: *mut u8) -> i64 { 0 } // stub
-fn syscall_setitimer(_which: i32, _new_value: *const u8, _old_value: *mut u8) -> i64 { 0 } // stub
+fn syscall_pause() -> i64 {
+    0
+} // stub - would block until signal
+fn syscall_alarm(_seconds: u32) -> i64 {
+    0
+} // stub
+fn syscall_getitimer(_which: i32, _curr_value: *mut u8) -> i64 {
+    0
+} // stub
+fn syscall_setitimer(_which: i32, _new_value: *const u8, _old_value: *mut u8) -> i64 {
+    0
+} // stub
 
 /// INT 0x80 handler entry point
 ///
@@ -1384,6 +2215,10 @@ extern "C" fn syscall_0x80_dispatch(frame: *const Int80Frame) -> i64 {
     if let Some((entry, stack)) = crate::usermode::take_pending_user_entry() {
         unsafe {
             crate::usermode::patch_syscall_return_to_user(frame as *mut u8, entry, stack);
+        }
+    } else if let Some((rip, rsp)) = crate::user_sched::take_user_resume() {
+        unsafe {
+            crate::usermode::patch_syscall_return_to_kernel(frame as *mut u8, rip, rsp);
         }
     }
 

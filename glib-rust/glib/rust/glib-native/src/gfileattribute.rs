@@ -13,8 +13,8 @@
 //! ref count, though `Arc` would also work — we use `Arc` directly).
 
 use crate::prelude::*;
-use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 // ─────────────────────── GFileAttributeType ───────────────────────────────
@@ -23,10 +23,11 @@ use alloc::vec::Vec;
 ///
 /// Matches the upstream enum order so the discriminant values are stable
 /// across the C and Rust implementations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[repr(u32)]
 pub enum FileAttributeType {
     /// Invalid or uninitialized (`G_FILE_ATTRIBUTE_TYPE_INVALID`).
+    #[default]
     Invalid = 0,
     /// NUL-terminated UTF-8 string (`G_FILE_ATTRIBUTE_TYPE_STRING`).
     String = 1,
@@ -228,11 +229,14 @@ impl FileAttributeInfoList {
             inner.infos[i].r#type = attr_type;
             inner.infos[i].flags = flags;
         } else {
-            inner.infos.insert(i, FileAttributeInfo {
-                name: name.to_owned(),
-                r#type: attr_type,
-                flags,
-            });
+            inner.infos.insert(
+                i,
+                FileAttributeInfo {
+                    name: name.to_owned(),
+                    r#type: attr_type,
+                    flags,
+                },
+            );
         }
         Ok(())
     }
@@ -295,8 +299,8 @@ mod tests {
 
     #[test]
     fn info_flags_bitor_and_contains() {
-        let flags = FileAttributeInfoFlags::COPY_WITH_FILE
-            | FileAttributeInfoFlags::COPY_WHEN_MOVED;
+        let flags =
+            FileAttributeInfoFlags::COPY_WITH_FILE | FileAttributeInfoFlags::COPY_WHEN_MOVED;
         assert!(flags.contains(FileAttributeInfoFlags::COPY_WITH_FILE));
         assert!(flags.contains(FileAttributeInfoFlags::COPY_WHEN_MOVED));
         // NONE is 0 so contains(NONE) is trivially true for any flags;
@@ -370,9 +374,12 @@ mod tests {
     fn add_keeps_list_sorted() {
         let mut list = FileAttributeInfoList::new();
         // Insert in non-sorted order; the list should stay sorted by name.
-        list.add("c", FileAttributeType::String, FileAttributeInfoFlags::NONE).unwrap();
-        list.add("a", FileAttributeType::String, FileAttributeInfoFlags::NONE).unwrap();
-        list.add("b", FileAttributeType::String, FileAttributeInfoFlags::NONE).unwrap();
+        list.add("c", FileAttributeType::String, FileAttributeInfoFlags::NONE)
+            .unwrap();
+        list.add("a", FileAttributeType::String, FileAttributeInfoFlags::NONE)
+            .unwrap();
+        list.add("b", FileAttributeType::String, FileAttributeInfoFlags::NONE)
+            .unwrap();
         assert_eq!(list.n_infos(), 3);
         assert_eq!(list.infos()[0].name, "a");
         assert_eq!(list.infos()[1].name, "b");
@@ -425,8 +432,14 @@ mod tests {
     #[test]
     fn info_indexing() {
         let mut list = FileAttributeInfoList::new();
-        list.add("a", FileAttributeType::String, FileAttributeInfoFlags::NONE).unwrap();
-        list.add("b", FileAttributeType::Boolean, FileAttributeInfoFlags::NONE).unwrap();
+        list.add("a", FileAttributeType::String, FileAttributeInfoFlags::NONE)
+            .unwrap();
+        list.add(
+            "b",
+            FileAttributeType::Boolean,
+            FileAttributeInfoFlags::NONE,
+        )
+        .unwrap();
         assert_eq!(list.info(0).name, "a");
         assert_eq!(list.info(1).name, "b");
         assert_eq!(list.info(1).r#type, FileAttributeType::Boolean);
@@ -451,7 +464,12 @@ mod tests {
         // Insert 26 entries in reverse order; lookup must find each.
         for c in "zyxwvutsrqponmlkjihgfedcba".chars() {
             let name: String = c.to_string();
-            list.add(&name, FileAttributeType::String, FileAttributeInfoFlags::NONE).unwrap();
+            list.add(
+                &name,
+                FileAttributeType::String,
+                FileAttributeInfoFlags::NONE,
+            )
+            .unwrap();
         }
         assert_eq!(list.n_infos(), 26);
         // Verify sorted.

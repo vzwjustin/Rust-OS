@@ -360,6 +360,12 @@ impl PhysicalFrameAllocator {
             zone_start[2].as_u64(),
         ];
 
+        let heap_start =
+            crate::memory_basic::HEAP_PHYS_START.load(core::sync::atomic::Ordering::SeqCst);
+        let heap_size =
+            crate::memory_basic::HEAP_PHYS_SIZE.load(core::sync::atomic::Ordering::SeqCst);
+        let heap_end = heap_start + heap_size;
+
         // Process memory regions and build buddy lists
         for region in memory_regions
             .iter()
@@ -374,6 +380,11 @@ impl PhysicalFrameAllocator {
 
             let mut current = start;
             while current < end {
+                if current >= heap_start && current < heap_end {
+                    current += PAGE_SIZE as u64;
+                    continue;
+                }
+
                 let zone = MemoryZone::from_address(PhysAddr::new(current));
                 let zone_idx = zone as usize;
 
@@ -382,7 +393,9 @@ impl PhysicalFrameAllocator {
                 let mut block_size = PAGE_SIZE << order;
 
                 while order > 0 {
-                    if current % (block_size as u64) == 0 && current + block_size as u64 <= end {
+                    let block_end = current + block_size as u64;
+                    let overlaps_heap = !(block_end <= heap_start || current >= heap_end);
+                    if current % (block_size as u64) == 0 && block_end <= end && !overlaps_heap {
                         break;
                     }
                     order -= 1;

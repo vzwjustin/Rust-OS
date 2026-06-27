@@ -17,9 +17,8 @@
 //! Fully `no_std` compatible using `alloc` and `spin`.
 
 use crate::gtype::{
-    G_TYPE_BOOLEAN, G_TYPE_CHAR, G_TYPE_DOUBLE, G_TYPE_FLOAT, G_TYPE_INT,
-    G_TYPE_INT64, G_TYPE_LONG, G_TYPE_UCHAR, G_TYPE_UINT, G_TYPE_UINT64,
-    G_TYPE_ULONG, G_TYPE_STRING, type_is_a,
+    type_is_a, G_TYPE_BOOLEAN, G_TYPE_CHAR, G_TYPE_DOUBLE, G_TYPE_FLOAT, G_TYPE_INT, G_TYPE_INT64,
+    G_TYPE_LONG, G_TYPE_STRING, G_TYPE_UCHAR, G_TYPE_UINT, G_TYPE_UINT64, G_TYPE_ULONG,
 };
 use crate::gvalue::{GValue, TransformFunc};
 use crate::prelude::*;
@@ -167,14 +166,30 @@ pub fn init_builtin_transforms() {
     }
 
     // Helper functions to read each integer source type as i64.
-    fn get_char(v: &GValue) -> i64 { v.get_char() as i64 }
-    fn get_uchar(v: &GValue) -> i64 { v.get_uchar() as i64 }
-    fn get_int(v: &GValue) -> i64 { v.get_int() as i64 }
-    fn get_uint(v: &GValue) -> i64 { v.get_uint() as i64 }
-    fn get_long(v: &GValue) -> i64 { v.get_long() }
-    fn get_ulong(v: &GValue) -> i64 { v.get_ulong() as i64 }
-    fn get_int64(v: &GValue) -> i64 { v.get_int64() }
-    fn get_uint64(v: &GValue) -> i64 { v.get_uint64() as i64 }
+    fn get_char(v: &GValue) -> i64 {
+        v.get_char() as i64
+    }
+    fn get_uchar(v: &GValue) -> i64 {
+        v.get_uchar() as i64
+    }
+    fn get_int(v: &GValue) -> i64 {
+        v.get_int() as i64
+    }
+    fn get_uint(v: &GValue) -> i64 {
+        v.get_uint() as i64
+    }
+    fn get_long(v: &GValue) -> i64 {
+        v.get_long()
+    }
+    fn get_ulong(v: &GValue) -> i64 {
+        v.get_ulong() as i64
+    }
+    fn get_int64(v: &GValue) -> i64 {
+        v.get_int64()
+    }
+    fn get_uint64(v: &GValue) -> i64 {
+        v.get_uint64() as i64
+    }
 
     register_int_source!(G_TYPE_CHAR, get_char);
     register_int_source!(G_TYPE_UCHAR, get_uchar);
@@ -227,8 +242,12 @@ pub fn init_builtin_transforms() {
         };
     }
 
-    fn get_float(v: &GValue) -> f64 { v.get_float() as f64 }
-    fn get_double(v: &GValue) -> f64 { v.get_double() }
+    fn get_float(v: &GValue) -> f64 {
+        v.get_float() as f64
+    }
+    fn get_double(v: &GValue) -> f64 {
+        v.get_double()
+    }
 
     register_float_source!(G_TYPE_FLOAT, get_float);
     register_float_source!(G_TYPE_DOUBLE, get_double);
@@ -399,9 +418,9 @@ mod tests {
         assert!(value_type_transformable(G_TYPE_INT, G_TYPE_DOUBLE));
         assert!(value_type_transformable(G_TYPE_INT, G_TYPE_STRING));
         assert!(value_type_transformable(G_TYPE_INT, G_TYPE_INT)); // same type
-        // STRING→INT may be registered by the register_custom_transform
-        // test (shared global registry), so we can't reliably assert
-        // it's not transformable. Use a pair that no test registers.
+                                                                   // STRING→INT may be registered by the register_custom_transform
+                                                                   // test (shared global registry), so we can't reliably assert
+                                                                   // it's not transformable. Use a pair that no test registers.
         assert!(!value_type_transformable(G_TYPE_STRING, G_TYPE_FLOAT));
     }
 
@@ -436,7 +455,7 @@ mod tests {
     fn init_builtin_is_idempotent() {
         init_builtin_transforms();
         init_builtin_transforms(); // should not panic or double-register
-        // Verify transforms still work.
+                                   // Verify transforms still work.
         let mut src = GValue::for_type(G_TYPE_INT);
         src.set_int(7);
         let mut dest = GValue::for_type(G_TYPE_UINT);

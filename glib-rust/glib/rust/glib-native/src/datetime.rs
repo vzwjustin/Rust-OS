@@ -6,6 +6,7 @@
 //! computation. Fully `no_std` compatible using `alloc`.
 
 use crate::prelude::*;
+use crate::timezone::TimeZone;
 
 /// Time span in microseconds (`GTimeSpan`).
 pub type TimeSpan = i64;
@@ -36,7 +37,15 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 }
 
 /// Convert (year, month, day, hour, min, sec, usec) to Unix timestamp in microseconds.
-fn ymd_to_unix_usec(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32, usec: u32) -> i64 {
+fn ymd_to_unix_usec(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    usec: u32,
+) -> i64 {
     // Days since epoch (1970-01-01)
     let mut days: i64 = 0;
     if year >= 1970 {
@@ -108,15 +117,37 @@ fn unix_usec_to_ymd(mut usec: i64) -> (i32, u32, u32, u32, u32, u32, u32) {
 
 /// An immutable date-time (`GDateTime`).
 ///
-/// Stores time as Unix microseconds. UTC-only (timezone support deferred).
+/// Stores time as Unix microseconds in UTC with an associated time zone for
+/// local wall-clock display.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DateTime {
     usec: i64,
+    timezone: TimeZone,
 }
 
 impl DateTime {
+    fn from_usec_utc(usec: i64) -> Self {
+        Self {
+            usec,
+            timezone: TimeZone::utc(),
+        }
+    }
+
+    fn local_usec(&self) -> i64 {
+        let offset = self
+            .timezone
+            .offset_at_unix(self.usec.div_euclid(TIME_SPAN_SECOND));
+        self.usec + offset as i64 * TIME_SPAN_SECOND
+    }
     /// Create from components, UTC (`g_date_time_new_utc`).
-    pub fn new_utc(year: i32, month: u32, day: u32, hour: u32, minute: u32, seconds: f64) -> Option<Self> {
+    pub fn new_utc(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        seconds: f64,
+    ) -> Option<Self> {
         if month < 1 || month > 12 || day < 1 || day > days_in_month(year, month) {
             return None;
         }
@@ -126,17 +157,30 @@ impl DateTime {
         let sec = seconds as u32;
         let usec = ((seconds - sec as f64) * 1_000_000.0) as u32;
         let usec_total = ymd_to_unix_usec(year, month, day, hour, minute, sec, usec);
-        Some(Self { usec: usec_total })
+        Some(Self::from_usec_utc(usec_total))
     }
 
     /// Create from Unix timestamp, UTC (`g_date_time_new_from_unix_utc`).
     pub fn from_unix_utc(t: i64) -> Self {
-        Self { usec: t * TIME_SPAN_SECOND }
+        Self::from_usec_utc(t * TIME_SPAN_SECOND)
     }
 
     /// Create from Unix timestamp in microseconds, UTC (`g_date_time_new_from_unix_utc_usec`).
     pub fn from_unix_utc_usec(usec: i64) -> Self {
-        Self { usec }
+        Self::from_usec_utc(usec)
+    }
+
+    /// Convert to the same instant in another time zone (`g_date_time_to_timezone`).
+    pub fn to_timezone(&self, tz: &TimeZone) -> Self {
+        Self {
+            usec: self.usec,
+            timezone: tz.clone(),
+        }
+    }
+
+    /// Get the associated time zone.
+    pub fn timezone(&self) -> &TimeZone {
+        &self.timezone
     }
 
     /// Convert to Unix timestamp (`g_date_time_to_unix`).
@@ -151,7 +195,10 @@ impl DateTime {
 
     /// Add a time span (`g_date_time_add`).
     pub fn add(&self, span: TimeSpan) -> Self {
-        Self { usec: self.usec + span }
+        Self {
+            usec: self.usec + span,
+            timezone: self.timezone.clone(),
+        }
     }
 
     /// Add years (`g_date_time_add_years`).
@@ -160,7 +207,14 @@ impl DateTime {
         let new_year = y + years;
         // Clamp day if needed (e.g. Feb 29 -> Feb 28)
         let new_day = d.min(days_in_month(new_year, mo));
-        Self::new_utc(new_year, mo, new_day, h, mi, s as f64 + us as f64 / 1_000_000.0)
+        Self::new_utc(
+            new_year,
+            mo,
+            new_day,
+            h,
+            mi,
+            s as f64 + us as f64 / 1_000_000.0,
+        )
     }
 
     /// Add months (`g_date_time_add_months`).
@@ -170,7 +224,14 @@ impl DateTime {
         let new_year = total_months.div_euclid(12);
         let new_month = (total_months.rem_euclid(12) + 1) as u32;
         let new_day = d.min(days_in_month(new_year, new_month));
-        Self::new_utc(new_year, new_month, new_day, h, mi, s as f64 + us as f64 / 1_000_000.0)
+        Self::new_utc(
+            new_year,
+            new_month,
+            new_day,
+            h,
+            mi,
+            s as f64 + us as f64 / 1_000_000.0,
+        )
     }
 
     /// Add weeks (`g_date_time_add_weeks`).
@@ -200,48 +261,48 @@ impl DateTime {
 
     /// Get year (`g_date_time_get_year`).
     pub fn year(&self) -> i32 {
-        unix_usec_to_ymd(self.usec).0
+        unix_usec_to_ymd(self.local_usec()).0
     }
 
     /// Get month (`g_date_time_get_month`).
     pub fn month(&self) -> u32 {
-        unix_usec_to_ymd(self.usec).1
+        unix_usec_to_ymd(self.local_usec()).1
     }
 
     /// Get day of month (`g_date_time_get_day_of_month`).
     pub fn day_of_month(&self) -> u32 {
-        unix_usec_to_ymd(self.usec).2
+        unix_usec_to_ymd(self.local_usec()).2
     }
 
     /// Get hour (`g_date_time_get_hour`).
     pub fn hour(&self) -> u32 {
-        unix_usec_to_ymd(self.usec).3
+        unix_usec_to_ymd(self.local_usec()).3
     }
 
     /// Get minute (`g_date_time_get_minute`).
     pub fn minute(&self) -> u32 {
-        unix_usec_to_ymd(self.usec).4
+        unix_usec_to_ymd(self.local_usec()).4
     }
 
     /// Get second (`g_date_time_get_second`).
     pub fn second(&self) -> u32 {
-        unix_usec_to_ymd(self.usec).5
+        unix_usec_to_ymd(self.local_usec()).5
     }
 
     /// Get microsecond (`g_date_time_get_microsecond`).
     pub fn microsecond(&self) -> u32 {
-        unix_usec_to_ymd(self.usec).6
+        unix_usec_to_ymd(self.local_usec()).6
     }
 
     /// Get seconds as double (`g_date_time_get_seconds`).
     pub fn seconds(&self) -> f64 {
-        let (_, _, _, _, _, s, us) = unix_usec_to_ymd(self.usec);
+        let (_, _, _, _, _, s, us) = unix_usec_to_ymd(self.local_usec());
         s as f64 + us as f64 / 1_000_000.0
     }
 
     /// Get day of week (1=Monday..7=Sunday) (`g_date_time_get_day_of_week`).
     pub fn day_of_week(&self) -> u32 {
-        let days = self.usec.div_euclid(TIME_SPAN_DAY);
+        let days = self.local_usec().div_euclid(TIME_SPAN_DAY);
         // 1970-01-01 was a Thursday (4)
         // Monday=1, so: ((days + 3) % 7) + 1
         ((days + 3).rem_euclid(7) + 1) as u32
@@ -249,7 +310,7 @@ impl DateTime {
 
     /// Get day of year (1..366) (`g_date_time_get_day_of_year`).
     pub fn day_of_year(&self) -> u32 {
-        let (y, mo, d, _, _, _, _) = unix_usec_to_ymd(self.usec);
+        let (y, mo, d, _, _, _, _) = unix_usec_to_ymd(self.local_usec());
         let mut doy = 0u32;
         for m in 1..mo {
             doy += days_in_month(y, m);
@@ -261,7 +322,7 @@ impl DateTime {
     pub fn week_of_year(&self) -> u32 {
         let doy = self.day_of_year() as i32;
         let dow = self.day_of_week() as i32; // 1=Mon..7=Sun
-        // ISO 8601: week 1 is the week with the first Thursday
+                                             // ISO 8601: week 1 is the week with the first Thursday
         let thu_doy = doy + (4 - dow);
         let week = (thu_doy + 6) / 7;
         if week < 1 {
@@ -308,16 +369,28 @@ impl DateTime {
 
     /// Format as ISO 8601 (`g_date_time_format_iso8601`).
     pub fn format_iso8601(&self) -> String {
-        let (y, mo, d, h, mi, s, us) = unix_usec_to_ymd(self.usec);
+        let (y, mo, d, h, mi, s, us) = unix_usec_to_ymd(self.local_usec());
+        let offset = self
+            .timezone
+            .offset_at_unix(self.usec.div_euclid(TIME_SPAN_SECOND));
+        let sign = if offset >= 0 { '+' } else { '-' };
+        let abs = offset.unsigned_abs();
+        let oh = abs / 3600;
+        let om = (abs % 3600) / 60;
+        let suffix = if offset == 0 {
+            "Z".to_owned()
+        } else {
+            format!("{}{:02}:{:02}", sign, oh, om)
+        };
         if us > 0 {
             format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
-                y, mo, d, h, mi, s, us
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}{}",
+                y, mo, d, h, mi, s, us, suffix
             )
         } else {
             format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                y, mo, d, h, mi, s
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
+                y, mo, d, h, mi, s, suffix
             )
         }
     }
@@ -326,25 +399,56 @@ impl DateTime {
     ///
     /// Supports: %Y, %m, %d, %H, %M, %S, %j, %u, %U, %V, %z, %Z, %%.
     pub fn format(&self, fmt: &str) -> String {
-        let (y, mo, d, h, mi, s, us) = unix_usec_to_ymd(self.usec);
+        let (y, mo, d, h, mi, s, us) = unix_usec_to_ymd(self.local_usec());
+        let offset = self
+            .timezone
+            .offset_at_unix(self.usec.div_euclid(TIME_SPAN_SECOND));
         let mut result = String::new();
         let mut chars = fmt.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '%' {
                 match chars.next() {
-                    Some('Y') => { let _ = write!(result, "{:04}", y); }
-                    Some('m') => { let _ = write!(result, "{:02}", mo); }
-                    Some('d') => { let _ = write!(result, "{:02}", d); }
-                    Some('H') => { let _ = write!(result, "{:02}", h); }
-                    Some('M') => { let _ = write!(result, "{:02}", mi); }
-                    Some('S') => { let _ = write!(result, "{:02}", s); }
-                    Some('j') => { let _ = write!(result, "{:03}", self.day_of_year()); }
-                    Some('u') => { let _ = write!(result, "{}", self.day_of_week()); }
-                    Some('U') => { let _ = write!(result, "{:02}", self.week_of_year()); }
-                    Some('V') => { let _ = write!(result, "{:02}", self.week_of_year()); }
-                    Some('f') => { let _ = write!(result, "{:06}", us); }
-                    Some('z') => result.push_str("+0000"),
-                    Some('Z') => result.push_str("UTC"),
+                    Some('Y') => {
+                        let _ = write!(result, "{:04}", y);
+                    }
+                    Some('m') => {
+                        let _ = write!(result, "{:02}", mo);
+                    }
+                    Some('d') => {
+                        let _ = write!(result, "{:02}", d);
+                    }
+                    Some('H') => {
+                        let _ = write!(result, "{:02}", h);
+                    }
+                    Some('M') => {
+                        let _ = write!(result, "{:02}", mi);
+                    }
+                    Some('S') => {
+                        let _ = write!(result, "{:02}", s);
+                    }
+                    Some('j') => {
+                        let _ = write!(result, "{:03}", self.day_of_year());
+                    }
+                    Some('u') => {
+                        let _ = write!(result, "{}", self.day_of_week());
+                    }
+                    Some('U') => {
+                        let _ = write!(result, "{:02}", self.week_of_year());
+                    }
+                    Some('V') => {
+                        let _ = write!(result, "{:02}", self.week_of_year());
+                    }
+                    Some('f') => {
+                        let _ = write!(result, "{:06}", us);
+                    }
+                    Some('z') => {
+                        let sign = if offset >= 0 { '+' } else { '-' };
+                        let abs = offset.unsigned_abs();
+                        let _ = write!(result, "{}{:02}{:02}", sign, abs / 3600, (abs % 3600) / 60);
+                    }
+                    Some('Z') => {
+                        result.push_str(self.timezone.identifier());
+                    }
                     Some('%') => result.push('%'),
                     Some(other) => {
                         result.push('%');
@@ -361,18 +465,21 @@ impl DateTime {
 
     /// Get YMD (`g_date_time_get_ymd`).
     pub fn ymd(&self) -> (i32, u32, u32) {
-        let (y, mo, d, _, _, _, _) = unix_usec_to_ymd(self.usec);
+        let (y, mo, d, _, _, _, _) = unix_usec_to_ymd(self.local_usec());
         (y, mo, d)
     }
 
     /// UTC offset (`g_date_time_get_utc_offset`).
     pub fn utc_offset(&self) -> TimeSpan {
-        0 // UTC only
+        self.timezone
+            .offset_at_unix(self.usec.div_euclid(TIME_SPAN_SECOND)) as i64
+            * TIME_SPAN_SECOND
     }
 
     /// Is daylight savings (`g_date_time_is_daylight_savings`).
     pub fn is_daylight_savings(&self) -> bool {
-        false // UTC has no DST
+        self.timezone
+            .is_dst_at_unix(self.usec.div_euclid(TIME_SPAN_SECOND))
     }
 }
 
@@ -391,6 +498,7 @@ impl Ord for DateTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::timezone::TimeZone;
 
     #[test]
     fn new_utc_basic() {
@@ -519,5 +627,33 @@ mod tests {
         assert_eq!(dt.hour(), 23);
         assert_eq!(dt.minute(), 59);
         assert_eq!(dt.second(), 59);
+    }
+
+    #[test]
+    fn to_timezone_new_york() {
+        let dt = DateTime::new_utc(2024, 1, 15, 12, 0, 0.0).unwrap();
+        let tz = TimeZone::new_iana("America/New_York").unwrap();
+        let local = dt.to_timezone(&tz);
+        assert_eq!(local.to_unix(), dt.to_unix());
+        assert_eq!(local.hour(), 7); // EST = UTC-5
+        assert_eq!(local.utc_offset(), -5 * TIME_SPAN_HOUR);
+    }
+
+    #[test]
+    fn to_timezone_london_summer() {
+        let dt = DateTime::new_utc(2024, 7, 15, 12, 0, 0.0).unwrap();
+        let tz = TimeZone::new_iana("Europe/London").unwrap();
+        let local = dt.to_timezone(&tz);
+        assert_eq!(local.hour(), 13); // BST = UTC+1
+        assert!(local.is_daylight_savings());
+    }
+
+    #[test]
+    fn format_with_timezone() {
+        let dt = DateTime::new_utc(2024, 6, 15, 12, 30, 45.0).unwrap();
+        let tz = TimeZone::new_offset(5 * 3600 + 30 * 60);
+        let local = dt.to_timezone(&tz);
+        assert_eq!(local.format("%H:%M:%S"), "18:00:45");
+        assert_eq!(local.format("%z"), "+0530");
     }
 }

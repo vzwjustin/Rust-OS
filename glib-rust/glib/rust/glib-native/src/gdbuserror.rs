@@ -23,7 +23,7 @@
 
 use crate::error::Error;
 use crate::prelude::*;
-use crate::quark::{quark_from_string, quark_from_static_string, Quark};
+use crate::quark::{quark_from_static_string, quark_from_string, Quark};
 use crate::strfuncs::str_has_prefix;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -204,7 +204,10 @@ const WELL_KNOWN_ENTRIES: &[(i32, &str)] = &[
     (35, "org.freedesktop.DBus.Error.UnixProcessIdUnknown"),
     (36, "org.freedesktop.DBus.Error.InvalidSignature"),
     (37, "org.freedesktop.DBus.Error.InvalidFileContent"),
-    (38, "org.freedesktop.DBus.Error.SELinuxSecurityContextUnknown"),
+    (
+        38,
+        "org.freedesktop.DBus.Error.SELinuxSecurityContextUnknown",
+    ),
     (39, "org.freedesktop.DBus.Error.AdtAuditDataUnknown"),
     (40, "org.freedesktop.DBus.Error.ObjectPathInUse"),
     (41, "org.freedesktop.DBus.Error.UnknownObject"),
@@ -256,7 +259,10 @@ pub fn dbus_error_quark() -> Quark {
         // slice of DBusErrorEntry and call the domain registrar.
         let entries: Vec<DBusErrorEntry> = WELL_KNOWN_ENTRIES
             .iter()
-            .map(|&(code, name)| DBusErrorEntry { error_code: code, dbus_error_name: name })
+            .map(|&(code, name)| DBusErrorEntry {
+                error_code: code,
+                dbus_error_name: name,
+            })
             .collect();
         dbus_error_register_error_domain("g-dbus-error-quark", quark, &entries);
         quark
@@ -288,7 +294,8 @@ pub fn dbus_error_register_error(
         error_code,
         dbus_error_name: dbus_error_name.to_owned(),
     });
-    reg.by_pair.insert((error_domain, error_code), Arc::clone(&re));
+    reg.by_pair
+        .insert((error_domain, error_code), Arc::clone(&re));
     reg.by_name.insert(dbus_error_name.to_owned(), re);
     true
 }
@@ -433,10 +440,7 @@ pub fn parse_remote_prefix(message: &str) -> Option<(&str, &str)> {
 /// In all cases the message is prefixed with
 /// `"GDBus.Error:NAME: "` so `dbus_error_get_remote_error` can
 /// recover the name later.
-pub fn dbus_error_new_for_dbus_error(
-    dbus_error_name: &str,
-    dbus_error_message: &str,
-) -> Error {
+pub fn dbus_error_new_for_dbus_error(dbus_error_name: &str, dbus_error_message: &str) -> Error {
     // Ensure well-known entries are registered.
     let _ = dbus_error_quark();
 
@@ -471,6 +475,131 @@ pub fn dbus_error_new_for_dbus_error(
         0,
         format!("GDBus.Error:{dbus_error_name}: {dbus_error_message}"),
     )
+}
+
+// ─────────────────────── set_dbus_error ───────────────────────────────────
+
+/// Format a printf-style `format` string substituting `%s` placeholders
+/// with the provided string `args` (in order). `%%` is emitted literally.
+///
+/// This is a self-contained minimal formatter covering the substitution
+/// patterns D-Bus error messages use (`%s` and `%%`). The crate's
+/// `printf::printf_format` helper only accepts `&'static str` arguments
+/// (via `PrintfArg::String`), which is unsuitable for runtime-built
+/// messages, so a local helper is used instead. Other specifiers (`%d`,
+/// `%u`, `%x`, `%f`, `%c`) are emitted verbatim (the `%` plus the
+/// specifier character) rather than interpreted.
+fn format_with_str_args(message_format: &str, args: &[&str]) -> String {
+    let mut out = String::new();
+    let mut it = args.iter();
+    let bytes = message_format.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b's' => {
+                    if let Some(arg) = it.next() {
+                        out.push_str(arg);
+                    }
+                    i += 2;
+                    continue;
+                }
+                b'%' => {
+                    out.push('%');
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    // Unknown specifier: emit the '%' verbatim and let the
+                    // next iteration copy the specifier char.
+                    out.push('%');
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        let ch_len = utf8_char_len_local(bytes[i]);
+        let end = core::cmp::min(i + ch_len, bytes.len());
+        if let Ok(s) = core::str::from_utf8(&bytes[i..end]) {
+            out.push_str(s);
+        }
+        i = end;
+    }
+    out
+}
+
+/// Minimal UTF-8 leading-byte length helper (mirrors `markup::utf8_char_len`).
+fn utf8_char_len_local(b: u8) -> usize {
+    if b < 0xC0 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Set `error` to a D-Bus error (`g_dbus_error_set_dbus_error`).
+///
+/// Builds the message by printf-formatting `message_format` with `args`
+/// (substituting each `%s` in turn), then composes
+/// `"{dbus_error_message}: {formatted}"` and stores it via
+/// [`dbus_error_new_for_dbus_error`].
+///
+/// # Deviation from upstream
+///
+/// Upstream takes a `GError **` and only assigns when `*error == NULL`
+/// (emitting a "set over the top" warning otherwise). This binding takes
+/// `&mut Error` (an already-initialized slot) and overwrites it
+/// unconditionally, which is the natural Rust mapping for a non-`Option`
+/// out-parameter. Callers wanting the "only if unset" guard should check
+/// before calling.
+///
+/// `args` is a `&[&str]` slice rather than C varargs — only `%s`
+/// substitution is supported (sufficient for D-Bus error messages). For
+/// richer formatting use [`dbus_error_set_dbus_error_valist`] with a
+/// `core::fmt::Arguments` value built via `format_args!`.
+pub fn dbus_error_set_dbus_error(
+    error: &mut Error,
+    dbus_error_name: &str,
+    dbus_error_message: &str,
+    message_format: &str,
+    args: &[&str],
+) {
+    let formatted = format_with_str_args(message_format, args);
+    let combined = format!("{}: {}", dbus_error_message, formatted);
+    *error = dbus_error_new_for_dbus_error(dbus_error_name, &combined);
+}
+
+/// Set `error` to a D-Bus error from a `va_list`
+/// (`g_dbus_error_set_dbus_error_valist`).
+///
+/// # Deviation from upstream
+///
+/// Rust has no C varargs, so the valist is modelled as a
+/// `core::fmt::Arguments` value. The formatted piece is obtained with
+/// `format!("{}", args)`, i.e. the caller pre-assembles the formatted
+/// string via `format_args!("...", ...)` exactly as `g_strdup_vprintf`
+/// would have. `message_format` is accepted for API parity with the
+/// upstream `_valist` signature but is not used (the `Arguments` value
+/// already encodes it); it is intentionally consumed via `let _` to avoid
+/// an unused-parameter warning.
+///
+/// Like [`dbus_error_set_dbus_error`], this overwrites `error`
+/// unconditionally.
+pub fn dbus_error_set_dbus_error_valist(
+    error: &mut Error,
+    dbus_error_name: &str,
+    dbus_error_message: &str,
+    message_format: &str,
+    args: core::fmt::Arguments,
+) {
+    let _ = message_format;
+    let formatted = format!("{}", args);
+    let combined = format!("{}: {}", dbus_error_message, formatted);
+    *error = dbus_error_new_for_dbus_error(dbus_error_name, &combined);
 }
 
 // ─────────────────────── encode_gerror ────────────────────────────────────
@@ -519,9 +648,22 @@ pub fn dbus_error_encode_gerror(error: &Error) -> String {
 
 fn hex_digit(n: u8) -> &'static str {
     match n {
-        0 => "0", 1 => "1", 2 => "2", 3 => "3", 4 => "4",
-        5 => "5", 6 => "6", 7 => "7", 8 => "8", 9 => "9",
-        0xa => "a", 0xb => "b", 0xc => "c", 0xd => "d", 0xe => "e", _ => "f",
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        9 => "9",
+        0xa => "a",
+        0xb => "b",
+        0xc => "c",
+        0xd => "d",
+        0xe => "e",
+        _ => "f",
     }
 }
 
@@ -626,7 +768,9 @@ mod tests {
         let re = reg.by_pair.get(&(q, 0)).expect("Failed not registered");
         assert_eq!(re.dbus_error_name, "org.freedesktop.DBus.Error.Failed");
         // Reverse lookup.
-        let re2 = reg.by_name.get("org.freedesktop.DBus.Error.PropertyReadOnly")
+        let re2 = reg
+            .by_name
+            .get("org.freedesktop.DBus.Error.PropertyReadOnly")
             .expect("PropertyReadOnly not registered");
         assert_eq!(re2.error_code, 44);
     }
@@ -644,7 +788,11 @@ mod tests {
         // Re-registering the same pair or name should fail.
         assert!(!dbus_error_register_error(test_domain, code, name));
         assert!(!dbus_error_register_error(test_domain, code + 1, name));
-        assert!(!dbus_error_register_error(test_domain, code, "org.test.DifferentName"));
+        assert!(!dbus_error_register_error(
+            test_domain,
+            code,
+            "org.test.DifferentName"
+        ));
 
         // Unregister.
         assert!(dbus_error_unregister_error(test_domain, code, name));
@@ -661,9 +809,18 @@ mod tests {
     fn register_error_domain_registers_all_entries() {
         let domain = quark_from_static_string(Some("test-domain-entries"));
         let entries = [
-            DBusErrorEntry { error_code: 1, dbus_error_name: "org.test.A" },
-            DBusErrorEntry { error_code: 2, dbus_error_name: "org.test.B" },
-            DBusErrorEntry { error_code: 3, dbus_error_name: "org.test.C" },
+            DBusErrorEntry {
+                error_code: 1,
+                dbus_error_name: "org.test.A",
+            },
+            DBusErrorEntry {
+                error_code: 2,
+                dbus_error_name: "org.test.B",
+            },
+            DBusErrorEntry {
+                error_code: 3,
+                dbus_error_name: "org.test.C",
+            },
         ];
         dbus_error_register_error_domain("test-domain-entries", domain, &entries);
         let reg = REGISTRY.lock();
@@ -735,10 +892,7 @@ mod tests {
     #[test]
     fn new_for_dbus_error_uses_registered_domain() {
         let q = dbus_error_quark();
-        let err = dbus_error_new_for_dbus_error(
-            "org.freedesktop.DBus.Error.Failed",
-            "boom",
-        );
+        let err = dbus_error_new_for_dbus_error("org.freedesktop.DBus.Error.Failed", "boom");
         assert_eq!(err.domain(), q);
         assert_eq!(err.code(), 0);
         assert!(err.message().contains("GDBus.Error:"));
@@ -748,10 +902,7 @@ mod tests {
 
     #[test]
     fn new_for_dbus_error_falls_back_for_unregistered() {
-        let err = dbus_error_new_for_dbus_error(
-            "org.test.NotInRegistry",
-            "mystery",
-        );
+        let err = dbus_error_new_for_dbus_error("org.test.NotInRegistry", "mystery");
         // Domain should be the fallback quark (non-zero).
         assert!(err.domain() != 0);
         assert!(err.message().contains("org.test.NotInRegistry"));
@@ -787,8 +938,8 @@ mod tests {
         assert!(encoded.ends_with(".Code7"));
 
         // Decode it back.
-        let (decoded_domain, decoded_code) = decode_unmapped_gerror(&encoded)
-            .expect("round-trip decode should succeed");
+        let (decoded_domain, decoded_code) =
+            decode_unmapped_gerror(&encoded).expect("round-trip decode should succeed");
         assert_eq!(decoded_domain, domain);
         assert_eq!(decoded_code, code);
     }
@@ -813,9 +964,7 @@ mod tests {
         // straightforward (the encoder hex-escapes non-alphanumeric
         // chars as _XX).
         let domain = quark_from_string(Some("testNewfromUnmapped"));
-        let encoded = format!(
-            "org.gtk.GDBus.UnmappedGError.Quark._testNewfromUnmapped.Code5"
-        );
+        let encoded = format!("org.gtk.GDBus.UnmappedGError.Quark._testNewfromUnmapped.Code5");
         let err = dbus_error_new_for_dbus_error(&encoded, "the message");
         assert_eq!(err.domain(), domain);
         assert_eq!(err.code(), 5);
@@ -827,9 +976,7 @@ mod tests {
         // Domain name with hyphens — the decoder must reverse the _2d
         // escapes back to '-'.
         let domain = quark_from_string(Some("test-hyphen-name"));
-        let encoded = format!(
-            "org.gtk.GDBus.UnmappedGError.Quark._test_2dhyphen_2dname.Code5"
-        );
+        let encoded = format!("org.gtk.GDBus.UnmappedGError.Quark._test_2dhyphen_2dname.Code5");
         let err = dbus_error_new_for_dbus_error(&encoded, "the message");
         assert_eq!(err.domain(), domain);
         assert_eq!(err.code(), 5);
@@ -854,5 +1001,124 @@ mod tests {
     fn parse_remote_prefix_returns_none_for_no_separator() {
         // Prefix present but no ": " separator after it.
         assert!(parse_remote_prefix("GDBus.Error:justname").is_none());
+    }
+
+    // ── set_dbus_error ──
+
+    #[test]
+    fn set_dbus_error_composes_message_with_percent_s() {
+        let q = dbus_error_quark();
+        let mut err = Error::new(q, 99, "placeholder");
+        dbus_error_set_dbus_error(
+            &mut err,
+            "org.freedesktop.DBus.Error.Failed",
+            "the message",
+            "code %s",
+            &["7"],
+        );
+        // Composed message: "GDBus.Error:NAME: dbus_error_message: formatted"
+        assert_eq!(
+            err.message(),
+            "GDBus.Error:org.freedesktop.DBus.Error.Failed: the message: code 7"
+        );
+    }
+
+    #[test]
+    fn set_dbus_error_domain_code_match_new_for_dbus_error() {
+        let q = dbus_error_quark();
+        let mut err = Error::new(q, 99, "placeholder");
+        dbus_error_set_dbus_error(
+            &mut err,
+            "org.freedesktop.DBus.Error.Failed",
+            "the message",
+            "code %s",
+            &["7"],
+        );
+        // Should match dbus_error_new_for_dbus_error for the same name and
+        // the same composed inner message.
+        let reference = dbus_error_new_for_dbus_error(
+            "org.freedesktop.DBus.Error.Failed",
+            "the message: code 7",
+        );
+        assert_eq!(err.domain(), reference.domain());
+        assert_eq!(err.code(), reference.code());
+        // Well-known name resolves to the G_DBUS_ERROR quark + code 0.
+        assert_eq!(err.domain(), q);
+        assert_eq!(err.code(), 0);
+    }
+
+    #[test]
+    fn set_dbus_error_multiple_string_args() {
+        let q = dbus_error_quark();
+        let mut err = Error::new(q, 0, "x");
+        dbus_error_set_dbus_error(
+            &mut err,
+            "org.freedesktop.DBus.Error.InvalidArgs",
+            "bad args",
+            "%s and %s",
+            &["foo", "bar"],
+        );
+        assert_eq!(
+            err.message(),
+            "GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: bad args: foo and bar"
+        );
+    }
+
+    #[test]
+    fn set_dbus_error_percent_percent_is_literal() {
+        let q = dbus_error_quark();
+        let mut err = Error::new(q, 0, "x");
+        dbus_error_set_dbus_error(
+            &mut err,
+            "org.freedesktop.DBus.Error.Failed",
+            "msg",
+            "100%% done",
+            &[],
+        );
+        assert_eq!(
+            err.message(),
+            "GDBus.Error:org.freedesktop.DBus.Error.Failed: msg: 100% done"
+        );
+    }
+
+    #[test]
+    fn set_dbus_error_valist_uses_arguments() {
+        let q = dbus_error_quark();
+        let mut err = Error::new(q, 0, "x");
+        dbus_error_set_dbus_error_valist(
+            &mut err,
+            "org.freedesktop.DBus.Error.Failed",
+            "msg",
+            "val %d",
+            format_args!("val {}", 5),
+        );
+        assert_eq!(
+            err.message(),
+            "GDBus.Error:org.freedesktop.DBus.Error.Failed: msg: val 5"
+        );
+        // Domain/code parity with new_for_dbus_error.
+        let reference =
+            dbus_error_new_for_dbus_error("org.freedesktop.DBus.Error.Failed", "msg: val 5");
+        assert_eq!(err.domain(), reference.domain());
+        assert_eq!(err.code(), reference.code());
+    }
+
+    #[test]
+    fn set_dbus_error_overwrites_existing_error() {
+        let q = dbus_error_quark();
+        let mut err = Error::new(q, 0, "previous");
+        dbus_error_set_dbus_error(
+            &mut err,
+            "org.freedesktop.DBus.Error.TimedOut",
+            "timed out",
+            "after %s ms",
+            &["500"],
+        );
+        // The previous message is replaced (Rust &mut Error semantics).
+        assert_eq!(
+            err.message(),
+            "GDBus.Error:org.freedesktop.DBus.Error.TimedOut: timed out: after 500 ms"
+        );
+        assert_eq!(err.code(), DBusError::TimedOut as i32);
     }
 }

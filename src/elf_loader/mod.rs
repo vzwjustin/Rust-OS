@@ -23,7 +23,6 @@ mod loader;
 pub mod parser;
 mod types;
 
-
 /// Result type for ELF operations
 pub type Result<T> = core::result::Result<T, ElfError>;
 

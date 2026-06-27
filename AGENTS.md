@@ -13,7 +13,7 @@
 - `make build` / `make build-release`: compile the kernel (debug/release).
 - `make bootimage` / `make run`: create a bootable image and run in QEMU.
 - `make boot-smoke`: headless QEMU run that checks for the boot banner on serial.
-- `make test`: run kernel tests for the default target.
+- `make test` / `make test-glib-native`: kernel tests vs glib-native host unit tests.
 - `make check`: fast compile check without building artifacts.
 - `./build_rustos.sh --check-only --test --release`: scripted builds; see `./build_rustos.sh --help`.
 - `RUSTOS_QEMU_DISPLAY=cocoa|gtk` selects the QEMU display backend for scripts.

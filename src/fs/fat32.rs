@@ -8,12 +8,7 @@ use super::{
     FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
 use crate::drivers::storage::{read_storage_sectors, write_storage_sectors};
-use alloc::{
-    collections::BTreeMap,
-    string::String,
-    vec,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 use core::mem;
 use spin::RwLock;
 

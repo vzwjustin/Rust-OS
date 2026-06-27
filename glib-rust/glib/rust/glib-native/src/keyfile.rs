@@ -43,6 +43,20 @@ impl KeyFileFlags {
     pub const KEEP_TRANSLATIONS: Self = Self(1 << 1);
 }
 
+impl core::ops::BitOr for KeyFileFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for KeyFileFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 /// Key file parser (`GKeyFile`).
 ///
 /// Stores groups as a `BTreeMap` of group name → (`BTreeMap` of key → value).
@@ -183,10 +197,7 @@ impl KeyFile {
             .groups
             .get(group_name)
             .ok_or(KeyFileError::GroupNotFound)?;
-        group
-            .get(key)
-            .ok_or(KeyFileError::KeyNotFound)
-            .cloned()
+        group.get(key).ok_or(KeyFileError::KeyNotFound).cloned()
     }
 
     /// Set the raw value of `key` in `group_name` (`g_key_file_set_value`).
@@ -245,7 +256,11 @@ impl KeyFile {
     }
 
     /// Get a list of string values for `key` in `group_name` (`g_key_file_get_string_list`).
-    pub fn get_string_list(&self, group_name: &str, key: &str) -> Result<Vec<String>, KeyFileError> {
+    pub fn get_string_list(
+        &self,
+        group_name: &str,
+        key: &str,
+    ) -> Result<Vec<String>, KeyFileError> {
         let value = self.get_value(group_name, key)?;
         Ok(value
             .split(self.list_separator)
@@ -392,10 +407,7 @@ mod tests {
             kf.get_string("G", "nonexistent"),
             Err(KeyFileError::KeyNotFound)
         );
-        assert_eq!(
-            kf.get_integer("G", "k"),
-            Err(KeyFileError::InvalidValue)
-        );
+        assert_eq!(kf.get_integer("G", "k"), Err(KeyFileError::InvalidValue));
     }
 
     #[test]
@@ -406,8 +418,14 @@ mod tests {
         let out = kf.to_data();
         let mut kf2 = KeyFile::new();
         kf2.load_from_data(&out, KeyFileFlags::NONE).unwrap();
-        assert_eq!(kf.get_string("Section", "name"), kf2.get_string("Section", "name"));
-        assert_eq!(kf.get_string("Section", "value"), kf2.get_string("Section", "value"));
+        assert_eq!(
+            kf.get_string("Section", "name"),
+            kf2.get_string("Section", "name")
+        );
+        assert_eq!(
+            kf.get_string("Section", "value"),
+            kf2.get_string("Section", "value")
+        );
     }
 
     #[test]

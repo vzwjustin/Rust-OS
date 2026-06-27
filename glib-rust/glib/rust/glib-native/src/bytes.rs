@@ -1,7 +1,7 @@
 //! Immutable reference-counted byte buffer matching `GBytes`.
 
-use crate::prelude::*;
 use crate::checked::{checked_add_size, checked_mul_size};
+use crate::prelude::*;
 use crate::Size;
 use alloc::sync::Arc;
 use core::cmp::Ordering;

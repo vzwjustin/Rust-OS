@@ -80,7 +80,7 @@ impl Rand {
         for _ in 1..N {
             self.mt[i] = self.mt[i]
                 ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1566083941))
-                .wrapping_sub(i as u32);
+                    .wrapping_sub(i as u32);
             i += 1;
             if i >= N {
                 self.mt[0] = self.mt[N - 1];

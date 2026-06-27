@@ -85,13 +85,24 @@ pub fn get_memory_stats() -> Result<MemoryStats, &'static str> {
     }
 }
 
-/// Initialize the kernel heap allocator using memory from the bootloader memory map
+pub static HEAP_PHYS_START: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static HEAP_PHYS_SIZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Initialize the kernel heap (simplified)
 pub fn init_heap(allocator: &linked_list_allocator::LockedHeap) -> Result<(), &'static str> {
     // Use the static heap region defined in memory constants
     // For early boot, we use a simple approach
     unsafe {
         allocator.lock().init(KERNEL_HEAP_START, KERNEL_HEAP_SIZE);
     }
+    HEAP_PHYS_START.store(
+        KERNEL_HEAP_START as u64,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+    HEAP_PHYS_SIZE.store(
+        KERNEL_HEAP_SIZE as u64,
+        core::sync::atomic::Ordering::SeqCst,
+    );
     Ok(())
 }
 
@@ -144,6 +155,8 @@ pub fn init_heap_from_memory_map(
         unsafe {
             allocator.lock().init(virt_start as usize, heap_size);
         }
+        HEAP_PHYS_START.store(phys_start, core::sync::atomic::Ordering::SeqCst);
+        HEAP_PHYS_SIZE.store(heap_size as u64, core::sync::atomic::Ordering::SeqCst);
         return Ok(());
     }
 

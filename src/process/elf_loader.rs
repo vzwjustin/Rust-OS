@@ -9,8 +9,8 @@
 //! - Robust error handling
 
 use crate::memory::{
-    align_up, allocate_memory, allocate_memory_with_guards, translate_addr, MemoryProtection, MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE,
-    USER_SPACE_END, USER_SPACE_START,
+    align_up, allocate_memory, allocate_memory_with_guards, translate_addr, MemoryProtection,
+    MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE, USER_SPACE_END, USER_SPACE_START,
 };
 use crate::process::Pid;
 use alloc::vec::Vec;
@@ -384,9 +384,12 @@ impl ElfLoader {
             MemoryRegionType::UserData
         };
 
-        // Allocate memory for segment
+        // Allocate writable memory while populating the segment. The returned
+        // region metadata below preserves the ELF permissions for callers.
         let aligned_size = align_up(phdr.p_memsz as usize, PAGE_SIZE);
-        let region_start = allocate_memory(aligned_size, region_type, protection)
+        let mut load_protection = protection;
+        load_protection.writable = true;
+        let region_start = allocate_memory(aligned_size, region_type, load_protection)
             .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
 
         // Copy file data to memory if present
@@ -398,10 +401,9 @@ impl ElfLoader {
                 return Err(ElfLoaderError::InvalidSegmentOffset);
             }
 
-            // Get physical address for copying
-            if let Some(phys_addr) = translate_addr(region_start) {
+            if translate_addr(region_start).is_some() {
                 unsafe {
-                    let dest_ptr = phys_addr.as_u64() as *mut u8;
+                    let dest_ptr = region_start.as_mut_ptr::<u8>();
                     let src_ptr = binary_data[file_offset..file_offset + file_size].as_ptr();
                     core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, file_size);
                 }
@@ -416,10 +418,9 @@ impl ElfLoader {
             let bss_size = (phdr.p_memsz - phdr.p_filesz) as usize;
 
             let bss_start = VirtAddr::new(region_start.as_u64() + bss_offset as u64);
-            if let Some(phys_addr) = translate_addr(bss_start) {
+            if translate_addr(bss_start).is_some() {
                 unsafe {
-                    let bss_ptr = phys_addr.as_u64() as *mut u8;
-                    core::ptr::write_bytes(bss_ptr, 0, bss_size);
+                    core::ptr::write_bytes(bss_start.as_mut_ptr::<u8>(), 0, bss_size);
                 }
             }
         }
@@ -500,12 +501,27 @@ impl ElfLoader {
 
         let stack_top = VirtAddr::new(stack_bottom.as_u64() + stack_size as u64);
 
-        // Calculate entry point
-        let entry_point = VirtAddr::new(base_address.as_u64() + elf_header.e_entry);
+        // Translate the ELF entry address into the actual allocated code
+        // region. load_segment() allocates fresh VM ranges instead of mapping at
+        // p_vaddr, so base + e_entry is not a valid runtime address here.
+        let entry_point = program_headers
+            .iter()
+            .filter(|phdr| phdr.p_type == elf_constants::PT_LOAD)
+            .zip(code_regions.iter().chain(data_regions.iter()))
+            .find_map(|(phdr, region)| {
+                let start = phdr.p_vaddr;
+                let end = start.checked_add(phdr.p_memsz)?;
+                if elf_header.e_entry >= start && elf_header.e_entry < end {
+                    Some(VirtAddr::new(
+                        region.start.as_u64() + (elf_header.e_entry - start),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .ok_or(ElfLoaderError::InvalidEntryPoint)?;
 
-        // Validate entry point is within code region
-        let entry_in_code = code_regions.iter().any(|r| r.contains(entry_point));
-        if !entry_in_code && !code_regions.is_empty() {
+        if !code_regions.iter().any(|r| r.contains(entry_point)) {
             return Err(ElfLoaderError::InvalidEntryPoint);
         }
 

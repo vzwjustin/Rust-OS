@@ -10,11 +10,7 @@
 use crate::scheduler::Priority;
 use crate::syscall::{SyscallContext, SyscallNumber};
 use crate::testing_framework::{TestCase, TestResult, TestSuite, TestType};
-use alloc::{
-    string::ToString,
-    vec,
-    vec::Vec,
-};
+use alloc::{string::ToString, vec, vec::Vec};
 
 /// Integration test suite for system calls
 pub fn create_syscall_integration_tests() -> TestSuite {

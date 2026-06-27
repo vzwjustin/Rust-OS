@@ -3,8 +3,8 @@
 //! Provides reference-counted heap allocations using `alloc::sync::Arc`.
 //! Fully `no_std` compatible using `alloc`.
 
-use alloc::sync::Arc;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 /// A reference-counted box (`GRcBox`).
 ///
@@ -59,9 +59,7 @@ impl<T> Clone for RcBox<T> {
 
 impl<T: core::fmt::Debug> core::fmt::Debug for RcBox<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RcBox")
-            .field("inner", &self.inner)
-            .finish()
+        f.debug_struct("RcBox").field("inner", &self.inner).finish()
     }
 }
 

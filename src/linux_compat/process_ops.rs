@@ -86,7 +86,7 @@ pub fn exec(program: &[u8], args: &[&str]) -> LinuxResult<i32> {
     // - Argument setup
     // - Context initialization
     process_mgr
-        .exec(pid, program, args)
+        .exec(pid, program, args, &[])
         .map_err(|_| LinuxError::ENOEXEC)?;
 
     Ok(0)
@@ -415,8 +415,8 @@ fn apply_loaded_binary(
     let process_manager = process::get_process_manager();
     process_manager
         .with_process_mut(pid, |pcb| {
-            let user_code = crate::gdt::get_user_code_selector().0;
-            let user_data = crate::gdt::get_user_data_selector().0;
+            let user_code = crate::gdt::get_user_code_selector().0 | 3;
+            let user_data = crate::gdt::get_user_data_selector().0 | 3;
 
             pcb.memory.code_start = loaded.base_address.as_u64();
             pcb.memory.code_size = loaded.code_regions.iter().map(|r| r.size as u64).sum();
@@ -590,6 +590,7 @@ pub fn exit(status: i32) -> ! {
     // - Parent notification
     // - Scheduler removal
     let _ = process_mgr.exit(pid, status);
+    let _ = crate::process::get_process_manager().terminate_process(pid as u32, status);
 
     // Should never return, but if it does, halt
     loop {
@@ -1181,7 +1182,8 @@ pub fn execveat(
     }
 
     // If pathname is absolute or dirfd is AT_FDCWD, delegate to execve
-    if path_str.starts_with('/') || dirfd == -100 { // AT_FDCWD is -100
+    if path_str.starts_with('/') || dirfd == -100 {
+        // AT_FDCWD is -100
         return execve(pathname, argv, envp);
     }
 

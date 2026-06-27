@@ -127,12 +127,7 @@ impl HookList {
     }
 
     /// Add a hook with a destroy callback.
-    pub fn add_full(
-        &mut self,
-        func: HookFunc,
-        data: usize,
-        destroy: Option<DestroyNotify>,
-    ) -> u64 {
+    pub fn add_full(&mut self, func: HookFunc, data: usize, destroy: Option<DestroyNotify>) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let hook = Box::new(Hook {

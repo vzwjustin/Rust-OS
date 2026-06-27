@@ -51,7 +51,9 @@ pub fn slice_copy(block_size: usize, mem_block: *const u8) -> *mut u8 {
     }
     let dst = slice_alloc(block_size);
     if !dst.is_null() {
-        unsafe { ptr::copy_nonoverlapping(mem_block, dst, block_size); }
+        unsafe {
+            ptr::copy_nonoverlapping(mem_block, dst, block_size);
+        }
     }
     dst
 }
@@ -65,7 +67,9 @@ pub fn slice_free1(block_size: usize, mem_block: *mut u8) {
         Ok(l) => l,
         Err(_) => return,
     };
-    unsafe { dealloc(mem_block, layout); }
+    unsafe {
+        dealloc(mem_block, layout);
+    }
 }
 
 /// Set config (`g_slice_set_config`). Deprecated, no-op.
@@ -104,7 +108,9 @@ mod tests {
         let src = slice_alloc(16);
         assert!(!src.is_null());
         for i in 0..16 {
-            unsafe { *src.add(i) = i as u8; }
+            unsafe {
+                *src.add(i) = i as u8;
+            }
         }
         let dst = slice_copy(16, src);
         assert!(!dst.is_null());

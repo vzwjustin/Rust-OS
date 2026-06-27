@@ -18,10 +18,10 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::prelude::*;
 use crate::ginetaddress::{InetAddress, SocketFamily};
-use alloc::string::String;
+use crate::prelude::*;
 use alloc::format;
+use alloc::string::String;
 
 // ─────────────────────── InetAddressMaskError ─────────────────────────────
 
@@ -109,13 +109,12 @@ impl InetAddressMask {
             let length: u32 = len_str
                 .parse()
                 .map_err(|_| InetAddressMaskError::ParseFailed)?;
-            let addr = InetAddress::new_from_string(addr_str)
-                .ok_or(InetAddressMaskError::ParseFailed)?;
+            let addr =
+                InetAddress::new_from_string(addr_str).ok_or(InetAddressMaskError::ParseFailed)?;
             Self::new(addr, length)
         } else {
             // No '/' — full-length mask.
-            let addr = InetAddress::new_from_string(s)
-                .ok_or(InetAddressMaskError::ParseFailed)?;
+            let addr = InetAddress::new_from_string(s).ok_or(InetAddressMaskError::ParseFailed)?;
             let length = (addr.native_size() * 8) as u32;
             Self::new(addr, length)
         }
@@ -352,7 +351,8 @@ mod tests {
 
     #[test]
     fn matches_zero_length_matches_everything() {
-        let mask = InetAddressMask::new(InetAddress::new_from_string("0.0.0.0").unwrap(), 0).unwrap();
+        let mask =
+            InetAddressMask::new(InetAddress::new_from_string("0.0.0.0").unwrap(), 0).unwrap();
         assert!(mask.matches(&InetAddress::new_from_string("192.168.1.1").unwrap()));
         assert!(mask.matches(&InetAddress::new_from_string("10.0.0.1").unwrap()));
     }

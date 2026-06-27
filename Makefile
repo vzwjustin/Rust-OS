@@ -32,7 +32,7 @@ PURPLE = \033[0;35m
 CYAN = \033[0;36m
 NC = \033[0m # No Color
 
-.PHONY: help all build build-release clean test run run-release install-deps check bootimage bootimage-release boot-smoke
+.PHONY: help all build build-release clean test run run-release install-deps check bootimage bootimage-release boot-smoke test-glib-native check-glib-native build-glib-static
 
 # Default target
 all: build
@@ -52,6 +52,9 @@ help:
 	@echo "  $(GREEN)boot-smoke$(NC)      - Headless boot smoke test (serial log check)"
 	@echo "  $(GREEN)run-vnc$(NC)         - Run with VNC display"
 	@echo "  $(GREEN)test$(NC)            - Run kernel tests"
+	@echo "  $(GREEN)test-glib-native$(NC) - Run glib-native host unit tests"
+	@echo "  $(GREEN)check-glib-native$(NC) - Check glib-native on host (no kernel target)"
+	@echo "  $(GREEN)build-glib-static$(NC) - Build glib-native C static library (host)"
 	@echo "  $(GREEN)check$(NC)           - Check compilation without building"
 	@echo "  $(GREEN)clean$(NC)           - Clean build artifacts"
 	@echo "  $(GREEN)install-deps$(NC)    - Install build dependencies"
@@ -117,6 +120,7 @@ bootimage-release: build-release
 # Headless boot smoke test
 boot-smoke: bootimage
 	@echo "$(BLUE)[INFO]$(NC) Running boot smoke test..."
+	@./scripts/qemu_preflight.sh
 	@./scripts/boot_smoke.sh
 
 # Run debug kernel in QEMU
@@ -147,7 +151,22 @@ run-arm:
 # Run kernel tests
 test:
 	@echo "$(BLUE)[INFO]$(NC) Running kernel tests..."
+	@./scripts/qemu_preflight.sh
 	@$(BUILD_SCRIPT) --test
+
+# Run glib-native unit tests on the host std toolchain
+test-glib-native:
+	@echo "$(BLUE)[INFO]$(NC) Running glib-native tests..."
+	@$(MAKE) -C glib-rust/glib/rust test
+
+check-glib-native:
+	@echo "$(BLUE)[INFO]$(NC) Checking glib-native..."
+	@$(MAKE) -C glib-rust/glib/rust check
+
+# Build glib-native static library for C FFI (host toolchain)
+build-glib-static:
+	@echo "$(BLUE)[INFO]$(NC) Building glib-native static library..."
+	@$(MAKE) -C glib-rust/glib/rust staticlib
 
 # Clean build artifacts
 clean:

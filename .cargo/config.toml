@@ -1,6 +1,7 @@
-[unstable]
-build-std = ["core", "compiler_builtins", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+# Kernel builds pass `-Zbuild-std` and `--target` explicitly via `build_rustos.sh` /
+# `make build`. Do not enable `build-std` here: it applies to every `cargo` invocation
+# under this repo (including `glib-native` host tests) and causes duplicate `alloc`
+# lang items when `#[cfg(test)]` links the host `std` library.
 
 [build]
 target = "x86_64-rustos.json"
@@ -11,19 +12,12 @@ rustflags = ["-C", "debug-assertions=off"]
 
 [env]
 CARGO_TARGET_X86_64_RUSTOS_RUNNER = "bootimage runner"
-# Environment variables for cross-compilation
 RUST_BACKTRACE = "1"
 
-# Workaround for duplicate lang item issues in tests
-[target.'cfg(test)']
-rustflags = ["-C", "prefer-dynamic"]
-
-# Override target for tests to use host target - avoid build-std for tests
 [profile.test]
 panic = "unwind"
 
 [alias]
-# Build aliases for different architectures
 build-x86 = "build --target x86_64-rustos.json"
 build-arm = "build --lib --target aarch64-apple-rustos.json"
 build-lib = "build --lib"

@@ -3,8 +3,8 @@
 //! Phase 5 covers the core [`Error`] type and propagation helpers. Extended
 //! error domains (`G_DEFINE_EXTENDED_ERROR`) are deferred.
 
-use crate::prelude::*;
 use crate::messages::warning;
+use crate::prelude::*;
 use crate::quark::Quark;
 use core::fmt;
 

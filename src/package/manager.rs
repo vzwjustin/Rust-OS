@@ -5,10 +5,7 @@
 
 use crate::package::adapters::{ApkAdapter, DebAdapter, NativeAdapter, PackageAdapter, RpmAdapter};
 use crate::package::database::{PackageCache, PackageDatabase};
-use crate::package::{
-    PackageError, PackageManagerType,
-    PackageOperation, PackageResult,
-};
+use crate::package::{PackageError, PackageManagerType, PackageOperation, PackageResult};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};

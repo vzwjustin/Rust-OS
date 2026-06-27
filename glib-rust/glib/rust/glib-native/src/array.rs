@@ -1,8 +1,8 @@
 //! Growable array types matching `garray.h` / `garray.c`.
 
-use crate::prelude::*;
 use crate::checked::checked_mul_size;
 use crate::mem::realloc;
+use crate::prelude::*;
 use crate::refcount::AtomicRefCount;
 use crate::UInt;
 use alloc::sync::Arc;

@@ -5,7 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
 pub mod operations;
@@ -82,8 +82,14 @@ impl ProcessManager {
     }
 
     /// Execute a program in a process
-    pub fn exec(&self, pid: Pid, program: &[u8], args: &[&str]) -> Result<(), &'static str> {
-        operations::exec(pid, program, args, &self.process_table)
+    pub fn exec(
+        &self,
+        pid: Pid,
+        program: &[u8],
+        args: &[&str],
+        envp: &[&str],
+    ) -> Result<(), &'static str> {
+        operations::exec(pid, program, args, envp, &self.process_table)
     }
 
     /// Wait for any child process to exit
@@ -105,6 +111,14 @@ impl ProcessManager {
     pub fn get_process(&self, pid: Pid) -> Option<ProcessControlBlock> {
         let table = self.process_table.lock();
         table.get(pid)
+    }
+
+    /// Set a process working directory.
+    pub fn set_cwd(&self, pid: Pid, cwd: &str) -> Result<(), &'static str> {
+        let mut table = self.process_table.lock();
+        let pcb = table.get_mut(pid).ok_or("Process not found")?;
+        pcb.cwd = String::from(cwd);
+        Ok(())
     }
 
     /// Get parent process ID
@@ -155,6 +169,44 @@ impl ProcessManager {
         table.close_fd(pid, fd)
     }
 
+    /// Point stdout/stderr at pipe write ends (used by GSpawn).
+    pub fn redirect_stdio_to_pipes(
+        &self,
+        pid: Pid,
+        stdout_pipe: Option<u32>,
+        stderr_pipe: Option<u32>,
+    ) -> Result<(), &'static str> {
+        let mut table = self.process_table.lock();
+        let pcb = table.get_mut(pid).ok_or("Process not found")?;
+        if let Some(pipe_id) = stdout_pipe {
+            pcb.fd_table.insert(
+                1,
+                FileDescriptor {
+                    fd_type: FileDescriptorType::Pipe {
+                        pipe_id,
+                        read_end: false,
+                    },
+                    flags: 0,
+                    offset: 0,
+                },
+            );
+        }
+        if let Some(pipe_id) = stderr_pipe {
+            pcb.fd_table.insert(
+                2,
+                FileDescriptor {
+                    fd_type: FileDescriptorType::Pipe {
+                        pipe_id,
+                        read_end: false,
+                    },
+                    flags: 0,
+                    offset: 0,
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Get file descriptor
     pub fn get_fd(&self, pid: Pid, fd: u32) -> Option<FileDescriptor> {
         let table = self.process_table.lock();
@@ -164,15 +216,21 @@ impl ProcessManager {
 
 /// Global process manager instance
 static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
+static PROCESS_MANAGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Get global process manager
 pub fn get_process_manager() -> &'static ProcessManager {
     &PROCESS_MANAGER
 }
 
-/// Initialize process management system
+/// Initialize process management system (idempotent).
 pub fn init() -> Result<(), &'static str> {
-    PROCESS_MANAGER.init()
+    if PROCESS_MANAGER_INITIALIZED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    PROCESS_MANAGER.init()?;
+    PROCESS_MANAGER_INITIALIZED.store(true, Ordering::Release);
+    Ok(())
 }
 
 /// Get current process ID

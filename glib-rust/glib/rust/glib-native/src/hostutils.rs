@@ -66,8 +66,16 @@ fn is_valid_ipv6(s: &str) -> bool {
     if has_double_colon {
         // Split on :: and verify each side
         let parts: Vec<&str> = s.splitn(2, "::").collect();
-        let left = if parts[0].is_empty() { Vec::new() } else { parts[0].split(':').collect() };
-        let right = if parts[1].is_empty() { Vec::new() } else { parts[1].split(':').collect() };
+        let left = if parts[0].is_empty() {
+            Vec::new()
+        } else {
+            parts[0].split(':').collect()
+        };
+        let right = if parts[1].is_empty() {
+            Vec::new()
+        } else {
+            parts[1].split(':').collect()
+        };
 
         if left.len() + right.len() > 7 {
             return false;
@@ -113,10 +121,7 @@ pub fn hostname_to_ascii(hostname: &str) -> Option<String> {
         } else {
             // Full punycode is complex; we encode as xn-- with hex representation
             // This is a simplified encoding for no_std environments
-            let encoded: String = label
-                .bytes()
-                .map(|b| format!("{:02x}", b))
-                .collect();
+            let encoded: String = label.bytes().map(|b| format!("{:02x}", b)).collect();
             result.push(format!("xn--{encoded}"));
         }
     }
@@ -196,17 +201,11 @@ mod tests {
 
     #[test]
     fn to_ascii_pure_ascii() {
-        assert_eq!(
-            hostname_to_ascii("Example.COM").unwrap(),
-            "example.com"
-        );
+        assert_eq!(hostname_to_ascii("Example.COM").unwrap(), "example.com");
     }
 
     #[test]
     fn to_unicode_ascii() {
-        assert_eq!(
-            hostname_to_unicode("example.com").unwrap(),
-            "example.com"
-        );
+        assert_eq!(hostname_to_unicode("example.com").unwrap(), "example.com");
     }
 }

@@ -322,6 +322,10 @@ impl Vfs {
 
     /// Initialize VFS with a root filesystem
     pub fn init(&self) -> VfsResult<()> {
+        if !self.mounts.read().is_empty() {
+            return Ok(());
+        }
+
         // Create root ramfs
         let root_fs = ramfs::RamFs::new();
         let root_sb = Arc::new(root_fs);

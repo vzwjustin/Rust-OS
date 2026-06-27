@@ -3,8 +3,8 @@
 //! Uses `alloc::sync::Arc` for reference counting.
 //! Fully `no_std` compatible using `alloc`.
 
-use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::sync::Arc;
 
 /// A reference-counted string (`GRefString`).
 ///

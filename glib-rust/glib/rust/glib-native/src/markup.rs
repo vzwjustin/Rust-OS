@@ -253,10 +253,7 @@ impl MarkupParser {
 
                         // Attribute name
                         let attr_start = pos;
-                        while pos < bytes.len()
-                            && bytes[pos] != b'='
-                            && !is_space(bytes[pos])
-                        {
+                        while pos < bytes.len() && bytes[pos] != b'=' && !is_space(bytes[pos]) {
                             pos += 1;
                         }
                         if pos >= bytes.len() || bytes[pos] != b'=' {
@@ -455,7 +452,9 @@ mod tests {
     #[test]
     fn nested_elements() {
         let parser = MarkupParser::new(MarkupParseFlags::DEFAULT_FLAGS);
-        let root = parser.parse("<root><child>A</child><child>B</child></root>").unwrap();
+        let root = parser
+            .parse("<root><child>A</child><child>B</child></root>")
+            .unwrap();
         assert_eq!(root.name, "root");
         assert_eq!(root.children.len(), 2);
     }
@@ -463,7 +462,9 @@ mod tests {
     #[test]
     fn attributes() {
         let parser = MarkupParser::new(MarkupParseFlags::DEFAULT_FLAGS);
-        let root = parser.parse(r#"<root attr="value" foo="bar"></root>"#).unwrap();
+        let root = parser
+            .parse(r#"<root attr="value" foo="bar"></root>"#)
+            .unwrap();
         assert_eq!(root.attributes.len(), 2);
         assert_eq!(root.attributes[0].name, "attr");
         assert_eq!(root.attributes[0].value, "value");
@@ -499,7 +500,9 @@ mod tests {
     #[test]
     fn entities() {
         let parser = MarkupParser::new(MarkupParseFlags::DEFAULT_FLAGS);
-        let root = parser.parse("<root>&amp;&lt;&gt;&quot;&apos;</root>").unwrap();
+        let root = parser
+            .parse("<root>&amp;&lt;&gt;&quot;&apos;</root>")
+            .unwrap();
         match &root.children[0] {
             MarkupNode::Text(t) => assert_eq!(t, "&<>\"'"),
             _ => panic!("expected text"),
@@ -522,7 +525,9 @@ mod tests {
     #[test]
     fn cdata() {
         let parser = MarkupParser::new(MarkupParseFlags::DEFAULT_FLAGS);
-        let root = parser.parse("<root><![CDATA[hello <world>]]></root>").unwrap();
+        let root = parser
+            .parse("<root><![CDATA[hello <world>]]></root>")
+            .unwrap();
         match &root.children[0] {
             MarkupNode::Passthrough(s) => assert_eq!(s, "hello <world>"),
             _ => panic!("expected passthrough"),
@@ -548,7 +553,10 @@ mod tests {
     #[test]
     fn mismatched_tags() {
         let parser = MarkupParser::new(MarkupParseFlags::DEFAULT_FLAGS);
-        assert_eq!(parser.parse("<root></other>").unwrap_err(), MarkupError::Parse);
+        assert_eq!(
+            parser.parse("<root></other>").unwrap_err(),
+            MarkupError::Parse
+        );
     }
 
     #[test]

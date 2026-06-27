@@ -45,7 +45,11 @@ pub fn install_proc(root: Arc<dyn InodeOps>) -> VfsResult<()> {
         "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: RustOS Virtual CPU\n\
          cpu MHz\t\t: 2400.000\ncpu cores\t: 1\n",
     )?;
-    write_file(&proc, "mounts", "rootfs / rootfs rw 0 0\nramfs / ramfs rw 0 0\n")?;
+    write_file(
+        &proc,
+        "mounts",
+        "rootfs / rootfs rw 0 0\nramfs / ramfs rw 0 0\n",
+    )?;
 
     proc.create("self", InodeType::Directory, 0o555)?;
     let self_dir = proc.lookup("self")?;

@@ -3,9 +3,10 @@
 //! Core of the GLib/GObject dynamic type system in `no_std` Rust.
 
 use crate::prelude::*;
-use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use spin::rwlock::RwLock;
+use spin::{Mutex, Once};
 
 /// A GType identifier (`GType` in C).
 pub type GType = usize;
@@ -50,12 +51,16 @@ impl GTypeFundamentalFlags {
     pub const INSTANTIATABLE: Self = Self(1 << 1);
     pub const DERIVABLE: Self = Self(1 << 2);
     pub const DEEP_DERIVABLE: Self = Self(1 << 3);
-    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 impl core::ops::BitOr for GTypeFundamentalFlags {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 
 /// Type flags (`GTypeFlags`).
@@ -68,12 +73,16 @@ impl GTypeFlags {
     pub const VALUE_ABSTRACT: Self = Self(1 << 5);
     pub const FINAL: Self = Self(1 << 6);
     pub const DEPRECATED: Self = Self(1 << 7);
-    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 impl core::ops::BitOr for GTypeFlags {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 
 /// Internal storage for a GValue's data.
@@ -158,6 +167,7 @@ pub struct ParamSpec {
 pub struct ParamFlags(pub u32);
 
 impl ParamFlags {
+    pub const NONE: Self = Self(0);
     pub const READABLE: Self = Self(1 << 0);
     pub const WRITABLE: Self = Self(1 << 1);
     pub const READWRITE: Self = Self(Self::READABLE.0 | Self::WRITABLE.0);
@@ -168,12 +178,16 @@ impl ParamFlags {
     pub const STATIC_NICK: Self = Self(1 << 6);
     pub const STATIC_BLURB: Self = Self(1 << 7);
     pub const EXPLICIT_NOTIFY: Self = Self(1 << 8);
-    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 impl core::ops::BitOr for ParamFlags {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 
 // ── Type node (internal) ─────────────────────────────────────────────
@@ -190,6 +204,12 @@ struct TypeNode {
     info: GTypeInfo,
     is_classed: bool,
     is_instantiatable: bool,
+    /// True when this type's `GTypeInfo` is supplied lazily by a
+    /// [`TypePlugin`] (registered via [`type_register_dynamic`]).
+    is_dynamic: bool,
+    /// Whether a dynamic type's `info` has been filled in by [`type_ensure`].
+    /// Always `true` for non-dynamic types.
+    dynamic_info_completed: bool,
 }
 
 impl TypeNode {
@@ -270,6 +290,8 @@ fn register_fundamental_types(reg: &mut TypeRegistry) {
             info: GTypeInfo::default(),
             is_classed: false,
             is_instantiatable: false,
+            is_dynamic: false,
+            dynamic_info_completed: true,
         };
         reg.nodes.insert(id, node);
         reg.name_to_id.insert(name.to_owned(), id);
@@ -292,22 +314,37 @@ pub fn type_get_type_registration_serial() -> u32 {
 /// Look up a type ID by name (`g_type_from_name`).
 pub fn type_from_name(name: &str) -> GType {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .name_to_id.get(name).copied().unwrap_or(G_TYPE_INVALID)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .name_to_id
+        .get(name)
+        .copied()
+        .unwrap_or(G_TYPE_INVALID)
 }
 
 /// Look up a type name by ID (`g_type_name`).
 pub fn type_name(type_id: GType) -> Option<String> {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id).map(|n| n.name.clone())
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
+        .map(|n| n.name.clone())
 }
 
 /// Get the parent type (`g_type_parent`).
 pub fn type_parent(type_id: GType) -> GType {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .and_then(|n| n.parent)
         .unwrap_or(G_TYPE_INVALID)
 }
@@ -335,7 +372,11 @@ pub fn type_fundamental_next() -> GType {
     let guard = TYPE_REGISTRY.read();
     let reg = guard.as_ref().unwrap();
     let next = reg.next_fundamental;
-    if next <= G_TYPE_FUNDAMENTAL_MAX { next } else { 0 }
+    if next <= G_TYPE_FUNDAMENTAL_MAX {
+        next
+    } else {
+        0
+    }
 }
 
 /// Check if `type_id` is a descendant of `is_a_type` (`g_type_is_a`).
@@ -391,8 +432,12 @@ pub fn type_depth(type_id: GType) -> u32 {
 /// Get the number of children of a type (`g_type_children`).
 pub fn type_children(type_id: GType) -> Vec<GType> {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.children.clone())
         .unwrap_or_default()
 }
@@ -400,8 +445,12 @@ pub fn type_children(type_id: GType) -> Vec<GType> {
 /// Get the interfaces implemented by a type (`g_type_interfaces`).
 pub fn type_interfaces(type_id: GType) -> Vec<GType> {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.interfaces.clone())
         .unwrap_or_default()
 }
@@ -409,8 +458,12 @@ pub fn type_interfaces(type_id: GType) -> Vec<GType> {
 /// Check if a type is classed (`G_TYPE_IS_CLASSED`).
 pub fn type_is_classed(type_id: GType) -> bool {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.is_classed)
         .unwrap_or(false)
 }
@@ -418,8 +471,12 @@ pub fn type_is_classed(type_id: GType) -> bool {
 /// Check if a type is instantiatable (`G_TYPE_IS_INSTANTIATABLE`).
 pub fn type_is_instantiatable(type_id: GType) -> bool {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.is_instantiatable)
         .unwrap_or(false)
 }
@@ -427,8 +484,12 @@ pub fn type_is_instantiatable(type_id: GType) -> bool {
 /// Check if a type is abstract (`G_TYPE_IS_ABSTRACT`).
 pub fn type_is_abstract(type_id: GType) -> bool {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.flags.contains(GTypeFlags::ABSTRACT))
         .unwrap_or(false)
 }
@@ -436,8 +497,12 @@ pub fn type_is_abstract(type_id: GType) -> bool {
 /// Check if a type is final (`G_TYPE_IS_FINAL`).
 pub fn type_is_final(type_id: GType) -> bool {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.flags.contains(GTypeFlags::FINAL))
         .unwrap_or(false)
 }
@@ -475,6 +540,8 @@ pub fn type_register_fundamental(
         info,
         is_classed: finfo.contains(GTypeFundamentalFlags::CLASSED),
         is_instantiatable: finfo.contains(GTypeFundamentalFlags::INSTANTIATABLE),
+        is_dynamic: false,
+        dynamic_info_completed: true,
     };
     reg.nodes.insert(type_id, node);
     reg.name_to_id.insert(type_name.to_owned(), type_id);
@@ -523,6 +590,8 @@ pub fn type_register_static(
         info: info.clone(),
         is_classed,
         is_instantiatable,
+        is_dynamic: false,
+        dynamic_info_completed: true,
     };
     reg.nodes.insert(type_id, node);
     reg.name_to_id.insert(type_name.to_owned(), type_id);
@@ -558,8 +627,12 @@ pub fn type_register_static_simple(
 /// Get the instance size of a type (`g_type_instance_size`).
 pub fn type_instance_size(type_id: GType) -> u16 {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.info.instance_size)
         .unwrap_or(0)
 }
@@ -567,8 +640,12 @@ pub fn type_instance_size(type_id: GType) -> u16 {
 /// Get the class size of a type.
 pub fn type_class_size(type_id: GType) -> u16 {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| n.info.class_size)
         .unwrap_or(0)
 }
@@ -622,8 +699,12 @@ pub struct TypeQuery {
 
 pub fn type_query(type_id: GType) -> Option<TypeQuery> {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.get(&type_id)
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .get(&type_id)
         .map(|n| TypeQuery {
             type_id: n.type_id,
             type_name: n.name.clone(),
@@ -635,8 +716,322 @@ pub fn type_query(type_id: GType) -> Option<TypeQuery> {
 /// Get all registered type IDs.
 pub fn type_get_all() -> Vec<GType> {
     ensure_registry();
-    TYPE_REGISTRY.read().as_ref().unwrap()
-        .nodes.keys().copied().collect()
+    TYPE_REGISTRY
+        .read()
+        .as_ref()
+        .unwrap()
+        .nodes
+        .keys()
+        .copied()
+        .collect()
+}
+
+// ── GInterface: vtable init + dispatch ───────────────────────────────
+
+/// A type-erased interface vtable, holding the per-interface struct plus the
+/// implementer and interface `GType` IDs.
+///
+/// Real GObject method dispatch through an interface goes via the per-interface
+/// struct stored in `data`; callers obtain the vtable with
+/// [`type_interface_peek`] (or [`type_peek_vtable`]) and downcast `data` to
+/// the concrete interface struct.
+pub struct InterfaceVTable {
+    /// The implementer (instance) type that owns this vtable.
+    pub instance_type: GType,
+    /// The interface `GType` this vtable implements.
+    pub interface_type: GType,
+    /// Type-erased per-interface struct, populated by `interface_init`.
+    pub data: Option<alloc::boxed::Box<dyn core::any::Any + Send + Sync>>,
+}
+
+impl InterfaceVTable {
+    /// Construct an empty vtable for the given `(instance_type, interface_type)`
+    /// pair; `data` is `None` until an init callback fills it in.
+    pub fn new(instance_type: GType, interface_type: GType) -> Self {
+        Self {
+            instance_type,
+            interface_type,
+            data: None,
+        }
+    }
+
+    /// Downcast the per-interface struct to a concrete reference
+    /// (`G_TYPE_INSTANCE_GET_INTERFACE`).
+    pub fn downcast_ref<T: core::any::Any>(&self) -> Option<&T> {
+        self.data.as_ref().and_then(|d| d.downcast_ref::<T>())
+    }
+}
+
+/// Callback bundle supplied to [`type_add_interface_static`]
+/// (`GInterfaceInfo`).
+///
+/// `interface_init` builds the per-interface struct and stores it on the fresh
+/// [`InterfaceVTable`]; `class_init` (rarely used) runs afterwards on the same
+/// vtable. `interface_finalize` would be invoked when the implementing type is
+/// finalized — finalization is not modelled in this `no_std` port, so it is
+/// stored here for API parity but currently not dispatched.
+#[derive(Clone, Copy, Default)]
+pub struct InterfaceInfo {
+    /// `interface_init`: builds the per-interface struct on a fresh vtable.
+    pub interface_init: Option<fn(&mut InterfaceVTable)>,
+    /// `interface_finalize`: would tear down the per-interface struct
+    /// (deferred — see the type-level docs).
+    pub interface_finalize: Option<fn(&mut InterfaceVTable)>,
+    /// `class_init`: additional vtable setup run after `interface_init`.
+    pub class_init: Option<fn(&mut InterfaceVTable)>,
+}
+
+/// Global interface vtable registry, keyed by `(instance_type, interface_type)`
+/// and lazily initialised on first use (mirrors the locking style of
+/// [`TYPE_REGISTRY`]).
+static INTERFACE_REGISTRY: Once<RwLock<BTreeMap<(GType, GType), Arc<InterfaceVTable>>>> =
+    Once::new();
+
+fn interface_registry() -> &'static RwLock<BTreeMap<(GType, GType), Arc<InterfaceVTable>>> {
+    INTERFACE_REGISTRY.call_once(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Register an interface implementation on `instance_type` and run its vtable
+/// init callbacks (`g_type_add_interface_static`).
+///
+/// Both `instance_type` and `interface_type` must already exist in the type
+/// registry. On success the interface is recorded on the type node (so
+/// [`type_is_a`] / [`type_interface_is_a`] recognise it) and a freshly
+/// initialised [`InterfaceVTable`] is stored, retrievable via
+/// [`type_interface_peek`]. Returns `false` if either type is unknown.
+pub fn type_add_interface_static(
+    instance_type: GType,
+    interface_type: GType,
+    info: &InterfaceInfo,
+) -> bool {
+    ensure_registry();
+    // Validates both types exist and records the interface on the node.
+    if !type_add_interface(instance_type, interface_type) {
+        return false;
+    }
+    let mut vtable = InterfaceVTable::new(instance_type, interface_type);
+    if let Some(init) = info.interface_init {
+        init(&mut vtable);
+    }
+    if let Some(class_init) = info.class_init {
+        class_init(&mut vtable);
+    }
+    interface_registry()
+        .write()
+        .insert((instance_type, interface_type), Arc::new(vtable));
+    true
+}
+
+/// Look up the vtable registered for `(instance_type, interface_type)`
+/// (`g_type_interface_peek`).
+pub fn type_interface_peek(
+    instance_type: GType,
+    interface_type: GType,
+) -> Option<Arc<InterfaceVTable>> {
+    ensure_registry();
+    interface_registry()
+        .read()
+        .get(&(instance_type, interface_type))
+        .cloned()
+}
+
+/// Check whether `instance_type` implements `interface_type`, walking the
+/// parent chain and interface list via [`type_is_a`]
+/// (`g_type_is_a` for the interface case).
+pub fn type_interface_is_a(instance_type: GType, interface_type: GType) -> bool {
+    type_is_a(instance_type, interface_type)
+}
+
+/// Alias of [`type_interface_peek`] used as the dispatch entry point
+/// (`G_TYPE_INSTANCE_GET_INTERFACE` plumbing).
+///
+/// Real method dispatch is performed by downcasting the returned vtable's
+/// `data` to the concrete interface struct (see [`InterfaceVTable::downcast_ref`]).
+pub fn type_peek_vtable(
+    instance_type: GType,
+    interface_type: GType,
+) -> Option<Arc<InterfaceVTable>> {
+    type_interface_peek(instance_type, interface_type)
+}
+
+// ── GType plugin system (dynamic type registration) ──────────────────
+
+/// Plugin trait that lazily completes type and interface info for a
+/// dynamically registered type (`GTypePlugin`).
+///
+/// `use_`/`unuse` carry default no-op implementations; the host bumps a use
+/// count via [`type_plugin_use`] / [`type_plugin_unuse`] and forwards to these.
+pub trait TypePlugin: Send + Sync {
+    /// Fill in the [`GTypeInfo`] for the dynamic `type_`
+    /// (`g_type_plugin_complete_type_info`).
+    fn complete_type_info(&self, type_: GType) -> GTypeInfo;
+    /// Fill in the [`InterfaceInfo`] for implementing `interface_type` on
+    /// `instance_type` (`g_type_plugin_complete_interface_info`).
+    fn complete_interface_info(&self, instance_type: GType, interface_type: GType)
+        -> InterfaceInfo;
+    /// Increment the plugin's use count (`g_type_plugin_use`).
+    fn use_(&self) {}
+    /// Decrement the plugin's use count (`g_type_plugin_unuse`).
+    fn unuse(&self) {}
+}
+
+/// Global plugin registry, keyed by the dynamic `GType` they own.
+static PLUGIN_REGISTRY: Once<Mutex<BTreeMap<GType, Arc<dyn TypePlugin>>>> = Once::new();
+
+/// Global per-type plugin use counts.
+static PLUGIN_USE_COUNTS: Once<Mutex<BTreeMap<GType, u32>>> = Once::new();
+
+fn plugin_registry() -> &'static Mutex<BTreeMap<GType, Arc<dyn TypePlugin>>> {
+    PLUGIN_REGISTRY.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+fn plugin_use_counts() -> &'static Mutex<BTreeMap<GType, u32>> {
+    PLUGIN_USE_COUNTS.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Register a type whose `GTypeInfo` is completed lazily by `plugin`
+/// (`g_type_register_dynamic`).
+///
+/// A placeholder type node is created immediately with default info; the
+/// plugin is stored keyed by the new `GType`. The first call to
+/// [`type_ensure`] on the returned id invokes
+/// [`TypePlugin::complete_type_info`] to fill in the real info. Returns
+/// [`G_TYPE_INVALID`] on an unknown parent or a duplicate name.
+pub fn type_register_dynamic(
+    parent_type: GType,
+    type_name: &str,
+    plugin: Arc<dyn TypePlugin>,
+    flags: GTypeFlags,
+) -> GType {
+    ensure_registry();
+    let mut guard = TYPE_REGISTRY.write();
+    let reg = guard.as_mut().unwrap();
+
+    if parent_type == G_TYPE_INVALID || !reg.nodes.contains_key(&parent_type) {
+        return G_TYPE_INVALID;
+    }
+    if reg.name_to_id.contains_key(type_name) {
+        return G_TYPE_INVALID;
+    }
+
+    let type_id = reg.next_id;
+    reg.next_id += 1;
+
+    let parent_node = reg.nodes.get(&parent_type).unwrap();
+    let is_classed = parent_node.is_classed;
+    let is_instantiatable = parent_node.is_instantiatable;
+
+    let node = TypeNode {
+        type_id,
+        name: type_name.to_owned(),
+        parent: Some(parent_type),
+        children: Vec::new(),
+        interfaces: Vec::new(),
+        fundamental_flags: GTypeFundamentalFlags::NONE,
+        flags,
+        info: GTypeInfo::default(),
+        is_classed,
+        is_instantiatable,
+        is_dynamic: true,
+        dynamic_info_completed: false,
+    };
+    reg.nodes.insert(type_id, node);
+    reg.name_to_id.insert(type_name.to_owned(), type_id);
+
+    let pnode = reg.nodes.get_mut(&parent_type).unwrap();
+    pnode.children.push(type_id);
+
+    reg.registration_serial = reg.registration_serial.wrapping_add(1);
+    drop(guard);
+
+    plugin_registry().lock().insert(type_id, plugin);
+    type_id
+}
+
+/// Ensure a type is fully initialised, completing dynamic type info on first
+/// touch (`g_type_class_ref` / `g_type_ensure`).
+///
+/// For types registered via [`type_register_dynamic`] this calls
+/// [`TypePlugin::complete_type_info`] exactly once (idempotent) and stores the
+/// resulting [`GTypeInfo`] on the type node. Non-dynamic types are a no-op.
+pub fn type_ensure(type_: GType) {
+    ensure_registry();
+    // Pull the plugin Arc out without holding the type registry lock.
+    let plugin = plugin_registry().lock().get(&type_).cloned();
+    let plugin = match plugin {
+        Some(p) => p,
+        None => return,
+    };
+
+    let needs_completion = {
+        let guard = TYPE_REGISTRY.read();
+        guard
+            .as_ref()
+            .unwrap()
+            .nodes
+            .get(&type_)
+            .map(|n| n.is_dynamic && !n.dynamic_info_completed)
+            .unwrap_or(false)
+    };
+    if !needs_completion {
+        return;
+    }
+
+    let info = plugin.complete_type_info(type_);
+    let mut guard = TYPE_REGISTRY.write();
+    let reg = guard.as_mut().unwrap();
+    if let Some(node) = reg.nodes.get_mut(&type_) {
+        if node.is_dynamic && !node.dynamic_info_completed {
+            node.info = info;
+            node.dynamic_info_completed = true;
+            reg.registration_serial = reg.registration_serial.wrapping_add(1);
+        }
+    }
+}
+
+/// Bump the use count of the plugin owning `type_` and call
+/// [`TypePlugin::use_`] (`g_type_plugin_use`).
+pub fn type_plugin_use(type_: GType) {
+    let plugin = plugin_registry().lock().get(&type_).cloned();
+    {
+        let mut counts = plugin_use_counts().lock();
+        *counts.entry(type_).or_insert(0) += 1;
+    }
+    if let Some(plugin) = plugin {
+        plugin.use_();
+    }
+}
+
+/// Decrement the use count of the plugin owning `type_` (floored at zero) and
+/// call [`TypePlugin::unuse`] (`g_type_plugin_unuse`).
+pub fn type_plugin_unuse(type_: GType) {
+    let plugin = plugin_registry().lock().get(&type_).cloned();
+    {
+        let mut counts = plugin_use_counts().lock();
+        if let Some(entry) = counts.get_mut(&type_) {
+            if *entry > 0 {
+                *entry -= 1;
+            }
+        }
+    }
+    if let Some(plugin) = plugin {
+        plugin.unuse();
+    }
+}
+
+/// Current plugin use count for `type_` (test/inspection helper).
+fn plugin_use_count(type_: GType) -> u32 {
+    *plugin_use_counts().lock().get(&type_).unwrap_or(&0)
+}
+
+/// Forward to [`TypePlugin::complete_interface_info`] on `plugin`
+/// (`g_type_plugin_complete_interface_info`).
+pub fn type_plugin_complete_interface_info(
+    plugin: &dyn TypePlugin,
+    instance_type: GType,
+    interface_type: GType,
+) -> InterfaceInfo {
+    plugin.complete_interface_info(instance_type, interface_type)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -764,5 +1159,140 @@ mod tests {
         assert!(type_add_interface(id, G_TYPE_INTERFACE));
         let ifaces = type_interfaces(id);
         assert!(ifaces.contains(&G_TYPE_INTERFACE));
+    }
+
+    #[test]
+    fn interface_vtable_register_and_peek() {
+        type_init();
+        let iface_info = GTypeInfo::default();
+        let iface =
+            type_register_static(G_TYPE_INTERFACE, "TestIface", &iface_info, GTypeFlags::NONE);
+        let impl_info = GTypeInfo::default();
+        let imp =
+            type_register_static(G_TYPE_OBJECT, "TestIfaceImpl", &impl_info, GTypeFlags::NONE);
+
+        fn init(vt: &mut InterfaceVTable) {
+            vt.data = Some(alloc::boxed::Box::new(7u32));
+        }
+        let info = InterfaceInfo {
+            interface_init: Some(init),
+            interface_finalize: None,
+            class_init: None,
+        };
+        assert!(type_add_interface_static(imp, iface, &info));
+
+        let vt = type_interface_peek(imp, iface).expect("vtable registered");
+        assert_eq!(vt.instance_type, imp);
+        assert_eq!(vt.interface_type, iface);
+        assert_eq!(vt.downcast_ref::<u32>(), Some(&7));
+
+        // Dispatch alias returns the same vtable.
+        let peeked = type_peek_vtable(imp, iface)
+            .map(|v| v.downcast_ref::<u32>().copied())
+            .flatten();
+        assert_eq!(peeked, Some(7));
+    }
+
+    #[test]
+    fn interface_is_a_check() {
+        type_init();
+        let iface_info = GTypeInfo::default();
+        let iface =
+            type_register_static(G_TYPE_INTERFACE, "IsAIface", &iface_info, GTypeFlags::NONE);
+        let impl_info = GTypeInfo::default();
+        let imp = type_register_static(G_TYPE_OBJECT, "IsAImpl", &impl_info, GTypeFlags::NONE);
+        let other = type_register_static(G_TYPE_OBJECT, "IsAOther", &impl_info, GTypeFlags::NONE);
+        let info = InterfaceInfo {
+            interface_init: Some(|_vt: &mut InterfaceVTable| {}),
+            interface_finalize: None,
+            class_init: None,
+        };
+        assert!(type_add_interface_static(imp, iface, &info));
+        assert!(type_interface_is_a(imp, iface));
+        assert!(!type_interface_is_a(other, iface));
+    }
+
+    #[test]
+    fn dynamic_type_register_and_ensure() {
+        type_init();
+
+        struct DynPlugin;
+        impl TypePlugin for DynPlugin {
+            fn complete_type_info(&self, _type_: GType) -> GTypeInfo {
+                GTypeInfo {
+                    class_size: 16,
+                    instance_size: 48,
+                    class_init: None,
+                    instance_init: None,
+                    value_table: None,
+                }
+            }
+            fn complete_interface_info(
+                &self,
+                _instance_type: GType,
+                _interface_type: GType,
+            ) -> InterfaceInfo {
+                InterfaceInfo {
+                    interface_init: None,
+                    interface_finalize: None,
+                    class_init: None,
+                }
+            }
+        }
+
+        let plugin: Arc<dyn TypePlugin> = Arc::new(DynPlugin);
+        let id = type_register_dynamic(G_TYPE_OBJECT, "DynType", plugin, GTypeFlags::NONE);
+        assert_ne!(id, G_TYPE_INVALID);
+
+        // Placeholder info before ensure.
+        assert_eq!(type_instance_size(id), 0);
+        assert_eq!(type_class_size(id), 0);
+
+        type_ensure(id);
+        assert_eq!(type_instance_size(id), 48);
+        assert_eq!(type_class_size(id), 16);
+
+        // Idempotent: a second ensure does not regress.
+        type_ensure(id);
+        assert_eq!(type_instance_size(id), 48);
+    }
+
+    #[test]
+    fn plugin_use_unuse_counts() {
+        type_init();
+
+        struct CountingPlugin;
+        impl TypePlugin for CountingPlugin {
+            fn complete_type_info(&self, _type_: GType) -> GTypeInfo {
+                GTypeInfo::default()
+            }
+            fn complete_interface_info(
+                &self,
+                _instance_type: GType,
+                _interface_type: GType,
+            ) -> InterfaceInfo {
+                InterfaceInfo {
+                    interface_init: None,
+                    interface_finalize: None,
+                    class_init: None,
+                }
+            }
+        }
+
+        let plugin: Arc<dyn TypePlugin> = Arc::new(CountingPlugin);
+        let id = type_register_dynamic(G_TYPE_OBJECT, "DynUseType", plugin, GTypeFlags::NONE);
+
+        assert_eq!(plugin_use_count(id), 0);
+        type_plugin_use(id);
+        assert_eq!(plugin_use_count(id), 1);
+        type_plugin_use(id);
+        assert_eq!(plugin_use_count(id), 2);
+        type_plugin_unuse(id);
+        assert_eq!(plugin_use_count(id), 1);
+        type_plugin_unuse(id);
+        assert_eq!(plugin_use_count(id), 0);
+        // Floored at zero.
+        type_plugin_unuse(id);
+        assert_eq!(plugin_use_count(id), 0);
     }
 }

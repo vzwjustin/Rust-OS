@@ -8,6 +8,7 @@ use crate::graphics::framebuffer::{Color, Rect};
 use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_readdir, InodeType, OpenFlags};
 use alloc::format;
 use core::cmp::{max, min};
+use core::fmt::Write as _;
 use heapless::{String as HString, Vec};
 
 /// Maximum lines of text content per window
@@ -694,14 +695,14 @@ impl WindowManager {
         let hours = (secs / 3600) % 24;
         let minutes = (secs / 60) % 60;
         let mut out = HString::new();
-        let _ = out.push_str(&format!("{:02}:{:02}", hours, minutes));
+        let _ = write!(out, "{:02}:{:02}", hours, minutes);
         out
     }
 
     fn network_tray_label() -> HString<16> {
         let count = crate::net::network_stack().interface_count();
         let mut out = HString::new();
-        let _ = out.push_str(&format!("NET {}", count));
+        let _ = write!(out, "NET {}", count);
         out
     }
 

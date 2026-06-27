@@ -3,7 +3,6 @@
 //! This module implements Linux filesystem operations including
 //! mount, umount, statfs, and filesystem-level operations.
 
-
 extern crate alloc;
 
 use alloc::string::String;
@@ -40,8 +39,7 @@ unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
         len += 1;
     }
     let slice = core::slice::from_raw_parts(ptr, len);
-    String::from_utf8(slice.iter().copied().collect())
-        .map_err(|_| LinuxError::EINVAL)
+    String::from_utf8(slice.iter().copied().collect()).map_err(|_| LinuxError::EINVAL)
 }
 
 // ============================================================================

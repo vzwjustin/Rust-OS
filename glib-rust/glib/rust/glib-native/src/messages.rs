@@ -731,7 +731,9 @@ mod tests {
         let _guard = reset_state();
         let previous = log_set_default_handler(capture_log_handler, std::ptr::null_mut());
         #[allow(unpredictable_function_pointer_comparisons)]
-        { assert!(previous == log_default_handler); }
+        {
+            assert!(previous == log_default_handler);
+        }
 
         log(None, LogLevelFlags::LEVEL_MESSAGE, "via default");
         assert_eq!(CAPTURED_LOGS.with(|logs| logs.borrow().len()), 1);
@@ -773,7 +775,9 @@ mod tests {
         let _guard = reset_state();
         let old = set_print_handler(Some(capture_print_handler));
         #[allow(unpredictable_function_pointer_comparisons)]
-        { assert!(old == default_print_handler); }
+        {
+            assert!(old == default_print_handler);
+        }
 
         print("hello stdout");
         assert_eq!(
@@ -783,7 +787,9 @@ mod tests {
 
         let restored = set_print_handler(None);
         #[allow(unpredictable_function_pointer_comparisons)]
-        { assert!(restored == capture_print_handler); }
+        {
+            assert!(restored == capture_print_handler);
+        }
     }
 
     #[test]
@@ -791,7 +797,9 @@ mod tests {
         let _guard = reset_state();
         let old = set_printerr_handler(Some(capture_printerr_handler));
         #[allow(unpredictable_function_pointer_comparisons)]
-        { assert!(old == default_printerr_handler); }
+        {
+            assert!(old == default_printerr_handler);
+        }
 
         printerr("hello stderr");
         assert_eq!(

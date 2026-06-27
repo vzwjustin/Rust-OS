@@ -30,7 +30,11 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     /// Create a new thread pool (`g_thread_pool_new`).
-    pub fn new(func: fn(usize), max_threads: i32, exclusive: bool) -> Result<Self, ThreadPoolError> {
+    pub fn new(
+        func: fn(usize),
+        max_threads: i32,
+        exclusive: bool,
+    ) -> Result<Self, ThreadPoolError> {
         if max_threads < -1 {
             return Err(ThreadPoolError::Invalid);
         }

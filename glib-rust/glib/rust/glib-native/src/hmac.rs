@@ -3,9 +3,9 @@
 //! Built on top of [`crate::checksum::Checksum`]. Supports the same algorithms
 //! as `GChecksumType`: MD5, SHA-1, SHA-256, SHA-384, SHA-512.
 
-use crate::prelude::*;
-use crate::checksum::{Checksum, ChecksumType, checksum_type_get_length};
 use crate::bytes::Bytes;
+use crate::checksum::{checksum_type_get_length, Checksum, ChecksumType};
+use crate::prelude::*;
 
 /// Block size in bytes for the hash algorithms.
 ///
@@ -108,31 +108,19 @@ impl Hmac {
 }
 
 /// Compute HMAC of `data` as a hex string (`g_compute_hmac_for_data`).
-pub fn compute_hmac_for_data(
-    checksum_type: ChecksumType,
-    key: &[u8],
-    data: &[u8],
-) -> String {
+pub fn compute_hmac_for_data(checksum_type: ChecksumType, key: &[u8], data: &[u8]) -> String {
     let mut hmac = Hmac::new(checksum_type, key);
     hmac.update(data);
     hmac.get_string()
 }
 
 /// Compute HMAC of a string as a hex string (`g_compute_hmac_for_string`).
-pub fn compute_hmac_for_string(
-    checksum_type: ChecksumType,
-    key: &[u8],
-    s: &str,
-) -> String {
+pub fn compute_hmac_for_string(checksum_type: ChecksumType, key: &[u8], s: &str) -> String {
     compute_hmac_for_data(checksum_type, key, s.as_bytes())
 }
 
 /// Compute HMAC of `Bytes` as a hex string (`g_compute_hmac_for_bytes`).
-pub fn compute_hmac_for_bytes(
-    checksum_type: ChecksumType,
-    key: &Bytes,
-    data: &Bytes,
-) -> String {
+pub fn compute_hmac_for_bytes(checksum_type: ChecksumType, key: &Bytes, data: &Bytes) -> String {
     let mut hmac = Hmac::new(checksum_type, key.as_ref());
     hmac.update(data.as_ref());
     hmac.get_string()
@@ -165,7 +153,11 @@ mod tests {
     // RFC 4231 test vector 2: key = "Jefe", data = "what do ya want for nothing?"
     #[test]
     fn hmac_sha256_rfc4231_test2() {
-        let result = compute_hmac_for_string(ChecksumType::Sha256, b"Jefe", "what do ya want for nothing?");
+        let result = compute_hmac_for_string(
+            ChecksumType::Sha256,
+            b"Jefe",
+            "what do ya want for nothing?",
+        );
         assert_eq!(
             result,
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
@@ -202,21 +194,23 @@ mod tests {
     // HMAC-SHA1 test with known vector
     #[test]
     fn hmac_sha1_known() {
-        let result = compute_hmac_for_string(ChecksumType::Sha1, b"key", "The quick brown fox jumps over the lazy dog");
-        assert_eq!(
-            result,
-            "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9"
+        let result = compute_hmac_for_string(
+            ChecksumType::Sha1,
+            b"key",
+            "The quick brown fox jumps over the lazy dog",
         );
+        assert_eq!(result, "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9");
     }
 
     // HMAC-MD5 test with known vector
     #[test]
     fn hmac_md5_known() {
-        let result = compute_hmac_for_string(ChecksumType::Md5, b"key", "The quick brown fox jumps over the lazy dog");
-        assert_eq!(
-            result,
-            "80070713463e7749b90c2dc24911e275"
+        let result = compute_hmac_for_string(
+            ChecksumType::Md5,
+            b"key",
+            "The quick brown fox jumps over the lazy dog",
         );
+        assert_eq!(result, "80070713463e7749b90c2dc24911e275");
     }
 
     // Incremental update should match one-shot

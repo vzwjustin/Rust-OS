@@ -95,13 +95,17 @@ impl Relation {
     pub fn select(&self, key: &str, field: usize) -> Vec<&Tuple> {
         if let Some(index) = self.indices.get(&field) {
             if let Some(indices) = index.get(key) {
-                return indices.iter().filter_map(|&i| self.records.get(i)).collect();
+                return indices
+                    .iter()
+                    .filter_map(|&i| self.records.get(i))
+                    .collect();
             }
         }
         // Fallback: linear scan
-        self.records.iter().filter(|r| {
-            r.get(field).map_or(false, |v| v == key)
-        }).collect()
+        self.records
+            .iter()
+            .filter(|r| r.get(field).map_or(false, |v| v == key))
+            .collect()
     }
 
     /// Count records matching a key in a field (`g_relation_count`).

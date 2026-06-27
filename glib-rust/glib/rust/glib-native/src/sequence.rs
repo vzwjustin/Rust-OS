@@ -149,19 +149,30 @@ impl<T> Sequence<T> {
     }
 
     /// Insert sorted (`g_sequence_insert_sorted`).
-    pub fn insert_sorted(&mut self, data: T, mut cmp: impl FnMut(&T, &T) -> core::cmp::Ordering) -> SequenceIter {
-        let pos = self.items.partition_point(|item| cmp(item, &data) == core::cmp::Ordering::Less);
+    pub fn insert_sorted(
+        &mut self,
+        data: T,
+        mut cmp: impl FnMut(&T, &T) -> core::cmp::Ordering,
+    ) -> SequenceIter {
+        let pos = self
+            .items
+            .partition_point(|item| cmp(item, &data) == core::cmp::Ordering::Less);
         self.items.insert(pos, data);
         pos
     }
 
     /// Search for an element (`g_sequence_search`).
     pub fn search(&self, data: &T, cmp: impl Fn(&T, &T) -> core::cmp::Ordering) -> SequenceIter {
-        self.items.partition_point(|item| cmp(item, data) == core::cmp::Ordering::Less)
+        self.items
+            .partition_point(|item| cmp(item, data) == core::cmp::Ordering::Less)
     }
 
     /// Lookup an exact match (`g_sequence_lookup`).
-    pub fn lookup(&self, data: &T, cmp: impl Fn(&T, &T) -> core::cmp::Ordering) -> Option<SequenceIter> {
+    pub fn lookup(
+        &self,
+        data: &T,
+        cmp: impl Fn(&T, &T) -> core::cmp::Ordering,
+    ) -> Option<SequenceIter> {
         let pos = self.search(data, &cmp);
         if pos < self.items.len() && cmp(&self.items[pos], data) == core::cmp::Ordering::Equal {
             Some(pos)
@@ -184,7 +195,8 @@ impl<T> Sequence<T> {
         }
         let item = self.items.remove(src);
         let dest = if dest > src { dest - 1 } else { dest };
-        self.items.insert(core::cmp::min(dest, self.items.len()), item);
+        self.items
+            .insert(core::cmp::min(dest, self.items.len()), item);
     }
 
     /// ForEach (`g_sequence_foreach`).

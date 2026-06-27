@@ -426,7 +426,10 @@ mod tests {
     #[test]
     fn canonicalize_relative() {
         assert_eq!(canonicalize_filename("bin", Some("/usr")), "/usr/bin");
-        assert_eq!(canonicalize_filename("../bin", Some("/usr/lib")), "/usr/bin");
+        assert_eq!(
+            canonicalize_filename("../bin", Some("/usr/lib")),
+            "/usr/bin"
+        );
         assert_eq!(canonicalize_filename("./test", Some("/usr")), "/usr/test");
     }
 

@@ -390,14 +390,73 @@ impl Scanner {
 
         // Single-char tokens
         match b {
-            b'(' => { self.advance(); return (TokenType::LeftParen, TokenValue::None, start_line, start_col); }
-            b')' => { self.advance(); return (TokenType::RightParen, TokenValue::None, start_line, start_col); }
-            b'{' => { self.advance(); return (TokenType::LeftCurly, TokenValue::None, start_line, start_col); }
-            b'}' => { self.advance(); return (TokenType::RightCurly, TokenValue::None, start_line, start_col); }
-            b'[' => { self.advance(); return (TokenType::LeftBrace, TokenValue::None, start_line, start_col); }
-            b']' => { self.advance(); return (TokenType::RightBrace, TokenValue::None, start_line, start_col); }
-            b'=' => { self.advance(); return (TokenType::EqualSign, TokenValue::None, start_line, start_col); }
-            b',' => { self.advance(); return (TokenType::Comma, TokenValue::None, start_line, start_col); }
+            b'(' => {
+                self.advance();
+                return (
+                    TokenType::LeftParen,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b')' => {
+                self.advance();
+                return (
+                    TokenType::RightParen,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b'{' => {
+                self.advance();
+                return (
+                    TokenType::LeftCurly,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b'}' => {
+                self.advance();
+                return (
+                    TokenType::RightCurly,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b'[' => {
+                self.advance();
+                return (
+                    TokenType::LeftBrace,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b']' => {
+                self.advance();
+                return (
+                    TokenType::RightBrace,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b'=' => {
+                self.advance();
+                return (
+                    TokenType::EqualSign,
+                    TokenValue::None,
+                    start_line,
+                    start_col,
+                );
+            }
+            b',' => {
+                self.advance();
+                return (TokenType::Comma, TokenValue::None, start_line, start_col);
+            }
             _ => {}
         }
 
@@ -405,22 +464,42 @@ impl Scanner {
         if b == b'\'' && self.config.scan_string_sq {
             self.advance();
             let s = self.scan_string(b'\'');
-            return (TokenType::String, TokenValue::String(s), start_line, start_col);
+            return (
+                TokenType::String,
+                TokenValue::String(s),
+                start_line,
+                start_col,
+            );
         }
         if b == b'"' && self.config.scan_string_dq {
             self.advance();
             let s = self.scan_string(b'"');
-            return (TokenType::String, TokenValue::String(s), start_line, start_col);
+            return (
+                TokenType::String,
+                TokenValue::String(s),
+                start_line,
+                start_col,
+            );
         }
 
         // Numbers
-        if b.is_ascii_digit() || (b == b'.' && self.text.get(self.pos + 1).map_or(false, |c| c.is_ascii_digit())) {
+        if b.is_ascii_digit()
+            || (b == b'.'
+                && self
+                    .text
+                    .get(self.pos + 1)
+                    .map_or(false, |c| c.is_ascii_digit()))
+        {
             return self.scan_number(start_line, start_col);
         }
 
         // Hex with dollar
         if b == b'$' && self.config.scan_hex_dollar {
-            if self.text.get(self.pos + 1).map_or(false, |c| c.is_ascii_hexdigit()) {
+            if self
+                .text
+                .get(self.pos + 1)
+                .map_or(false, |c| c.is_ascii_hexdigit())
+            {
                 self.advance();
                 return self.scan_hex(start_line, start_col);
             }
@@ -596,11 +675,18 @@ impl Scanner {
                 break;
             }
         }
-        let s = core::str::from_utf8(&self.text[start..self.pos]).unwrap_or("").to_owned();
+        let s = core::str::from_utf8(&self.text[start..self.pos])
+            .unwrap_or("")
+            .to_owned();
 
         // Check for NULL identifier
         if self.config.scan_identifier_null && s == "NULL" {
-            return (TokenType::IdentifierNull, TokenValue::Identifier(s), line, col);
+            return (
+                TokenType::IdentifierNull,
+                TokenValue::Identifier(s),
+                line,
+                col,
+            );
         }
 
         // Check for symbol
@@ -661,9 +747,15 @@ mod tests {
         let mut s = Scanner::new(ScannerConfig::default());
         s.input_text("'hello' \"world\"");
         assert_eq!(s.get_next_token(), TokenType::String);
-        assert_eq!(s.cur_value().clone(), TokenValue::String("hello".to_owned()));
+        assert_eq!(
+            s.cur_value().clone(),
+            TokenValue::String("hello".to_owned())
+        );
         assert_eq!(s.get_next_token(), TokenType::String);
-        assert_eq!(s.cur_value().clone(), TokenValue::String("world".to_owned()));
+        assert_eq!(
+            s.cur_value().clone(),
+            TokenValue::String("world".to_owned())
+        );
     }
 
     #[test]
@@ -671,7 +763,10 @@ mod tests {
         let mut s = Scanner::new(ScannerConfig::default());
         s.input_text("foo bar_123 _baz");
         assert_eq!(s.get_next_token(), TokenType::Identifier);
-        assert_eq!(s.cur_value().clone(), TokenValue::Identifier("foo".to_owned()));
+        assert_eq!(
+            s.cur_value().clone(),
+            TokenValue::Identifier("foo".to_owned())
+        );
         assert_eq!(s.get_next_token(), TokenType::Identifier);
         assert_eq!(s.get_next_token(), TokenType::Identifier);
     }
