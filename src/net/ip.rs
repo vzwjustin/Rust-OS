@@ -543,10 +543,14 @@ pub fn send_ipv4_packet(
         match super::arp::lookup_arp(&dst_ip) {
             Some(mac) => mac,
             None => {
-                // MAC not in ARP cache - send ARP request and use broadcast as fallback
-                // In production, packet would be queued pending ARP resolution
+                // MAC not in ARP cache — send an ARP request so the
+                // resolution can complete asynchronously, then return
+                // an error. The caller should retry after the ARP reply
+                // arrives and populates the cache. Sending the packet to
+                // broadcast would deliver it to every host on the segment,
+                // which is incorrect for unicast traffic.
                 let _ = super::arp::send_arp_request(dst_ip, interface.name.clone());
-                NetworkAddress::Mac([0xFF; 6])
+                return Err(NetworkError::NetworkUnreachable);
             }
         }
     };

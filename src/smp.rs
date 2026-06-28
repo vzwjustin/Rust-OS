@@ -537,12 +537,27 @@ unsafe fn wait_for_ipi_delivery(base: VirtAddr) -> Result<(), &'static str> {
     Err("IPI delivery timeout")
 }
 
-/// Simple microsecond delay using busy-waiting.
-/// In production, this should use a calibrated timer (PIT, HPET, or APIC timer).
+/// Microsecond delay using RDTSC for accurate timing.
+///
+/// Uses the Time Stamp Counter and its calibrated frequency to busy-wait
+/// for the specified number of microseconds. Falls back to an imprecise
+/// spin loop if the TSC frequency hasn't been calibrated yet.
 fn delay_microseconds(us: u64) {
-    // Approximate delay using spin loops
-    // This is very imprecise but works for startup sequences
-    // A proper implementation would use RDTSC or a calibrated timer
+    // Try to use RDTSC for an accurate delay.
+    if let Some(freq_hz) = crate::time::get_tsc_frequency() {
+        let target_cycles = us.saturating_mul(freq_hz / 1_000_000);
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+        loop {
+            let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.saturating_sub(start);
+            if elapsed >= target_cycles {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        return;
+    }
+
+    // Fallback: imprecise spin loop (used before TSC calibration).
     for _ in 0..(us * 100) {
         core::hint::spin_loop();
     }
