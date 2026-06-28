@@ -9,11 +9,91 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
-use crate::process;
-use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError};
+use crate::process::{self, FileDescriptor};
 
 /// AT_FDCWD — use process cwd for relative paths
 pub const AT_FDCWD: Fd = -100;
+use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError};
+
+/// FD_CLOEXEC flag stored in PCB fd flags
+const FD_CLOEXEC: u32 = 1;
+
+fn stat_dev(vfs_stat: &vfs::Stat) -> u64 {
+    match vfs_stat.inode_type {
+        InodeType::CharDevice | InodeType::BlockDevice => vfs_stat.rdev,
+        _ => 1,
+    }
+}
+
+fn populate_linux_stat(statbuf: *mut Stat, vfs_stat: &vfs::Stat) {
+    unsafe {
+        *statbuf = Stat::new();
+        (*statbuf).st_dev = stat_dev(vfs_stat);
+        (*statbuf).st_ino = vfs_stat.ino;
+        (*statbuf).st_mode = vfs_stat.mode;
+        (*statbuf).st_nlink = vfs_stat.nlink as u64;
+        (*statbuf).st_uid = vfs_stat.uid;
+        (*statbuf).st_gid = vfs_stat.gid;
+        (*statbuf).st_size = vfs_stat.size as Off;
+        (*statbuf).st_blksize = 4096;
+        (*statbuf).st_blocks = ((vfs_stat.size + 511) / 512) as i64;
+        (*statbuf).st_atime = vfs_stat.atime as Time;
+        (*statbuf).st_mtime = vfs_stat.mtime as Time;
+        (*statbuf).st_ctime = vfs_stat.ctime as Time;
+    }
+}
+
+fn check_access_permissions(
+    vfs_stat: &vfs::Stat,
+    mode: i32,
+    uid: u32,
+    gid: u32,
+    supplementary: &[u32],
+) -> LinuxResult<()> {
+    if mode == access::F_OK {
+        return Ok(());
+    }
+
+    if uid == 0 {
+        return Ok(());
+    }
+
+    let file_mode = vfs_stat.mode;
+    let perm_bits = if uid == vfs_stat.uid {
+        (file_mode >> 6) & 0o7
+    } else if gid == vfs_stat.gid || supplementary.contains(&vfs_stat.gid) {
+        (file_mode >> 3) & 0o7
+    } else {
+        file_mode & 0o7
+    };
+
+    if mode & access::R_OK != 0 && perm_bits & 0o4 == 0 {
+        return Err(LinuxError::EACCES);
+    }
+    if mode & access::W_OK != 0 && perm_bits & 0o2 == 0 {
+        return Err(LinuxError::EACCES);
+    }
+    if mode & access::X_OK != 0 && perm_bits & 0o1 == 0 {
+        return Err(LinuxError::EACCES);
+    }
+
+    Ok(())
+}
+
+fn set_fd_cloexec(fd: Fd) {
+    let pid = process::current_pid();
+    process::get_process_manager().with_process_mut(pid, |pcb| {
+        if let Some(entry) = pcb.fd_table.get_mut(&(fd as u32)) {
+            entry.flags |= FD_CLOEXEC;
+        } else {
+            pcb.fd_table.insert(
+                fd as u32,
+                FileDescriptor::from_vfs_fd(fd, FD_CLOEXEC),
+            );
+        }
+        pcb.file_descriptors = pcb.fd_table.clone();
+    });
+}
 
 // Re-export types for external access
 pub use super::types::Stat;
@@ -247,21 +327,7 @@ pub fn fstat(fd: Fd, statbuf: *mut Stat) -> LinuxResult<i32> {
     // Get actual file status from VFS
     match vfs::vfs_fstat(fd) {
         Ok(vfs_stat) => {
-            unsafe {
-                *statbuf = Stat::new();
-                (*statbuf).st_dev = 0; // TODO: device ID
-                (*statbuf).st_ino = vfs_stat.ino;
-                (*statbuf).st_mode = vfs_stat.mode;
-                (*statbuf).st_nlink = vfs_stat.nlink as u64;
-                (*statbuf).st_uid = vfs_stat.uid;
-                (*statbuf).st_gid = vfs_stat.gid;
-                (*statbuf).st_size = vfs_stat.size as Off;
-                (*statbuf).st_blksize = 4096;
-                (*statbuf).st_blocks = ((vfs_stat.size + 511) / 512) as i64;
-                (*statbuf).st_atime = vfs_stat.atime as Time;
-                (*statbuf).st_mtime = vfs_stat.mtime as Time;
-                (*statbuf).st_ctime = vfs_stat.ctime as Time;
-            }
+            populate_linux_stat(statbuf, &vfs_stat);
             Ok(0)
         }
         Err(_) => Err(LinuxError::EBADF),
@@ -280,21 +346,7 @@ pub fn stat(path: *const u8, statbuf: *mut Stat) -> LinuxResult<i32> {
 
     match vfs::vfs_stat(&path_str) {
         Ok(vfs_stat) => {
-            unsafe {
-                *statbuf = Stat::new();
-                (*statbuf).st_dev = 0; // TODO: device ID
-                (*statbuf).st_ino = vfs_stat.ino;
-                (*statbuf).st_mode = vfs_stat.mode;
-                (*statbuf).st_nlink = vfs_stat.nlink as u64;
-                (*statbuf).st_uid = vfs_stat.uid;
-                (*statbuf).st_gid = vfs_stat.gid;
-                (*statbuf).st_size = vfs_stat.size as Off;
-                (*statbuf).st_blksize = 4096;
-                (*statbuf).st_blocks = ((vfs_stat.size + 511) / 512) as i64;
-                (*statbuf).st_atime = vfs_stat.atime as Time;
-                (*statbuf).st_mtime = vfs_stat.mtime as Time;
-                (*statbuf).st_ctime = vfs_stat.ctime as Time;
-            }
+            populate_linux_stat(statbuf, &vfs_stat);
             Ok(0)
         }
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -329,41 +381,14 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
 
     let path_str = unsafe { c_str_to_string(path)? };
 
-    // Check if file exists
+    let pid = process::current_pid();
+    let (uid, gid, groups) = process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| (pcb.euid, pcb.egid, pcb.supplementary_groups.clone()))
+        .ok_or(LinuxError::ESRCH)?;
+
     match vfs::vfs_stat(&path_str) {
-        Ok(vfs_stat) => {
-            // F_OK: file exists (already checked)
-            if mode == access::F_OK {
-                return Ok(0);
-            }
-
-            // For now, do simplified permission check
-            // TODO: Implement proper UID/GID permission checking
-            let file_mode = vfs_stat.mode;
-
-            if mode & access::R_OK != 0 {
-                // Check read permission (simplified: check any read bit)
-                if file_mode & 0o444 == 0 {
-                    return Err(LinuxError::EACCES);
-                }
-            }
-
-            if mode & access::W_OK != 0 {
-                // Check write permission (simplified: check any write bit)
-                if file_mode & 0o222 == 0 {
-                    return Err(LinuxError::EACCES);
-                }
-            }
-
-            if mode & access::X_OK != 0 {
-                // Check execute permission (simplified: check any execute bit)
-                if file_mode & 0o111 == 0 {
-                    return Err(LinuxError::EACCES);
-                }
-            }
-
-            Ok(0)
-        }
+        Ok(vfs_stat) => check_access_permissions(&vfs_stat, mode, uid, gid, &groups).map(|_| 0),
         Err(e) => Err(vfs_error_to_linux(e)),
     }
 }
@@ -410,15 +435,23 @@ pub fn dup2(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
 }
 
 /// dup3 - duplicate file descriptor with flags
-pub fn dup3(oldfd: Fd, newfd: Fd, _flags: i32) -> LinuxResult<Fd> {
+pub fn dup3(oldfd: Fd, newfd: Fd, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
     if oldfd < 0 || newfd < 0 || oldfd == newfd {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Handle O_CLOEXEC flag
-    dup2(oldfd, newfd)
+    const O_CLOEXEC: i32 = open_flags::O_CLOEXEC;
+    if flags & !O_CLOEXEC != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let result = dup2(oldfd, newfd)?;
+    if flags & O_CLOEXEC != 0 {
+        set_fd_cloexec(result);
+    }
+    Ok(result)
 }
 
 /// unlink - remove a file
@@ -551,15 +584,16 @@ pub fn fchmod(fd: Fd, mode: Mode) -> LinuxResult<i32> {
 }
 
 /// fchmodat - change file permissions relative to directory fd
-pub fn fchmodat(_dirfd: Fd, path: *const u8, mode: Mode, _flags: i32) -> LinuxResult<i32> {
+pub fn fchmodat(dirfd: Fd, path: *const u8, mode: Mode, _flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Handle relative paths and flags
-    chmod(path, mode)
+    let resolved_path = resolve_at_path(dirfd, path)?;
+    vfs::vfs_chmod(&resolved_path, mode).map_err(vfs_error_to_linux)?;
+    Ok(0)
 }
 
 /// chown - change file owner and group
@@ -827,8 +861,18 @@ pub fn fchdir(fd: Fd) -> LinuxResult<i32> {
             if stat.inode_type != InodeType::Directory {
                 return Err(LinuxError::ENOTDIR);
             }
-            // TODO: Store CWD in process-local storage
-            Ok(0)
+            let dir_path = vfs::vfs_fd_directory_path(fd).map_err(vfs_error_to_linux)?;
+            let pid = process::current_pid();
+            if process::get_process_manager()
+                .with_process_mut(pid, |pcb| {
+                    pcb.cwd = dir_path;
+                })
+                .is_some()
+            {
+                Ok(0)
+            } else {
+                Err(LinuxError::ESRCH)
+            }
         }
         Err(e) => Err(vfs_error_to_linux(e)),
     }
@@ -1051,34 +1095,14 @@ pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, _flags: i32) -> LinuxRe
 
     let resolved_path = resolve_at_path(dirfd, path)?;
 
+    let pid = process::current_pid();
+    let (uid, gid, groups) = process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| (pcb.euid, pcb.egid, pcb.supplementary_groups.clone()))
+        .ok_or(LinuxError::ESRCH)?;
+
     match vfs::vfs_stat(&resolved_path) {
-        Ok(vfs_stat) => {
-            if mode == access::F_OK {
-                return Ok(0);
-            }
-
-            let file_mode = vfs_stat.mode;
-
-            if mode & access::R_OK != 0 {
-                if file_mode & 0o444 == 0 {
-                    return Err(LinuxError::EACCES);
-                }
-            }
-
-            if mode & access::W_OK != 0 {
-                if file_mode & 0o222 == 0 {
-                    return Err(LinuxError::EACCES);
-                }
-            }
-
-            if mode & access::X_OK != 0 {
-                if file_mode & 0o111 == 0 {
-                    return Err(LinuxError::EACCES);
-                }
-            }
-
-            Ok(0)
-        }
+        Ok(vfs_stat) => check_access_permissions(&vfs_stat, mode, uid, gid, &groups).map(|_| 0),
         Err(e) => Err(vfs_error_to_linux(e)),
     }
 }

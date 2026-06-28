@@ -377,6 +377,33 @@ impl Vfs {
         Ok(())
     }
 
+    /// Unmount a filesystem at the given path
+    pub fn umount(&self, path: &str) -> VfsResult<()> {
+        if path == "/" {
+            return Err(VfsError::InvalidArgument);
+        }
+
+        let mut mounts = self.mounts.write();
+        let pos = mounts.iter().position(|m| m.path == path);
+        match pos {
+            Some(i) => {
+                mounts.remove(i);
+                Ok(())
+            }
+            None => Err(VfsError::NotFound),
+        }
+    }
+
+    /// Return the directory path associated with an open directory fd.
+    pub fn fd_directory_path(&self, fd: i32) -> VfsResult<String> {
+        let file_table = self.file_table.lock();
+        let file_desc = file_table.get(fd)?;
+        match &file_desc.kind {
+            FdKind::Directory { path } => Ok(path.clone()),
+            _ => Err(VfsError::NotDirectory),
+        }
+    }
+
     /// Get filesystem statistics for a path
     pub fn statfs(&self, path: &str) -> VfsResult<StatFs> {
         let mounts = self.mounts.read();
@@ -937,4 +964,66 @@ pub fn vfs_fchmod(fd: i32, mode: u32) -> VfsResult<()> {
 pub fn vfs_fchown(fd: i32, uid: u32, gid: u32) -> VfsResult<()> {
     let inode = VFS.fd_inode(fd)?;
     inode.set_owner(uid, gid)
+}
+
+/// Mount a filesystem at the given path
+pub fn vfs_mount(path: &str, sb: Arc<dyn SuperblockOps>) -> VfsResult<()> {
+    VFS.mount(path, sb)
+}
+
+/// Unmount a filesystem at the given path
+pub fn vfs_umount(path: &str) -> VfsResult<()> {
+    VFS.umount(path)
+}
+
+/// Return the directory path for an open directory fd
+pub fn vfs_fd_directory_path(fd: i32) -> VfsResult<String> {
+    VFS.fd_directory_path(fd)
+}
+
+/// Get extended attribute value (returns NotSupported when unavailable)
+pub fn vfs_getxattr(path: &str, name: &str) -> VfsResult<alloc::vec::Vec<u8>> {
+    let _ = (path, name);
+    Err(VfsError::NotSupported)
+}
+
+/// Set extended attribute value (returns NotSupported when unavailable)
+pub fn vfs_setxattr(path: &str, name: &str, value: &[u8], create: bool) -> VfsResult<()> {
+    let _ = (path, name, value, create);
+    Err(VfsError::NotSupported)
+}
+
+/// List extended attribute names (returns NotSupported when unavailable)
+pub fn vfs_listxattr(path: &str) -> VfsResult<alloc::vec::Vec<u8>> {
+    let _ = path;
+    Err(VfsError::NotSupported)
+}
+
+/// Remove extended attribute (returns NotSupported when unavailable)
+pub fn vfs_removexattr(path: &str, name: &str) -> VfsResult<()> {
+    let _ = (path, name);
+    Err(VfsError::NotSupported)
+}
+
+/// Get extended attribute by fd (returns NotSupported when unavailable)
+pub fn vfs_fgetxattr(_fd: i32, name: &str) -> VfsResult<alloc::vec::Vec<u8>> {
+    let _ = name;
+    Err(VfsError::NotSupported)
+}
+
+/// Set extended attribute by fd (returns NotSupported when unavailable)
+pub fn vfs_fsetxattr(_fd: i32, name: &str, value: &[u8], create: bool) -> VfsResult<()> {
+    let _ = (name, value, create);
+    Err(VfsError::NotSupported)
+}
+
+/// List extended attributes by fd (returns NotSupported when unavailable)
+pub fn vfs_flistxattr(_fd: i32) -> VfsResult<alloc::vec::Vec<u8>> {
+    Err(VfsError::NotSupported)
+}
+
+/// Remove extended attribute by fd (returns NotSupported when unavailable)
+pub fn vfs_fremovexattr(_fd: i32, name: &str) -> VfsResult<()> {
+    let _ = name;
+    Err(VfsError::NotSupported)
 }

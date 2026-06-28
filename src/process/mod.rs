@@ -195,6 +195,28 @@ pub struct ProcessControlBlock {
     pub name: [u8; 32],
     /// CPU time used (in ticks)
     pub cpu_time: u64,
+    /// User CPU time in clock ticks (USER_HZ)
+    pub user_time_ticks: u64,
+    /// System CPU time in clock ticks
+    pub system_time_ticks: u64,
+    /// Accumulated user CPU time of reaped children
+    pub child_user_time: u64,
+    /// Accumulated system CPU time of reaped children
+    pub child_system_time: u64,
+    /// Minor (soft) page faults
+    pub minor_faults: u64,
+    /// Major (hard) page faults
+    pub major_faults: u64,
+    /// Whether process can be dumped (core dumps, ptrace)
+    pub dumpable: bool,
+    /// Signal sent on parent death (0 = none)
+    pub parent_death_signal: u32,
+    /// Permitted capability mask
+    pub cap_permitted: u64,
+    /// Effective capability mask
+    pub cap_effective: u64,
+    /// Inheritable capability mask
+    pub cap_inheritable: u64,
     /// Time when process was created
     pub creation_time: u64,
     /// Exit status (valid only when state is Zombie)
@@ -205,6 +227,16 @@ pub struct ProcessControlBlock {
     pub uid: u32,
     /// Group ID
     pub gid: u32,
+    /// Effective user ID
+    pub euid: u32,
+    /// Effective group ID
+    pub egid: u32,
+    /// Process group ID
+    pub pgid: Pid,
+    /// Session ID
+    pub sid: Pid,
+    /// Supplementary group IDs
+    pub supplementary_groups: Vec<u32>,
     /// Current working directory
     pub cwd: alloc::string::String,
     /// File descriptor table
@@ -227,6 +259,20 @@ pub struct ProcessControlBlock {
     pub entry_point: u64,
     /// File descriptors map (alias for compatibility)
     pub file_descriptors: BTreeMap<u32, FileDescriptor>,
+    /// mlockall() flags (MCL_CURRENT, MCL_FUTURE, MCL_ONFAULT)
+    pub mlock_flags: i32,
+    /// Default NUMA memory policy (MPOL_*)
+    pub memory_policy: i32,
+    /// NUMA node mask for memory policy
+    pub nodemask: u64,
+    /// Current program break (heap end)
+    pub heap_break: usize,
+    /// Initial program break at process start
+    pub initial_break: usize,
+    /// Number of locked pages (for RLIMIT_MEMLOCK accounting)
+    pub locked_pages: usize,
+    /// Per-process resource limits
+    pub rlimits: ProcessRlimits,
 }
 
 /// File descriptor information
@@ -348,6 +394,53 @@ pub enum FileDescriptorType {
     Pipe { pipe_id: u32 },
 }
 
+/// Single resource limit (soft + hard ceiling)
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceLimit {
+    pub rlim_cur: u64,
+    pub rlim_max: u64,
+}
+
+/// Linux RLIMIT_* indices 0..=15
+pub const RLIMIT_COUNT: usize = 16;
+
+/// Per-process resource limits
+#[derive(Debug, Clone)]
+pub struct ProcessRlimits {
+    pub limits: [ResourceLimit; RLIMIT_COUNT],
+}
+
+impl Default for ProcessRlimits {
+    fn default() -> Self {
+        const INF: u64 = u64::MAX;
+        let mut limits = [ResourceLimit {
+            rlim_cur: INF,
+            rlim_max: INF,
+        }; RLIMIT_COUNT];
+        // RLIMIT_NOFILE
+        limits[7] = ResourceLimit {
+            rlim_cur: 1024,
+            rlim_max: 4096,
+        };
+        // RLIMIT_NPROC
+        limits[6] = ResourceLimit {
+            rlim_cur: 4096,
+            rlim_max: 16384,
+        };
+        // RLIMIT_STACK
+        limits[3] = ResourceLimit {
+            rlim_cur: 8 * 1024 * 1024,
+            rlim_max: INF,
+        };
+        // RLIMIT_MEMLOCK (64 KiB default for unprivileged processes)
+        limits[8] = ResourceLimit {
+            rlim_cur: 65536,
+            rlim_max: 65536,
+        };
+        Self { limits }
+    }
+}
+
 /// Scheduling-specific information
 #[derive(Debug, Clone)]
 pub struct SchedulingInfo {
@@ -361,6 +454,12 @@ pub struct SchedulingInfo {
     pub last_scheduled: u64,
     /// CPU affinity mask
     pub cpu_affinity: u64,
+    /// Linux sched policy (SCHED_NORMAL, SCHED_FIFO, etc.)
+    pub sched_policy: i32,
+    /// Real-time scheduling priority (1-99 for FIFO/RR)
+    pub sched_priority: i32,
+    /// SCHED_RR quantum in nanoseconds
+    pub rr_interval_ns: u64,
 }
 
 impl ProcessControlBlock {
@@ -376,11 +475,27 @@ impl ProcessControlBlock {
             memory: MemoryInfo::default(),
             name: [0; 32],
             cpu_time: 0,
+            user_time_ticks: 0,
+            system_time_ticks: 0,
+            child_user_time: 0,
+            child_system_time: 0,
+            minor_faults: 0,
+            major_faults: 0,
+            dumpable: true,
+            parent_death_signal: 0,
+            cap_permitted: u64::MAX,
+            cap_effective: u64::MAX,
+            cap_inheritable: 0,
             creation_time: get_system_time(),
             exit_status: None,
             exit_code: None,
             uid: 0,
             gid: 0,
+            euid: 0,
+            egid: 0,
+            pgid: pid,
+            sid: pid,
+            supplementary_groups: Vec::new(),
             cwd: alloc::string::String::from("/"),
             fd_table: fd_table.clone(),
             next_fd: 3, // 0, 1, 2 reserved for stdin, stdout, stderr
@@ -390,6 +505,9 @@ impl ProcessControlBlock {
                 schedule_count: 0,
                 last_scheduled: 0,
                 cpu_affinity: 0xFFFFFFFFFFFFFFFF, // All CPUs
+                sched_policy: 0,                // SCHED_NORMAL
+                sched_priority: 0,
+                rr_interval_ns: 100_000_000, // 100 ms
             },
             main_thread: None,
             file_offsets: BTreeMap::new(),
@@ -398,6 +516,13 @@ impl ProcessControlBlock {
             pending_signals: alloc::vec::Vec::new(),
             entry_point: 0,
             file_descriptors: fd_table,
+            mlock_flags: 0,
+            memory_policy: 0, // MPOL_DEFAULT
+            nodemask: 0x1,    // Node 0 on single-node systems
+            heap_break: 0,
+            initial_break: 0,
+            locked_pages: 0,
+            rlimits: ProcessRlimits::default(),
         };
 
         // Set process name
@@ -547,6 +672,24 @@ impl ProcessManager {
             let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
             let mut pcb = ProcessControlBlock::new(pid, parent_pid, name);
             pcb.priority = priority;
+
+            if let Some(parent) = parent_pid {
+                if let Some(parent_pcb) = processes.get(&parent) {
+                    pcb.uid = parent_pcb.uid;
+                    pcb.euid = parent_pcb.euid;
+                    pcb.gid = parent_pcb.gid;
+                    pcb.egid = parent_pcb.egid;
+                    pcb.pgid = parent_pcb.pgid;
+                    pcb.sid = parent_pcb.sid;
+                    pcb.supplementary_groups = parent_pcb.supplementary_groups.clone();
+                    pcb.dumpable = parent_pcb.dumpable;
+                    pcb.parent_death_signal = parent_pcb.parent_death_signal;
+                    pcb.cap_permitted = parent_pcb.cap_permitted;
+                    pcb.cap_effective = parent_pcb.cap_effective;
+                    pcb.cap_inheritable = parent_pcb.cap_inheritable;
+                    pcb.sched_info.cpu_affinity = parent_pcb.sched_info.cpu_affinity;
+                }
+            }
 
             processes.insert(pid, pcb);
             self.process_count.fetch_add(1, Ordering::SeqCst);
@@ -757,6 +900,19 @@ impl ProcessManager {
             .collect()
     }
 
+    /// Return cloned PCBs matching a predicate
+    pub fn find_processes<F>(&self, predicate: F) -> Vec<ProcessControlBlock>
+    where
+        F: Fn(&ProcessControlBlock) -> bool,
+    {
+        let processes = self.processes.read();
+        processes
+            .values()
+            .filter(|pcb| predicate(pcb))
+            .cloned()
+            .collect()
+    }
+
     /// Create a thread for a process
     pub fn create_thread(
         &self,
@@ -852,6 +1008,158 @@ impl ProcessManager {
     pub fn get_pending_signals(&self, pid: Pid) -> Vec<ipc::SignalInfo> {
         let ipc_manager = ipc::get_ipc_manager();
         ipc_manager.get_pending_signals(pid)
+    }
+
+    /// Returns true if `parent_pid` has at least one child process.
+    pub fn has_children(&self, parent_pid: Pid) -> bool {
+        let processes = self.processes.read();
+        processes
+            .values()
+            .any(|pcb| pcb.parent_pid == Some(parent_pid))
+    }
+
+    /// Reap the first zombie child of `parent_pid` matching `matches`.
+    pub fn reap_zombie_child<F>(&self, parent_pid: Pid, matches: F) -> Result<(Pid, i32), &'static str>
+    where
+        F: Fn(&ProcessControlBlock) -> bool,
+    {
+        let child_pid = {
+            let processes = self.processes.read();
+            processes
+                .iter()
+                .find(|(_, pcb)| {
+                    pcb.parent_pid == Some(parent_pid)
+                        && matches!(pcb.state, ProcessState::Zombie)
+                        && matches(pcb)
+                })
+                .map(|(&pid, _)| pid)
+        };
+
+        let Some(child_pid) = child_pid else {
+            if self.has_children(parent_pid) {
+                return Err("Would block waiting for child");
+            }
+            return Err("No child processes");
+        };
+
+        let (exit_status, child_user, child_sys) = {
+            let processes = self.processes.read();
+            let child = processes.get(&child_pid);
+            let exit_status = child.and_then(|pcb| pcb.exit_status).unwrap_or(-1);
+            let child_user = child
+                .map(|pcb| {
+                    if pcb.user_time_ticks > 0 {
+                        pcb.user_time_ticks
+                    } else {
+                        pcb.cpu_time / 10
+                    }
+                })
+                .unwrap_or(0);
+            let child_sys = child.map(|pcb| pcb.system_time_ticks).unwrap_or(0);
+            (exit_status, child_user, child_sys)
+        };
+
+        {
+            let mut processes = self.processes.write();
+            if let Some(parent) = processes.get_mut(&parent_pid) {
+                parent.child_user_time = parent.child_user_time.saturating_add(child_user);
+                parent.child_system_time = parent.child_system_time.saturating_add(child_sys);
+            }
+            processes.remove(&child_pid);
+            self.process_count.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        {
+            let mut scheduler = self.scheduler.lock();
+            let _ = scheduler.remove_process(child_pid);
+        }
+
+        Ok((child_pid, exit_status))
+    }
+
+    /// Find the first zombie child of `parent_pid` matching `matches` without reaping.
+    pub fn find_zombie_child<F>(&self, parent_pid: Pid, matches: F) -> Option<ProcessControlBlock>
+    where
+        F: Fn(&ProcessControlBlock) -> bool,
+    {
+        let processes = self.processes.read();
+        processes
+            .values()
+            .find(|pcb| {
+                pcb.parent_pid == Some(parent_pid)
+                    && matches!(pcb.state, ProcessState::Zombie)
+                    && matches(pcb)
+            })
+            .cloned()
+    }
+
+    /// Return the highest scheduling priority (lowest nice value) among matching processes.
+    pub fn max_nice_among<F>(&self, matches: F) -> Option<i32>
+    where
+        F: Fn(&ProcessControlBlock) -> bool,
+    {
+        let processes = self.processes.read();
+        processes
+            .values()
+            .filter(|pcb| matches(pcb))
+            .map(|pcb| priority_to_nice(pcb.priority))
+            .min()
+    }
+
+    /// Set scheduler priority for all processes matching `matches`.
+    pub fn set_priority_among<F>(&self, matches: F, priority: Priority) -> Result<(), &'static str>
+    where
+        F: Fn(&ProcessControlBlock) -> bool,
+    {
+        let pids: Vec<Pid> = {
+            let processes = self.processes.read();
+            processes
+                .values()
+                .filter(|pcb| matches(pcb))
+                .map(|pcb| pcb.pid)
+                .collect()
+        };
+
+        if pids.is_empty() {
+            return Err("Process not found");
+        }
+
+        {
+            let mut processes = self.processes.write();
+            for pid in &pids {
+                if let Some(pcb) = processes.get_mut(pid) {
+                    pcb.priority = priority;
+                }
+            }
+        }
+
+        let mut scheduler = self.scheduler.lock();
+        for pid in pids {
+            scheduler.update_process_priority(pid, priority)?;
+        }
+        Ok(())
+    }
+}
+
+/// Convert kernel priority to Linux nice value (-20..19).
+pub fn priority_to_nice(priority: Priority) -> i32 {
+    match priority {
+        Priority::RealTime => -20,
+        Priority::High => -10,
+        Priority::Normal => 0,
+        Priority::Low => 10,
+        Priority::Idle => 19,
+    }
+}
+
+/// Convert Linux nice value to kernel priority.
+pub fn nice_to_priority(nice: i32) -> Priority {
+    match nice {
+        p if p <= -15 => Priority::RealTime,
+        p if p <= -5 => Priority::High,
+        p if p <= 5 => Priority::Normal,
+        p if p <= 15 => Priority::Low,
+        _ => Priority::Idle,
     }
 }
 

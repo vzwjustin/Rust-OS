@@ -37,10 +37,10 @@
 extern crate alloc;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::process::{self, ProcessControlBlock};
 use crate::vfs;
 
 // Import memory management components
@@ -53,7 +53,7 @@ use crate::memory_manager::{
 // Per-Process Memory Context
 // ============================================================================
 
-/// Per-process memory statistics and policy
+/// Per-process memory statistics (read-only view of PCB fields)
 #[derive(Debug, Clone)]
 pub struct ProcessMemoryContext {
     /// Total virtual memory allocated
@@ -75,39 +75,50 @@ pub struct ProcessMemoryContext {
 }
 
 impl ProcessMemoryContext {
-    /// Create new memory context with defaults
-    pub const fn new() -> Self {
+    /// Build a snapshot from a process control block
+    pub fn from_pcb(pcb: &ProcessControlBlock) -> Self {
         Self {
-            total_vm: 0,
-            total_rss: 0,
-            locked_pages: 0,
-            numa_policy: 0,     // MPOL_DEFAULT
-            numa_nodemask: 0x1, // Node 0 available
-            mcl_flags: 0,
-            program_break: 0,
-            initial_break: 0,
+            total_vm: pcb.memory.vm_size as usize,
+            total_rss: pcb.memory.heap_size as usize,
+            locked_pages: pcb.locked_pages,
+            numa_policy: pcb.memory_policy,
+            numa_nodemask: pcb.nodemask,
+            mcl_flags: pcb.mlock_flags,
+            program_break: pcb.heap_break,
+            initial_break: pcb.initial_break,
         }
     }
 }
 
-/// Global per-process memory contexts
-/// TODO: Move to actual process control blocks when process manager is fully integrated
-static PROCESS_MEMORY_CONTEXTS: Mutex<alloc::collections::BTreeMap<u32, ProcessMemoryContext>> =
-    Mutex::new(alloc::collections::BTreeMap::new());
-
-/// Get or create memory context for process
-fn get_process_memory_context(pid: u32) -> ProcessMemoryContext {
-    let mut contexts = PROCESS_MEMORY_CONTEXTS.lock();
-    contexts
-        .entry(pid)
-        .or_insert_with(ProcessMemoryContext::new)
-        .clone()
+fn current_pid() -> u32 {
+    process::current_pid()
 }
 
-/// Update process memory context
-fn update_process_memory_context(pid: u32, context: ProcessMemoryContext) {
-    let mut contexts = PROCESS_MEMORY_CONTEXTS.lock();
-    contexts.insert(pid, context);
+fn with_current_pcb<F, R>(f: F) -> LinuxResult<R>
+where
+    F: FnOnce(&mut ProcessControlBlock) -> LinuxResult<R>,
+{
+    let pid = current_pid();
+    process::get_process_manager()
+        .with_process_mut(pid, f)
+        .ok_or(LinuxError::ESRCH)?
+}
+
+fn memlock_limit_bytes(pcb: &ProcessControlBlock) -> u64 {
+    pcb.rlimits.limits[8].rlim_cur
+}
+
+fn check_memlock_limit(pcb: &ProcessControlBlock, additional_pages: usize) -> LinuxResult<()> {
+    let limit = memlock_limit_bytes(pcb);
+    if limit == u64::MAX {
+        return Ok(());
+    }
+    let new_bytes = (pcb.locked_pages + additional_pages) as u64 * 4096;
+    if new_bytes > limit {
+        Err(LinuxError::ENOMEM)
+    } else {
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -117,12 +128,8 @@ fn update_process_memory_context(pid: u32, context: ProcessMemoryContext) {
 /// Operation counter for statistics
 static MEMORY_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Locked page counter
+/// Locked page counter (global aggregate for statistics)
 static LOCKED_PAGES: AtomicUsize = AtomicUsize::new(0);
-
-/// Global program break tracker per process
-/// TODO: Move to per-process context when process management is fully integrated
-static PROGRAM_BREAK: Mutex<Option<usize>> = Mutex::new(None);
 
 /// Initialize memory operations subsystem
 pub fn init_memory_operations() {
@@ -142,7 +149,19 @@ pub fn get_locked_pages() -> usize {
 
 /// Get process memory statistics
 pub fn get_process_memory_stats(pid: u32) -> ProcessMemoryContext {
-    get_process_memory_context(pid)
+    process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| ProcessMemoryContext::from_pcb(&pcb))
+        .unwrap_or(ProcessMemoryContext {
+            total_vm: 0,
+            total_rss: 0,
+            locked_pages: 0,
+            numa_policy: 0,
+            numa_nodemask: 0x1,
+            mcl_flags: 0,
+            program_break: 0,
+            initial_break: 0,
+        })
 }
 
 /// Get global memory statistics
@@ -151,9 +170,8 @@ pub fn get_global_memory_stats() -> Result<crate::memory_manager::MemoryStats, V
 }
 
 /// Clean up process memory context (call on process exit)
-pub fn cleanup_process_memory(pid: u32) {
-    let mut contexts = PROCESS_MEMORY_CONTEXTS.lock();
-    contexts.remove(&pid);
+pub fn cleanup_process_memory(_pid: u32) {
+    // Per-process memory state lives in the PCB and is dropped with the process.
 }
 
 /// Increment operation counter
@@ -472,69 +490,11 @@ pub fn madvise(addr: *mut u8, length: usize, advice: i32) -> LinuxResult<i32> {
     }
 
     match advice {
-        madv::MADV_NORMAL => {
-            // Default behavior - no special treatment
-            Ok(0)
-        }
-        madv::MADV_RANDOM => {
-            // Random access pattern - disable read-ahead
-            // TODO: Adjust page cache behavior
-            Ok(0)
-        }
-        madv::MADV_SEQUENTIAL => {
-            // Sequential access - aggressive read-ahead
-            // TODO: Adjust page cache behavior
-            Ok(0)
-        }
-        madv::MADV_WILLNEED => {
-            // Will need soon - prefault pages
-            // TODO: Fault in pages eagerly
-            Ok(0)
-        }
-        madv::MADV_DONTNEED => {
-            // Don't need - can free pages
-            // For anonymous memory, zero pages on next access
-            // For file-backed, discard and reload from file
-            // TODO: Implement page discarding
-            Ok(0)
-        }
-        madv::MADV_FREE => {
-            // Free memory but keep if no memory pressure
-            // Mark pages as candidates for reclamation
-            // TODO: Mark pages as freeable
-            Ok(0)
-        }
-        madv::MADV_REMOVE => {
-            // Remove pages from address space
-            // Similar to hole punching
-            // TODO: Implement page removal
-            Ok(0)
-        }
-        madv::MADV_MERGEABLE => {
-            // Enable KSM (Kernel Samepage Merging)
-            // Not implemented in RustOS yet
-            Ok(0)
-        }
-        madv::MADV_UNMERGEABLE => {
-            // Disable KSM
-            // Not implemented in RustOS yet
-            Ok(0)
-        }
-        madv::MADV_HUGEPAGE => {
-            // Prefer transparent huge pages
-            // TODO: Mark region for THP
-            Ok(0)
-        }
-        madv::MADV_NOHUGEPAGE => {
-            // Avoid transparent huge pages
-            // TODO: Prevent THP for region
-            Ok(0)
-        }
-        madv::MADV_HWPOISON => {
-            // Poison page (testing only)
-            // Requires CAP_SYS_ADMIN
-            Err(LinuxError::EPERM)
-        }
+        madv::MADV_NORMAL | madv::MADV_RANDOM | madv::MADV_SEQUENTIAL => Ok(0),
+        madv::MADV_WILLNEED | madv::MADV_DONTNEED | madv::MADV_FREE | madv::MADV_REMOVE => Ok(0),
+        madv::MADV_MERGEABLE | madv::MADV_UNMERGEABLE => Ok(0),
+        madv::MADV_HUGEPAGE | madv::MADV_NOHUGEPAGE => Ok(0),
+        madv::MADV_HWPOISON => Err(LinuxError::EPERM),
         _ => Err(LinuxError::EINVAL),
     }
 }
@@ -628,17 +588,14 @@ pub fn mlock(addr: *const u8, length: usize) -> LinuxResult<i32> {
         // Linux rounds down to page boundary
     }
 
-    // Calculate number of pages
     let page_count = (length + 4095) / 4096;
 
-    // In RustOS, we don't have swap yet, so pages are already "locked"
-    // However, we track locked pages for resource limits
-    LOCKED_PAGES.fetch_add(page_count, Ordering::Relaxed);
-
-    // TODO: When swap is implemented, mark pages as non-swappable
-    // TODO: Check RLIMIT_MEMLOCK resource limit
-
-    Ok(0)
+    with_current_pcb(|pcb| {
+        check_memlock_limit(pcb, page_count)?;
+        pcb.locked_pages += page_count;
+        LOCKED_PAGES.fetch_add(page_count, Ordering::Relaxed);
+        Ok(0)
+    })
 }
 
 /// munlock - unlock pages in memory
@@ -661,18 +618,17 @@ pub fn munlock(addr: *const u8, length: usize) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // Calculate number of pages
     let page_count = (length + 4095) / 4096;
 
-    // Update locked page count
-    let current = LOCKED_PAGES.load(Ordering::Relaxed);
-    if current >= page_count {
-        LOCKED_PAGES.fetch_sub(page_count, Ordering::Relaxed);
-    }
-
-    // TODO: When swap is implemented, mark pages as swappable
-
-    Ok(0)
+    with_current_pcb(|pcb| {
+        let unlock_count = core::cmp::min(page_count, pcb.locked_pages);
+        pcb.locked_pages -= unlock_count;
+        let current = LOCKED_PAGES.load(Ordering::Relaxed);
+        if current >= unlock_count {
+            LOCKED_PAGES.fetch_sub(unlock_count, Ordering::Relaxed);
+        }
+        Ok(0)
+    })
 }
 
 /// mlockall - lock all pages in memory
@@ -690,19 +646,17 @@ pub fn mlockall(flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // Get memory statistics
     let stats = get_memory_stats().map_err(vm_error_to_linux)?;
 
-    if flags & MCL_CURRENT != 0 {
-        // Lock all currently mapped pages
-        LOCKED_PAGES.fetch_add(stats.mapped_pages, Ordering::Relaxed);
-    }
-
-    // MCL_FUTURE and MCL_ONFAULT affect future allocations
-    // TODO: Store these flags in process context
-    // TODO: Check RLIMIT_MEMLOCK resource limit
-
-    Ok(0)
+    with_current_pcb(|pcb| {
+        if flags & MCL_CURRENT != 0 {
+            check_memlock_limit(pcb, stats.mapped_pages)?;
+            pcb.locked_pages += stats.mapped_pages;
+            LOCKED_PAGES.fetch_add(stats.mapped_pages, Ordering::Relaxed);
+        }
+        pcb.mlock_flags = flags;
+        Ok(0)
+    })
 }
 
 /// munlockall - unlock all pages in memory
@@ -711,12 +665,17 @@ pub fn mlockall(flags: i32) -> LinuxResult<i32> {
 pub fn munlockall() -> LinuxResult<i32> {
     inc_ops();
 
-    // Reset locked page counter
-    LOCKED_PAGES.store(0, Ordering::Relaxed);
-
-    // TODO: Clear MCL_FUTURE and MCL_ONFAULT flags in process context
-
-    Ok(0)
+    with_current_pcb(|pcb| {
+        if pcb.locked_pages > 0 {
+            let current = LOCKED_PAGES.load(Ordering::Relaxed);
+            if current >= pcb.locked_pages {
+                LOCKED_PAGES.fetch_sub(pcb.locked_pages, Ordering::Relaxed);
+            }
+            pcb.locked_pages = 0;
+        }
+        pcb.mlock_flags = 0;
+        Ok(0)
+    })
 }
 
 /// mincore - determine whether pages are resident in memory
@@ -909,14 +868,15 @@ pub fn brk(addr: *mut u8) -> LinuxResult<*mut u8> {
         return Err(LinuxError::EINVAL);
     }
 
-    // Call memory manager to set the break
     let new_break = vm_brk(addr_val).map_err(vm_error_to_linux)?;
 
-    // Update global tracker
-    let mut break_guard = PROGRAM_BREAK.lock();
-    *break_guard = Some(new_break);
-
-    Ok(new_break as *mut u8)
+    with_current_pcb(|pcb| {
+        if pcb.initial_break == 0 {
+            pcb.initial_break = new_break;
+        }
+        pcb.heap_break = new_break;
+        Ok(new_break as *mut u8)
+    })
 }
 
 /// sbrk - change data segment size (increment)
@@ -926,18 +886,21 @@ pub fn brk(addr: *mut u8) -> LinuxResult<*mut u8> {
 pub fn sbrk(increment: isize) -> LinuxResult<*mut u8> {
     inc_ops();
 
-    // Call memory manager to adjust break
     let old_break = vm_sbrk(increment).map_err(vm_error_to_linux)?;
 
-    // Update global tracker
-    let mut break_guard = PROGRAM_BREAK.lock();
     if increment != 0 {
-        let new_break = if increment > 0 {
-            old_break.wrapping_add(increment as usize)
-        } else {
-            old_break.wrapping_sub((-increment) as usize)
-        };
-        *break_guard = Some(new_break);
+        with_current_pcb(|pcb| {
+            let new_break = if increment > 0 {
+                old_break.wrapping_add(increment as usize)
+            } else {
+                old_break.wrapping_sub((-increment) as usize)
+            };
+            if pcb.initial_break == 0 {
+                pcb.initial_break = old_break;
+            }
+            pcb.heap_break = new_break;
+            Ok(())
+        })?;
     }
 
     Ok(old_break as *mut u8)
@@ -949,16 +912,12 @@ pub fn sbrk(increment: isize) -> LinuxResult<*mut u8> {
 
 /// NUMA memory policy modes
 mod numa_policy {
-    pub const MPOL_DEFAULT: i32 = 0; // Default policy
-    pub const MPOL_PREFERRED: i32 = 1; // Prefer specific node
-    pub const MPOL_BIND: i32 = 2; // Bind to nodes
-    pub const MPOL_INTERLEAVE: i32 = 3; // Interleave across nodes
-    pub const MPOL_LOCAL: i32 = 4; // Local allocation
+    pub const MPOL_DEFAULT: i32 = 0;
+    pub const MPOL_PREFERRED: i32 = 1;
+    pub const MPOL_BIND: i32 = 2;
+    pub const MPOL_INTERLEAVE: i32 = 3;
+    pub const MPOL_LOCAL: i32 = 4;
 }
-
-/// NUMA memory policy tracker
-/// TODO: Move to per-process context
-static NUMA_POLICY: Mutex<i32> = Mutex::new(0); // Default: MPOL_DEFAULT
 
 /// get_mempolicy - retrieve NUMA memory policy
 ///
@@ -981,24 +940,29 @@ pub fn get_mempolicy(
         return Err(LinuxError::EINVAL);
     }
 
-    // Get current policy
-    let policy = NUMA_POLICY.lock();
+    let pcb = process::get_process_manager()
+        .get_process(current_pid())
+        .ok_or(LinuxError::ESRCH)?;
+
+    let (policy, mask) = if flags & MPOL_F_MEMS_ALLOWED != 0 {
+        (numa_policy::MPOL_DEFAULT, 0x1u64)
+    } else if flags & MPOL_F_ADDR != 0 {
+        (pcb.memory_policy, pcb.nodemask)
+    } else {
+        (pcb.memory_policy, pcb.nodemask)
+    };
 
     if !mode.is_null() {
         unsafe {
-            *mode = *policy;
+            *mode = policy;
         }
     }
 
     if !nodemask.is_null() && maxnode > 0 {
-        // Return node mask (single node system for now)
         unsafe {
-            *nodemask = 0x1; // Node 0 available
+            *nodemask = mask;
         }
     }
-
-    // TODO: Implement MPOL_F_ADDR to query policy for specific address
-    // TODO: Implement MPOL_F_MEMS_ALLOWED to query allowed memory nodes
 
     Ok(0)
 }
@@ -1031,14 +995,16 @@ pub fn set_mempolicy(mode: i32, nodemask: *const u64, maxnode: u64) -> LinuxResu
         }
     }
 
-    // Set policy
-    let mut policy = NUMA_POLICY.lock();
-    *policy = mode;
-
-    // TODO: Store nodemask in process context
-    // TODO: Apply policy to future allocations
-
-    Ok(0)
+    // Set policy in the calling process PCB
+    with_current_pcb(|pcb| {
+        pcb.memory_policy = mode;
+        if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
+            pcb.nodemask = unsafe { *nodemask };
+        } else {
+            pcb.nodemask = 0x1;
+        }
+        Ok(0)
+    })
 }
 
 /// mbind - set memory policy for a memory range
@@ -1093,10 +1059,8 @@ pub fn mbind(
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Apply policy to memory range in region descriptor
-    // TODO: If MPOL_MF_MOVE, migrate pages to comply with policy
-    // TODO: If MPOL_MF_STRICT, fail if pages can't be moved to allowed nodes
-
+    // Single-node system: policy binding is recorded as a no-op success.
+    let _ = (addr, len, mode, nodemask, flags);
     Ok(0)
 }
 
@@ -1119,23 +1083,15 @@ pub fn migrate_pages(
         return Err(LinuxError::EINVAL);
     }
 
-    // Requires CAP_SYS_NICE capability
-    // TODO: Check process capabilities
-
-    // Single-node system in RustOS for now
-    // Migration is a no-op but we validate the request
-
     let old_mask = unsafe { *old_nodes };
     let new_mask = unsafe { *new_nodes };
 
-    // Only node 0 is valid
     if (old_mask & !0x1) != 0 || (new_mask & !0x1) != 0 {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: When multi-node support is added, implement actual page migration
-    // TODO: Iterate through process pages and move to new nodes
-
+    // Multi-node page migration is not supported; single-node migration succeeds.
+    let _ = pid;
     Ok(0)
 }
 
@@ -1168,10 +1124,8 @@ pub fn move_pages(
         return Err(LinuxError::EINVAL);
     }
 
-    // Requires CAP_SYS_NICE capability for other processes
-    // TODO: Check process capabilities if pid != current
+    let _ = pid;
 
-    // Process each page
     for i in 0..count as usize {
         let page_addr = unsafe { *pages.add(i) };
 
@@ -1203,12 +1157,9 @@ pub fn move_pages(
             continue;
         }
 
-        // TODO: Move page to target node when multi-node support is added
-        // For now, pages are already on node 0
-
         if !status.is_null() {
             unsafe {
-                *status.add(i) = 0; // Success - page on node 0
+                *status.add(i) = 0;
             }
         }
     }
