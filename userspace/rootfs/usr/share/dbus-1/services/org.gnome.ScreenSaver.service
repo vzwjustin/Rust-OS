@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.gnome.ScreenSaver
-Exec=/usr/bin/gjs -m /usr/share/gnome-shell/org.gnome.ScreenSaver

@@ -1,6 +1,0 @@
-[Template]
-#EnvironmentFiles=/etc/os-release;
-
-[User]
-Session=
-Icon=${HOME}/.face

@@ -1,3 +1,0 @@
-#!/bin/sh
-# RustOS PID 1 — delegate to the GNOME Wayland session bootstrap.
-exec /init "$@"

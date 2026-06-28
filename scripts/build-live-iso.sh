@@ -2,13 +2,13 @@
 # Build RustOS live/install media: bootimage + installer initramfs + live squashfs.
 #
 # Layout:
-#   build/iso/boot/rustos
+#   build/iso/boot/bootimage-rustos.bin
 #   build/iso/boot/initrd.img
 #   build/iso/live/filesystem.squashfs
 #   build/iso/.disk/info
 #
-# Uses xorriso or grub-mkrescue when available; otherwise stages files and prints
-# manual QEMU boot instructions.
+# Uses xorriso when available to wrap the bootloader raw disk image; otherwise
+# stages files and prints manual QEMU boot instructions.
 #
 # Usage:
 #   ./scripts/build-live-iso.sh [--release]
@@ -114,24 +114,6 @@ Built: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
 }
 
-write_grub_cfg() {
-    mkdir -p "$ISO_ROOT/boot/grub"
-    cat > "$ISO_ROOT/boot/grub/grub.cfg" <<'EOF'
-set timeout=5
-set default=0
-
-menuentry "RustOS Live (try)" {
-    linux /boot/rustos rustos.boot=live
-    initrd /boot/initrd.img
-}
-
-menuentry "RustOS Install" {
-    linux /boot/rustos rustos.boot=install
-    initrd /boot/initrd.img
-}
-EOF
-}
-
 build_iso_xorriso() {
     log "Creating ISO with xorriso hard-disk boot emulation..."
     xorriso -as mkisofs \
@@ -174,9 +156,7 @@ EOF
 ensure_prerequisites
 stage_iso_tree
 
-if command -v grub-mkrescue >/dev/null 2>&1; then
-    build_iso_grub_mkrescue
-elif command -v xorriso >/dev/null 2>&1; then
+if command -v xorriso >/dev/null 2>&1; then
     build_iso_xorriso
 else
     print_manual_qemu

@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.gnome.Shell.CalendarServer
-Exec=/usr/libexec/gnome-shell-calendar-server

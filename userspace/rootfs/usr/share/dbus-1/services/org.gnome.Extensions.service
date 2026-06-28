@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.gnome.Extensions
-Exec=/usr/bin/gnome-extensions-app --gapplication-service

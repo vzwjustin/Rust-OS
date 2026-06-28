@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.IBus
-Exec=/usr/bin/ibus-daemon --replace --panel disable --xim

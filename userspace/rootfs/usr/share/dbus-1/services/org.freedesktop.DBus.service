@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.DBus
-Exec=/bin/true
-User=root
