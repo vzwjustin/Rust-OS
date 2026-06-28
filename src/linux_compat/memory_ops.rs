@@ -113,7 +113,10 @@ fn check_memlock_limit(pcb: &ProcessControlBlock, additional_pages: usize) -> Li
     if limit == u64::MAX {
         return Ok(());
     }
-    let new_bytes = (pcb.locked_pages + additional_pages) as u64 * 4096;
+    let total_pages = pcb.locked_pages.checked_add(additional_pages)
+        .ok_or(LinuxError::ENOMEM)?;
+    let new_bytes = (total_pages as u64).checked_mul(4096)
+        .ok_or(LinuxError::ENOMEM)?;
     if new_bytes > limit {
         Err(LinuxError::ENOMEM)
     } else {
