@@ -4,6 +4,10 @@
 use std::path::PathBuf;
 
 fn main() {
+    if std::env::var("CARGO_FEATURE_C_ABI").is_err() {
+        return;
+    }
+
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let ffi_rs = manifest_dir.join("src/ffi.rs");

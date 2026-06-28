@@ -10,11 +10,11 @@
 - Target specs and linker scripts live at the repo root (`x86_64-rustos.json`, `aarch64-apple-rustos.json`, `linker.ld`, `link.ld`).
 
 ## Build, Test, and Development Commands
-- `make build` / `make build-release`: compile the kernel (debug/release).
+- `make build` / `make build-release`: compile and link the kernel (debug/release).
 - `make bootimage` / `make run`: create a bootable image and run in QEMU.
 - `make boot-smoke`: headless QEMU run that checks for the boot banner on serial.
 - `make test` / `make test-glib-native`: kernel tests vs glib-native host unit tests.
-- `make check`: fast compile check without building artifacts.
+- `make check`: compile and link the debug kernel (same as `make build`; catches link failures that `cargo check` / `--check-only` miss).
 - `./build_rustos.sh --check-only --test --release`: scripted builds; see `./build_rustos.sh --help`.
 - `RUSTOS_QEMU_DISPLAY=cocoa|gtk` selects the QEMU display backend for scripts.
 

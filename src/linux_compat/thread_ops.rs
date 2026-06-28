@@ -20,9 +20,17 @@ const MSR_FS_BASE: u32 = 0xC000_0100;
 /// GS base MSR (x86_64)
 const MSR_GS_BASE: u32 = 0xC000_0101;
 
-static FS_BASE: AtomicU64 = AtomicU64::new(0);
-static GS_BASE: AtomicU64 = AtomicU64::new(0);
 static CLEAR_CHILD_TID: AtomicU64 = AtomicU64::new(0);
+
+/// Per-thread FS/GS base addresses keyed by tid.
+static TLS_FS_BASE: RwLock<BTreeMap<Pid, u64>> = RwLock::new(BTreeMap::new());
+static TLS_GS_BASE: RwLock<BTreeMap<Pid, u64>> = RwLock::new(BTreeMap::new());
+
+/// Per-thread robust futex list heads keyed by tid (stored as address).
+static ROBUST_LISTS: RwLock<BTreeMap<Pid, usize>> = RwLock::new(BTreeMap::new());
+
+/// Legacy x86 thread area entries keyed by tid.
+static THREAD_AREAS: RwLock<BTreeMap<Pid, [u8; 32]>> = RwLock::new(BTreeMap::new());
 
 /// Futex wait queues keyed by userspace address.
 static FUTEX_WAITERS: RwLock<BTreeMap<usize, Vec<Pid>>> = RwLock::new(BTreeMap::new());
@@ -40,12 +48,37 @@ unsafe fn wrmsr(msr: u32, value: u64) {
     );
 }
 
+fn current_tid() -> Pid {
+    process::current_pid() as Pid
+}
+
+fn send_signal_to_thread(tid: Pid, sig: i32) -> LinuxResult<i32> {
+    if sig != 0 && (sig < 0 || sig > 64) {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let target = tid as u32;
+    process::get_process_manager()
+        .with_process_mut(target, |pcb| {
+            if sig != 0 {
+                pcb.pending_signals.push(sig as u32);
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
+}
+
 /// Operation counter for statistics
 static THREAD_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Initialize thread operations subsystem
 pub fn init_thread_operations() {
     THREAD_OPS_COUNT.store(0, Ordering::Relaxed);
+    TLS_FS_BASE.write().clear();
+    TLS_GS_BASE.write().clear();
+    ROBUST_LISTS.write().clear();
+    THREAD_AREAS.write().clear();
 }
 
 /// Get number of thread operations performed
@@ -156,7 +189,6 @@ pub fn clone(
     inc_ops();
 
     if (flags & clone_flags::CLONE_THREAD) != 0 {
-        // Thread creation shares address space with parent; reuse fork for now.
         return process_ops::fork();
     }
 
@@ -168,14 +200,13 @@ pub fn set_tid_address(tidptr: *mut Pid) -> Pid {
     inc_ops();
 
     CLEAR_CHILD_TID.store(tidptr as u64, Ordering::SeqCst);
-    process::current_pid() as Pid
+    current_tid()
 }
 
 /// gettid - get thread ID
 pub fn gettid() -> Pid {
     inc_ops();
-
-    process::current_pid() as Pid
+    current_tid()
 }
 
 /// tkill - send signal to thread
@@ -186,12 +217,7 @@ pub fn tkill(tid: Pid, sig: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    if sig < 0 || sig > 64 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    // TODO: Send signal to specific thread
-    Ok(0)
+    send_signal_to_thread(tid, sig)
 }
 
 /// tgkill - send signal to thread in thread group
@@ -206,8 +232,16 @@ pub fn tgkill(tgid: Pid, tid: Pid, sig: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Send signal to thread in specific thread group
-    Ok(0)
+    let process_manager = process::get_process_manager();
+    let pcb = process_manager
+        .get_process(tid as u32)
+        .ok_or(LinuxError::ESRCH)?;
+
+    if pcb.pid as Pid != tgid && pcb.pgid as Pid != tgid {
+        return Err(LinuxError::ESRCH);
+    }
+
+    send_signal_to_thread(tid, sig)
 }
 
 // ============================================================================
@@ -248,7 +282,6 @@ pub fn futex(
 
             let _ = process::get_process_manager().block_process(pid);
 
-            // Re-check value after wakeup
             unsafe {
                 if *uaddr != val {
                     return Err(LinuxError::EAGAIN);
@@ -303,13 +336,15 @@ pub fn set_robust_list(head: *mut RobustListHead, len: usize) -> LinuxResult<i32
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Store robust list head for thread
+    ROBUST_LISTS
+        .write()
+        .insert(current_tid(), head as usize);
     Ok(0)
 }
 
 /// get_robust_list - get robust futex list
 pub fn get_robust_list(
-    _pid: Pid,
+    pid: Pid,
     head_ptr: *mut *mut RobustListHead,
     len_ptr: *mut usize,
 ) -> LinuxResult<i32> {
@@ -319,8 +354,14 @@ pub fn get_robust_list(
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get robust list for thread
+    let target = if pid == 0 { current_tid() } else { pid };
+    process::get_process_manager()
+        .get_process(target as u32)
+        .ok_or(LinuxError::ESRCH)?;
+
+    let head_addr = ROBUST_LISTS.read().get(&target).copied().unwrap_or(0);
     unsafe {
+        *head_ptr = head_addr as *mut RobustListHead;
         *len_ptr = core::mem::size_of::<RobustListHead>();
     }
     Ok(0)
@@ -338,9 +379,11 @@ pub fn set_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set up TLS segment descriptor
-    // Allocate GDT entry
-    // Return entry number in u_info
+    let mut area = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(u_info, area.as_mut_ptr(), 32);
+    }
+    THREAD_AREAS.write().insert(current_tid(), area);
     Ok(0)
 }
 
@@ -352,7 +395,15 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get TLS segment descriptor info
+    let tid = current_tid();
+    let area = THREAD_AREAS
+        .read()
+        .get(&tid)
+        .copied()
+        .unwrap_or([0u8; 32]);
+    unsafe {
+        core::ptr::copy_nonoverlapping(area.as_ptr(), u_info, 32);
+    }
     Ok(0)
 }
 
@@ -360,15 +411,16 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
 pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
     inc_ops();
 
-    // x86_64 specific
     const ARCH_SET_GS: i32 = 0x1001;
     const ARCH_SET_FS: i32 = 0x1002;
     const ARCH_GET_FS: i32 = 0x1003;
     const ARCH_GET_GS: i32 = 0x1004;
 
+    let tid = current_tid();
+
     match code {
         ARCH_SET_FS => {
-            FS_BASE.store(addr, Ordering::SeqCst);
+            TLS_FS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_FS_BASE, addr);
             }
@@ -378,14 +430,18 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let base = FS_BASE.load(Ordering::SeqCst);
+            let base = TLS_FS_BASE
+                .read()
+                .get(&tid)
+                .copied()
+                .unwrap_or(0);
             unsafe {
                 *(addr as *mut u64) = base;
             }
             Ok(0)
         }
         ARCH_SET_GS => {
-            GS_BASE.store(addr, Ordering::SeqCst);
+            TLS_GS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_GS_BASE, addr);
             }
@@ -395,7 +451,11 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let base = GS_BASE.load(Ordering::SeqCst);
+            let base = TLS_GS_BASE
+                .read()
+                .get(&tid)
+                .copied()
+                .unwrap_or(0);
             unsafe {
                 *(addr as *mut u64) = base;
             }
@@ -413,7 +473,7 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
 pub type CpuSet = u64;
 
 /// sched_setaffinity - set CPU affinity
-pub fn sched_setaffinity(_pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> LinuxResult<i32> {
+pub fn sched_setaffinity(pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> LinuxResult<i32> {
     inc_ops();
 
     if mask.is_null() {
@@ -424,7 +484,23 @@ pub fn sched_setaffinity(_pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> L
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Set CPU affinity for thread
+    let cpu_mask = unsafe { *mask };
+    if cpu_mask == 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let target_pid = if pid == 0 {
+        process::current_pid()
+    } else {
+        pid as u32
+    };
+
+    process::get_process_manager()
+        .with_process_mut(target_pid, |pcb| {
+            pcb.sched_info.cpu_affinity = cpu_mask;
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
     Ok(0)
 }
 
@@ -440,9 +516,19 @@ pub fn sched_getaffinity(_pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> Lin
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Get CPU affinity for thread
+    let target_pid = if _pid == 0 {
+        process::current_pid()
+    } else {
+        _pid as u32
+    };
+
+    let cpu_affinity = process::get_process_manager()
+        .get_process(target_pid)
+        .map(|pcb| pcb.sched_info.cpu_affinity)
+        .ok_or(LinuxError::ESRCH)?;
+
     unsafe {
-        *mask = 0xFFFF_FFFF_FFFF_FFFF; // All CPUs
+        *mask = cpu_affinity;
     }
     Ok(0)
 }
@@ -452,31 +538,15 @@ pub fn sched_getaffinity(_pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> Lin
 // ============================================================================
 
 /// exit - terminate current thread
-pub fn exit(_status: i32) -> ! {
+pub fn exit(status: i32) -> ! {
     inc_ops();
-
-    // TODO: Exit thread
-    // Clean up thread resources
-    // If last thread in process, exit process
-    // Wake futex at clear_child_tid if set
-
-    loop {
-        // For now, spin forever since we can't actually exit
-        core::hint::spin_loop();
-    }
+    process_ops::exit(status)
 }
 
 /// exit_group - terminate all threads in process
-pub fn exit_group(_status: i32) -> ! {
+pub fn exit_group(status: i32) -> ! {
     inc_ops();
-
-    // TODO: Exit entire process
-    // Send SIGKILL to all threads
-    // Clean up all resources
-
-    loop {
-        core::hint::spin_loop();
-    }
+    process_ops::exit(status)
 }
 
 // ============================================================================
@@ -492,18 +562,15 @@ pub fn membarrier(cmd: i32, _flags: i32) -> LinuxResult<i32> {
     const MEMBARRIER_CMD_PRIVATE_EXPEDITED: i32 = 2;
 
     match cmd {
-        MEMBARRIER_CMD_QUERY => {
-            // Return supported commands
-            Ok(MEMBARRIER_CMD_GLOBAL | MEMBARRIER_CMD_PRIVATE_EXPEDITED)
-        }
+        MEMBARRIER_CMD_QUERY => Ok(MEMBARRIER_CMD_GLOBAL | MEMBARRIER_CMD_PRIVATE_EXPEDITED),
         MEMBARRIER_CMD_GLOBAL => {
-            // TODO: Issue global memory barrier
             core::sync::atomic::fence(Ordering::SeqCst);
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
             Ok(0)
         }
         MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
-            // TODO: Issue private expedited barrier
             core::sync::atomic::fence(Ordering::SeqCst);
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -518,7 +585,6 @@ pub fn clone3(cl_args: *const CloneArgs, size: usize) -> LinuxResult<Pid> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Ensure we don't read past size
     let expected_size = core::mem::size_of::<CloneArgs>();
     if size < expected_size {
         return Err(LinuxError::EINVAL);
@@ -530,7 +596,6 @@ pub fn clone3(cl_args: *const CloneArgs, size: usize) -> LinuxResult<Pid> {
         return Err(LinuxError::EINVAL);
     }
 
-    // Call clone with parameters from clone_args
     clone(
         args.flags,
         args.stack as *mut u8,
@@ -546,7 +611,6 @@ mod tests {
 
     #[test_case]
     fn test_clone_flags() {
-        // Thread creation requires VM and SIGHAND
         let flags = clone_flags::CLONE_THREAD | clone_flags::CLONE_VM | clone_flags::CLONE_SIGHAND;
         assert!(clone(
             flags,
@@ -562,7 +626,6 @@ mod tests {
     fn test_futex_wait() {
         let mut futex_word: i32 = 0;
 
-        // Should return EAGAIN if value doesn't match
         assert_eq!(
             futex(
                 &mut futex_word,
@@ -580,7 +643,6 @@ mod tests {
     fn test_futex_wake() {
         let mut futex_word: i32 = 0;
 
-        // Wake should succeed
         assert!(futex(
             &mut futex_word,
             futex_op::FUTEX_WAKE,

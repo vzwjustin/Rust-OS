@@ -338,6 +338,81 @@ pub fn getdomainname(name: *mut u8, len: usize) -> LinuxResult<i32> {
 // System Control (sysctl)
 // ============================================================================
 
+/// Old Linux sysctl argument block
+#[repr(C)]
+struct SysctlArgs {
+    name: *mut i32,
+    nlen: i32,
+    oldval: *mut u8,
+    oldlenp: *mut usize,
+    newval: *mut u8,
+    newlen: usize,
+}
+
+fn sysctl_copy_out(value: &[u8], oldval: *mut u8, oldlenp: *mut usize) -> LinuxResult<i32> {
+    if oldlenp.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let required = value.len();
+    let available = unsafe { *oldlenp };
+
+    unsafe {
+        *oldlenp = required;
+    }
+
+    if oldval.is_null() {
+        return Ok(0);
+    }
+
+    if available < required {
+        return Err(LinuxError::ENOSPC);
+    }
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(value.as_ptr(), oldval, required);
+    }
+
+    Ok(0)
+}
+
+fn sysctl_read_int(value: i32, oldval: *mut u8, oldlenp: *mut usize) -> LinuxResult<i32> {
+    sysctl_copy_out(&value.to_ne_bytes(), oldval, oldlenp)
+}
+
+fn sysctl_read_string(value: &str, oldval: *mut u8, oldlenp: *mut usize) -> LinuxResult<i32> {
+    let mut bytes = alloc::vec::Vec::with_capacity(value.len() + 1);
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+    sysctl_copy_out(&bytes, oldval, oldlenp)
+}
+
+fn sysctl_lookup(name: &[i32]) -> LinuxResult<SysctlValue> {
+    match name {
+        [1, 1] => Ok(SysctlValue::String("Linux")),
+        [1, 2] => Ok(SysctlValue::String("6.12.58-rustos")),
+        [1, 3] => Ok(SysctlValue::String(
+            "#1 SMP RustOS (linux-compat)",
+        )),
+        [1, 8] => Ok(SysctlValue::Int(0)),
+        [1, 10] => Ok(SysctlValue::Int(4096)),
+        [1, 38] => {
+            let hn = HOSTNAME.lock();
+            let len = hn.iter().position(|&b| b == 0).unwrap_or(MAX_HOSTNAME);
+            let host = core::str::from_utf8(&hn[..len]).unwrap_or("localhost");
+            Ok(SysctlValue::OwnedString(alloc::string::String::from(host)))
+        }
+        [2, 6] => Ok(SysctlValue::Int(60)),
+        _ => Err(LinuxError::ENOSYS),
+    }
+}
+
+enum SysctlValue {
+    Int(i32),
+    String(&'static str),
+    OwnedString(alloc::string::String),
+}
+
 /// sysctl - read/write system parameters
 pub fn sysctl(args: *mut u8) -> LinuxResult<i32> {
     inc_ops();
@@ -346,9 +421,30 @@ pub fn sysctl(args: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Implement sysctl
-    // This is largely obsolete in favor of /proc/sys
-    Err(LinuxError::ENOSYS)
+    let params = unsafe { &*(args as *const SysctlArgs) };
+
+    if params.name.is_null() || params.nlen <= 0 || params.nlen > 256 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if !params.newval.is_null() || params.newlen != 0 {
+        return Err(LinuxError::EPERM);
+    }
+
+    let name_slice = unsafe { core::slice::from_raw_parts(params.name, params.nlen as usize) };
+
+    match sysctl_lookup(name_slice) {
+        Ok(SysctlValue::Int(v)) => {
+            sysctl_read_int(v, params.oldval, params.oldlenp)
+        }
+        Ok(SysctlValue::String(s)) => {
+            sysctl_read_string(s, params.oldval, params.oldlenp)
+        }
+        Ok(SysctlValue::OwnedString(s)) => {
+            sysctl_read_string(&s, params.oldval, params.oldlenp)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ============================================================================

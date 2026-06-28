@@ -48,13 +48,13 @@ The crate is named `glib-native` to avoid confusion with the existing
 | **4** | Associative containers & datasets | `ghash.*`, `gtree.*`, `gdataset.*`, `gquark.*`, `grel.*` (deprecated), `gcache.*` (deprecated) | **Done** |
 | **5** | Errors, logging, options | `gerror.*`, `gmessages.*`, `goption.*` | **Done** |
 | **6** | I/O primitives | `gfileutils.*`, `gconvert.*`, … | **Done** (pure logic + `DirPlatform`/`MappedFilePlatform`/`StdioPlatform`/`SpawnPlatform`; RustOS VFS wired in `src/glib_platform.rs`) |
-| **7** | Date/time & variants | `gdate.*`, `gdatetime.*`, `gtimezone.*`, … | **Done** (TZif v1/v2, embedded IANA, `unicode_norm` NFD/NFC for Latin-1 + Extended-A) |
-| **8** | Main loop & threading | `gmain.*`, `gthread.*`, … | **Done** (`PollPlatform`/`g_poll`, `HostPollPlatform` with real `poll(2)` on host tests, kernel timer poll) |
-| **9** | GObject core | `gobject/*` | **Done** (Rust GObject stack complete; `ffi` module exports ~70 `g_*` symbols for C interop) |
+| **7** | Date/time & variants | `gdate.*`, `gdatetime.*`, `gtimezone.*`, … | **Done** (embedded IANA table, `TimeZone::new_iana`, TZif v1/v2 parser in `tzif.rs`, `from_zoneinfo_file` via `MappedFilePlatform`; full Unicode tables still optional) |
+| **8** | Main loop & threading | `gmain.*`, `gthread.*`, … | **Done** (`PollPlatform`/`g_poll`, `ThreadPlatform`/`GThread::spawn`, `MainContext::iteration` with poll-fd dispatch; kernel uses `RustOsPollPlatform`/`RustOsThreadPlatform`; real epoll/pthreads optional on host) |
+| **9** | GObject core | `gobject/*` | **Done** (Rust GObject stack complete; `ffi` module exports ~70 `g_*` symbols — gated behind `feature = "c-abi"` or `#[cfg(test)]`, not linked in the default kernel build) |
 | **10** | GModule | `gmodule/*` | **Done** (`NoModulePlatform` kernel default; `HostModulePlatform` + `parse_libtool_archive` on host tests) |
-| **11** | GIO | `gio/*` | **Done** (~230 modules; real zlib via `miniz_oxide`, `io_error_from_win32_error`, loopback D-Bus, platform stubs) |
+| **11** | GIO | `gio/*` | **Done** (full GIO tree ported; real zlib via `miniz_oxide`, `io_error_from_win32_error`, loopback D-Bus, platform stubs) |
 | **12** | GObject Introspection & tools | `girepository/*`, `tools/*` | **Done** (full `gi*` module set, binary `Typelib::from_bytes`, `Repository::require` loads from search paths; CLI tools complete) |
-| **13** | Remove C implementations; stable C ABI | all | **Done** (`ffi` + `ffi_parity`, `libglib_native.a` staticlib, `include/glib_native.h`, C smoke test; upstream C sources retained for diff/parity until Meson `rust-native` switch) |
+| **13** | Remove C implementations; stable C ABI | all | **Partial** (`ffi` exports memory/GType/GValue/GObject/GSignal/GParamSpec/GError/GBytes/GClosure/string utils; 38 FFI parity tests on host; kernel `smoke_check()` exercises Rust APIs at boot; C ABI via `--features c-abi` staticlib only; C source removal blocked on upstream FFI parity tests) |
 
 ## `no_std` refactor
 
@@ -87,11 +87,13 @@ glib-native = { path = "../glib-rust/glib/rust/glib-native" }
 
 A `glib` wrapper module (`src/glib.rs`) re-exports all `glib_native` types/functions and provides:
 - `init_glib_logging()` — routes `g_print` / `g_printerr` through the kernel serial port.
-- `smoke_check()` — boot-time integration validation exercising 60+ GLib primitives,
-  including the new regex engine (compile, match with captures, split, replace),
-  thread pool (push, unprocessed count), and test framework (TestSuite, TestCase).
+- `smoke_check()` — boot-time integration validation calling Rust `glib_native` APIs
+  directly (not the `ffi` C ABI layer), exercising 60+ GLib primitives including
+  regex (compile, match with captures, split, replace), thread pool (push,
+  unprocessed count), and test framework (TestSuite, TestCase).
 
-All 448 ported modules are declared in `glib-native/src/lib.rs`. Kernel integration
+All 463 ported modules are declared in `glib-native/src/lib.rs`. **2847** host unit
+tests pass (`make test-glib-native`). Kernel integration
 re-exports selected types in `src/glib.rs` via `pub use glib_native::*` plus an explicit
 alphabetical re-export list for documentation and name resolution.
 
@@ -1140,7 +1142,12 @@ alphabetical re-export list for documentation and name resolution.
 
 ### RustOS smoke test coverage
 
-The `smoke_check()` function in `rust-os/src/glib.rs` validates at boot:
+The `smoke_check()` function in `src/glib.rs` validates at boot via direct Rust API
+calls (the `ffi` module is not linked in the default kernel build). C ABI coverage
+is validated separately: 38 FFI parity tests on the host and a `c-abi` staticlib
+build (`make build-glib-static` / `cargo build --features c-abi`).
+
+At boot, `smoke_check()` exercises:
 - Checked arithmetic, byte swaps, base64 encode/decode
 - `GBytes`, `GChecksum`, `GHmac`, `GCharset` defaults
 - Path helpers, filename-to-URI roundtrip
@@ -1527,26 +1534,7 @@ Two groups of internal modules are declared in `lib.rs`:
 | `giowin32_afunix` | `gio/giowin32-afunix.c` | Win32 AF_UNIX socket stub |
 | `giowin32_priv` | `gio/giowin32-priv.c` | Win32 GIO private helpers |
 
-Host unit tests: **2822** tests in `glib-native` (`make test-glib-native`).
-
-### C ABI packaging (Phase 13)
-
-Build a host static library and C header for linking remaining C code against Rust GLib:
-
-```bash
-# From repo root
-make build-glib-static
-
-# Or from glib workspace
-cd glib-rust/glib/rust && make staticlib   # libglib_native.a
-make header                              # regenerate include/glib_native.h
-make c-ffi-smoke                         # link/run examples/c_ffi_smoke.c
-```
-
-- **`glib-native/Cargo.toml`** — `crate-type = ["rlib", "staticlib"]`, `c-abi` feature (enables `std` for host staticlib link)
-- **`include/glib_native.h`** — cbindgen output from `ffi.rs` (70+ symbols)
-- **`ffi_parity.rs`** — systematic `extern "C"` parity tests (memory, quark, type, value, object, error, signal)
-- **`examples/c_ffi_smoke.c`** — minimal `g_type_init` / `g_malloc` / `g_free` link test
+Host unit tests: **2847** tests in `glib-native` (`make test-glib-native`).
 
 ### GObject Introspection (complete)
 
@@ -1595,6 +1583,27 @@ All 35 `.c`/`.h` files in `girepository/` have been ported to Rust modules.
 | `girparser_private` | Private parser state |
 | `girwriter_private` | Private writer state |
 | `gitypelib_internal` | Typelib binary header structures |
+
+### C ABI (`ffi` module, expanded)
+
+The `ffi` module is compiled only under `#[cfg(test)]` or `feature = "c-abi"`; it is
+not linked into the default RustOS kernel binary. Build the host staticlib with
+`--features c-abi` to export the symbols below.
+
+`extern "C"` exports now cover:
+
+- **GType**: `g_type_from_name`, `g_type_name`, `g_type_init`, `g_type_is_a`, `g_type_fundamental`, `g_type_get_type_registration_serial`
+- **GValue**: `g_value_init`/`unset`/`copy`/`reset`, get/set for boolean, int, uint, int64, uint64, float, double, char, uchar, long, ulong, enum, flags, string, pointer
+- **GObject**: `g_object_ref`/`unref`/`ref_sink`/`weak_ref`/`qdata`, `g_object_new`, `g_object_get_property`/`set_property`, `g_object_is_floating`/`force_floating`
+- **GError**: `g_set_error`/`g_clear_error`/`g_propagate_error`, `g_error_new`/`new_literal`/`copy`/`matches`/`free`
+- **GQuark**: `g_quark_from_string`/`g_quark_try_string`/`g_quark_to_string`
+- **Memory**: `g_malloc`/`g_malloc0`/`g_free`/`g_realloc`/`g_try_malloc`/`g_try_malloc0`/`g_try_realloc`/`g_malloc_n`/`g_malloc0_n`/`g_realloc_n`/`g_try_malloc_n`/`g_try_malloc0_n`/`g_try_realloc_n`/`g_strdup`/`g_strndup`/`g_memdup2`
+- **Signals**: `g_signal_connect_data`, `g_signal_new`/`lookup`/`name`/`emit`/`emit_by_name`/`handler_disconnect`
+- **Paramspec**: `g_param_spec_int`, `g_param_spec_boolean`/`string`/`uint`
+- **GBytes**: `g_bytes_new`/`new_take`/`get_data`/`get_size`/`ref`/`unref`/`equal`/`hash`
+- **GClosure**: `g_cclosure_new`/`closure_invoke`/`closure_ref`/`closure_sink`/`closure_unref`
+- **GType registration**: `g_type_register_static`/`g_type_register_static_simple`
+- **String utils**: `g_strcmp0`/`g_str_has_prefix`/`g_str_has_suffix`/`g_str_hash`
 
 ### Win32 platform modules (complete)
 
@@ -1673,9 +1682,10 @@ HOST_TARGET=x86_64-unknown-linux-gnu make test-glib-native
 Kernel builds and tests pass `-Zbuild-std` explicitly via `build_rustos.sh`:
 
 ```bash
-make build          # kernel binary
+make build          # kernel binary (full compile + link)
+make check          # same as make build — validates link, not just cargo check
 make test           # kernel tests (custom target + build-std)
-./build_rustos.sh --check-only
+./build_rustos.sh --check-only   # cargo check only; misses link failures
 ```
 
 ## Contributing

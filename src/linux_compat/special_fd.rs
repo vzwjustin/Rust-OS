@@ -258,7 +258,7 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
                 }
             }
         }
-        FdKind::Epoll(_) | FdKind::Signalfd(_) => {}
+        FdKind::Epoll(_) | FdKind::Signalfd(_) | FdKind::Inotify(_) => {}
     }
     revents
 }

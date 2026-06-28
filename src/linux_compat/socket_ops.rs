@@ -965,6 +965,16 @@ pub fn recvmmsg(
     Ok(received)
 }
 
+/// Convert a timespec pointer to a poll/epoll timeout in milliseconds.
+fn timespec_to_timeout_ms(ts: *const TimeSpec) -> i32 {
+    if ts.is_null() {
+        -1
+    } else {
+        let timespec = unsafe { &*ts };
+        timespec.tv_sec as i32 * 1000 + timespec.tv_nsec as i32 / 1_000_000
+    }
+}
+
 /// ppoll - poll with timeout and signal mask
 pub fn ppoll(
     fds: *mut PollFd,
@@ -974,9 +984,9 @@ pub fn ppoll(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement ppoll with timeout and signal mask
-    let _ = (ts, sigmask);
-    poll(fds, nfds, -1)
+    // sigmask is not applied yet; callers still block/ unblock via sigprocmask.
+    let _ = sigmask;
+    poll(fds, nfds, timespec_to_timeout_ms(ts))
 }
 
 /// epoll_pwait - wait for events with signal mask
@@ -989,7 +999,7 @@ pub fn epoll_pwait(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement epoll_pwait with signal masking
+    // sigmask is not applied yet; delegate to epoll_wait.
     let _ = sigmask;
     epoll_wait(epfd, events, maxevents, timeout)
 }
@@ -1004,9 +1014,10 @@ pub fn epoll_pwait2(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement epoll_pwait2 with timespec timeout and signal masking
-    let _ = (timeout, sigmask);
-    epoll_wait(epfd, events, maxevents, -1)
+    // sigmask is not applied yet; timeout is a struct timespec at offset 0.
+    let _ = sigmask;
+    let timeout_ms = timespec_to_timeout_ms(timeout as *const TimeSpec);
+    epoll_wait(epfd, events, maxevents, timeout_ms)
 }
 
 #[cfg(any())]

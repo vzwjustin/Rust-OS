@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::process::{self, Priority, ResourceLimit};
 
 /// Operation counter for statistics
 static RESOURCE_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -26,6 +27,58 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     RESOURCE_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn current_pid() -> u32 {
+    process::current_pid()
+}
+
+fn resolve_pid(pid: Pid) -> LinuxResult<u32> {
+    if pid < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(if pid == 0 { current_pid() } else { pid as u32 })
+}
+
+fn current_euid() -> u32 {
+    process::get_process_manager()
+        .get_process(current_pid())
+        .map(|pcb| pcb.euid)
+        .unwrap_or(0)
+}
+
+fn pcb_rlimit_to_api(limit: ResourceLimit) -> RLimit {
+    RLimit {
+        rlim_cur: limit.rlim_cur,
+        rlim_max: limit.rlim_max,
+    }
+}
+
+fn validate_rlimit(limit: &RLimit) -> LinuxResult<()> {
+    if limit.rlim_cur > limit.rlim_max {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(())
+}
+
+fn priority_to_nice(priority: Priority) -> i32 {
+    match priority {
+        Priority::RealTime => -20,
+        Priority::High => -10,
+        Priority::Normal => 0,
+        Priority::Low => 10,
+        Priority::Idle => 19,
+    }
+}
+
+fn nice_to_priority(nice: i32) -> Priority {
+    match nice {
+        p if p <= -15 => Priority::RealTime,
+        p if p <= -5 => Priority::High,
+        p if p <= 5 => Priority::Normal,
+        p if p <= 15 => Priority::Low,
+        _ => Priority::Idle,
+    }
 }
 
 // ============================================================================
@@ -179,21 +232,17 @@ pub fn getrlimit(resource: i32, rlim: *mut RLimit) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Validate resource
     if resource < 0 || resource > rlimit_resource::RLIMIT_RTTIME {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Get actual resource limits from process
-    // For now, return default limits
+    let limit = process::get_process_manager()
+        .get_process(current_pid())
+        .map(|pcb| pcb_rlimit_to_api(pcb.rlimits.limits[resource as usize]))
+        .ok_or(LinuxError::ESRCH)?;
+
     unsafe {
-        *rlim = match resource {
-            rlimit_resource::RLIMIT_NOFILE => RLimit::new(1024, 4096),
-            rlimit_resource::RLIMIT_NPROC => RLimit::new(4096, 16384),
-            rlimit_resource::RLIMIT_STACK => RLimit::new(8 * 1024 * 1024, RLIM_INFINITY),
-            rlimit_resource::RLIMIT_AS => RLimit::unlimited(),
-            _ => RLimit::unlimited(),
-        };
+        *rlim = limit;
     }
 
     Ok(0)
@@ -207,24 +256,34 @@ pub fn setrlimit(resource: i32, rlim: *const RLimit) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Validate resource
     if resource < 0 || resource > rlimit_resource::RLIMIT_RTTIME {
         return Err(LinuxError::EINVAL);
     }
 
-    unsafe {
-        let limit = *rlim;
+    let limit = unsafe { *rlim };
+    validate_rlimit(&limit)?;
 
-        // Soft limit cannot exceed hard limit
-        if limit.rlim_cur > limit.rlim_max {
-            return Err(LinuxError::EINVAL);
-        }
+    let pid = current_pid();
+    let is_root = current_euid() == 0;
 
-        // TODO: Set resource limits
-        // Raising hard limit requires CAP_SYS_RESOURCE capability
-    }
-
-    Ok(0)
+    process::get_process_manager()
+        .with_process_mut(pid, |pcb| {
+            let current = pcb.rlimits.limits[resource as usize];
+            let new_max = if limit.rlim_max > current.rlim_max && !is_root {
+                return Err(LinuxError::EPERM);
+            } else {
+                limit.rlim_max
+            };
+            if limit.rlim_cur > new_max {
+                return Err(LinuxError::EINVAL);
+            }
+            pcb.rlimits.limits[resource as usize] = ResourceLimit {
+                rlim_cur: limit.rlim_cur,
+                rlim_max: new_max,
+            };
+            Ok(0)
+        })
+        .ok_or(LinuxError::ESRCH)?
 }
 
 /// prlimit - get/set resource limits of arbitrary process
@@ -236,38 +295,50 @@ pub fn prlimit(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // Validate resource
     if resource < 0 || resource > rlimit_resource::RLIMIT_RTTIME {
         return Err(LinuxError::EINVAL);
     }
 
-    // pid == 0 means current process
-    let target_pid = if pid == 0 { 1 } else { pid };
+    let target_pid = resolve_pid(pid)?;
+    let caller_pid = current_pid();
+    let is_root = current_euid() == 0;
 
-    if target_pid < 0 {
-        return Err(LinuxError::EINVAL);
+    if target_pid != caller_pid && !is_root {
+        return Err(LinuxError::EPERM);
     }
 
-    // Get old limit if requested
     if !old_limit.is_null() {
-        // TODO: Get limits from target process
+        let old = process::get_process_manager()
+            .get_process(target_pid)
+            .map(|pcb| pcb_rlimit_to_api(pcb.rlimits.limits[resource as usize]))
+            .ok_or(LinuxError::ESRCH)?;
         unsafe {
-            *old_limit = RLimit::unlimited();
+            *old_limit = old;
         }
     }
 
-    // Set new limit if provided
     if !new_limit.is_null() {
-        unsafe {
-            let limit = *new_limit;
+        let limit = unsafe { *new_limit };
+        validate_rlimit(&limit)?;
 
-            if limit.rlim_cur > limit.rlim_max {
-                return Err(LinuxError::EINVAL);
-            }
-
-            // TODO: Set limits for target process
-            // Requires appropriate permissions
-        }
+        process::get_process_manager()
+            .with_process_mut(target_pid, |pcb| {
+                let current = pcb.rlimits.limits[resource as usize];
+                let new_max = if limit.rlim_max > current.rlim_max && !is_root {
+                    return Err(LinuxError::EPERM);
+                } else {
+                    limit.rlim_max
+                };
+                if limit.rlim_cur > new_max {
+                    return Err(LinuxError::EINVAL);
+                }
+                pcb.rlimits.limits[resource as usize] = ResourceLimit {
+                    rlim_cur: limit.rlim_cur,
+                    rlim_max: new_max,
+                };
+                Ok(())
+            })
+            .ok_or(LinuxError::ESRCH)??;
     }
 
     Ok(0)
@@ -278,7 +349,7 @@ pub fn prlimit(
 // ============================================================================
 
 /// getpriority - get program scheduling priority
-pub fn getpriority(which: i32, _who: i32) -> LinuxResult<i32> {
+pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const PRIO_PROCESS: i32 = 0;
@@ -286,32 +357,120 @@ pub fn getpriority(which: i32, _who: i32) -> LinuxResult<i32> {
     const PRIO_USER: i32 = 2;
 
     match which {
-        PRIO_PROCESS | PRIO_PGRP | PRIO_USER => {
-            // TODO: Get priority
-            // Return priority value (0-39, where 20 is normal)
-            Ok(20)
+        PRIO_PROCESS => {
+            let target_pid = if who == 0 {
+                current_pid()
+            } else {
+                who as u32
+            };
+            process::scheduler::get_process_priority(target_pid)
+                .map(priority_to_nice)
+                .ok_or(LinuxError::ESRCH)
+        }
+        PRIO_PGRP => {
+            let pgid = if who == 0 {
+                process::get_process_manager()
+                    .get_process(current_pid())
+                    .map(|pcb| pcb.pgid)
+                    .ok_or(LinuxError::ESRCH)?
+            } else {
+                who as u32
+            };
+            process::get_process_manager()
+                .find_processes(|pcb| pcb.pgid == pgid)
+                .into_iter()
+                .map(|pcb| priority_to_nice(pcb.priority))
+                .min()
+                .ok_or(LinuxError::ESRCH)
+        }
+        PRIO_USER => {
+            let uid = if who == 0 {
+                current_euid()
+            } else {
+                who as u32
+            };
+            process::get_process_manager()
+                .find_processes(|pcb| pcb.uid == uid)
+                .into_iter()
+                .map(|pcb| priority_to_nice(pcb.priority))
+                .min()
+                .ok_or(LinuxError::ESRCH)
         }
         _ => Err(LinuxError::EINVAL),
     }
 }
 
 /// setpriority - set program scheduling priority
-pub fn setpriority(which: i32, _who: i32, prio: i32) -> LinuxResult<i32> {
+pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const PRIO_PROCESS: i32 = 0;
     const PRIO_PGRP: i32 = 1;
     const PRIO_USER: i32 = 2;
 
-    // Priority range is -20 to 19
     if prio < -20 || prio > 19 {
         return Err(LinuxError::EINVAL);
     }
 
+    let is_root = current_euid() == 0;
+    if !is_root && prio < 0 {
+        return Err(LinuxError::EACCES);
+    }
+
+    let priority = nice_to_priority(prio);
+
     match which {
-        PRIO_PROCESS | PRIO_PGRP | PRIO_USER => {
-            // TODO: Set priority
-            // Requires appropriate permissions for nice values < 0
+        PRIO_PROCESS => {
+            let target_pid = if who == 0 {
+                current_pid()
+            } else {
+                who as u32
+            };
+            process::scheduler::set_process_priority(target_pid, priority)
+                .map_err(|_| LinuxError::ESRCH)?;
+            Ok(0)
+        }
+        PRIO_PGRP => {
+            let pgid = if who == 0 {
+                process::get_process_manager()
+                    .get_process(current_pid())
+                    .map(|pcb| pcb.pgid)
+                    .ok_or(LinuxError::ESRCH)?
+            } else {
+                who as u32
+            };
+            let pids: alloc::vec::Vec<u32> = process::get_process_manager()
+                .find_processes(|pcb| pcb.pgid == pgid)
+                .into_iter()
+                .map(|pcb| pcb.pid)
+                .collect();
+            if pids.is_empty() {
+                return Err(LinuxError::ESRCH);
+            }
+            for pid in pids {
+                process::scheduler::set_process_priority(pid, priority)
+                    .map_err(|_| LinuxError::ESRCH)?;
+            }
+            Ok(0)
+        }
+        PRIO_USER => {
+            let uid = if who == 0 {
+                current_euid()
+            } else {
+                who as u32
+            };
+            let pids: alloc::vec::Vec<u32> = process::get_process_manager()
+                .find_processes(|pcb| pcb.uid == uid)
+                .into_iter()
+                .map(|pcb| pcb.pid)
+                .collect();
+            if pids.is_empty() {
+                return Err(LinuxError::ESRCH);
+            }
+            for pid in pids {
+                process::scheduler::set_process_priority(pid, priority)
+                    .map_err(|_| LinuxError::ESRCH)?;
+            }
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -319,12 +478,13 @@ pub fn setpriority(which: i32, _who: i32, prio: i32) -> LinuxResult<i32> {
 }
 
 /// nice - change process priority
-pub fn nice(_inc: i32) -> LinuxResult<i32> {
+pub fn nice(inc: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Adjust process priority by inc
-    // Return new priority value
-    Ok(20)
+    let current_nice = getpriority(0, 0)?;
+    let new_nice = (current_nice + inc).clamp(-20, 19);
+    setpriority(0, 0, new_nice)?;
+    Ok(new_nice)
 }
 
 // ============================================================================
@@ -354,8 +514,35 @@ pub struct SchedParam {
     pub sched_priority: i32,
 }
 
+fn resolve_sched_pid(pid: Pid) -> LinuxResult<u32> {
+    if pid < 0 {
+        return Err(LinuxError::ESRCH);
+    }
+    Ok(if pid == 0 { current_pid() } else { pid as u32 })
+}
+
+fn validate_sched_param(policy: i32, param: &SchedParam) -> LinuxResult<()> {
+    match policy {
+        sched_policy::SCHED_FIFO | sched_policy::SCHED_RR => {
+            if param.sched_priority < 1 || param.sched_priority > 99 {
+                return Err(LinuxError::EINVAL);
+            }
+        }
+        sched_policy::SCHED_NORMAL
+        | sched_policy::SCHED_BATCH
+        | sched_policy::SCHED_IDLE
+        | sched_policy::SCHED_DEADLINE => {
+            if param.sched_priority != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+        }
+        _ => return Err(LinuxError::EINVAL),
+    }
+    Ok(())
+}
+
 /// sched_setscheduler - set scheduling policy and parameters
-pub fn sched_setscheduler(_pid: Pid, policy: i32, param: *const SchedParam) -> LinuxResult<i32> {
+pub fn sched_setscheduler(pid: Pid, policy: i32, param: *const SchedParam) -> LinuxResult<i32> {
     inc_ops();
 
     if param.is_null() {
@@ -368,46 +555,83 @@ pub fn sched_setscheduler(_pid: Pid, policy: i32, param: *const SchedParam) -> L
         | sched_policy::SCHED_RR
         | sched_policy::SCHED_BATCH
         | sched_policy::SCHED_IDLE
-        | sched_policy::SCHED_DEADLINE => {
-            // TODO: Set scheduler policy
-            // SCHED_FIFO and SCHED_RR require real-time permissions
-            Ok(0)
-        }
-        _ => Err(LinuxError::EINVAL),
+        | sched_policy::SCHED_DEADLINE => {}
+        _ => return Err(LinuxError::EINVAL),
     }
+
+    let sched_param = unsafe { *param };
+    validate_sched_param(policy, &sched_param)?;
+
+    let target_pid = resolve_sched_pid(pid)?;
+    let caller_pid = current_pid();
+    let is_root = current_euid() == 0;
+
+    if target_pid != caller_pid && !is_root {
+        return Err(LinuxError::EPERM);
+    }
+
+    if (policy == sched_policy::SCHED_FIFO || policy == sched_policy::SCHED_RR) && !is_root {
+        return Err(LinuxError::EPERM);
+    }
+
+    process::get_process_manager()
+        .with_process_mut(target_pid, |pcb| {
+            pcb.sched_info.sched_policy = policy;
+            pcb.sched_info.sched_priority = sched_param.sched_priority;
+            Ok(0)
+        })
+        .ok_or(LinuxError::ESRCH)?
 }
 
 /// sched_getscheduler - get scheduling policy
-pub fn sched_getscheduler(_pid: Pid) -> LinuxResult<i32> {
+pub fn sched_getscheduler(pid: Pid) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Get scheduler policy for process
-    Ok(sched_policy::SCHED_NORMAL)
+    let target_pid = resolve_sched_pid(pid)?;
+
+    process::get_process_manager()
+        .get_process(target_pid)
+        .map(|pcb| pcb.sched_info.sched_policy)
+        .ok_or(LinuxError::ESRCH)
 }
 
 /// sched_setparam - set scheduling parameters
-pub fn sched_setparam(_pid: Pid, param: *const SchedParam) -> LinuxResult<i32> {
+pub fn sched_setparam(pid: Pid, param: *const SchedParam) -> LinuxResult<i32> {
     inc_ops();
 
     if param.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set scheduling parameters
-    Ok(0)
+    let target_pid = resolve_sched_pid(pid)?;
+    let sched_param = unsafe { *param };
+
+    process::get_process_manager()
+        .with_process_mut(target_pid, |pcb| {
+            validate_sched_param(pcb.sched_info.sched_policy, &sched_param)?;
+            pcb.sched_info.sched_priority = sched_param.sched_priority;
+            Ok(0)
+        })
+        .ok_or(LinuxError::ESRCH)?
 }
 
 /// sched_getparam - get scheduling parameters
-pub fn sched_getparam(_pid: Pid, param: *mut SchedParam) -> LinuxResult<i32> {
+pub fn sched_getparam(pid: Pid, param: *mut SchedParam) -> LinuxResult<i32> {
     inc_ops();
 
     if param.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get scheduling parameters
+    let target_pid = resolve_sched_pid(pid)?;
+
+    let priority = process::get_process_manager()
+        .get_process(target_pid)
+        .map(|pcb| pcb.sched_info.sched_priority)
+        .ok_or(LinuxError::ESRCH)?;
+
     unsafe {
-        (*param).sched_priority = 0;
+        (*param).sched_priority = priority;
     }
     Ok(0)
 }
@@ -435,18 +659,23 @@ pub fn sched_get_priority_min(policy: i32) -> LinuxResult<i32> {
 }
 
 /// sched_rr_get_interval - get SCHED_RR interval
-pub fn sched_rr_get_interval(_pid: Pid, tp: *mut TimeSpec) -> LinuxResult<i32> {
+pub fn sched_rr_get_interval(pid: Pid, tp: *mut TimeSpec) -> LinuxResult<i32> {
     inc_ops();
 
     if tp.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get actual RR interval
-    // Default is typically 100ms
+    let target_pid = resolve_sched_pid(pid)?;
+
+    let interval_ns = process::get_process_manager()
+        .get_process(target_pid)
+        .map(|pcb| pcb.sched_info.rr_interval_ns)
+        .ok_or(LinuxError::ESRCH)?;
+
     unsafe {
-        (*tp).tv_sec = 0;
-        (*tp).tv_nsec = 100_000_000;
+        (*tp).tv_sec = (interval_ns / 1_000_000_000) as i64;
+        (*tp).tv_nsec = (interval_ns % 1_000_000_000) as i64;
     }
 
     Ok(0)
@@ -465,7 +694,6 @@ mod tests {
 
     #[test_case]
     fn test_setrlimit_validation() {
-        // Soft limit cannot exceed hard limit
         let invalid = RLimit {
             rlim_cur: 1000,
             rlim_max: 500,
@@ -477,7 +705,7 @@ mod tests {
     fn test_priority() {
         assert!(getpriority(0, 0).is_ok());
         assert!(setpriority(0, 0, 10).is_ok());
-        assert!(setpriority(0, 0, -30).is_err()); // Out of range
+        assert!(setpriority(0, 0, -30).is_err());
     }
 
     #[test_case]

@@ -5,14 +5,43 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+
+use lazy_static::lazy_static;
+use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::vfs::{self, ramfs, FdKind, InodeType, VfsError};
 
 /// Operation counter for statistics
 static FS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
+
+lazy_static! {
+    static ref INOTIFY_INSTANCES: Mutex<BTreeMap<u32, InotifyInstance>> = Mutex::new(BTreeMap::new());
+    static ref INOTIFY_FD_MAP: Mutex<BTreeMap<Fd, u32>> = Mutex::new(BTreeMap::new());
+}
+
+static NEXT_INOTIFY_ID: AtomicU32 = AtomicU32::new(1);
+
+struct InotifyInstance {
+    flags: i32,
+    watches: BTreeMap<i32, String>,
+    next_wd: AtomicI32,
+}
+
+impl InotifyInstance {
+    fn new(flags: i32) -> Self {
+        Self {
+            flags,
+            watches: BTreeMap::new(),
+            next_wd: AtomicI32::new(1),
+        }
+    }
+}
 
 /// Initialize filesystem operations subsystem
 pub fn init_fs_operations() {
@@ -37,9 +66,89 @@ unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
     let mut len = 0;
     while *ptr.add(len) != 0 {
         len += 1;
+        if len > 4096 {
+            return Err(LinuxError::ENAMETOOLONG);
+        }
     }
     let slice = core::slice::from_raw_parts(ptr, len);
     String::from_utf8(slice.iter().copied().collect()).map_err(|_| LinuxError::EINVAL)
+}
+
+fn vfs_error_to_linux(err: VfsError) -> LinuxError {
+    match err {
+        VfsError::NotFound => LinuxError::ENOENT,
+        VfsError::PermissionDenied => LinuxError::EACCES,
+        VfsError::AlreadyExists => LinuxError::EEXIST,
+        VfsError::NotDirectory => LinuxError::ENOTDIR,
+        VfsError::IsDirectory => LinuxError::EISDIR,
+        VfsError::InvalidArgument => LinuxError::EINVAL,
+        VfsError::IoError => LinuxError::EIO,
+        VfsError::NoSpace => LinuxError::ENOSPC,
+        VfsError::TooManyFiles => LinuxError::EMFILE,
+        VfsError::BadFileDescriptor => LinuxError::EBADF,
+        VfsError::InvalidSeek => LinuxError::EINVAL,
+        VfsError::NameTooLong => LinuxError::ENAMETOOLONG,
+        VfsError::CrossDevice => LinuxError::EXDEV,
+        VfsError::ReadOnly => LinuxError::EROFS,
+        VfsError::NotSupported => LinuxError::ENOSYS,
+    }
+}
+
+fn validate_mount_target(path: &str) -> LinuxResult<()> {
+    match vfs::vfs_stat(path) {
+        Ok(stat) => {
+            if stat.inode_type != InodeType::Directory {
+                return Err(LinuxError::ENOTDIR);
+            }
+            Ok(())
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
+fn normalize_mount_path(path: &str) -> String {
+    if path == "/" {
+        return String::from("/");
+    }
+    String::from(path.trim_end_matches('/'))
+}
+
+fn placeholder_inode() -> Arc<dyn vfs::InodeOps> {
+    vfs::get_vfs().lookup("/").expect("root mount")
+}
+
+fn alloc_inotify_fd(flags: i32) -> LinuxResult<Fd> {
+    let id = NEXT_INOTIFY_ID.fetch_add(1, Ordering::Relaxed);
+    INOTIFY_INSTANCES
+        .lock()
+        .insert(id, InotifyInstance::new(flags));
+
+    let vfs_flags = if flags & 0x800 != 0 {
+        0x800
+    } else {
+        0
+    };
+
+    let fd = vfs::vfs_open_special(
+        placeholder_inode(),
+        vfs_flags,
+        FdKind::Inotify(id),
+    )
+    .map_err(|e| match e {
+        VfsError::TooManyFiles => LinuxError::EMFILE,
+        _ => LinuxError::EMFILE,
+    })?;
+
+    INOTIFY_FD_MAP.lock().insert(fd, id);
+    Ok(fd)
+}
+
+fn inotify_id_for_fd(fd: Fd) -> LinuxResult<u32> {
+    INOTIFY_FD_MAP
+        .lock()
+        .get(&fd)
+        .copied()
+        .ok_or(LinuxError::EBADF)
 }
 
 // ============================================================================
@@ -167,15 +276,30 @@ pub mod fstype {
     pub const ISOFS_SUPER_MAGIC: i64 = 0x9660;
 }
 
+fn fill_statfs(buf: *mut StatFs, vfs_stat: vfs::StatFs) {
+    unsafe {
+        *buf = StatFs::zero();
+        (*buf).f_type = vfs_stat.fs_type as i64;
+        (*buf).f_bsize = vfs_stat.block_size as i64;
+        (*buf).f_blocks = vfs_stat.total_blocks;
+        (*buf).f_bfree = vfs_stat.free_blocks;
+        (*buf).f_bavail = vfs_stat.avail_blocks;
+        (*buf).f_files = vfs_stat.total_inodes;
+        (*buf).f_ffree = vfs_stat.free_inodes;
+        (*buf).f_namelen = vfs_stat.max_name_len as i64;
+        (*buf).f_frsize = vfs_stat.block_size as i64;
+    }
+}
+
 // ============================================================================
 // Mount Operations
 // ============================================================================
 
 /// mount - mount filesystem
 pub fn mount(
-    _source: *const u8,
+    source: *const u8,
     target: *const u8,
-    _filesystemtype: *const u8,
+    filesystemtype: *const u8,
     mountflags: u64,
     _data: *const u8,
 ) -> LinuxResult<i32> {
@@ -185,10 +309,6 @@ pub fn mount(
         return Err(LinuxError::EFAULT);
     }
 
-    // source can be NULL for some filesystem types (e.g., tmpfs, proc)
-    // filesystemtype can be NULL for MS_BIND, MS_MOVE, MS_REMOUNT
-
-    // Validate flags
     let valid_flags = mount_flags::MS_RDONLY
         | mount_flags::MS_NOSUID
         | mount_flags::MS_NODEV
@@ -211,15 +331,40 @@ pub fn mount(
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Implement actual mounting
-    // 1. Parse filesystem type
-    // 2. Locate source device/path
-    // 3. Load filesystem driver
-    // 4. Mount at target path
-    // 5. Apply mount flags
-    // 6. Handle bind/move/remount specially
+    let target_str = normalize_mount_path(&unsafe { c_str_to_string(target)? });
+    validate_mount_target(&target_str)?;
 
-    Ok(0)
+    if mountflags & (mount_flags::MS_BIND | mount_flags::MS_MOVE | mount_flags::MS_REMOUNT) != 0 {
+        return Err(LinuxError::ENOSYS);
+    }
+
+    if filesystemtype.is_null() {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let fstype = unsafe { c_str_to_string(filesystemtype)? };
+    match fstype.as_str() {
+        "tmpfs" => {
+            let sb = Arc::new(ramfs::RamFs::new());
+            vfs::vfs_mount(&target_str, sb).map_err(|e| match e {
+                VfsError::AlreadyExists => LinuxError::EBUSY,
+                VfsError::NotFound => LinuxError::ENOENT,
+                _ => LinuxError::ENOSYS,
+            })?;
+            Ok(0)
+        }
+        "proc" | "sysfs" | "devtmpfs" | "devpts" => Err(LinuxError::ENOSYS),
+        _ => {
+            if source.is_null() {
+                return Err(LinuxError::ENODEV);
+            }
+            let source_str = unsafe { c_str_to_string(source)? };
+            if vfs::vfs_stat(&source_str).is_err() {
+                return Err(LinuxError::ENODEV);
+            }
+            Err(LinuxError::ENOSYS)
+        }
+    }
 }
 
 /// umount - unmount filesystem
@@ -230,11 +375,17 @@ pub fn umount(target: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Unmount filesystem at target
-    // Check if not busy
-    // Flush buffers
-    // Remove from mount tree
-    Ok(0)
+    let target_str = normalize_mount_path(&unsafe { c_str_to_string(target)? });
+    if target_str == "/" {
+        return Err(LinuxError::EBUSY);
+    }
+
+    match vfs::vfs_umount(&target_str) {
+        Ok(()) => Ok(0),
+        Err(VfsError::NotFound) => Err(LinuxError::EINVAL),
+        Err(VfsError::InvalidArgument) => Err(LinuxError::EBUSY),
+        Err(_) => Err(LinuxError::ENOSYS),
+    }
 }
 
 /// umount2 - unmount filesystem with flags
@@ -254,11 +405,11 @@ pub fn umount2(target: *const u8, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Unmount with specific behavior
-    // MNT_FORCE: force unmount even if busy
-    // MNT_DETACH: lazy unmount
-    // MNT_EXPIRE: mark for expiration
-    Ok(0)
+    if flags & (umount_flags::MNT_EXPIRE | umount_flags::UMOUNT_NOFOLLOW) != 0 {
+        return Err(LinuxError::ENOSYS);
+    }
+
+    umount(target)
 }
 
 /// pivot_root - change root filesystem
@@ -269,11 +420,13 @@ pub fn pivot_root(new_root: *const u8, put_old: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Change root filesystem
-    // Move current root to put_old
-    // Make new_root the new root
-    // Requires CAP_SYS_ADMIN
-    Ok(0)
+    let new_root_str = unsafe { c_str_to_string(new_root)? };
+    let put_old_str = unsafe { c_str_to_string(put_old)? };
+
+    validate_mount_target(&new_root_str)?;
+    validate_mount_target(&put_old_str)?;
+
+    Err(LinuxError::ENOSYS)
 }
 
 // ============================================================================
@@ -289,21 +442,12 @@ pub fn statfs(path: *const u8, buf: *mut StatFs) -> LinuxResult<i32> {
     }
 
     let path = unsafe { c_str_to_string(path)? };
-    let vfs_stat = crate::vfs::vfs_statfs(&path).map_err(|_| LinuxError::ENOSYS)?;
+    let vfs_stat = vfs::vfs_statfs(&path).map_err(|e| match e {
+        VfsError::NotFound => LinuxError::ENOENT,
+        _ => LinuxError::ENOSYS,
+    })?;
 
-    unsafe {
-        *buf = StatFs::zero();
-        (*buf).f_type = vfs_stat.fs_type as i64;
-        (*buf).f_bsize = vfs_stat.block_size as i64;
-        (*buf).f_blocks = vfs_stat.total_blocks;
-        (*buf).f_bfree = vfs_stat.free_blocks;
-        (*buf).f_bavail = vfs_stat.avail_blocks;
-        (*buf).f_files = vfs_stat.total_inodes;
-        (*buf).f_ffree = vfs_stat.free_inodes;
-        (*buf).f_namelen = vfs_stat.max_name_len as i64;
-        (*buf).f_frsize = vfs_stat.block_size as i64;
-    }
-
+    fill_statfs(buf, vfs_stat);
     Ok(0)
 }
 
@@ -319,21 +463,12 @@ pub fn fstatfs(fd: Fd, buf: *mut StatFs) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Get filesystem statistics for fd by looking up the root mount
-    let vfs_stat = crate::vfs::vfs_statfs("/").map_err(|_| LinuxError::ENOSYS)?;
-    unsafe {
-        *buf = StatFs::zero();
-        (*buf).f_type = vfs_stat.fs_type as i64;
-        (*buf).f_bsize = vfs_stat.block_size as i64;
-        (*buf).f_blocks = vfs_stat.total_blocks;
-        (*buf).f_bfree = vfs_stat.free_blocks;
-        (*buf).f_bavail = vfs_stat.avail_blocks;
-        (*buf).f_files = vfs_stat.total_inodes;
-        (*buf).f_ffree = vfs_stat.free_inodes;
-        (*buf).f_namelen = vfs_stat.max_name_len as i64;
-        (*buf).f_frsize = vfs_stat.block_size as i64;
-    }
-
+    let path = match vfs::vfs_fd_directory_path(fd) {
+        Ok(p) => p,
+        Err(_) => String::from("/"),
+    };
+    let vfs_stat = vfs::vfs_statfs(&path).map_err(|_| LinuxError::ENOSYS)?;
+    fill_statfs(buf, vfs_stat);
     Ok(0)
 }
 
@@ -345,9 +480,7 @@ pub fn ustat(_dev: Dev, ubuf: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get filesystem statistics for device
-    // This is obsolete, redirect to statfs
-    Ok(0)
+    Err(LinuxError::ENOSYS)
 }
 
 // ============================================================================
@@ -358,7 +491,7 @@ pub fn ustat(_dev: Dev, ubuf: *mut u8) -> LinuxResult<i32> {
 pub fn sync() {
     inc_ops();
 
-    let _ = crate::vfs::get_vfs().sync_all();
+    let _ = vfs::get_vfs().sync_all();
 }
 
 /// syncfs - sync filesystem containing file
@@ -369,8 +502,7 @@ pub fn syncfs(fd: Fd) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    // Sync all filesystems (syncfs syncs the filesystem containing the fd)
-    let _ = crate::vfs::get_vfs().sync_all();
+    let _ = vfs::get_vfs().sync_all();
     Ok(0)
 }
 
@@ -382,7 +514,6 @@ pub fn syncfs(fd: Fd) -> LinuxResult<i32> {
 pub fn quotactl(cmd: i32, _special: *const u8, _id: i32, _addr: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
-    // Quota commands
     const Q_QUOTAON: i32 = 0x0100;
     const Q_QUOTAOFF: i32 = 0x0200;
     const Q_GETQUOTA: i32 = 0x0300;
@@ -395,10 +526,7 @@ pub fn quotactl(cmd: i32, _special: *const u8, _id: i32, _addr: *mut u8) -> Linu
     let cmd_type = cmd & 0xFF00;
     match cmd_type {
         Q_QUOTAON | Q_QUOTAOFF | Q_GETQUOTA | Q_SETQUOTA | Q_GETINFO | Q_SETINFO | Q_GETFMT
-        | Q_SYNC => {
-            // TODO: Implement quota operations
-            Ok(0)
-        }
+        | Q_SYNC => Err(LinuxError::ENOSYS),
         _ => Err(LinuxError::EINVAL),
     }
 }
@@ -411,7 +539,6 @@ pub fn quotactl(cmd: i32, _special: *const u8, _id: i32, _addr: *mut u8) -> Linu
 pub fn unshare(flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    // Unshare flags (from clone_flags)
     const CLONE_FILES: i32 = 0x00000400;
     const CLONE_FS: i32 = 0x00000200;
     const CLONE_NEWNS: i32 = 0x00020000;
@@ -436,9 +563,11 @@ pub fn unshare(flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Unshare namespaces
-    // Create new namespace(s) and move current process to them
-    Ok(0)
+    if flags == 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    Err(LinuxError::ENOSYS)
 }
 
 /// setns - reassociate thread with a namespace
@@ -449,7 +578,6 @@ pub fn setns(fd: Fd, nstype: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    // Namespace types
     const CLONE_NEWNS: i32 = 0x00020000;
     const CLONE_NEWUTS: i32 = 0x04000000;
     const CLONE_NEWIPC: i32 = 0x08000000;
@@ -472,8 +600,7 @@ pub fn setns(fd: Fd, nstype: i32) -> LinuxResult<i32> {
         }
     }
 
-    // TODO: Join namespace referred to by fd
-    Ok(0)
+    Err(LinuxError::ENOSYS)
 }
 
 // ============================================================================
@@ -488,13 +615,8 @@ pub fn swapon(path: *const u8, _swapflags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Swap flags
-    const SWAP_FLAG_PREFER: i32 = 0x8000;
-    const SWAP_FLAG_DISCARD: i32 = 0x10000;
-
-    // TODO: Enable swapping
-    // Requires CAP_SYS_ADMIN
-    Ok(0)
+    let _ = unsafe { c_str_to_string(path)? };
+    Err(LinuxError::ENOSYS)
 }
 
 /// swapoff - stop swapping to file/device
@@ -505,9 +627,8 @@ pub fn swapoff(path: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Disable swapping
-    // Requires CAP_SYS_ADMIN
-    Ok(0)
+    let _ = unsafe { c_str_to_string(path)? };
+    Err(LinuxError::ENOSYS)
 }
 
 // ============================================================================
@@ -517,9 +638,7 @@ pub fn swapoff(path: *const u8) -> LinuxResult<i32> {
 /// inotify_init - initialize inotify instance
 pub fn inotify_init() -> LinuxResult<Fd> {
     inc_ops();
-
-    // TODO: Create inotify instance
-    Ok(200)
+    alloc_inotify_fd(0)
 }
 
 /// inotify_init1 - initialize inotify instance with flags
@@ -533,8 +652,7 @@ pub fn inotify_init1(flags: i32) -> LinuxResult<Fd> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Create inotify instance with flags
-    Ok(200)
+    alloc_inotify_fd(flags)
 }
 
 /// inotify_add_watch - add watch to inotify instance
@@ -549,20 +667,33 @@ pub fn inotify_add_watch(fd: Fd, pathname: *const u8, _mask: u32) -> LinuxResult
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Add watch for pathname
-    // Return watch descriptor
-    Ok(1)
+    let path = unsafe { c_str_to_string(pathname)? };
+    if vfs::vfs_stat(&path).is_err() {
+        return Err(LinuxError::ENOENT);
+    }
+
+    let id = inotify_id_for_fd(fd)?;
+    let mut instances = INOTIFY_INSTANCES.lock();
+    let instance = instances.get_mut(&id).ok_or(LinuxError::EBADF)?;
+    let wd = instance.next_wd.fetch_add(1, Ordering::Relaxed);
+    instance.watches.insert(wd, path);
+    Ok(wd)
 }
 
 /// inotify_rm_watch - remove watch from inotify instance
-pub fn inotify_rm_watch(fd: Fd, _wd: i32) -> LinuxResult<i32> {
+pub fn inotify_rm_watch(fd: Fd, wd: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {
         return Err(LinuxError::EBADF);
     }
 
-    // TODO: Remove watch
+    let id = inotify_id_for_fd(fd)?;
+    let mut instances = INOTIFY_INSTANCES.lock();
+    let instance = instances.get_mut(&id).ok_or(LinuxError::EBADF)?;
+    if instance.watches.remove(&wd).is_none() {
+        return Err(LinuxError::EINVAL);
+    }
     Ok(0)
 }
 
@@ -579,14 +710,13 @@ mod tests {
 
     #[test_case]
     fn test_mount_flags() {
-        // Test that flags are properly defined
         assert_eq!(mount_flags::MS_RDONLY, 1);
         assert_eq!(mount_flags::MS_NOSUID, 2);
     }
 
     #[test_case]
     fn test_sync() {
-        sync(); // Should not panic
+        sync();
     }
 
     #[test_case]

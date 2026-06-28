@@ -457,7 +457,10 @@ impl ProcessIntegration {
         let process_manager = get_process_manager();
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
-        // Get parent process memory layout
+        // Get parent process memory layout and other fork-inherited state
+        let parent_process = process_manager
+            .get_process(parent_pid)
+            .ok_or("Parent process not found")?;
         let (
             code_start,
             code_size,
@@ -470,24 +473,35 @@ impl ProcessIntegration {
             _vm_start,
             _vm_size,
             parent_priority,
-        ) = {
-            let parent_process = process_manager
-                .get_process(parent_pid)
-                .ok_or("Parent process not found")?;
-            (
-                parent_process.memory.code_start,
-                parent_process.memory.code_size,
-                parent_process.memory.data_start,
-                parent_process.memory.data_size,
-                parent_process.memory.heap_start,
-                parent_process.memory.heap_size,
-                parent_process.memory.stack_start,
-                parent_process.memory.stack_size,
-                parent_process.memory.vm_start,
-                parent_process.memory.vm_size,
-                parent_process.priority,
-            )
-        };
+        ) = (
+            parent_process.memory.code_start,
+            parent_process.memory.code_size,
+            parent_process.memory.data_start,
+            parent_process.memory.data_size,
+            parent_process.memory.heap_start,
+            parent_process.memory.heap_size,
+            parent_process.memory.stack_start,
+            parent_process.memory.stack_size,
+            parent_process.memory.vm_start,
+            parent_process.memory.vm_size,
+            parent_process.priority,
+        );
+        let parent_memory = parent_process.memory.clone();
+        let parent_fd_table = parent_process.fd_table.clone();
+        let parent_file_descriptors = parent_process.file_descriptors.clone();
+        let parent_next_fd = parent_process.next_fd;
+        let parent_cwd = parent_process.cwd.clone();
+        let parent_context = parent_process.context;
+        let parent_entry_point = parent_process.entry_point;
+        let parent_file_offsets = parent_process.file_offsets.clone();
+        let parent_rlimits = parent_process.rlimits.clone();
+        let parent_mlock_flags = parent_process.mlock_flags;
+        let parent_memory_policy = parent_process.memory_policy;
+        let parent_nodemask = parent_process.nodemask;
+        let parent_heap_break = parent_process.heap_break;
+        let parent_initial_break = parent_process.initial_break;
+        let parent_locked_pages = parent_process.locked_pages;
+        let parent_sched_info = parent_process.sched_info.clone();
 
         // Create child process with same priority as parent
         let child_name = "forked_process";
@@ -539,9 +553,26 @@ impl ProcessIntegration {
                 .map_err(|_| "Failed to clone stack")?;
         }
 
-        // 5. Update child process memory info through process manager's internal access
-        // Note: In a production system, we would need a proper API to update PCB fields
-        // For now, the memory is COW-mapped and will work correctly even without updating PCB
+        // 5. Copy parent's memory layout, fd table, and context into child PCB
+        process_manager.with_process_mut(child_pid, |child| {
+            child.memory = parent_memory;
+            child.fd_table = parent_fd_table;
+            child.file_descriptors = parent_file_descriptors;
+            child.next_fd = parent_next_fd;
+            child.cwd = parent_cwd;
+            child.context = parent_context;
+            child.context.rax = 0; // fork returns 0 in child
+            child.entry_point = parent_entry_point;
+            child.file_offsets = parent_file_offsets;
+            child.rlimits = parent_rlimits;
+            child.mlock_flags = parent_mlock_flags;
+            child.memory_policy = parent_memory_policy;
+            child.nodemask = parent_nodemask;
+            child.heap_break = parent_heap_break;
+            child.initial_break = parent_initial_break;
+            child.locked_pages = parent_locked_pages;
+            child.sched_info = parent_sched_info;
+        });
 
         Ok(child_pid)
     }

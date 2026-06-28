@@ -19,6 +19,7 @@ pub enum FdKind {
     Epoll(u32),
     Signalfd(u32),
     Socket(u32),
+    Inotify(u32),
 }
 
 impl FdKind {

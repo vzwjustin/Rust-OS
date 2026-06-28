@@ -4,8 +4,9 @@
 //! Upstream `GProxyAddress` is a `GObject` subclass that extends
 //! `GInetSocketAddress` with proxy-related fields (protocol, destination
 //! hostname/port, username, password, URI). We port it as a plain
-//! `pub struct` that wraps `InetSocketAddress` and adds the proxy fields,
-//! since the GObject subclassing system is deferred (Phase 9).
+//! `pub struct` that wraps `InetSocketAddress` and adds the proxy fields
+//! rather than a registered GObject subclass, mirroring upstream semantics
+//! with idiomatic Rust.
 //!
 //! Provides:
 //! - `ProxyAddress` struct (InetSocketAddress + protocol + dest_hostname +

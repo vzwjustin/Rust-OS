@@ -177,6 +177,7 @@ pub mod dir;
 pub mod endian;
 pub mod environ;
 pub mod error;
+#[cfg(any(test, feature = "c-abi"))]
 pub mod ffi;
 #[cfg(test)]
 pub mod ffi_parity;
@@ -325,7 +326,9 @@ pub mod gnullsettingsbackend;
 pub mod gobject;
 pub mod gopenuriportal;
 pub mod goutputstream;
+pub mod gparam;
 pub mod gparamspec;
+pub mod gparamspecs;
 pub mod gpermission;
 pub mod gpollableinputstream;
 pub mod gpollableoutputstream;
@@ -408,6 +411,7 @@ pub mod gunixsocketaddress;
 pub mod gunixvolume;
 pub mod gunixvolumemonitor;
 pub mod gvalue;
+pub mod gvaluearray;
 pub mod gvaluetransform;
 pub mod gvfs;
 pub mod gvolume;
@@ -879,7 +883,7 @@ pub use gnetworkmonitornetlink::NetworkMonitorNetlink;
 pub use gnetworkmonitornm::{NMConnectivity, NetworkMonitorNM};
 pub use gnetworkmonitorportal::NetworkMonitorPortal;
 pub use gnetworkservice::NetworkService;
-pub use gnotification::{Notification, NotificationButton, NotificationIcon, NotificationPriority};
+pub use gnotification::{Notification, NotificationButton, NotificationPriority};
 pub use gnotificationbackend::NotificationBackend;
 pub use gobject::{
     object_new, object_new_with_params, GObject, ObjectFlags, PropertyBinding, WeakRefCallback,

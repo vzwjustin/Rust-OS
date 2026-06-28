@@ -938,7 +938,6 @@ pub use glib_native::{
     // GIO notification backend
     NotificationBackend,
     NotificationButton,
-    NotificationIcon,
     NotificationPriority,
     ObjectFlags,
     Once,
@@ -2648,16 +2647,14 @@ pub fn smoke_check() -> Result<(), &'static str> {
     if notif.default_action_target().is_some() {
         return Err("GNotification default action clears target");
     }
-    // Opaque icon storage.
-    let icon: NotificationIcon = alloc::sync::Arc::new(0xDEADBEEFu32);
-    notif.set_icon(icon);
+    // Icon storage via GIcon enum.
+    let icon = Icon::Themed(ThemedIcon::new("notification"));
+    notif.set_icon(icon.clone());
     if notif.icon().is_none() {
         return Err("GNotification icon set");
     }
-    let stored_icon = notif.icon().unwrap();
-    let downcasted = stored_icon.downcast_ref::<u32>();
-    if downcasted != Some(&0xDEADBEEF) {
-        return Err("GNotification icon downcast");
+    if !notif.icon().unwrap().equal(&icon) {
+        return Err("GNotification icon equal");
     }
 
     // GIO SRV record target (Phase 11). Exercise construction,
@@ -5159,6 +5156,71 @@ pub fn smoke_check() -> Result<(), &'static str> {
         {
             return Err("GIRepository metadata lookup");
         }
+    }
+
+    // ── GObject/GBytes/GError exercises (Phase 13) ───────────────────
+    // Validate core APIs via Rust wrappers (no C ABI / libc on kernel).
+
+    let phase13_obj = object_new(G_TYPE_OBJECT);
+    if phase13_obj.is_floating() {
+        return Err("GObject is_floating initial");
+    }
+    phase13_obj.force_floating();
+    if !phase13_obj.is_floating() {
+        return Err("GObject force_floating");
+    }
+    phase13_obj.unref();
+
+    let phase13_bytes_data = b"phase13-bytes";
+    let phase13_bytes = Bytes::new(phase13_bytes_data);
+    if phase13_bytes.len() != phase13_bytes_data.len()
+        || phase13_bytes.data() != phase13_bytes_data
+    {
+        return Err("GBytes phase13");
+    }
+
+    let phase13_err_domain = quark_from_static_string(Some("rustos-phase13-err"));
+    let phase13_err = error_new(phase13_err_domain, 42, "phase13 error smoke");
+    if !error_matches(&phase13_err, phase13_err_domain, 42) {
+        return Err("GError matches");
+    }
+    if error_matches(&phase13_err, phase13_err_domain, 0) {
+        return Err("GError matches negative");
+    }
+    let phase13_err_copy = error_copy(&phase13_err);
+    if !error_matches(&phase13_err_copy, phase13_err_domain, 42) {
+        return Err("GError copy");
+    }
+    error_free(phase13_err);
+    error_free(phase13_err_copy);
+
+    if strcmp("alpha", "alpha") != 0 {
+        return Err("strcmp equal");
+    }
+    if strcmp("alpha", "beta") >= 0 {
+        return Err("strcmp less");
+    }
+
+    let ps_bool = ParamSpec::boolean("active", "Active", "Whether active", true, ParamFlags::NONE);
+    if ps_bool.value_type != G_TYPE_BOOLEAN {
+        return Err("ParamSpec boolean");
+    }
+    let ps_uint = ParamSpec::uint("count", "Count", "Item count", 0, 100, 50, ParamFlags::NONE);
+    if ps_uint.value_type != G_TYPE_UINT {
+        return Err("ParamSpec uint");
+    }
+
+    let phase13_type_id = type_register_static_simple(
+        G_TYPE_OBJECT,
+        "RustOSPhase13Type",
+        0,
+        None,
+        0,
+        None,
+        GTypeFlags::NONE,
+    );
+    if phase13_type_id == G_TYPE_INVALID {
+        return Err("GType register static simple");
     }
 
     Ok(())

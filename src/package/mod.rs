@@ -31,6 +31,8 @@ pub mod types;
 #[cfg(test)]
 pub mod tests;
 
+pub use adapters::{DebAdapter, PackageAdapter};
+pub use database::PackageDatabase;
 pub use manager::PackageManager;
 pub use syscalls::{handle_package_syscall, init_package_manager};
 pub use types::*;

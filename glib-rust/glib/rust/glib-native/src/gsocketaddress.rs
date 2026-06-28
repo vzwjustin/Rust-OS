@@ -3,8 +3,8 @@
 //!
 //! Upstream `GSocketAddress` is an abstract `GObject` subclass that also
 //! implements `GSocketConnectable`. We port it as an `enum` wrapping the
-//! concrete socket address types, since the GObject abstract class /
-//! interface system is deferred (Phase 9).
+//! concrete socket address types rather than registering an abstract
+//! GObject class, mirroring upstream semantics with idiomatic Rust.
 //!
 //! Provides:
 //! - `SocketAddress` enum (`Inet` / `Unix` / `Native`).

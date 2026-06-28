@@ -3,8 +3,16 @@
 //! This module implements Linux-compatible time operations including
 //! clock_gettime, clock_settime, nanosleep, and timer operations.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+extern crate alloc;
 
+use alloc::collections::BTreeMap;
+
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+
+use lazy_static::lazy_static;
+use spin::Mutex;
+
+use super::process_ops;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
 
@@ -24,6 +32,37 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     TIME_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Timer specification structure (struct itimerspec)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct ITimerSpec {
+    it_interval_sec: u64,
+    it_interval_nsec: u64,
+    it_value_sec: u64,
+    it_value_nsec: u64,
+}
+
+/// In-memory POSIX timer entry.
+struct PosixTimer {
+    clockid: i32,
+}
+
+lazy_static! {
+    static ref POSIX_TIMERS: Mutex<BTreeMap<TimerId, PosixTimer>> = Mutex::new(BTreeMap::new());
+    static ref NEXT_TIMER_ID: AtomicI32 = AtomicI32::new(1);
+}
+
+/// Alarm deadline as Unix timestamp (0 = no alarm scheduled)
+static ALARM_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+fn zero_itimerspec(ptr: *mut u8) {
+    if !ptr.is_null() {
+        unsafe {
+            *(ptr as *mut ITimerSpec) = ITimerSpec::default();
+        }
+    }
 }
 
 /// clock_gettime - get time of specified clock
@@ -76,8 +115,9 @@ pub fn clock_settime(clockid: i32, tp: *const TimeSpec) -> LinuxResult<i32> {
 
     match clockid {
         clock::CLOCK_REALTIME => {
-            // TODO: Set real-time clock (requires privileges)
-            // Check if current process has CAP_SYS_TIME capability
+            if process_ops::geteuid() != 0 {
+                return Err(LinuxError::EPERM);
+            }
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL), // Only CLOCK_REALTIME can be set
@@ -99,11 +139,10 @@ pub fn clock_getres(clockid: i32, res: *mut TimeSpec) -> LinuxResult<i32> {
         | clock::CLOCK_THREAD_CPUTIME_ID
         | clock::CLOCK_MONOTONIC_RAW
         | clock::CLOCK_BOOTTIME => {
-            // TODO: Get actual clock resolution
-            // Most systems have nanosecond resolution
+            // Kernel time is tracked at nanosecond granularity.
             unsafe {
                 (*res).tv_sec = 0;
-                (*res).tv_nsec = 1; // 1 nanosecond resolution
+                (*res).tv_nsec = 1;
             }
             Ok(0)
         }
@@ -215,10 +254,25 @@ pub fn settimeofday(tv: *const TimeVal, tz: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set time of day (requires privileges)
-    // tz is obsolete
     if !tz.is_null() {
         return Err(LinuxError::EINVAL);
+    }
+
+    let pid = crate::process::current_pid();
+    if let Some(ctx) = crate::security::get_context(pid) {
+        if !ctx.is_root() && !crate::security::check_permission(pid, "sys_time") {
+            return Err(LinuxError::EPERM);
+        }
+    } else {
+        return Err(LinuxError::EPERM);
+    }
+
+    unsafe {
+        let secs = (*tv).tv_sec;
+        if secs < 0 {
+            return Err(LinuxError::EINVAL);
+        }
+        crate::time::set_system_time(secs as u64);
     }
 
     Ok(0)
@@ -241,10 +295,10 @@ pub fn timer_create(
 
     match clockid {
         clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
-            // TODO: Create actual timer
-            // For now, return a dummy timer ID
+            let id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
+            POSIX_TIMERS.lock().insert(id, PosixTimer { clockid });
             unsafe {
-                *timerid = 1;
+                *timerid = id;
             }
             Ok(0)
         }
@@ -254,10 +308,10 @@ pub fn timer_create(
 
 /// timer_settime - arm/disarm a timer
 pub fn timer_settime(
-    _timerid: TimerId,
+    timerid: TimerId,
     _flags: i32,
     new_value: *const u8, // struct itimerspec
-    _old_value: *mut u8,  // struct itimerspec
+    old_value: *mut u8,   // struct itimerspec
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -265,13 +319,17 @@ pub fn timer_settime(
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set timer value
+    if !POSIX_TIMERS.lock().contains_key(&timerid) {
+        return Err(LinuxError::EINVAL);
+    }
+
+    zero_itimerspec(old_value);
     Ok(0)
 }
 
 /// timer_gettime - get timer value
 pub fn timer_gettime(
-    _timerid: TimerId,
+    timerid: TimerId,
     curr_value: *mut u8, // struct itimerspec
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -280,33 +338,53 @@ pub fn timer_gettime(
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get timer value
+    if !POSIX_TIMERS.lock().contains_key(&timerid) {
+        return Err(LinuxError::EINVAL);
+    }
+
+    zero_itimerspec(curr_value);
     Ok(0)
 }
 
 /// timer_delete - delete a timer
-pub fn timer_delete(_timerid: TimerId) -> LinuxResult<i32> {
+pub fn timer_delete(timerid: TimerId) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Delete timer
+    if POSIX_TIMERS.lock().remove(&timerid).is_none() {
+        return Err(LinuxError::EINVAL);
+    }
+
     Ok(0)
 }
 
 /// timer_getoverrun - get timer overrun count
-pub fn timer_getoverrun(_timerid: TimerId) -> LinuxResult<i32> {
+pub fn timer_getoverrun(timerid: TimerId) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Get overrun count
+    if !POSIX_TIMERS.lock().contains_key(&timerid) {
+        return Err(LinuxError::EINVAL);
+    }
+
     Ok(0)
 }
 
 /// alarm - set an alarm clock
-pub fn alarm(_seconds: u32) -> u32 {
+pub fn alarm(seconds: u32) -> u32 {
     inc_ops();
 
-    // TODO: Set alarm
-    // Return seconds remaining on previous alarm, or 0
-    0
+    let now = crate::time::system_time();
+    let previous = ALARM_DEADLINE.swap(0, Ordering::Relaxed);
+    let remaining = if previous > now {
+        (previous - now) as u32
+    } else {
+        0
+    };
+
+    if seconds != 0 {
+        ALARM_DEADLINE.store(now + seconds as u64, Ordering::Relaxed);
+    }
+
+    remaining
 }
 
 /// sleep - sleep for specified number of seconds

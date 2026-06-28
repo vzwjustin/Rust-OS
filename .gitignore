@@ -1,10 +1,12 @@
 /target/
+**/target_test/
 **/*.rs.bk
 Cargo.lock
 *.iso
 *.img
 /tmp/
 backup/
+.claude/
 # System and temporary files
 .DS_Store
 *.log

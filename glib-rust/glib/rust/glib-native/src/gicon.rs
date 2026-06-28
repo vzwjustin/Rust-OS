@@ -1,10 +1,10 @@
 //! GIO icon matching `gio/gicon.h` / `gio/gicon.c`.
 //!
 //! Upstream `GIcon` is an abstract interface (`GInterface`) for icons.
-//! We port it as a Rust `enum` wrapping the concrete icon types, since
-//! the GObject interface system is deferred (Phase 9). The enum
-//! provides `hash`, `equal`, `to_string`, and `serialize` methods that
-//! delegate to the concrete variant.
+//! We port it as a Rust `enum` wrapping the concrete icon types rather
+//! than registering a `GInterface`, mirroring upstream semantics with
+//! idiomatic Rust. The enum provides `hash`, `equal`, `to_string`, and
+//! `serialize` methods that delegate to the concrete variant.
 //!
 //! Provides:
 //! - `Icon` enum (`Themed` / `Bytes` / `Emblem` / `EmblemedIcon` variants).

@@ -3,8 +3,9 @@
 //!
 //! Upstream `GNetworkService` is a `GObject` subclass that implements
 //! `GSocketConnectable`. It represents a SRV record to be resolved.
-//! We port it as a plain `pub struct` with the same API, since the
-//! GObject subclassing / interface system is deferred (Phase 9).
+//! We port it as a plain `pub struct` with the same API rather than a
+//! registered GObject subclass, mirroring upstream semantics with
+//! idiomatic Rust.
 //!
 //! Provides:
 //! - `NetworkService` struct (service / protocol / domain / scheme).

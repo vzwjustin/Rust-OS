@@ -13,10 +13,19 @@ use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
-use crate::process;
+use crate::process::{self, ProcessState};
 
 lazy_static! {
     static ref SIGNAL_MASKS: Mutex<BTreeMap<u32, AtomicU64>> = Mutex::new(BTreeMap::new());
+    static ref SIGNAL_STACKS: Mutex<BTreeMap<u32, SignalStack>> = Mutex::new(BTreeMap::new());
+}
+
+/// Per-process alternate signal stack
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalStack {
+    sp: u64,
+    flags: i32,
+    size: u64,
 }
 
 fn signal_mask_for(pid: u32) -> u64 {
@@ -35,6 +44,142 @@ where
     let entry = masks.entry(pid).or_insert_with(|| AtomicU64::new(0));
     let current = entry.load(Ordering::SeqCst);
     entry.store(f(current), Ordering::SeqCst);
+}
+
+fn pending_signal_set(pid: u32) -> SigSet {
+    let process_manager = process::get_process_manager();
+    let mut pending_set: SigSet = 0;
+
+    if let Some(pcb) = process_manager.get_process(pid) {
+        for sig in &pcb.pending_signals {
+            if *sig >= 1 && *sig <= 64 {
+                pending_set |= 1u64 << (sig - 1);
+            }
+        }
+    }
+
+    pending_set
+}
+
+fn first_deliverable_signal(set: SigSet, blocked: SigSet, pending: SigSet) -> Option<i32> {
+    let candidates = set & pending & !blocked;
+    if candidates == 0 {
+        return None;
+    }
+    for sig in 1..=64i32 {
+        if candidates & (1u64 << (sig - 1)) != 0 {
+            return Some(sig);
+        }
+    }
+    None
+}
+
+fn consume_pending_signal(pid: u32, signum: i32) {
+    let process_manager = process::get_process_manager();
+    process_manager.with_process_mut(pid, |pcb| {
+        pcb.pending_signals.retain(|s| *s != signum as u32);
+    });
+}
+
+fn wake_if_blocked(pid: u32) {
+    let process_manager = process::get_process_manager();
+    if let Some(pcb) = process_manager.get_process(pid) {
+        if matches!(pcb.state, ProcessState::Sleeping | ProcessState::Blocked) {
+            let _ = process_manager.unblock_process(pid);
+        }
+    }
+}
+
+fn deliver_signal_to_pid(target_pid: u32, sig: i32) -> LinuxResult<()> {
+    if sig == 0 {
+        let process_manager = process::get_process_manager();
+        if process_manager.get_process(target_pid).is_none() {
+            return Err(LinuxError::ESRCH);
+        }
+        return Ok(());
+    }
+
+    if sig < 1 || sig > 64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let process_manager = process::get_process_manager();
+    if process_manager.get_process(target_pid).is_none() {
+        return Err(LinuxError::ESRCH);
+    }
+
+    process_manager.with_process_mut(target_pid, |pcb| {
+        pcb.pending_signals.push(sig as u32);
+    });
+    wake_if_blocked(target_pid);
+    Ok(())
+}
+
+fn deliver_signal_to_pgid(pgid: u32, sig: i32) -> LinuxResult<()> {
+    let process_manager = process::get_process_manager();
+    let mut delivered = false;
+
+    for (pid, _, _, _) in process_manager.list_processes() {
+        if let Some(pcb) = process_manager.get_process(pid) {
+            if pcb.pgid == pgid {
+                deliver_signal_to_pid(pid, sig)?;
+                delivered = true;
+            }
+        }
+    }
+
+    if sig == 0 && !delivered {
+        return Err(LinuxError::ESRCH);
+    }
+
+    Ok(())
+}
+
+fn broadcast_signal(sig: i32) -> LinuxResult<()> {
+    let process_manager = process::get_process_manager();
+    let mut delivered = false;
+
+    for (pid, _, _, _) in process_manager.list_processes() {
+        if process_manager.get_process(pid).is_some() {
+            let _ = deliver_signal_to_pid(pid, sig);
+            delivered = true;
+        }
+    }
+
+    if sig == 0 && !delivered {
+        return Err(LinuxError::ESRCH);
+    }
+
+    Ok(())
+}
+
+fn wait_for_signal(
+    set: SigSet,
+    blocked: SigSet,
+    timeout: Option<u64>,
+) -> LinuxResult<i32> {
+    let pid = process::current_pid();
+    let start = crate::time::system_time();
+
+    loop {
+        let pending = pending_signal_set(pid);
+        if let Some(sig) = first_deliverable_signal(set, blocked, pending) {
+            consume_pending_signal(pid, sig);
+            return Ok(sig);
+        }
+
+        if let Some(deadline) = timeout {
+            if crate::time::system_time() >= deadline {
+                return Err(LinuxError::EAGAIN);
+            }
+        }
+
+        crate::time::sleep_us(1_000);
+
+        if timeout.is_none() {
+            let _ = start;
+        }
+    }
 }
 
 /// Operation counter for statistics
@@ -77,47 +222,6 @@ pub mod sig_how {
 pub fn sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> LinuxResult<i32> {
     inc_ops();
 
-    // Validate signal number
-    if signum < 1 || signum > 64 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    // SIGKILL and SIGSTOP cannot be caught or ignored
-    if signum == signal::SIGKILL || signum == signal::SIGSTOP {
-        return Err(LinuxError::EINVAL);
-    }
-
-    // TODO: Save old action if requested
-    if !oldact.is_null() {
-        unsafe {
-            (*oldact).sa_handler = sig_action::SIG_DFL;
-            (*oldact).sa_flags = 0;
-            (*oldact).sa_restorer = 0;
-            (*oldact).sa_mask = 0;
-        }
-    }
-
-    // TODO: Set new action if provided
-    if !act.is_null() {
-        // Validate and install new signal handler
-    }
-
-    Ok(0)
-}
-
-/// rt_sigaction - real-time signal action (similar to sigaction)
-pub fn rt_sigaction(
-    signum: i32,
-    act: *const SigAction,
-    oldact: *mut SigAction,
-    sigsetsize: usize,
-) -> LinuxResult<i32> {
-    inc_ops();
-
-    if sigsetsize != 8 {
-        return Err(LinuxError::EINVAL);
-    }
-
     if signum < 1 || signum > 64 {
         return Err(LinuxError::EINVAL);
     }
@@ -152,6 +256,22 @@ pub fn rt_sigaction(
     }
 
     Ok(0)
+}
+
+/// rt_sigaction - real-time signal action (similar to sigaction)
+pub fn rt_sigaction(
+    signum: i32,
+    act: *const SigAction,
+    oldact: *mut SigAction,
+    sigsetsize: usize,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sigsetsize != 8 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    sigaction(signum, act, oldact)
 }
 
 /// sigprocmask - examine and change blocked signals
@@ -211,9 +331,9 @@ pub fn sigpending(set: *mut SigSet) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get pending signals
+    let pid = process::current_pid();
     unsafe {
-        *set = 0; // No pending signals for now
+        *set = pending_signal_set(pid);
     }
 
     Ok(0)
@@ -238,10 +358,20 @@ pub fn sigsuspend(mask: *const SigSet) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Suspend process until signal arrives
-    // This should never return normally, only via signal handler
-    // For now, just return EINTR as if interrupted
-    Err(LinuxError::EINTR)
+    let pid = process::current_pid();
+    let new_mask = unsafe { *mask };
+    let old_mask = signal_mask_for(pid);
+    update_signal_mask(pid, |_| new_mask);
+
+    loop {
+        let pending = pending_signal_set(pid);
+        let deliverable = pending & !new_mask;
+        if deliverable != 0 {
+            update_signal_mask(pid, |_| old_mask);
+            return Err(LinuxError::EINTR);
+        }
+        crate::time::sleep_us(1_000);
+    }
 }
 
 /// rt_sigsuspend - real-time signal suspend
@@ -256,14 +386,61 @@ pub fn rt_sigsuspend(mask: *const SigSet, sigsetsize: usize) -> LinuxResult<i32>
 }
 
 /// sigaltstack - set/get signal stack context
-pub fn sigaltstack(_ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
+pub fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Set alternate signal stack
-    // For now, just copy if old_ss is provided
+    const SS_DISABLE: i32 = 2;
+    const SS_ONSTACK: i32 = 1;
+
+    let pid = process::current_pid();
+
     if !old_ss.is_null() {
+        let stacks = SIGNAL_STACKS.lock();
+        let stack = stacks.get(&pid).copied().unwrap_or_default();
         unsafe {
-            core::ptr::write_bytes(old_ss, 0, 24); // stack_t is 24 bytes
+            let out = old_ss as *mut u64;
+            *out = stack.sp;
+            *(old_ss.add(8) as *mut i32) = if stack.flags & SS_DISABLE != 0 {
+                SS_DISABLE
+            } else if stack.size > 0 {
+                0
+            } else {
+                SS_DISABLE
+            };
+            *(old_ss.add(16) as *mut u64) = stack.size;
+        }
+    }
+
+    if !ss.is_null() {
+        unsafe {
+            let input_sp = *(ss as *const u64);
+            let input_flags = *(ss.add(8) as *const i32);
+            let input_size = *(ss.add(16) as *const u64);
+
+            if input_flags & SS_DISABLE != 0 {
+                let mut stacks = SIGNAL_STACKS.lock();
+                stacks.insert(
+                    pid,
+                    SignalStack {
+                        sp: 0,
+                        flags: SS_DISABLE,
+                        size: 0,
+                    },
+                );
+            } else {
+                if input_sp == 0 || input_size < 2048 {
+                    return Err(LinuxError::ENOMEM);
+                }
+                let mut stacks = SIGNAL_STACKS.lock();
+                stacks.insert(
+                    pid,
+                    SignalStack {
+                        sp: input_sp,
+                        flags: input_flags & !SS_ONSTACK,
+                        size: input_size,
+                    },
+                );
+            }
         }
     }
 
@@ -273,8 +450,8 @@ pub fn sigaltstack(_ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
 /// sigtimedwait - wait for queued signals
 pub fn sigtimedwait(
     set: *const SigSet,
-    _info: *mut u8, // siginfo_t
-    _timeout: *const TimeSpec,
+    _info: *mut u8,
+    timeout: *const TimeSpec,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -282,9 +459,19 @@ pub fn sigtimedwait(
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Wait for signal with timeout
-    // Return signal number if caught, or error
-    Err(LinuxError::EAGAIN)
+    let wait_set = unsafe { *set };
+    let blocked = signal_mask_for(process::current_pid());
+
+    let deadline = if timeout.is_null() {
+        None
+    } else {
+        unsafe {
+            let ts = &*timeout;
+            Some(crate::time::system_time() + ts.tv_sec as u64 + ts.tv_nsec as u64 / 1_000_000_000)
+        }
+    };
+
+    wait_for_signal(wait_set, blocked, deadline)
 }
 
 /// sigwaitinfo - wait for queued signals
@@ -306,7 +493,7 @@ pub fn sigqueue(pid: Pid, sig: i32, _value: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Queue signal to process
+    deliver_signal_to_pid(pid as u32, sig)?;
     Ok(0)
 }
 
@@ -314,9 +501,16 @@ pub fn sigqueue(pid: Pid, sig: i32, _value: i32) -> LinuxResult<i32> {
 pub fn pause() -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Suspend until signal arrives
-    // Always returns EINTR when interrupted by signal
-    Err(LinuxError::EINTR)
+    let pid = process::current_pid();
+    let blocked = signal_mask_for(pid);
+
+    loop {
+        let pending = pending_signal_set(pid);
+        if first_deliverable_signal(!0, blocked, pending).is_some() {
+            return Err(LinuxError::EINTR);
+        }
+        crate::time::sleep_us(1_000);
+    }
 }
 
 /// Signal set manipulation helpers
@@ -341,7 +535,7 @@ pub fn sigfillset(set: *mut SigSet) -> LinuxResult<i32> {
     }
 
     unsafe {
-        *set = !0; // All bits set
+        *set = !0;
     }
 
     Ok(0)
@@ -401,31 +595,26 @@ pub fn sigismember(set: *const SigSet, signum: i32) -> LinuxResult<i32> {
 pub fn kill(pid: Pid, sig: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    // Validate signal number (0 is valid - means just check permissions)
     if sig < 0 || sig > 64 {
         return Err(LinuxError::EINVAL);
     }
 
-    // pid > 0: send to process `pid`
-    // pid == 0: send to all processes in same process group
-    // pid == -1: send to all processes we can send to
-    // pid < -1: send to process group -pid
+    let process_manager = process::get_process_manager();
 
     if pid > 0 {
-        // Verify process exists
-        let process_manager = process::get_process_manager();
-        if process_manager.get_process(pid as u32).is_none() {
-            return Err(LinuxError::ESRCH);
-        }
-
-        // TODO: Actually deliver the signal
-        // For now, just succeed
+        deliver_signal_to_pid(pid as u32, sig)?;
     } else if pid == 0 {
-        // TODO: Send to process group
+        let current = process::current_pid();
+        let pgid = process_manager
+            .get_process(current)
+            .map(|pcb| pcb.pgid)
+            .ok_or(LinuxError::ESRCH)?;
+        deliver_signal_to_pgid(pgid, sig)?;
     } else if pid == -1 {
-        // TODO: Send to all processes
+        broadcast_signal(sig)?;
     } else {
-        // TODO: Send to process group -pid
+        let pgid = (-pid) as u32;
+        deliver_signal_to_pgid(pgid, sig)?;
     }
 
     Ok(0)
@@ -461,10 +650,7 @@ mod tests {
             sa_mask: 0,
         };
 
-        // SIGKILL cannot be caught
         assert!(sigaction(signal::SIGKILL, &act, core::ptr::null_mut()).is_err());
-
-        // Valid signal
         assert!(sigaction(signal::SIGINT, &act, core::ptr::null_mut()).is_ok());
     }
 }

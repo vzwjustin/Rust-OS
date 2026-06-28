@@ -3,8 +3,8 @@
 //!
 //! Upstream `GUnixSocketAddress` is a `GObject` subclass that also
 //! implements `GSocketConnectable`. We port it as a plain `pub struct`
-//! with the same API, since the GObject subclassing / interface system
-//! is deferred (Phase 9).
+//! with the same API rather than a registered GObject subclass,
+//! mirroring upstream semantics with idiomatic Rust.
 //!
 //! Provides:
 //! - `UnixSocketAddressType` enum (Invalid / Anonymous / Path / Abstract /

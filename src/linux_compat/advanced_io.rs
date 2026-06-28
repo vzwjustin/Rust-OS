@@ -477,55 +477,106 @@ pub fn copy_file_range(
 // Extended Attributes
 // ============================================================================
 
+fn validate_xattr_name(name: &str) -> LinuxResult<()> {
+    if name.is_empty() || name.len() > 255 {
+        return Err(LinuxError::EINVAL);
+    }
+    if name.starts_with('.') {
+        return Err(LinuxError::EINVAL);
+    }
+    if name.contains('\0') {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(())
+}
+
+unsafe fn xattr_name_from_ptr(name: *const u8) -> LinuxResult<alloc::string::String> {
+    if name.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let name_str = c_str_to_string(name)?;
+    validate_xattr_name(&name_str)?;
+    Ok(name_str)
+}
+
+fn xattr_vfs_error(err: crate::vfs::VfsError) -> LinuxError {
+    match err {
+        crate::vfs::VfsError::NotFound => LinuxError::ENODATA,
+        crate::vfs::VfsError::NotSupported => LinuxError::ENOTSUP,
+        crate::vfs::VfsError::AlreadyExists => LinuxError::EEXIST,
+        crate::vfs::VfsError::InvalidArgument => LinuxError::EINVAL,
+        _ => vfs_error_to_linux(err),
+    }
+}
+
+fn copy_xattr_value(value: &[u8], out: *mut u8, size: usize) -> LinuxResult<isize> {
+    if size == 0 {
+        return Ok(value.len() as isize);
+    }
+    if value.len() > size {
+        return Err(LinuxError::ERANGE);
+    }
+    if out.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+    }
+    Ok(value.len() as isize)
+}
+
 /// getxattr - get an extended attribute value
 pub fn getxattr(
     path: *const u8,
     name: *const u8,
-    _value: *mut u8,
-    _size: usize,
+    value: *mut u8,
+    size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
-    if path.is_null() || name.is_null() {
+    if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get extended attribute from VFS
-    // Return ENODATA if attribute doesn't exist
-    Err(LinuxError::ENODATA)
+    let path = unsafe { c_str_to_string(path)? };
+    let name = unsafe { xattr_name_from_ptr(name)? };
+
+    match vfs::vfs_getxattr(&path, &name) {
+        Ok(data) => Ok(copy_xattr_value(&data, value, size)),
+        Err(e) => Err(xattr_vfs_error(e)),
+    }
 }
 
 /// lgetxattr - get extended attribute (don't follow symlinks)
 pub fn lgetxattr(
     path: *const u8,
     name: *const u8,
-    _value: *mut u8,
-    _size: usize,
+    value: *mut u8,
+    size: usize,
 ) -> LinuxResult<isize> {
     inc_ops();
 
-    if path.is_null() || name.is_null() {
+    if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Get extended attribute without following symlinks
-    Err(LinuxError::ENODATA)
+    getxattr(path, name, value, size)
 }
 
 /// fgetxattr - get extended attribute by file descriptor
-pub fn fgetxattr(fd: Fd, name: *const u8, _value: *mut u8, _size: usize) -> LinuxResult<isize> {
+pub fn fgetxattr(fd: Fd, name: *const u8, value: *mut u8, size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
         return Err(LinuxError::EBADF);
     }
 
-    if name.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
+    let name = unsafe { xattr_name_from_ptr(name)? };
 
-    // TODO: Get extended attribute by fd
-    Err(LinuxError::ENODATA)
+    match vfs::vfs_fgetxattr(fd, &name) {
+        Ok(data) => Ok(copy_xattr_value(&data, value, size)),
+        Err(e) => Err(xattr_vfs_error(e)),
+    }
 }
 
 /// setxattr - set an extended attribute value
@@ -533,16 +584,15 @@ pub fn setxattr(
     path: *const u8,
     name: *const u8,
     value: *const u8,
-    _size: usize,
+    size: usize,
     flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    if path.is_null() || name.is_null() || value.is_null() {
+    if path.is_null() || value.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // Flags: XATTR_CREATE (1), XATTR_REPLACE (2)
     const XATTR_CREATE: i32 = 1;
     const XATTR_REPLACE: i32 = 2;
 
@@ -550,8 +600,19 @@ pub fn setxattr(
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Set extended attribute in VFS
-    Ok(0)
+    let path = unsafe { c_str_to_string(path)? };
+    let name = unsafe { xattr_name_from_ptr(name)? };
+    let data = unsafe { core::slice::from_raw_parts(value, size) };
+
+    let create = flags & XATTR_CREATE != 0;
+    let replace = flags & XATTR_REPLACE != 0;
+    if create && replace {
+        return Err(LinuxError::EINVAL);
+    }
+
+    vfs::vfs_setxattr(&path, &name, data, create)
+        .map(|_| 0)
+        .map_err(xattr_vfs_error)
 }
 
 /// lsetxattr - set extended attribute (don't follow symlinks)
@@ -559,17 +620,16 @@ pub fn lsetxattr(
     path: *const u8,
     name: *const u8,
     value: *const u8,
-    _size: usize,
-    _flags: i32,
+    size: usize,
+    flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    if path.is_null() || name.is_null() || value.is_null() {
+    if path.is_null() || value.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set extended attribute without following symlinks
-    Ok(0)
+    setxattr(path, name, value, size, flags)
 }
 
 /// fsetxattr - set extended attribute by file descriptor
@@ -577,8 +637,8 @@ pub fn fsetxattr(
     fd: Fd,
     name: *const u8,
     value: *const u8,
-    _size: usize,
-    _flags: i32,
+    size: usize,
+    flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -586,73 +646,92 @@ pub fn fsetxattr(
         return Err(LinuxError::EBADF);
     }
 
-    if name.is_null() || value.is_null() {
+    if value.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Set extended attribute by fd
-    Ok(0)
+    const XATTR_CREATE: i32 = 1;
+    const XATTR_REPLACE: i32 = 2;
+
+    if flags & !(XATTR_CREATE | XATTR_REPLACE) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let name = unsafe { xattr_name_from_ptr(name)? };
+    let data = unsafe { core::slice::from_raw_parts(value, size) };
+    let create = flags & XATTR_CREATE != 0;
+
+    vfs::vfs_fsetxattr(fd, &name, data, create)
+        .map(|_| 0)
+        .map_err(xattr_vfs_error)
 }
 
 /// listxattr - list extended attribute names
-pub fn listxattr(path: *const u8, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
+pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: List extended attributes
-    // Return list of null-terminated names
-    Ok(0)
+    let path = unsafe { c_str_to_string(path)? };
+
+    match vfs::vfs_listxattr(&path) {
+        Ok(data) => Ok(copy_xattr_value(&data, list, size)),
+        Err(e) => Err(xattr_vfs_error(e)),
+    }
 }
 
 /// llistxattr - list extended attributes (don't follow symlinks)
-pub fn llistxattr(path: *const u8, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
+pub fn llistxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: List extended attributes without following symlinks
-    Ok(0)
+    listxattr(path, list, size)
 }
 
 /// flistxattr - list extended attributes by file descriptor
-pub fn flistxattr(fd: Fd, _list: *mut u8, _size: usize) -> LinuxResult<isize> {
+pub fn flistxattr(fd: Fd, list: *mut u8, size: usize) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
         return Err(LinuxError::EBADF);
     }
 
-    // TODO: List extended attributes by fd
-    Ok(0)
+    match vfs::vfs_flistxattr(fd) {
+        Ok(data) => Ok(copy_xattr_value(&data, list, size)),
+        Err(e) => Err(xattr_vfs_error(e)),
+    }
 }
 
 /// removexattr - remove an extended attribute
 pub fn removexattr(path: *const u8, name: *const u8) -> LinuxResult<i32> {
     inc_ops();
 
-    if path.is_null() || name.is_null() {
+    if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Remove extended attribute from VFS
-    Ok(0)
+    let path = unsafe { c_str_to_string(path)? };
+    let name = unsafe { xattr_name_from_ptr(name)? };
+
+    vfs::vfs_removexattr(&path, &name)
+        .map(|_| 0)
+        .map_err(xattr_vfs_error)
 }
 
 /// lremovexattr - remove extended attribute (don't follow symlinks)
 pub fn lremovexattr(path: *const u8, name: *const u8) -> LinuxResult<i32> {
     inc_ops();
 
-    if path.is_null() || name.is_null() {
+    if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Remove extended attribute without following symlinks
-    Ok(0)
+    removexattr(path, name)
 }
 
 /// fremovexattr - remove extended attribute by file descriptor
@@ -663,12 +742,11 @@ pub fn fremovexattr(fd: Fd, name: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    if name.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
+    let name = unsafe { xattr_name_from_ptr(name)? };
 
-    // TODO: Remove extended attribute by fd
-    Ok(0)
+    vfs::vfs_fremovexattr(fd, &name)
+        .map(|_| 0)
+        .map_err(xattr_vfs_error)
 }
 
 // ============================================================================

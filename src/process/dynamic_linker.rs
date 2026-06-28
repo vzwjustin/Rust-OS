@@ -27,13 +27,16 @@
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::VirtAddr;
 
-use super::elf_loader::{elf_constants, Elf64ProgramHeader};
+use super::elf_loader::{elf_constants, Elf64ProgramHeader, ElfLoader};
+use crate::memory::PAGE_SIZE;
+use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_stat, OpenFlags};
 
 /// Dynamic linker for loading shared libraries and resolving symbols
 #[derive(Clone)]
@@ -454,21 +457,15 @@ impl DynamicLinker {
             // Try to find the library
             match self.find_library(lib_name) {
                 Some(path) => {
-                    // Try to load the library file
                     match self.load_library_file(&path) {
-                        Ok(_data) => {
-                            // TODO: Parse the library ELF, load it into memory,
-                            // extract symbols, and add to loaded_libraries
-                            // For now, just record the attempt
+                        Ok(data) => {
+                            self.register_shared_library(lib_name, &data)?;
                             loaded.push(lib_name.clone());
                         }
                         Err(DynamicLinkerError::LibraryNotFound(_)) => {
-                            // Filesystem integration pending - record as attempted
-                            loaded.push(lib_name.clone());
+                            return Err(DynamicLinkerError::LibraryNotFound(lib_name.clone()));
                         }
-                        Err(e) => {
-                            return Err(e);
-                        }
+                        Err(e) => return Err(e),
                     }
                 }
                 None => {
@@ -478,6 +475,50 @@ impl DynamicLinker {
         }
 
         Ok(loaded)
+    }
+
+    /// Parse, map, and register a shared library loaded from the VFS.
+    fn register_shared_library(
+        &mut self,
+        name: &str,
+        data: &[u8],
+    ) -> DynamicLinkerResult<()> {
+        if self.loaded_libraries.contains_key(name) {
+            return Ok(());
+        }
+
+        let base = self.next_base_address;
+        let loader = ElfLoader::new(false, true);
+        let (loaded_base, mem_size, program_headers) = loader
+            .load_shared_library(data, base)
+            .map_err(|e| DynamicLinkerError::InvalidElf(format!("{e}")))?;
+
+        let mut dynamic_info =
+            self.parse_dynamic_section(data, &program_headers, loaded_base)?;
+        self.resolve_library_names(data, &mut dynamic_info)?;
+
+        let nested: Vec<String> = dynamic_info
+            .needed
+            .iter()
+            .filter(|dep| !self.loaded_libraries.contains_key(*dep))
+            .cloned()
+            .collect();
+        self.load_dependencies(&nested)?;
+
+        self.load_symbols_from_binary(data, &dynamic_info, loaded_base)?;
+
+        let library = LoadedLibrary {
+            name: name.to_string(),
+            base_address: loaded_base,
+            size: mem_size,
+            entry_point: None,
+            dynamic_info,
+        };
+        self.loaded_libraries.insert(name.to_string(), library);
+        self.next_base_address =
+            VirtAddr::new(loaded_base.as_u64() + mem_size as u64 + PAGE_SIZE as u64);
+
+        Ok(())
     }
 
     /// Search for a library in search paths
@@ -493,45 +534,54 @@ impl DynamicLinker {
     }
 
     /// Check if a file exists in the filesystem
-    fn check_file_exists(&self, _path: &str) -> bool {
-        // Try to get file metadata to check existence
-        // In a full implementation, we would use the VFS
-        // For now, return true to maintain compatibility
-        // TODO: Integrate with VFS when filesystem is mounted
-        // use crate::fs::vfs;
-        // vfs().stat(path).is_ok()
-        true
+    fn check_file_exists(&self, path: &str) -> bool {
+        vfs_stat(path).is_ok()
     }
 
     /// Load a shared library file from filesystem
     ///
     /// Returns the library data if successfully loaded
     pub fn load_library_file(&self, path: &str) -> DynamicLinkerResult<Vec<u8>> {
-        // TODO: Integrate with VFS to read file
-        // For now, return an error indicating filesystem integration needed
+        const MAX_LIBRARY_SIZE: usize = 64 * 1024 * 1024;
 
-        // In a full implementation:
-        // use crate::fs::vfs;
-        // let vfs = vfs();
-        // let fd = vfs.open(path, OpenFlags::read_only())
-        //     .map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
-        //
-        // // Get file size
-        // let metadata = vfs.stat(path)
-        //     .map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
-        //
-        // // Read file data
-        // let mut buffer = vec![0u8; metadata.size as usize];
-        // vfs.read(fd, &mut buffer)
-        //     .map_err(|_| DynamicLinkerError::InvalidElf(String::from("Failed to read library")))?;
-        // vfs.close(fd).ok();
-        //
-        // Ok(buffer)
+        let stat = vfs_stat(path)
+            .map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
 
-        Err(DynamicLinkerError::LibraryNotFound(format!(
-            "{} (filesystem integration pending)",
-            path
-        )))
+        let size = stat.size as usize;
+        if size == 0 {
+            return Err(DynamicLinkerError::InvalidElf(String::from(
+                "Empty library file",
+            )));
+        }
+        if size > MAX_LIBRARY_SIZE {
+            return Err(DynamicLinkerError::InvalidElf(String::from(
+                "Library file too large",
+            )));
+        }
+
+        let fd = vfs_open(path, OpenFlags::RDONLY, 0)
+            .map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
+
+        let mut buffer = alloc::vec![0u8; size];
+        let mut offset = 0usize;
+        while offset < size {
+            let read = vfs_read(fd, &mut buffer[offset..]).map_err(|_| {
+                DynamicLinkerError::InvalidElf(String::from("Failed to read library"))
+            })?;
+            if read == 0 {
+                break;
+            }
+            offset += read;
+        }
+        let _ = vfs_close(fd);
+
+        if offset == 0 {
+            return Err(DynamicLinkerError::InvalidElf(String::from(
+                "Failed to read library",
+            )));
+        }
+        buffer.truncate(offset);
+        Ok(buffer)
     }
 
     /// Resolve a symbol by name across all loaded libraries

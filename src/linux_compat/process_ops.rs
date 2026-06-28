@@ -13,11 +13,11 @@ use super::types::*;
 use super::{LinuxError, LinuxResult};
 
 // Re-export types for external access
-pub use super::types::Rusage;
+pub use super::types::{Rusage, TimeVal};
 
 // Import process management infrastructure
 use crate::process::Pid as KernelPid;
-use crate::process::{self, Priority};
+use crate::process::{self};
 use crate::process_manager;
 
 /// Operation counter for statistics
@@ -51,6 +51,107 @@ fn get_pcb(pid: KernelPid) -> LinuxResult<process::ProcessControlBlock> {
     process_manager.get_process(pid).ok_or(LinuxError::ESRCH)
 }
 
+/// Linux USER_HZ (clock ticks per second).
+const USER_HZ: u64 = 100;
+
+/// Linux capability header version 1.
+const CAP_VERSION_1: u32 = 0x19980330;
+
+/// Capability bit: CAP_SETPCAP.
+const CAP_SETPCAP: u64 = 1 << 8;
+
+/// Linux `struct __user_cap_header_struct`.
+#[repr(C)]
+struct CapUserHeader {
+    version: u32,
+    pid: i32,
+}
+
+/// Linux `struct __user_cap_data_struct`.
+#[repr(C)]
+struct CapUserData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+fn pcb_user_ticks(pcb: &process::ProcessControlBlock) -> u64 {
+    if pcb.user_time_ticks > 0 {
+        pcb.user_time_ticks
+    } else {
+        pcb.cpu_time / 10
+    }
+}
+
+fn ticks_to_timeval(ticks: u64) -> TimeVal {
+    TimeVal {
+        tv_sec: (ticks / USER_HZ) as i64,
+        tv_usec: (((ticks % USER_HZ) * 1_000_000) / USER_HZ) as i64,
+    }
+}
+
+fn pcb_to_rusage(pcb: &process::ProcessControlBlock) -> Rusage {
+    Rusage {
+        ru_utime: ticks_to_timeval(pcb_user_ticks(pcb)),
+        ru_stime: ticks_to_timeval(pcb.system_time_ticks),
+        ru_maxrss: ((pcb.memory.heap_size
+            + pcb.memory.stack_size
+            + pcb.memory.code_size
+            + pcb.memory.data_size)
+            / 1024) as i64,
+        ru_ixrss: 0,
+        ru_idrss: 0,
+        ru_isrss: 0,
+        ru_minflt: pcb.minor_faults as i64,
+        ru_majflt: pcb.major_faults as i64,
+        ru_nswap: 0,
+        ru_inblock: 0,
+        ru_oublock: 0,
+        ru_msgsnd: 0,
+        ru_msgrcv: 0,
+        ru_nsignals: 0,
+        ru_nvcsw: pcb.sched_info.schedule_count as i64,
+        ru_nivcsw: 0,
+    }
+}
+
+fn pcb_children_rusage(pcb: &process::ProcessControlBlock) -> Rusage {
+    Rusage {
+        ru_utime: ticks_to_timeval(pcb.child_user_time),
+        ru_stime: ticks_to_timeval(pcb.child_system_time),
+        ru_maxrss: 0,
+        ru_ixrss: 0,
+        ru_idrss: 0,
+        ru_isrss: 0,
+        ru_minflt: 0,
+        ru_majflt: 0,
+        ru_nswap: 0,
+        ru_inblock: 0,
+        ru_oublock: 0,
+        ru_msgsnd: 0,
+        ru_msgrcv: 0,
+        ru_nsignals: 0,
+        ru_nvcsw: 0,
+        ru_nivcsw: 0,
+    }
+}
+
+fn wait_child_matches(pid: Pid, caller_pgid: u32) -> impl Fn(&process::ProcessControlBlock) -> bool {
+    move |pcb: &process::ProcessControlBlock| -> bool {
+        if pid == -1 {
+            return true;
+        }
+        if pid == 0 {
+            return pcb.pgid == caller_pgid;
+        }
+        if pid < -1 {
+            let target_pgid = pid.unsigned_abs();
+            return pcb.pgid == target_pgid;
+        }
+        pcb.pid == pid as u32
+    }
+}
+
 //
 // Process Lifecycle Operations
 //
@@ -60,15 +161,8 @@ pub fn fork() -> LinuxResult<Pid> {
     inc_ops();
 
     let parent_pid = process::current_pid();
-    let process_mgr = process_manager::get_process_manager();
-
-    // Use process_manager fork which handles:
-    // - PCB cloning
-    // - Memory COW setup
-    // - File descriptor duplication
-    // - Scheduler integration
-    process_mgr
-        .fork(parent_pid)
+    crate::process::integration::get_integration_manager()
+        .fork_process(parent_pid)
         .map(|child_pid| child_pid as i32)
         .map_err(|_| LinuxError::EAGAIN)
 }
@@ -95,18 +189,37 @@ pub fn exec(program: &[u8], args: &[&str]) -> LinuxResult<i32> {
 /// wait - wait for any child process to exit
 pub fn wait(status: *mut i32) -> LinuxResult<Pid> {
     inc_ops();
+    waitpid(-1, status, 0)
+}
+
+/// waitpid - wait for specific child process
+pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
+    inc_ops();
 
     let parent_pid = process::current_pid();
-    let process_mgr = process_manager::get_process_manager();
+    let process_mgr = process::get_process_manager();
 
-    // Use process_manager wait which handles:
-    // - Zombie child detection
-    // - Exit status collection
-    // - Zombie cleanup
-    // - Blocking behavior
-    match process_mgr.wait(parent_pid) {
+    let caller_pgid = process_mgr
+        .get_process(parent_pid)
+        .map(|pcb| pcb.pgid)
+        .ok_or(LinuxError::ESRCH)?;
+
+    let matches = |pcb: &process::ProcessControlBlock| -> bool {
+        if pid == -1 {
+            return true;
+        }
+        if pid == 0 {
+            return pcb.pgid == caller_pgid;
+        }
+        if pid < -1 {
+            let target_pgid = (-pid) as u32;
+            return pcb.pgid == target_pgid;
+        }
+        pcb.pid == pid as u32
+    };
+
+    match process_mgr.reap_zombie_child(parent_pid, matches) {
         Ok((child_pid, exit_status)) => {
-            // Write exit status to user pointer if provided
             if !status.is_null() {
                 unsafe {
                     *status = exit_status;
@@ -116,42 +229,6 @@ pub fn wait(status: *mut i32) -> LinuxResult<Pid> {
         }
         Err("No child processes") => Err(LinuxError::ECHILD),
         Err("Would block waiting for child") => Err(LinuxError::EAGAIN),
-        Err(_) => Err(LinuxError::EINVAL),
-    }
-}
-
-/// waitpid - wait for specific child process
-pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
-    inc_ops();
-
-    if pid < -1 || pid == 0 {
-        // TODO: Support process group waits (pid < 0)
-        return Err(LinuxError::EINVAL);
-    }
-
-    let parent_pid = process::current_pid();
-    let process_mgr = process_manager::get_process_manager();
-
-    let target_pid = if pid == -1 {
-        // Wait for any child - delegate to wait()
-        return wait(status);
-    } else {
-        pid as u32 as KernelPid
-    };
-
-    // Use process_manager waitpid
-    match process_mgr.waitpid(parent_pid, target_pid) {
-        Ok(exit_status) => {
-            if !status.is_null() {
-                unsafe {
-                    *status = exit_status;
-                }
-            }
-            Ok(target_pid as i32)
-        }
-        Err("Not a child of this process") => Err(LinuxError::ECHILD),
-        Err("Child process not found") => Err(LinuxError::ECHILD),
-        Err("Would block waiting for specific child") => Err(LinuxError::EAGAIN),
         Err(_) => Err(LinuxError::EINVAL),
     }
 }
@@ -564,15 +641,25 @@ pub unsafe fn execve_and_enter_user_mode(
 pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> LinuxResult<Pid> {
     inc_ops();
 
-    // For now, ignore rusage (resource usage statistics)
     if !rusage.is_null() {
-        // TODO: Collect and return resource usage statistics
-        unsafe {
-            core::ptr::write_bytes(rusage, 0, 1);
+        let parent_pid = process::current_pid();
+        let process_mgr = process::get_process_manager();
+        let caller_pgid = process_mgr
+            .get_process(parent_pid)
+            .map(|pcb| pcb.pgid)
+            .ok_or(LinuxError::ESRCH)?;
+        let matches = wait_child_matches(pid, caller_pgid);
+        if let Some(child) = process_mgr.find_zombie_child(parent_pid, &matches) {
+            unsafe {
+                *rusage = pcb_to_rusage(&child);
+            }
+        } else {
+            unsafe {
+                core::ptr::write_bytes(rusage, 0, 1);
+            }
         }
     }
 
-    // Delegate to waitpid
     waitpid(pid, wstatus, options)
 }
 
@@ -619,49 +706,56 @@ pub fn getppid() -> Pid {
 }
 
 //
-// User/Group ID Operations (Stub - credentials not yet implemented in PCB)
+// User/Group ID Operations
 //
 
 /// getuid - get real user ID
 pub fn getuid() -> Uid {
     inc_ops();
-    // TODO: Add uid field to ProcessControlBlock
-    // For now, return 0 (root)
-    0
+    current_pcb().map(|pcb| pcb.uid).unwrap_or(0)
 }
 
 /// geteuid - get effective user ID
 pub fn geteuid() -> Uid {
     inc_ops();
-    // TODO: Add euid field to ProcessControlBlock
-    0
+    current_pcb().map(|pcb| pcb.euid).unwrap_or(0)
 }
 
 /// getgid - get real group ID
 pub fn getgid() -> Gid {
     inc_ops();
-    // TODO: Add gid field to ProcessControlBlock
-    0
+    current_pcb().map(|pcb| pcb.gid).unwrap_or(0)
 }
 
 /// getegid - get effective group ID
 pub fn getegid() -> Gid {
     inc_ops();
-    // TODO: Add egid field to ProcessControlBlock
-    0
+    current_pcb().map(|pcb| pcb.egid).unwrap_or(0)
 }
 
 /// setuid - set user ID
 pub fn setuid(uid: Uid) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement once credentials are added to PCB
-    // Only root (UID 0) can change to any UID
-    if getuid() != 0 && uid != getuid() {
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    if pcb.euid != 0 && uid != pcb.uid {
         return Err(LinuxError::EPERM);
     }
 
-    // TODO: Store in PCB credentials
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            if uid == pcb.uid {
+                pcb.euid = uid;
+            } else if pcb.euid == 0 {
+                pcb.uid = uid;
+                pcb.euid = uid;
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
     Ok(0)
 }
 
@@ -669,11 +763,19 @@ pub fn setuid(uid: Uid) -> LinuxResult<i32> {
 pub fn seteuid(uid: Uid) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement with PCB credentials
-    let current_uid = getuid();
-    if current_uid != 0 && uid != current_uid && uid != geteuid() {
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    if pcb.euid != 0 && uid != pcb.uid && uid != pcb.euid {
         return Err(LinuxError::EPERM);
     }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            pcb.euid = uid;
+        })
+        .ok_or(LinuxError::ESRCH)?;
 
     Ok(0)
 }
@@ -682,10 +784,24 @@ pub fn seteuid(uid: Uid) -> LinuxResult<i32> {
 pub fn setgid(gid: Gid) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement with PCB credentials
-    if getuid() != 0 && gid != getgid() {
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    if pcb.euid != 0 && gid != pcb.gid {
         return Err(LinuxError::EPERM);
     }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            if gid == pcb.gid {
+                pcb.egid = gid;
+            } else if pcb.euid == 0 {
+                pcb.gid = gid;
+                pcb.egid = gid;
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
 
     Ok(0)
 }
@@ -694,17 +810,25 @@ pub fn setgid(gid: Gid) -> LinuxResult<i32> {
 pub fn setegid(gid: Gid) -> LinuxResult<i32> {
     inc_ops();
 
-    // TODO: Implement with PCB credentials
-    let current_uid = getuid();
-    if current_uid != 0 && gid != getgid() && gid != getegid() {
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    if pcb.euid != 0 && gid != pcb.gid && gid != pcb.egid {
         return Err(LinuxError::EPERM);
     }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            pcb.egid = gid;
+        })
+        .ok_or(LinuxError::ESRCH)?;
 
     Ok(0)
 }
 
 //
-// Process Group and Session Operations (Stub - not yet in PCB)
+// Process Group and Session Operations
 //
 
 /// getpgid - get process group ID
@@ -717,12 +841,7 @@ pub fn getpgid(pid: Pid) -> LinuxResult<Pid> {
         pid as u32
     };
 
-    // Verify process exists
-    let _ = get_pcb(target_pid)?;
-
-    // TODO: Add pgid field to ProcessControlBlock
-    // For now, return the PID itself as pgid
-    Ok(target_pid as i32)
+    get_pcb(target_pid).map(|pcb| pcb.pgid as i32)
 }
 
 /// setpgid - set process group ID
@@ -739,10 +858,18 @@ pub fn setpgid(pid: Pid, pgid: Pid) -> LinuxResult<i32> {
         pid as u32
     };
 
-    // Verify process exists
+    let new_pgid = pgid as u32;
+    let process_mgr = process::get_process_manager();
+
+    // Verify target process exists
     let _ = get_pcb(target_pid)?;
 
-    // TODO: Add pgid field to ProcessControlBlock and update it
+    process_mgr
+        .with_process_mut(target_pid, |pcb| {
+            pcb.pgid = new_pgid;
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
     Ok(0)
 }
 
@@ -756,12 +883,7 @@ pub fn getsid(pid: Pid) -> LinuxResult<Pid> {
         pid as u32
     };
 
-    // Verify process exists
-    let _ = get_pcb(target_pid)?;
-
-    // TODO: Add sid field to ProcessControlBlock
-    // For now, return 1 (init session)
-    Ok(1)
+    get_pcb(target_pid).map(|pcb| pcb.sid as i32)
 }
 
 /// setsid - create new session
@@ -769,22 +891,27 @@ pub fn setsid() -> LinuxResult<Pid> {
     inc_ops();
 
     let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
 
-    // TODO: Check if process is not a process group leader
-    // TODO: Create new session and process group
-    // TODO: Add session/pgid fields to PCB
+    if pcb.sid == pid {
+        return Err(LinuxError::EPERM);
+    }
 
-    // Return new session ID (same as process ID)
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            pcb.sid = pid;
+            pcb.pgid = pid;
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
     Ok(pid as i32)
 }
 
 /// getpgrp - get process group
 pub fn getpgrp() -> Pid {
     inc_ops();
-
-    // TODO: Get from PCB pgid field
-    // For now, return current PID
-    process::current_pid() as i32
+    current_pcb().map(|pcb| pcb.pgid as i32).unwrap_or(0)
 }
 
 //
@@ -804,10 +931,11 @@ pub fn sched_yield() -> LinuxResult<i32> {
 pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    // PRIO constants
     const PRIO_PROCESS: i32 = 0;
     const PRIO_PGRP: i32 = 1;
     const PRIO_USER: i32 = 2;
+
+    let process_mgr = process::get_process_manager();
 
     match which {
         PRIO_PROCESS => {
@@ -817,24 +945,33 @@ pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
                 who as u32
             };
 
-            // Get priority from process manager
             if let Some(priority) = process::scheduler::get_process_priority(target_pid) {
-                // Convert Priority enum to nice value (-20 to 19)
-                let nice = match priority {
-                    Priority::RealTime => -20,
-                    Priority::High => -10,
-                    Priority::Normal => 0,
-                    Priority::Low => 10,
-                    Priority::Idle => 19,
-                };
-                Ok(nice)
+                Ok(process::priority_to_nice(priority))
             } else {
                 Err(LinuxError::ESRCH)
             }
         }
-        PRIO_PGRP | PRIO_USER => {
-            // TODO: Implement process group and user priority
-            Ok(0)
+        PRIO_PGRP => {
+            let target_pgid = if who == 0 {
+                current_pcb()?.pgid
+            } else {
+                who as u32
+            };
+
+            process_mgr
+                .max_nice_among(|pcb| pcb.pgid == target_pgid)
+                .ok_or(LinuxError::ESRCH)
+        }
+        PRIO_USER => {
+            let target_uid = if who == 0 {
+                getuid()
+            } else {
+                who as u32
+            };
+
+            process_mgr
+                .max_nice_among(|pcb| pcb.uid == target_uid)
+                .ok_or(LinuxError::ESRCH)
         }
         _ => Err(LinuxError::EINVAL),
     }
@@ -844,15 +981,16 @@ pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
 pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
     inc_ops();
 
-    // PRIO constants
     const PRIO_PROCESS: i32 = 0;
     const PRIO_PGRP: i32 = 1;
     const PRIO_USER: i32 = 2;
 
-    // Priority range is -20 (highest) to 19 (lowest)
     if prio < -20 || prio > 19 {
         return Err(LinuxError::EINVAL);
     }
+
+    let priority = process::nice_to_priority(prio);
+    let process_mgr = process::get_process_manager();
 
     match which {
         PRIO_PROCESS => {
@@ -862,29 +1000,54 @@ pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
                 who as u32
             };
 
-            // Check permissions - only root can increase priority
             let current_uid = getuid();
             if current_uid != 0 && prio < 0 {
                 return Err(LinuxError::EACCES);
             }
 
-            // Convert nice value to Priority enum
-            let priority = match prio {
-                p if p <= -15 => Priority::RealTime,
-                p if p <= -5 => Priority::High,
-                p if p <= 5 => Priority::Normal,
-                p if p <= 15 => Priority::Low,
-                _ => Priority::Idle,
-            };
-
-            // Set priority via scheduler
             process::scheduler::set_process_priority(target_pid, priority)
                 .map_err(|_| LinuxError::ESRCH)?;
 
+            process_mgr
+                .with_process_mut(target_pid, |pcb| {
+                    pcb.priority = priority;
+                })
+                .ok_or(LinuxError::ESRCH)?;
+
             Ok(0)
         }
-        PRIO_PGRP | PRIO_USER => {
-            // TODO: Implement process group and user priority
+        PRIO_PGRP => {
+            let current_uid = getuid();
+            if current_uid != 0 && prio < 0 {
+                return Err(LinuxError::EACCES);
+            }
+
+            let target_pgid = if who == 0 {
+                current_pcb()?.pgid
+            } else {
+                who as u32
+            };
+
+            process_mgr
+                .set_priority_among(|pcb| pcb.pgid == target_pgid, priority)
+                .map_err(|_| LinuxError::ESRCH)?;
+            Ok(0)
+        }
+        PRIO_USER => {
+            let current_uid = getuid();
+            if current_uid != 0 && prio < 0 {
+                return Err(LinuxError::EACCES);
+            }
+
+            let target_uid = if who == 0 {
+                getuid()
+            } else {
+                who as u32
+            };
+
+            process_mgr
+                .set_priority_among(|pcb| pcb.uid == target_uid, priority)
+                .map_err(|_| LinuxError::ESRCH)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -946,8 +1109,12 @@ pub fn sched_setaffinity(pid: Pid, cpusetsize: usize, mask: *const u8) -> LinuxR
         return Err(LinuxError::EINVAL);
     }
 
-    // TODO: Update cpu_affinity in PCB
-    // TODO: Notify scheduler of affinity change
+    let process_mgr = process::get_process_manager();
+    process_mgr
+        .with_process_mut(target_pid, |pcb| {
+            pcb.sched_info.cpu_affinity = cpu_mask;
+        })
+        .ok_or(LinuxError::ESRCH)?;
 
     Ok(0)
 }
@@ -1009,40 +1176,22 @@ pub fn getrusage(who: i32, usage: *mut Rusage) -> LinuxResult<i32> {
     match who {
         RUSAGE_SELF => {
             let pcb = current_pcb()?;
-
-            // Fill in resource usage from PCB
             unsafe {
-                (*usage).ru_utime.tv_sec = (pcb.cpu_time / 1000000) as i64;
-                (*usage).ru_utime.tv_usec = (pcb.cpu_time % 1000000) as i64;
-                (*usage).ru_stime.tv_sec = 0; // TODO: Track system time separately
-                (*usage).ru_stime.tv_usec = 0;
-
-                // Memory usage from PCB memory info
-                (*usage).ru_maxrss = ((pcb.memory.heap_size
-                    + pcb.memory.stack_size
-                    + pcb.memory.code_size
-                    + pcb.memory.data_size)
-                    / 1024) as i64;
-
-                // TODO: Track page faults and other statistics
-                (*usage).ru_minflt = 0;
-                (*usage).ru_majflt = 0;
-                (*usage).ru_nvcsw = pcb.sched_info.schedule_count as i64;
-                (*usage).ru_nivcsw = 0;
+                *usage = pcb_to_rusage(&pcb);
             }
             Ok(0)
         }
         RUSAGE_CHILDREN => {
-            // TODO: Accumulate resource usage from terminated children
+            let pcb = current_pcb()?;
             unsafe {
-                core::ptr::write_bytes(usage, 0, 1);
+                *usage = pcb_children_rusage(&pcb);
             }
             Ok(0)
         }
         RUSAGE_THREAD => {
-            // TODO: Implement thread-specific resource tracking
+            let pcb = current_pcb()?;
             unsafe {
-                core::ptr::write_bytes(usage, 0, 1);
+                *usage = pcb_to_rusage(&pcb);
             }
             Ok(0)
         }
@@ -1073,8 +1222,26 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
                 return Err(LinuxError::EFAULT);
             }
 
-            // TODO: Update process name in PCB
-            // Read name from user space and update PCB.name
+            let mut name_buf = [0u8; 16];
+            unsafe {
+                for (i, slot) in name_buf.iter_mut().enumerate() {
+                    let byte = *name_ptr.add(i);
+                    *slot = byte;
+                    if byte == 0 {
+                        break;
+                    }
+                }
+            }
+
+            let pid = process::current_pid();
+            process::get_process_manager()
+                .with_process_mut(pid, |pcb| {
+                    pcb.name = [0u8; 32];
+                    let copy_len = core::cmp::min(16, pcb.name.len());
+                    pcb.name[..copy_len].copy_from_slice(&name_buf[..copy_len]);
+                })
+                .ok_or(LinuxError::ESRCH)?;
+
             Ok(0)
         }
         PR_GET_NAME => {
@@ -1083,25 +1250,49 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
                 return Err(LinuxError::EFAULT);
             }
 
-            // Copy process name from PCB to user space
             let pcb = current_pcb()?;
             unsafe {
                 let dest = core::slice::from_raw_parts_mut(name_ptr, 16);
+                dest.fill(0);
                 let copy_len = core::cmp::min(dest.len(), pcb.name.len());
                 dest[..copy_len].copy_from_slice(&pcb.name[..copy_len]);
             }
             Ok(0)
         }
         PR_SET_DUMPABLE => {
-            // TODO: Add dumpable flag to PCB
+            let dumpable = arg2 != 0;
+            let pid = process::current_pid();
+            process::get_process_manager()
+                .with_process_mut(pid, |pcb| {
+                    pcb.dumpable = dumpable;
+                })
+                .ok_or(LinuxError::ESRCH)?;
             Ok(0)
         }
         PR_GET_DUMPABLE => {
-            // TODO: Get dumpable flag from PCB
-            Ok(1) // Default to dumpable
+            let pcb = current_pcb()?;
+            Ok(if pcb.dumpable { 1 } else { 0 })
         }
-        PR_SET_PDEATHSIG | PR_GET_PDEATHSIG => {
-            // TODO: Implement parent death signal
+        PR_SET_PDEATHSIG => {
+            let sig = arg2 as u32;
+            let pid = process::current_pid();
+            process::get_process_manager()
+                .with_process_mut(pid, |pcb| {
+                    pcb.parent_death_signal = sig;
+                })
+                .ok_or(LinuxError::ESRCH)?;
+            Ok(0)
+        }
+        PR_GET_PDEATHSIG => {
+            let sig_ptr = arg2 as *mut i32;
+            if sig_ptr.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+
+            let pcb = current_pcb()?;
+            unsafe {
+                *sig_ptr = pcb.parent_death_signal as i32;
+            }
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -1109,33 +1300,114 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
 }
 
 //
-// Capability Operations (Stub)
+// Capability Operations
 //
 
+fn caps_for_pcb(pcb: &process::ProcessControlBlock) -> (u32, u32, u32) {
+    (
+        pcb.cap_effective as u32,
+        pcb.cap_permitted as u32,
+        pcb.cap_inheritable as u32,
+    )
+}
+
+fn read_cap_header(hdrp: *mut u8) -> Result<(u32, i32), LinuxError> {
+    unsafe {
+        let header = core::ptr::read(hdrp as *const CapUserHeader);
+        if header.version != CAP_VERSION_1 {
+            return Err(LinuxError::EINVAL);
+        }
+        Ok((header.version, header.pid))
+    }
+}
+
+fn read_cap_data(datap: *const u8) -> Result<(u32, u32, u32), LinuxError> {
+    unsafe {
+        let data = core::ptr::read(datap as *const CapUserData);
+        Ok((data.effective, data.permitted, data.inheritable))
+    }
+}
+
+fn write_cap_data(datap: *mut u8, effective: u32, permitted: u32, inheritable: u32) -> Result<(), LinuxError> {
+    if datap.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    unsafe {
+        core::ptr::write(
+            datap as *mut CapUserData,
+            CapUserData {
+                effective,
+                permitted,
+                inheritable,
+            },
+        );
+    }
+    Ok(())
+}
+
 /// capget - get process capabilities
-pub fn capget(hdrp: *mut u8, _datap: *mut u8) -> LinuxResult<i32> {
+pub fn capget(hdrp: *mut u8, datap: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     if hdrp.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Implement capabilities system
-    // For now, return success with no capabilities
+    let (_version, target_pid) = read_cap_header(hdrp)?;
+    let pid = if target_pid == 0 {
+        process::current_pid()
+    } else if target_pid < 0 {
+        return Err(LinuxError::EINVAL);
+    } else {
+        target_pid as u32
+    };
+
+    let pcb = get_pcb(pid)?;
+    let (effective, permitted, inheritable) = caps_for_pcb(&pcb);
+    write_cap_data(datap, effective, permitted, inheritable)?;
     Ok(0)
 }
 
 /// capset - set process capabilities
-pub fn capset(hdrp: *const u8, _datap: *const u8) -> LinuxResult<i32> {
+pub fn capset(hdrp: *const u8, datap: *const u8) -> LinuxResult<i32> {
     inc_ops();
 
-    if hdrp.is_null() {
+    if hdrp.is_null() || datap.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: Implement capabilities system
-    // Requires CAP_SETPCAP capability
-    Err(LinuxError::EPERM)
+    let header = unsafe { core::ptr::read(hdrp as *const CapUserHeader) };
+    if header.version != CAP_VERSION_1 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let pid = if header.pid == 0 {
+        process::current_pid()
+    } else if header.pid < 0 {
+        return Err(LinuxError::EINVAL);
+    } else {
+        header.pid as u32
+    };
+
+    let caller = current_pcb()?;
+    if caller.euid != 0 && (caller.cap_effective & CAP_SETPCAP) == 0 {
+        return Err(LinuxError::EPERM);
+    }
+
+    let (effective, permitted, inheritable) = read_cap_data(datap)?;
+    if (effective & !permitted) != 0 {
+        return Err(LinuxError::EPERM);
+    }
+
+    process::get_process_manager()
+        .with_process_mut(pid, |pcb| {
+            pcb.cap_effective = effective as u64;
+            pcb.cap_permitted = permitted as u64;
+            pcb.cap_inheritable = inheritable as u64;
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
 }
 
 //
@@ -1149,14 +1421,12 @@ pub fn times(buf: *mut u8) -> LinuxResult<i64> {
     if !buf.is_null() {
         let pcb = current_pcb()?;
 
-        // Fill in tms structure (4 x i64 = 32 bytes)
-        // tms_utime, tms_stime, tms_cutime, tms_cstime
         unsafe {
             let tms = buf as *mut i64;
-            *tms.offset(0) = (pcb.cpu_time / 10) as i64; // User time in clock ticks
-            *tms.offset(1) = 0; // System time (TODO: track separately)
-            *tms.offset(2) = 0; // Children user time (TODO: accumulate)
-            *tms.offset(3) = 0; // Children system time (TODO: accumulate)
+            *tms.offset(0) = pcb_user_ticks(&pcb) as i64;
+            *tms.offset(1) = pcb.system_time_ticks as i64;
+            *tms.offset(2) = pcb.child_user_time as i64;
+            *tms.offset(3) = pcb.child_system_time as i64;
         }
     }
 
