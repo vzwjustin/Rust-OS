@@ -15,19 +15,27 @@ extern crate alloc;
 #[cfg(all(not(test), not(target_os = "none")))]
 extern crate std;
 
-// GObject compatibility source-split modules.
+// Compatibility modules matching upstream GLib/GObject source splits.
 pub mod gatomicarray;
+pub mod gbase64;
 pub mod gbinding;
 pub mod gbindinggroup;
 pub mod gclosure;
+pub mod giowin32;
 pub mod gmarshal;
 pub mod gobject_query;
 pub mod gobjectnotifyqueue;
 pub mod gsignalgroup;
 pub mod gsourceclosure;
+pub mod gspawn_win32;
+pub mod gspawn_win32_helper;
+pub mod gthread_win32;
 pub mod gtypemodule;
 pub mod gtypeplugin;
 pub mod gvaluetypes;
+pub mod gwakeup;
+pub mod gwin32;
+pub mod win_iconv;
 
 // When compiling for a no_std target, provide a delegating allocator and panic
 // handler so the crate type-checks and links. The kernel binary calls
