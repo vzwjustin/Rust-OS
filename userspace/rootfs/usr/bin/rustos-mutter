@@ -1,0 +1,54 @@
+#!/bin/sh
+# RustOS Mutter / Wayland compositor launcher.
+#
+# When a real Mutter binary is present this script execs it. Otherwise the
+# kernel-provided Wayland socket on $XDG_RUNTIME_DIR/wayland-0 is used and
+# this script reports readiness for the GNOME session probe.
+
+set -u
+
+RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/0}
+WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+SOCKET="$RUNTIME_DIR/$WAYLAND_DISPLAY"
+
+export XDG_RUNTIME_DIR=$RUNTIME_DIR
+export WAYLAND_DISPLAY=$WAYLAND_DISPLAY
+export GDK_BACKEND=${GDK_BACKEND:-wayland,x11}
+export CLUTTER_BACKEND=${CLUTTER_BACKEND:-wayland}
+
+log() {
+    echo "rustos-mutter: $*"
+}
+
+probe_socket() {
+    if [ -S "$SOCKET" ] || [ -e "$SOCKET" ]; then
+        log "ready: Wayland display socket ($SOCKET)"
+        return 0
+    fi
+
+    log "blocked: Wayland display socket missing ($SOCKET)"
+    return 1
+}
+
+case "${1:-}" in
+    --probe)
+        probe_socket
+        exit $?
+        ;;
+    --print-env)
+        printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR"
+        printf 'WAYLAND_DISPLAY=%s\n' "$WAYLAND_DISPLAY"
+        exit 0
+        ;;
+esac
+
+if ! probe_socket; then
+    exit 1
+fi
+
+if command -v mutter >/dev/null 2>&1 && [ "$(command -v mutter)" != "/usr/bin/rustos-mutter" ]; then
+    exec mutter --wayland --wayland-display="$WAYLAND_DISPLAY" "$@"
+fi
+
+log "kernel compositor active on $SOCKET"
+exit 0

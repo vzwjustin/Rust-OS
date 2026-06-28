@@ -142,6 +142,7 @@ mod usermode_test;
 mod glib;
 mod glib_platform;
 mod glib_spawn;
+mod mutter;
 mod gnome;
 mod gnome_overlay;
 // Include GNOME foundation subsystems

@@ -17,6 +17,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
+pub mod server;
+
 // ── Wire Protocol Constants ─────────────────────────────────────────────
 
 /// Wayland wire protocol magic value for wl_display (always object 1)
@@ -707,6 +709,17 @@ impl Compositor {
         self.outputs.insert(output.id, output);
 
         self.initialized = true;
+        if let Err(e) = server::smoke_check() {
+            unsafe {
+                crate::early_serial_write_str("RustOS: Wayland handshake smoke FAILED: ");
+                crate::early_serial_write_str(e);
+                crate::early_serial_write_str("\r\n");
+            }
+        } else {
+            unsafe {
+                crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
+            }
+        }
         unsafe {
             crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
         }
@@ -1017,6 +1030,8 @@ pub fn smoke_check() -> Result<(), &'static str> {
     {
         return Err("wl_compositor should be in global list");
     }
+
+    server::smoke_check()?;
 
     Ok(())
 }

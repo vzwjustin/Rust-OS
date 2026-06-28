@@ -130,6 +130,10 @@ fn allocate_connection_pipe() -> Result<u32, LinuxError> {
 }
 
 fn register_connector(sockfd: Fd, pipe_id: u32, path: &str, role: UnixSocketRole) {
+    if role == UnixSocketRole::WaylandDisplay {
+        let _ = crate::wayland::server::attach_connection(pipe_id);
+    }
+
     UNIX_SOCKET_FDS.write().insert(
         sockfd,
         UnixSocketEnd {
@@ -143,6 +147,13 @@ fn register_connector(sockfd: Fd, pipe_id: u32, path: &str, role: UnixSocketRole
 
 fn maybe_dispatch_dbus_request(data: &[u8], pipe_id: u32) {
     if let Some(reply) = crate::dbus::process_wire_request(data) {
+        let ipc = get_ipc_manager();
+        let _ = ipc.pipe_write(pipe_id, &reply);
+    }
+}
+
+fn maybe_dispatch_wayland_request(data: &[u8], pipe_id: u32) {
+    if let Some(reply) = crate::wayland::server::process_wire_request(data, pipe_id) {
         let ipc = get_ipc_manager();
         let _ = ipc.pipe_write(pipe_id, &reply);
     }
@@ -350,6 +361,8 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
             Ok(n) => {
                 if unix_end.role == UnixSocketRole::DbusSession {
                     maybe_dispatch_dbus_request(&data[..n], unix_end.pipe_id);
+                } else if unix_end.role == UnixSocketRole::WaylandDisplay {
+                    maybe_dispatch_wayland_request(&data[..n], unix_end.pipe_id);
                 }
                 return Ok(n as isize);
             }
