@@ -31,38 +31,45 @@ make install-media RELEASE=1
 |------|---------|
 | `cpio` | Pack installer initramfs (required) |
 | `mksquashfs` | Compress live rootfs (optional; falls back to `tar.gz`) |
-| `xorriso` or `grub-mkrescue` | Create bootable ISO (optional; staged tree + QEMU instructions otherwise) |
+| `xorriso` | Wrap the raw bootimage into an ISO (optional; staged tree + QEMU instructions otherwise) |
 | `rsync` | Stage rootfs excluding apk metadata |
 
 Optional Alpine packages for installer initramfs disk tools (install into `userspace/rootfs` with `apk --root`):
 
-- `e2fsprogs` — `mkfs.ext4`, `fsck.ext4`
-- `dosfstools` — `mkfs.vfat`
-- `busybox` — `mount`, shell (default in rootfs)
+- `e2fsprogs` - `mkfs.ext4`, `fsck.ext4`
+- `dosfstools` - `mkfs.vfat`
+- `busybox` - `mount`, shell (default in rootfs)
 
 ## ISO layout
 
-```
+```text
 build/iso/
-  boot/rustos              # Kernel bootimage
-  boot/initrd.img          # Minimal installer initramfs
-  live/filesystem.squashfs # Compressed live rootfs (or filesystem.tar.gz fallback)
-  .disk/info               # Build metadata
+  boot/bootimage-rustos.bin  # Bootloader raw disk image
+  boot/initrd.img            # Minimal installer initramfs artifact
+  live/filesystem.squashfs   # Compressed live rootfs (or filesystem.tar.gz fallback)
+  .disk/info                 # Build metadata
 ```
 
-When `grub-mkrescue` or `xorriso` is available, `build/rustos-live.iso` is produced with **Try RustOS Live** and **RustOS Install** menu entries.
+When `xorriso` is available, `build/rustos-live.iso` is produced by wrapping the raw bootimage with hard-disk boot emulation. Without `xorriso`, the staged tree is still usable with QEMU:
+
+```bash
+qemu-system-x86_64 \
+  -drive format=raw,file=build/iso/boot/bootimage-rustos.bin \
+  -m 2G -smp 2 \
+  -serial stdio \
+  -display cocoa
+```
 
 ## Download and boot
 
 1. Build or obtain `build/rustos-live.iso`.
 2. Write to USB (example):
 
-   ```bash
-   # Linux
-   sudo dd if=build/rustos-live.iso of=/dev/sdX bs=4M status=progress conv=fsync
-   ```
+```bash
+sudo dd if=build/rustos-live.iso of=/dev/sdX bs=4M status=progress conv=fsync
+```
 
-3. Boot the machine from USB. UEFI and legacy BIOS paths depend on your firmware; the ISO uses GRUB when built with `grub-mkrescue`.
+3. Boot the machine from USB. Boot menu selection happens inside RustOS.
 
 ## Try vs install
 
@@ -92,20 +99,16 @@ qemu-system-x86_64 \
 
 On Linux, use `-display gtk` instead of `cocoa`.
 
-### Manual kernel + initrd (no ISO tooling)
+### Manual bootimage (no ISO tooling)
 
 If only the staged tree exists under `build/iso/`:
 
 ```bash
 qemu-system-x86_64 \
-  -kernel build/iso/boot/rustos \
-  -initrd build/iso/boot/initrd.img \
-  -append "rustos.boot=install" \
+  -drive format=raw,file=build/iso/boot/bootimage-rustos.bin \
   -m 2G -smp 2 \
   -serial stdio \
-  -display cocoa \
-  -device virtio-blk,drive=live \
-  -drive id=live,file=build/iso/live/filesystem.squashfs,format=raw,if=none,readonly=on
+  -display cocoa
 ```
 
 Live try session:
@@ -186,16 +189,12 @@ The installer coordinates with kernel procfs nodes when they are enabled:
 ### Supplying a plan at boot
 
 ```bash
-# QEMU: attach plan via 9p
-qemu-system-x86_64 \
-  -kernel build/iso/boot/rustos \
-  -initrd build/iso/boot/initrd.img \
-  -append "rustos.boot=install rustos.install.plan=/autoinstall/plan" \
-  -fsdev local,id=plan,path=/path/to/plan/dir,security_model=none \
-  -device virtio-9p-pci,fsdev=plan,mount_tag=autoinstall
+# From a running installer shell:
+cat /path/to/plan > /proc/rustos/installer/plan
+echo apply > /proc/rustos/installer/apply
 ```
 
-Place `plan` in the host directory mounted at `/autoinstall`.
+The active bootloader raw-image path boots through RustOS' own boot menu. Submit unattended plans through the installer procfs bridge after the installer environment is running.
 
 ### Status and logs
 

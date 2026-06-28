@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.opensuse.CupsPkHelper.Mechanism
-Exec=/usr/libexec/cups-pk-helper-mechanism
-User=root

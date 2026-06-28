@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.gnome.Settings
-Exec=/usr/bin/gnome-control-center
