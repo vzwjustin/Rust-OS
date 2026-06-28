@@ -1669,8 +1669,12 @@ pub unsafe extern "C" fn g_bytes_new(data: *const c_void, size: usize) -> GBytes
 /// `data` must be a pointer from [`g_malloc`] / [`g_malloc0`] (or null when
 /// `size` is 0). Ownership is taken.
 #[no_mangle]
+#[no_mangle]
 pub unsafe extern "C" fn g_bytes_new_take(data: *mut c_void, size: usize) -> GBytesPtr {
     if data.is_null() || size == 0 {
+        if !data.is_null() {
+            unsafe { g_free(data) };
+        }
         return Box::into_raw(Box::new(Bytes::new(&[] as &[u8])));
     }
     let slice = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
