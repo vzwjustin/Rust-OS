@@ -2183,8 +2183,9 @@ pub unsafe extern "C" fn g_closure_ref(closure: GClosurePtr) -> GClosurePtr {
     if closure.is_null() {
         return ptr::null_mut();
     }
-    let c = unsafe { &*closure };
-    let _new_arc = c.ref_();
+    unsafe {
+        Arc::increment_strong_count(closure);
+    }
     closure
 }
 
