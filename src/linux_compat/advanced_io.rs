@@ -509,19 +509,20 @@ fn xattr_vfs_error(err: crate::vfs::VfsError) -> LinuxError {
     }
 }
 
-fn copy_xattr_value(value: &[u8], out: *mut u8, size: usize) -> isize {
-    if out.is_null() || size == 0 {
-        return value.len() as isize;
-    }
-    let n = core::cmp::min(value.len(), size);
-    unsafe {
-        core::ptr::copy_nonoverlapping(value.as_ptr(), out, n);
+fn copy_xattr_value(value: &[u8], out: *mut u8, size: usize) -> LinuxResult<isize> {
+    if size == 0 {
+        return Ok(value.len() as isize);
     }
     if value.len() > size {
-        n as isize
-    } else {
-        value.len() as isize
+        return Err(LinuxError::ERANGE);
     }
+    if out.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+    }
+    Ok(value.len() as isize)
 }
 
 /// getxattr - get an extended attribute value
