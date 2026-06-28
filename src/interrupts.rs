@@ -252,8 +252,10 @@ fn notify_irq_eoi(index: InterruptIndex) {
 
 /// Configure standard IRQs using APIC
 fn configure_standard_irqs_apic() -> Result<(), &'static str> {
-    // Get current CPU ID for interrupt routing
-    let cpu_id = 0; // For now, route all interrupts to CPU 0
+    // Route standard IRQs to the current CPU (the BSP during early boot).
+    // This is correct because only the BSP is running when this function
+    // is called during interrupt controller initialization.
+    let cpu_id = crate::smp::current_cpu() as u8;
 
     // Configure timer (IRQ 0) - critical for system operation
     if let Err(e) = crate::apic::configure_irq(0, InterruptIndex::Timer.as_u8(), cpu_id) {
@@ -772,9 +774,7 @@ extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptSta
     if let Some(mut manager) = ERROR_MANAGER.try_lock() {
         let _ = manager.handle_error(error_context);
     } else {
-        crate::serial_println!(
-            "CRITICAL: SIMD FP exception - error manager unavailable"
-        );
+        crate::serial_println!("CRITICAL: SIMD FP exception - error manager unavailable");
     }
 
     terminate_current_process("SIMD floating point exception");
@@ -889,8 +889,9 @@ fn attempt_page_fault_recovery(
 
         // Check if address is in user space and within reasonable bounds
         if addr >= 0x1000 && addr < 0x7fff_ffff_ffff {
-            // For now, cannot recover - demand paging not fully implemented
-            // In a full implementation, we would allocate and map a page here
+            // Return NeedsSwap to trigger the swap-in / demand-paging path.
+            // attempt_swap_in_page checks whether the page is in swap storage
+            // (swap-in) or needs a fresh zeroed page (demand allocation).
             return Some(PageFaultRecovery::NeedsSwap);
         }
     }
@@ -899,7 +900,7 @@ fn attempt_page_fault_recovery(
     None
 }
 
-/// Attempt to swap in a page from disk
+/// Attempt to swap in a page from disk, or demand-allocate a new page
 fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static str> {
     use crate::memory::get_memory_manager;
     use x86_64::structures::paging::{Page, Size4KiB};
@@ -912,25 +913,53 @@ fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static 
     // Get the page that caused the fault
     let _page: Page<Size4KiB> = Page::containing_address(fault_address);
 
-    // Step 1: Use the existing memory manager's swap-in functionality
-    // The memory manager already has a handle_swap_in method we can use
+    // Check if the page is in swap storage. If so, swap it back in.
+    if memory_manager.is_page_swapped(fault_address) {
+        // Find the region containing this address
+        let region = memory_manager
+            .find_region(fault_address)
+            .ok_or("No memory region found for fault address")?;
 
-    // Find the region containing this address
+        // Use the existing swap-in handler
+        memory_manager
+            .handle_swap_in(fault_address, &region)
+            .map_err(|e| match e {
+                crate::memory::MemoryError::OutOfMemory => "Out of memory during swap-in",
+                crate::memory::MemoryError::MappingFailed => "Failed to map swapped page",
+                crate::memory::MemoryError::InvalidAddress => "Invalid address for swap-in",
+                _ => "Memory manager swap-in failed",
+            })?;
+
+        crate::serial_println!("Successfully swapped in page at {:?}", fault_address);
+        return Ok(());
+    }
+
+    // The page is not in swap — this is a demand paging fault (e.g.,
+    // stack or heap growth into a region that was reserved but not
+    // yet backed by physical memory). Allocate a zeroed page and map
+    // it at the fault address.
+    crate::serial_println!("Demand paging: allocating new page at {:?}", fault_address);
+
+    // Find the region containing this address to get the protection flags.
     let region = memory_manager
         .find_region(fault_address)
-        .ok_or("No memory region found for fault address")?;
+        .ok_or("No memory region found for demand page")?;
 
-    // Use the existing swap-in handler
-    memory_manager
-        .handle_swap_in(fault_address, &region)
-        .map_err(|e| match e {
-            crate::memory::MemoryError::OutOfMemory => "Out of memory during swap-in",
-            crate::memory::MemoryError::MappingFailed => "Failed to map swapped page",
-            crate::memory::MemoryError::InvalidAddress => "Invalid address for swap-in",
-            _ => "Memory manager swap-in failed",
-        })?;
+    // Allocate memory at the fault address. This maps a new zeroed
+    // page at the specified virtual address with the region's protection.
+    crate::memory::allocate_memory_at(
+        fault_address,
+        4096,
+        crate::memory::MemoryRegionType::UserData,
+        region.protection,
+    )
+    .map_err(|e| match e {
+        crate::memory::MemoryError::OutOfMemory => "Out of memory during demand paging",
+        crate::memory::MemoryError::MappingFailed => "Failed to map demand page",
+        _ => "Demand paging allocation failed",
+    })?;
 
-    crate::serial_println!("Successfully swapped in page at {:?}", fault_address);
+    crate::serial_println!("Successfully demand-allocated page at {:?}", fault_address);
     Ok(())
 }
 
