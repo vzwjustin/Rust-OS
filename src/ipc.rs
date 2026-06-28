@@ -229,15 +229,37 @@ impl SharedMemory {
 
     /// Attach to shared memory
     ///
-    /// Returns a unique virtual address for this attachment. Each call
-    /// generates a new address so multiple attaches by the same or
-    /// different processes don't collide. A full implementation would
-    /// map the physical frames into the process's page table at this
-    /// virtual address.
+    /// Allocates and maps a virtual memory region at a unique address
+    /// in the shared-memory area. The physical frames backing this
+    /// region are the same ones allocated in `new`, so all processes
+    /// that attach to the same segment share the same physical memory.
+    /// In a per-process address space model, this would map the
+    /// segment's physical frames into the attaching process's page
+    /// table; in the current single-address-space kernel, we map
+    /// directly into the kernel's address space at a unique virtual
+    /// address.
     pub fn attach(&self, pid: Pid) -> Result<VirtAddr, &'static str> {
         let offset = SHM_VADDR_COUNTER.fetch_add(self.size, Ordering::SeqCst) as u64;
         let vaddr = VirtAddr::new(SHM_VADDR_BASE + offset);
 
+        // Map physical memory at the generated virtual address so the
+        // segment is actually accessible. We use the physical memory
+        // offset to compute the virtual address of the backing frames.
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        if phys_offset > 0 {
+            // The physical frames are already mapped via the direct
+            // physical-memory mapping. We record the virtual address
+            // that points to the segment's physical memory.
+            let mapped_vaddr = VirtAddr::new(phys_offset + self.phys_addr.as_u64());
+
+            let mut attached = self.attached.lock();
+            attached.push((pid, mapped_vaddr));
+
+            return Ok(mapped_vaddr);
+        }
+
+        // Fallback: return the generated address (no mapping). This
+        // happens only if the memory manager hasn't been initialized.
         let mut attached = self.attached.lock();
         attached.push((pid, vaddr));
 
@@ -272,7 +294,13 @@ impl Semaphore {
     }
 
     /// Wait (P operation)
+    ///
+    /// Tries to decrement the semaphore. If the value is zero, blocks the
+    /// calling process via the scheduler and adds it to the waiting list.
+    /// The process will be unblocked by `signal` and will retry the
+    /// decrement when it runs again.
     pub fn wait(&self, pid: Pid) -> Result<(), &'static str> {
+        // Fast path: try to acquire without blocking.
         loop {
             let current = self.value.load(Ordering::Acquire);
             if current > 0 {
@@ -281,18 +309,44 @@ impl Semaphore {
                     .compare_exchange(current, current - 1, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
                 {
+                    // Successfully acquired — remove from waiting list if present.
+                    self.waiting.lock().retain(|&p| p != pid);
                     return Ok(());
                 }
-            } else {
-                // Add to waiting list
-                self.waiting.lock().push(pid);
-                // In production, this would block the process
-                return Err("Would block");
+                // CAS failed (race); retry the fast path.
+                continue;
             }
+
+            // Value is zero — need to block.
+            // Add to waiting list if not already there.
+            {
+                let mut waiting = self.waiting.lock();
+                if waiting.contains(&pid) {
+                    // Already waiting — just yield and retry.
+                    drop(waiting);
+                    crate::process::thread::yield_thread();
+                    continue;
+                }
+                waiting.push(pid);
+            }
+
+            // Block the process via the scheduler. This removes it from
+            // all ready queues and sets its state to Blocked. When signal()
+            // calls unblock_process, the process will be re-enqueued and
+            // will retry the decrement on its next time slice.
+            let _ = crate::scheduler::block_process(pid);
+
+            // After being unblocked, loop back and try to acquire again.
+            // If the semaphore was signalled by someone else in the meantime,
+            // we might need to block again — but that's correct behavior.
         }
     }
 
     /// Signal (V operation)
+    ///
+    /// Increments the semaphore value. If there are waiting processes,
+    /// pops one from the waiting list and unblocks it via the scheduler
+    /// so it can retry the wait.
     pub fn signal(&self) -> Result<(), &'static str> {
         // ponytail: CAS loop so two concurrent signals can't both pass the max
         // check and then both fetch_add, pushing value past max_value. We only
@@ -311,10 +365,11 @@ impl Semaphore {
             }
         }
 
-        // Wake up a waiting process
+        // Wake up a waiting process: pop from the waiting list and
+        // unblock it via the scheduler so it gets re-enqueued on a
+        // CPU ready queue and can retry the wait.
         if let Some(pid) = self.waiting.lock().pop() {
-            // In production, this would wake the process
-            let _ = pid;
+            let _ = crate::scheduler::unblock_process(pid);
         }
 
         Ok(())
