@@ -505,7 +505,7 @@ impl ProcessControlBlock {
                 schedule_count: 0,
                 last_scheduled: 0,
                 cpu_affinity: 0xFFFFFFFFFFFFFFFF, // All CPUs
-                sched_policy: 0,                // SCHED_NORMAL
+                sched_policy: 0,                  // SCHED_NORMAL
                 sched_priority: 0,
                 rr_interval_ns: 100_000_000, // 100 ms
             },
@@ -1019,7 +1019,11 @@ impl ProcessManager {
     }
 
     /// Reap the first zombie child of `parent_pid` matching `matches`.
-    pub fn reap_zombie_child<F>(&self, parent_pid: Pid, matches: F) -> Result<(Pid, i32), &'static str>
+    pub fn reap_zombie_child<F>(
+        &self,
+        parent_pid: Pid,
+        matches: F,
+    ) -> Result<(Pid, i32), &'static str>
     where
         F: Fn(&ProcessControlBlock) -> bool,
     {

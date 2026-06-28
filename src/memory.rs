@@ -931,6 +931,65 @@ impl PhysicalFrameAllocator {
     }
 }
 
+impl PhysicalFrameAllocator {
+    /// Mark a specific physical frame as already in use (not available for allocation).
+    /// Used during init to reserve bootloader/kernel page-table frames that live in
+    /// memory regions the bootloader marked as "Usable".
+    pub fn mark_frame_used(&mut self, addr: PhysAddr) {
+        let zone = MemoryZone::from_address(addr);
+        let zone_idx = zone as usize;
+
+        // The frame might be part of a larger buddy block (up to MAX_ORDER).
+        // Search from highest order down to find the containing block, then split
+        // it until we reach the target frame, adding buddies back to free lists.
+        for order in (0..=MAX_ORDER).rev() {
+            let block_size = PAGE_SIZE << order;
+            let block_addr = PhysAddr::new((addr.as_u64() / block_size as u64) * block_size as u64);
+
+            let list = &mut self.buddy_lists[zone_idx][order];
+            if let Some(pos) = list.iter().position(|b| b.address == block_addr) {
+                // Found the containing block; remove it and split down to order 0.
+                let mut block = list.remove(pos);
+
+                // Split until we reach the target frame
+                while block.order > 0 {
+                    block.order -= 1;
+                    let buddy_size = PAGE_SIZE << block.order;
+                    let buddy_addr = PhysAddr::new(block.address.as_u64() ^ buddy_size as u64);
+
+                    // If the target frame is in the buddy half, keep the buddy
+                    // and add the current block to the free list.
+                    if addr.as_u64() >= buddy_addr.as_u64()
+                        && addr.as_u64() < buddy_addr.as_u64() + buddy_size as u64
+                    {
+                        // Target is in the buddy half; add current block to free list
+                        self.buddy_lists[zone_idx][block.order].push(BuddyNode {
+                            address: block.address,
+                            order: block.order,
+                        });
+                        block.address = buddy_addr;
+                    } else {
+                        // Target is in the current half; add buddy to free list
+                        self.buddy_lists[zone_idx][block.order].push(BuddyNode {
+                            address: buddy_addr,
+                            order: block.order,
+                        });
+                    }
+                }
+
+                // block is now order 0 at the target address; don't add it back.
+                // Mark it allocated in the bitmap.
+                self.mark_allocated(zone_idx, addr, 0);
+                return;
+            }
+        }
+
+        // If not found in any free list, the frame might already be allocated
+        // or in a different zone. Mark it in the bitmap as a safety measure.
+        self.mark_allocated(zone_idx, addr, 0);
+    }
+}
+
 // Implement the standard FrameAllocator trait (allocates from Normal zone by default)
 unsafe impl FrameAllocator<Size4KiB> for PhysicalFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
@@ -2588,11 +2647,16 @@ static ASLR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate ASLR offset using hardware RNG
 pub fn generate_aslr_offset() -> u64 {
-    // Use RDRAND instruction for hardware random number generation
     let random_value = unsafe {
         let mut value: u64 = 0;
-        // Try hardware RNG first
-        if core::arch::x86_64::_rdrand64_step(&mut value) == 1 {
+        // Try hardware RNG first, but only if RDRAND is actually supported
+        // by the CPU: calling _rdrand64_step on a CPU without RDRAND raises
+        // #UD and, with no handler yet, triple-faults.
+        let rdrand_ok = {
+            let cpuid = core::arch::x86_64::__cpuid(1);
+            (cpuid.ecx & (1 << 30)) != 0
+        };
+        if rdrand_ok && core::arch::x86_64::_rdrand64_step(&mut value) == 1 {
             value
         } else {
             // Fallback to TSC + counter if RDRAND not available
@@ -2732,7 +2796,56 @@ pub fn init_memory_management(
     let page_table_manager = PageTableManager::new(mapper, physical_memory_offset);
 
     // Create frame allocator with buddy system
-    let frame_allocator = PhysicalFrameAllocator::init(memory_regions);
+    let mut frame_allocator = PhysicalFrameAllocator::init(memory_regions);
+
+    // Walk the active page table tree and mark every page-table frame as used.
+    // The bootloader creates page tables in memory it marks "Usable", so the
+    // buddy allocator would happily hand those frames out again; `map_to`
+    // would then zero a live P2/P3 table, corrupting kernel mappings and
+    // causing a page fault in kernel code.
+    {
+        let p4_frame = Cr3::read().0;
+        frame_allocator.mark_frame_used(p4_frame.start_address());
+
+        let p4_ptr = (physical_memory_offset.as_u64() + p4_frame.start_address().as_u64())
+            as *const PageTable;
+        let p4 = unsafe { &*p4_ptr };
+
+        for p4e in p4.iter() {
+            if !p4e.flags().contains(PageTableFlags::PRESENT) {
+                continue;
+            }
+            let p3_phys = p4e.addr();
+            frame_allocator.mark_frame_used(p3_phys);
+            let p3_ptr = (physical_memory_offset.as_u64() + p3_phys.as_u64()) as *const PageTable;
+            let p3 = unsafe { &*p3_ptr };
+
+            for p3e in p3.iter() {
+                if !p3e.flags().contains(PageTableFlags::PRESENT) {
+                    continue;
+                }
+                if p3e.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    continue;
+                }
+                let p2_phys = p3e.addr();
+                frame_allocator.mark_frame_used(p2_phys);
+                let p2_ptr =
+                    (physical_memory_offset.as_u64() + p2_phys.as_u64()) as *const PageTable;
+                let p2 = unsafe { &*p2_ptr };
+
+                for p2e in p2.iter() {
+                    if !p2e.flags().contains(PageTableFlags::PRESENT) {
+                        continue;
+                    }
+                    if p2e.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        continue;
+                    }
+                    let p1_phys = p2e.addr();
+                    frame_allocator.mark_frame_used(p1_phys);
+                }
+            }
+        }
+    }
 
     // Create memory manager
     let memory_manager = MemoryManager::new(frame_allocator, page_table_manager);

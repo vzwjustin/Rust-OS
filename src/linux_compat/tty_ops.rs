@@ -797,13 +797,7 @@ pub fn forkpty(
 
     let mut master_fd = 0;
     let mut slave_fd = 0;
-    openpty(
-        &mut master_fd,
-        &mut slave_fd,
-        name,
-        termp,
-        winp,
-    )?;
+    openpty(&mut master_fd, &mut slave_fd, name, termp, winp)?;
 
     match process_ops::fork() {
         Ok(child_pid) => {

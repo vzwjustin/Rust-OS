@@ -471,9 +471,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     {
         let bc = boot_ui::boot_config();
         if !bc.force_text_mode && !bc.safe_mode {
-            unsafe {
-                early_serial_write_str("RustOS: Early graphics init (VBE)\r\n");
-            }
             match drivers::display::init(phys_mem_offset) {
                 Ok(mode) => {
                     crate::serial_println!(
@@ -786,13 +783,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         );
     }
 
-    // Enable keyboard interrupt for user input (timer enabled later after FS init)
+    // Enable keyboard and mouse interrupts for user input
     unsafe {
         early_serial_write_str("RustOS: Enabling keyboard interrupt...\r\n");
     }
     interrupts::enable_keyboard_interrupt();
     unsafe {
         early_serial_write_str("RustOS: Keyboard interrupt enabled\r\n");
+    }
+    unsafe {
+        early_serial_write_str("RustOS: Enabling mouse interrupt...\r\n");
+    }
+    interrupts::enable_mouse_interrupt();
+    unsafe {
+        early_serial_write_str("RustOS: Mouse interrupt enabled\r\n");
     }
 
     // ========================================================================
@@ -971,31 +975,15 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // ========================================================================
     let desktop_result = if use_graphics_desktop {
         if display_driver_ready {
-            // Display driver path: init desktop directly without boot_ui overhead
-            unsafe {
-                early_serial_write_str("RustOS: Setting up desktop (VBE path)\r\n");
-            }
             let mut result = boot_ui::DesktopInitResult::new();
-            unsafe {
-                early_serial_write_str("RustOS: calling desktop::init_default_desktop\r\n");
-            }
             match desktop::init_default_desktop() {
                 Ok(()) => {
-                    unsafe {
-                        early_serial_write_str("RustOS: init_default_desktop OK\r\n");
-                    }
                     result.window_manager_ready = true;
                     result.input_ready = true;
                     result.taskbar_ready = true;
                     result.windows_created = true;
-                    unsafe {
-                        early_serial_write_str("RustOS: Desktop setup OK\r\n");
-                    }
                 }
                 Err(e) => {
-                    unsafe {
-                        early_serial_write_str("RustOS: Desktop setup FAILED\r\n");
-                    }
                     crate::serial_println!("Desktop setup error: {}", e);
                 }
             }
@@ -1011,12 +999,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         boot_ui::complete_stage(boot_ui::BootStage::DesktopInit);
         boot_ui::DesktopInitResult::new()
     };
-
-    if use_graphics_desktop && desktop_result.window_manager_ready {
-        unsafe {
-            early_serial_write_str("RustOS: 32-bit framebuffer desktop ready\r\n");
-        }
-    }
 
     // ========================================================================
     // Boot Complete Summary
@@ -1059,11 +1041,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     } else if graphics_result.framebuffer_ready {
         // GNOME-style smooth fade before desktop appears
         boot_ui::transition_to_desktop();
-    }
-
-    // SAFETY: Raw I/O to COM1 for early logging. See docs/SAFETY.md#io-port-access.
-    unsafe {
-        early_serial_write_str("RustOS: Boot sequence complete, entering desktop\r\n");
     }
 
     // ========================================================================
@@ -1604,6 +1581,11 @@ fn modern_desktop_main_loop() -> ! {
     desktop::invalidate_desktop();
     desktop::render_desktop();
 
+    // Track last cursor position to detect movement and force redraws
+    let (init_x, init_y) = get_cursor_position();
+    let mut last_cursor_x = init_x;
+    let mut last_cursor_y = init_y;
+
     // Main event loop
     loop {
         let current_time = time::uptime_ms();
@@ -1657,10 +1639,8 @@ fn modern_desktop_main_loop() -> ! {
         // Desktop Update Phase
         // ====================================================================
 
-        // Process pending desktop events
-        if update_counter.is_multiple_of(1000) {
-            desktop::process_desktop_events();
-        }
+        // Process pending desktop events every iteration for responsive input
+        desktop::process_desktop_events();
 
         // Update desktop state periodically (clock, stats, file listings)
         if update_counter.is_multiple_of(500) {
@@ -1671,12 +1651,22 @@ fn modern_desktop_main_loop() -> ! {
         // Rendering Phase
         // ====================================================================
 
+        // Check if cursor moved since last frame — if so, force a full
+        // desktop redraw to overwrite the old cursor pixels (no trail).
+        let (cur_x, cur_y) = get_cursor_position();
+        if cur_x != last_cursor_x || cur_y != last_cursor_y {
+            desktop::invalidate_desktop();
+            last_cursor_x = cur_x;
+            last_cursor_y = cur_y;
+        }
+
         // Render at target frame rate or when needed
         let should_render = desktop::desktop_needs_redraw()
             || (current_time >= last_render_time + target_frame_time_ms);
 
         if should_render {
-            // Render the desktop (windows, taskbar, dock)
+            // Render the desktop (windows, taskbar, dock) — this repaints
+            // the area under the old cursor, erasing the trail.
             desktop::render_desktop();
 
             // Get current mouse position from input manager

@@ -234,6 +234,7 @@ pub struct KeyboardHandler {
     pc_keyboard: Keyboard<layouts::Us104Key, ScancodeSet1>,
     modifiers: ModifierState,
     stats: KeyboardStats,
+    last_event: Option<KeyEvent>,
 }
 
 impl KeyboardHandler {
@@ -243,6 +244,7 @@ impl KeyboardHandler {
             pc_keyboard: Keyboard::new(layouts::Us104Key, ScancodeSet1, HandleControl::Ignore),
             modifiers: ModifierState::default(),
             stats: KeyboardStats::default(),
+            last_event: None,
         }
     }
 
@@ -382,6 +384,9 @@ impl KeyboardHandler {
         // Update modifier state
         self.modifiers.update(event);
 
+        // Track last event for input manager forwarding
+        self.last_event = Some(event);
+
         // Try to add to global buffer
         let mut queue = KEY_EVENT_QUEUE.lock();
         match queue.enqueue(event) {
@@ -403,6 +408,11 @@ impl KeyboardHandler {
     pub fn has_key_events(&self) -> bool {
         let queue = KEY_EVENT_QUEUE.lock();
         queue.peek().is_some()
+    }
+
+    /// Get the last generated key event (for input manager forwarding)
+    pub fn last_event(&self) -> Option<KeyEvent> {
+        self.last_event
     }
 
     /// Get current modifier state
@@ -479,8 +489,18 @@ pub fn process_scancode(scancode: u8) -> Result<(), &'static str> {
     let mut handler = KEYBOARD_HANDLER.lock();
     handler.process_scancode(scancode)?;
 
-    // Desktop integration would go here when fully implemented
-    // Currently handled in main.rs event loop
+    // Forward the latest event to the input manager so the modern desktop
+    // loop (which reads from drivers::get_input_event()) receives keyboard
+    // events. The handler.process_scancode call above enqueued the event
+    // into KEY_EVENT_QUEUE; we peek at it to determine press/release for
+    // the InputEvent variant, then also push it to the input manager.
+    // We must not dequeue here — the legacy desktop loop reads from
+    // keyboard::get_key_event() which pops from the same queue.
+    // Instead, re-derive the event from the scancode for the input manager.
+    let is_release = (scancode & 0x80) != 0;
+    if let Some(last_event) = handler.last_event() {
+        crate::drivers::input_manager::handle_keyboard_event(last_event, !is_release);
+    }
 
     Ok(())
 }

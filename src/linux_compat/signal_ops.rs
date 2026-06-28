@@ -153,11 +153,7 @@ fn broadcast_signal(sig: i32) -> LinuxResult<()> {
     Ok(())
 }
 
-fn wait_for_signal(
-    set: SigSet,
-    blocked: SigSet,
-    timeout: Option<u64>,
-) -> LinuxResult<i32> {
+fn wait_for_signal(set: SigSet, blocked: SigSet, timeout: Option<u64>) -> LinuxResult<i32> {
     let pid = process::current_pid();
     let start = crate::time::system_time();
 
