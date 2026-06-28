@@ -2,8 +2,11 @@
 //!
 //! This module provides syscall interface for userspace package management operations.
 
+use crate::memory::user_space::UserSpaceMemory;
 use crate::package::{PackageManager, PackageManagerType, PackageOperation, PackageResult};
+use crate::syscall::SyscallError;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Package management syscall numbers
 pub mod syscall_numbers {
@@ -153,12 +156,14 @@ unsafe fn read_string_from_user(ptr: usize, len: usize) -> Result<String, &'stat
         return Err("Invalid string parameters");
     }
 
-    // TODO: Validate that ptr is in userspace memory range
-    // TODO: Check for page faults
+    UserSpaceMemory::validate_user_ptr(ptr as u64, len as u64, false)
+        .map_err(syscall_error_to_str)?;
 
-    let slice = core::slice::from_raw_parts(ptr as *const u8, len);
+    let mut buffer = Vec::with_capacity(len);
+    buffer.resize(len, 0);
+    UserSpaceMemory::copy_from_user(ptr as u64, &mut buffer).map_err(syscall_error_to_str)?;
 
-    core::str::from_utf8(slice)
+    core::str::from_utf8(&buffer)
         .map(|s| s.to_string())
         .map_err(|_| "Invalid UTF-8 string")
 }
@@ -177,11 +182,18 @@ unsafe fn write_string_to_user(ptr: usize, max_len: usize, data: &str) -> Result
     let bytes = data.as_bytes();
     let write_len = core::cmp::min(bytes.len(), max_len);
 
-    // TODO: Validate that ptr is in userspace memory range
-    // TODO: Check for page faults
-
-    let dest = core::slice::from_raw_parts_mut(ptr as *mut u8, write_len);
-    dest.copy_from_slice(&bytes[..write_len]);
+    UserSpaceMemory::validate_user_ptr(ptr as u64, write_len as u64, true)
+        .map_err(syscall_error_to_str)?;
+    UserSpaceMemory::copy_to_user(ptr as u64, &bytes[..write_len]).map_err(syscall_error_to_str)?;
 
     Ok(())
+}
+
+fn syscall_error_to_str(err: SyscallError) -> &'static str {
+    match err {
+        SyscallError::InvalidAddress => "Invalid user address",
+        SyscallError::InvalidArgument => "Invalid argument",
+        SyscallError::PermissionDenied => "Permission denied",
+        _ => "Memory access failed",
+    }
 }

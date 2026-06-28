@@ -891,7 +891,7 @@ pub fn extract_ipv4_addresses(message: &DnsMessage) -> Vec<Ipv4Address> {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

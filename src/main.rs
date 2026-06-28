@@ -9,7 +9,6 @@
 
 extern crate alloc;
 
-use alloc::string::ToString;
 use bootloader::{entry_point, BootInfo};
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
@@ -453,6 +452,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
     }
 
+    #[cfg(not(test))]
+    {
     // Set physical memory offset for VGA Mode 13h graphics
     // This allows the VGA driver to access the framebuffer at 0xA0000
     vga_mode13h::set_phys_mem_offset(phys_mem_offset);
@@ -818,7 +819,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     match process_manager::init() {
         Ok(()) => {
-            process_manager::get_process_manager().set_current_pid(process::current_pid());
             crate::glib_spawn::mark_spawn_runtime_ready();
             unsafe {
                 early_serial_write_str("RustOS: POSIX process manager initialized\r\n");
@@ -1101,6 +1101,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Starting pixel_desktop_main_loop()\r\n");
         }
         pixel_desktop_main_loop()
+    }
     }
 }
 
@@ -1997,7 +1998,7 @@ fn kernel_panic(info: &PanicInfo) -> ! {
         let location = if let Some(loc) = info.location() {
             alloc::format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
         } else {
-            "unknown location".to_string()
+            "unknown location".into()
         };
         let message = alloc::format!("{}", info.message());
         let error_context = ErrorContext::new(

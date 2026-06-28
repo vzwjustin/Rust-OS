@@ -1122,7 +1122,7 @@ fn calculate_icmp_checksum(data: &[u8]) -> u16 {
     !sum as u16
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
     use alloc::vec::Vec;

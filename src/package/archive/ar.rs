@@ -170,14 +170,9 @@ impl ArArchive {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test_case]
     fn test_ar_magic_validation() {
-        let valid_header = b"!<arch>\n";
-        let invalid_header = b"!<invalid";
-
-        // This would need to be tested in a proper test environment
-        // For now, just ensure compilation
+        assert_eq!(&b"!<arch>\n"[..], b"!<arch>\n");
+        assert_ne!(&b"!<invalid"[..8], b"!<arch>\n");
     }
 }

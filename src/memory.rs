@@ -1936,6 +1936,44 @@ impl MemoryManager {
         Ok(region)
     }
 
+    /// Map a virtual memory region at a fixed user-space address.
+    pub fn allocate_region_at(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        region_type: MemoryRegionType,
+        protection: MemoryProtection,
+    ) -> Result<VirtualMemoryRegion, MemoryError> {
+        let aligned_size = align_up_checked(size, PAGE_SIZE).ok_or(MemoryError::NoVirtualSpace)?;
+        let start_u = start.as_u64();
+        let end_u = start_u
+            .checked_add(aligned_size as u64)
+            .ok_or(MemoryError::NoVirtualSpace)?;
+        if start_u < USER_SPACE_START as u64 || end_u > USER_SPACE_END as u64 {
+            return Err(MemoryError::NoVirtualSpace);
+        }
+
+        let mut region = VirtualMemoryRegion::new(start, aligned_size, region_type, protection);
+
+        {
+            let regions = self.regions.read();
+            if regions
+                .values()
+                .any(|existing| self.regions_overlap(&region, existing))
+            {
+                return Err(MemoryError::RegionOverlap);
+            }
+        }
+
+        self.map_region(&mut region)?;
+        if let Err(e) = self.add_region(region.clone()) {
+            let _ = self.unmap_region(&mut region);
+            return Err(e);
+        }
+
+        Ok(region)
+    }
+
     /// Allocate region with guard pages
     pub fn allocate_region_with_guards(
         &self,
@@ -2877,6 +2915,18 @@ pub fn allocate_memory(
 ) -> Result<VirtAddr, MemoryError> {
     let mm = get_memory_manager().ok_or(MemoryError::OutOfMemory)?;
     let region = mm.allocate_region(size, region_type, protection)?;
+    Ok(region.start)
+}
+
+/// Allocate and map memory at a fixed user-space virtual address.
+pub fn allocate_memory_at(
+    start: VirtAddr,
+    size: usize,
+    region_type: MemoryRegionType,
+    protection: MemoryProtection,
+) -> Result<VirtAddr, MemoryError> {
+    let mm = get_memory_manager().ok_or(MemoryError::OutOfMemory)?;
+    let region = mm.allocate_region_at(start, size, region_type, protection)?;
     Ok(region.start)
 }
 

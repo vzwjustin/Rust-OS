@@ -2,7 +2,7 @@
 //!
 //! Defines the ProcessControlBlock structure and related types for managing process state.
 
-use crate::process::{CpuContext, MemoryInfo, Pid, Priority};
+use crate::process::{self, CpuContext, MemoryInfo, Pid, Priority};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 
@@ -70,6 +70,16 @@ pub struct FileDescriptor {
     pub offset: u64,
 }
 
+impl FileDescriptor {
+    pub fn from_kernel(fd: &process::FileDescriptor) -> Self {
+        Self {
+            fd_type: FileDescriptorType::from_kernel(&fd.fd_type),
+            flags: fd.flags,
+            offset: fd.offset,
+        }
+    }
+}
+
 /// File descriptor types
 #[derive(Debug, Clone)]
 pub enum FileDescriptorType {
@@ -82,7 +92,59 @@ pub enum FileDescriptorType {
     Device { device_id: u32 },
 }
 
+impl FileDescriptorType {
+    fn from_kernel(fd_type: &process::FileDescriptorType) -> Self {
+        match fd_type {
+            process::FileDescriptorType::StandardInput => FileDescriptorType::StandardInput,
+            process::FileDescriptorType::StandardOutput => FileDescriptorType::StandardOutput,
+            process::FileDescriptorType::StandardError => FileDescriptorType::StandardError,
+            process::FileDescriptorType::VfsFile { .. } | process::FileDescriptorType::VfsHandle { .. } => {
+                FileDescriptorType::File { path: [0u8; 256] }
+            }
+            process::FileDescriptorType::Socket { socket_id } => {
+                FileDescriptorType::Socket { socket_id: *socket_id }
+            }
+            process::FileDescriptorType::Pipe { pipe_id } => FileDescriptorType::Pipe {
+                pipe_id: *pipe_id,
+                read_end: false,
+            },
+        }
+    }
+}
+
 impl ProcessControlBlock {
+    /// Build a POSIX facade view from the canonical kernel PCB.
+    pub fn from_kernel(pcb: process::ProcessControlBlock) -> Self {
+        let kernel = &pcb;
+        let mut fd_table = BTreeMap::new();
+        for (&fd, kfd) in &kernel.fd_table {
+            fd_table.insert(fd, FileDescriptor::from_kernel(kfd));
+        }
+
+        let child_count = process::get_process_manager()
+            .find_processes(|child| child.parent_pid == Some(kernel.pid))
+            .len() as u32;
+
+        Self {
+            pid: kernel.pid,
+            parent_pid: kernel.parent_pid,
+            state: map_kernel_state(kernel.state),
+            priority: kernel.priority,
+            context: kernel.context,
+            memory: kernel.memory.clone(),
+            name: kernel.name,
+            cpu_time: kernel.cpu_time,
+            creation_time: kernel.creation_time,
+            exit_status: kernel.exit_status,
+            fd_table,
+            next_fd: kernel.next_fd,
+            entry_point: kernel.entry_point,
+            args: [0u8; 256],
+            cwd: kernel.cwd.clone(),
+            child_count,
+        }
+    }
+
     /// Create a new PCB with the given PID and parent
     pub fn new(pid: Pid, parent_pid: Option<Pid>, name: &str, priority: Priority) -> Self {
         let mut fd_table = BTreeMap::new();
@@ -260,8 +322,19 @@ impl ProcessControlBlock {
 
 /// Get current system time in milliseconds
 fn get_system_time() -> u64 {
-    // Placeholder - integrate with hardware timer
     crate::process::get_system_time()
+}
+
+fn map_kernel_state(state: process::ProcessState) -> ProcessState {
+    match state {
+        process::ProcessState::Ready => ProcessState::Ready,
+        process::ProcessState::Running => ProcessState::Running,
+        process::ProcessState::Blocked => ProcessState::Blocked,
+        process::ProcessState::Sleeping => ProcessState::Sleeping,
+        process::ProcessState::Terminated => ProcessState::Terminated,
+        process::ProcessState::Zombie => ProcessState::Zombie,
+        process::ProcessState::Dead => ProcessState::Dead,
+    }
 }
 
 impl Default for ProcessControlBlock {

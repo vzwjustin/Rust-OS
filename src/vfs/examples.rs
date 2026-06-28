@@ -58,9 +58,7 @@ pub fn example_directory_ops() -> VfsResult<()> {
     // List directory contents
     let entries = vfs_readdir("/tmp/test")?;
     for entry in entries {
-        // Process each entry
-        let stat = vfs_stat(&format!("/tmp/test/{}", entry.name))?;
-        // Use stat information...
+        let _stat = vfs_stat(&format!("/tmp/test/{}", entry.name))?;
     }
 
     // Cleanup
@@ -284,12 +282,41 @@ pub fn example_dup() -> VfsResult<()> {
     Ok(())
 }
 
+/// Example 11: Parent directory traversal (`..`)
+pub fn example_parent_traversal() -> VfsResult<()> {
+    init()?;
+
+    vfs_mkdir("/tmp/parent", 0o755)?;
+    vfs_mkdir("/tmp/parent/child", 0o755)?;
+
+    let fd = vfs_open(
+        "/tmp/parent/child/marker.txt",
+        OpenFlags::RDWR | OpenFlags::CREAT,
+        0o644,
+    )?;
+    vfs_write(fd, b"visible")?;
+    vfs_close(fd)?;
+
+    // Resolve through parent and verify the same file is reachable
+    let fd = vfs_open("/tmp/parent/child/../child/marker.txt", OpenFlags::RDONLY, 0)?;
+    let mut buffer = [0u8; 16];
+    let nbytes = vfs_read(fd, &mut buffer)?;
+    vfs_close(fd)?;
+    assert_eq!(&buffer[..nbytes], b"visible");
+
+    vfs_unlink("/tmp/parent/child/marker.txt")?;
+    vfs_rmdir("/tmp/parent/child")?;
+    vfs_rmdir("/tmp/parent")?;
+
+    Ok(())
+}
+
 /// Example 10: Integration with syscalls
 pub fn example_syscall_integration() {
     // This demonstrates how VFS operations can be used to implement syscalls
 
     // sys_open implementation
-    fn sys_open_impl(path: *const u8, flags: i32, mode: u32) -> i32 {
+    fn sys_open_impl(_path: *const u8, flags: i32, mode: u32) -> i32 {
         // Convert path from C string
         let path_str = "/example.txt"; // In real code, convert from pointer
 
