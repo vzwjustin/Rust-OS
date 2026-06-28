@@ -892,8 +892,12 @@ extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptSta
 // ========== HARDWARE INTERRUPT HANDLERS ==========
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    TIMER_COUNT.fetch_add(1, Ordering::Relaxed);
+    let tick = TIMER_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     crate::time::timer_tick();
+
+    if tick % 16 == 0 {
+        crate::wayland::poll_input();
+    }
 
     unsafe {
         // Send EOI directly to PIC port 0x20
@@ -910,6 +914,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     crate::keyboard::handle_keyboard_interrupt();
 
     KEYBOARD_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::wayland::poll_input();
 
     notify_irq_eoi(InterruptIndex::Keyboard);
 }
@@ -926,6 +931,7 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFr
     }
 
     MOUSE_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::wayland::poll_input();
 
     notify_irq_eoi(InterruptIndex::Mouse);
 }

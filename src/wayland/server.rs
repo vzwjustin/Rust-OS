@@ -134,6 +134,12 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
             ]),
             4 => Some(vec![ArgType::UInt]),
             5 => Some(vec![ArgType::Int]),
+            7 => Some(vec![ArgType::NewId]),
+            _ => None,
+        },
+        interfaces::WL_SEAT => match header.opcode {
+            0 | 1 | 2 => Some(vec![ArgType::NewId]),
+            3 => Some(Vec::new()),
             _ => None,
         },
         interfaces::WL_SHM if header.opcode == 0 => {
@@ -222,6 +228,10 @@ fn dispatch_message(_pipe_id: u32, client_id: u32, message: &Message) -> Option<
             handle_buffer_destroy(client, message.header.object_id);
             None
         }
+        interfaces::WL_SEAT => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_seat_request(client, message)
+        }
         _ => None,
     }
 }
@@ -303,8 +313,12 @@ fn handle_registry_bind(
     let mut out = Vec::new();
 
     match global.interface {
-        interfaces::WL_COMPOSITOR | interfaces::WL_SHM | interfaces::WL_SEAT
+        interfaces::WL_COMPOSITOR | interfaces::WL_SHM
         | interfaces::WL_DATA_DEVICE_MANAGER | interfaces::WL_SUBCOMPOSITOR => {}
+        interfaces::WL_SEAT => {
+            super::input::register_seat(client, new_id);
+            out.extend_from_slice(&super::input::seat_bind_events(new_id));
+        }
         interfaces::WL_OUTPUT => {
             if let Some(output) = outputs.first() {
                 out.extend_from_slice(
@@ -417,14 +431,34 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
                 surface.commit();
             }
 
-            let events = if let Some(surface) = client.surfaces.get(&surface_id) {
+            let mut events = if let Some(surface) = client.surfaces.get(&surface_id) {
                 super::render::render_surface(client, surface);
                 super::render::surface_commit_events(client, surface)
             } else {
                 Vec::new()
             };
 
+            events.extend(super::input::surface_post_commit_events(client, surface_id));
+
             if let Some(surface) = client.surfaces.get(&surface_id) {
+                if let Some(callback_id) = surface.frame_callback {
+                    client.objects.insert(
+                        callback_id,
+                        super::ProtocolObject {
+                            id: callback_id,
+                            interface: interfaces::WL_CALLBACK,
+                            version: 1,
+                        },
+                    );
+                    let serial = client.next_serial();
+                    events.extend_from_slice(
+                        &Message::new(callback_id, 0, vec![Arg::UInt(serial)]).encode(),
+                    );
+                }
+            }
+
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.frame_callback = None;
                 if let Some(buffer_id) = surface.buffer {
                     if let Some(buf) = client.buffers.get_mut(&buffer_id) {
                         buf.released = true;
@@ -437,6 +471,16 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
             } else {
                 Some(events)
             }
+        }
+        7 => {
+            let callback_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.frame_callback = Some(callback_id);
+            }
+            None
         }
         4 => {
             if let Some(surface) = client.surfaces.get_mut(&surface_id) {
@@ -524,6 +568,29 @@ fn handle_buffer_destroy(client: &mut ClientConnection, buffer_id: ObjectId) {
     client.destroy_object(buffer_id);
 }
 
+fn handle_seat_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let seat_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            let pointer_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            Some(super::input::seat_get_pointer(client, seat_id, pointer_id))
+        }
+        1 => {
+            let keyboard_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            Some(super::input::seat_get_keyboard(client, seat_id, keyboard_id))
+        }
+        2 | 3 => None,
+        _ => None,
+    }
+    .filter(|events| !events.is_empty())
+}
+
 fn arg_i32(args: &[Arg], index: usize) -> i32 {
     match args.get(index) {
         Some(Arg::Int(v)) => *v,
@@ -567,4 +634,131 @@ pub fn smoke_check() -> Result<(), &'static str> {
 
     detach_connection(TEST_PIPE);
     Ok(())
+}
+
+/// Forward queued kernel input events to connected Wayland clients.
+pub fn poll_kernel_input() {
+    use crate::drivers::input_manager::{self, InputEvent, MouseButton};
+    use crate::keyboard::KeyEvent;
+    use crate::process::ipc::get_ipc_manager;
+
+    loop {
+        let event = match input_manager::get_event() {
+            Some(event) => event,
+            None => break,
+        };
+
+        let pipe_ids: Vec<u32> = PIPE_CLIENTS.lock().keys().copied().collect();
+        for pipe_id in pipe_ids {
+            let client_id = match PIPE_CLIENTS.lock().get(&pipe_id).copied() {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let mut comp = compositor_mut();
+            let client = match comp.get_client_mut(client_id) {
+                Some(client) => client,
+                None => continue,
+            };
+
+            let focused_surface = client
+                .seats
+                .values()
+                .find_map(|seat| seat.focused_surface)
+                .or_else(|| client.surfaces.keys().next().copied());
+
+            let wire_events = match event {
+                InputEvent::MouseMove { x, y } => focused_surface
+                    .map(|surface_id| {
+                        super::input::inject_pointer_motion(
+                            client,
+                            surface_id,
+                            x as i32,
+                            y as i32,
+                        )
+                    })
+                    .unwrap_or_default(),
+                InputEvent::MouseButtonDown { button, x, y } => {
+                    pointer_button_events(client, focused_surface, button, x, y, true)
+                }
+                InputEvent::MouseButtonUp { button, x, y } => {
+                    pointer_button_events(client, focused_surface, button, x, y, false)
+                }
+                InputEvent::KeyPress(key) => super::input::inject_keyboard_key(
+                    client,
+                    key_event_code(key),
+                    true,
+                ),
+                InputEvent::KeyRelease(key) => {
+                    super::input::inject_keyboard_key(client, key_event_code(key), false)
+                }
+                InputEvent::MouseScroll { .. } => Vec::new(),
+            };
+
+            if wire_events.is_empty() {
+                continue;
+            }
+
+            let ipc = get_ipc_manager();
+            let _ = ipc.pipe_write(pipe_id, &wire_events);
+        }
+    }
+}
+
+fn pointer_button_events(
+    client: &mut ClientConnection,
+    surface_id: Option<ObjectId>,
+    button: crate::drivers::input_manager::MouseButton,
+    x: usize,
+    y: usize,
+    pressed: bool,
+) -> Vec<u8> {
+    let Some(surface_id) = surface_id else {
+        return Vec::new();
+    };
+
+    let mut out = super::input::inject_pointer_motion(client, surface_id, x as i32, y as i32);
+    let button_code = match button {
+        crate::drivers::input_manager::MouseButton::Left => 272,
+        crate::drivers::input_manager::MouseButton::Right => 273,
+        crate::drivers::input_manager::MouseButton::Middle => 274,
+        crate::drivers::input_manager::MouseButton::Button4 => 275,
+        crate::drivers::input_manager::MouseButton::Button5 => 276,
+    };
+    let state = if pressed { 1u32 } else { 0u32 };
+
+    for seat in client.seats.values() {
+        let Some(pointer_id) = seat.pointer_id else {
+            continue;
+        };
+        let serial = client.next_input_serial();
+        out.extend_from_slice(
+            &Message::new(
+                pointer_id,
+                3,
+                vec![
+                    Arg::UInt(serial),
+                    Arg::UInt(0),
+                    Arg::UInt(button_code),
+                    Arg::UInt(state),
+                ],
+            )
+            .encode(),
+        );
+        let frame_serial = client.next_input_serial();
+        out.extend_from_slice(
+            &Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode(),
+        );
+    }
+
+    out
+}
+
+fn key_event_code(key: crate::keyboard::KeyEvent) -> u32 {
+    use crate::keyboard::KeyEvent;
+    match key {
+        KeyEvent::RawPress(code) | KeyEvent::RawRelease(code) => code as u32,
+        KeyEvent::CharacterPress(c) | KeyEvent::CharacterRelease(c) => c as u32,
+        KeyEvent::SpecialPress(_) | KeyEvent::SpecialRelease(_) => 0,
+    }
 }

@@ -35,6 +35,9 @@ pub const BUS_PATH: &str = "/org/freedesktop/DBus";
 /// Standard D-Bus property interface
 pub const PROPERTIES_IFACE: &str = "org.freedesktop.DBus.Properties";
 
+/// Standard D-Bus introspection interface
+pub const INTROSPECTABLE_IFACE: &str = "org.freedesktop.DBus.Introspectable";
+
 // ── Endianness ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1310,6 +1313,121 @@ pub mod bus_methods {
 }
 
 
+
+const BUS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.DBus.Properties">
+    <method name="Get">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <method name="GetAll">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="properties" type="a{sv}" direction="out"/>
+    </method>
+    <method name="Set">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="in"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.DBus.Peer">
+    <method name="Ping"/>
+    <method name="GetMachineId">
+      <arg name="machine_uuid" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.DBus">
+    <method name="Hello">
+      <arg name="name" type="s" direction="out"/>
+    </method>
+    <method name="RequestName">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="flags" type="u" direction="in"/>
+      <arg name="reply" type="u" direction="out"/>
+    </method>
+    <method name="ReleaseName">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="reply" type="u" direction="out"/>
+    </method>
+    <method name="ListNames">
+      <arg name="names" type="as" direction="out"/>
+    </method>
+    <method name="AddMatch">
+      <arg name="rule" type="s" direction="in"/>
+    </method>
+    <method name="RemoveMatch">
+      <arg name="rule" type="s" direction="in"/>
+    </method>
+    <property name="Features" type="as" access="read"/>
+    <property name="Interfaces" type="as" access="read"/>
+  </interface>
+</node>"#;
+
+fn introspect_xml(path: &str) -> &'static str {
+    if path == BUS_PATH {
+        BUS_INTROSPECT_XML
+    } else {
+        r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node/>"#
+    }
+}
+
+fn dispatch_introspectable(
+    member: &str,
+    serial: u32,
+    sender: &str,
+    path: &str,
+) -> Option<Vec<u8>> {
+    match member {
+        "Introspect" => {
+            let xml = introspect_xml(path);
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                sender,
+            );
+            reply.header = reply.header.with_field(
+                HeaderField::Signature,
+                Value::Signature("s".to_string()),
+            );
+            reply.body = vec![Value::String(xml.to_string())];
+            Some(marshal_message(&reply))
+        }
+        "Ping" => {
+            let reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                sender,
+            );
+            Some(marshal_message(&reply))
+        }
+        "GetMachineId" => {
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                sender,
+            );
+            reply.header = reply.header.with_field(
+                HeaderField::Signature,
+                Value::Signature("s".to_string()),
+            );
+            reply.body = vec![Value::String("rustos00000000000000000000000000".to_string())];
+            Some(marshal_message(&reply))
+        }
+        _ => None,
+    }
+}
+
+
 fn dbus_features() -> Value {
     Value::Array(
         "s".to_string(),
@@ -1466,9 +1584,14 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
     let serial = header.serial;
     let destination = header.destination().unwrap_or(BUS_NAME);
 
+    let path = header.path().unwrap_or(BUS_PATH);
+    let sender = header.sender().unwrap_or(":1");
+
+    if iface == INTROSPECTABLE_IFACE || iface == "org.freedesktop.DBus.Peer" {
+        return dispatch_introspectable(member, serial, sender, path);
+    }
+
     if iface == PROPERTIES_IFACE {
-        let path = header.path().unwrap_or(BUS_PATH);
-        let sender = header.sender().unwrap_or(":1");
         let signature = header.signature().unwrap_or("");
         return dispatch_properties(member, serial, sender, path, signature, &mut unmarshaler);
     }
@@ -1647,6 +1770,20 @@ pub fn smoke_check() -> Result<(), &'static str> {
         .ok_or("Properties.GetAll dispatch produced no reply")?;
     if get_all_reply.is_empty() {
         return Err("Properties.GetAll reply was empty");
+    }
+
+    let introspect = Message::new_method_call(
+        44,
+        BUS_NAME,
+        BUS_PATH,
+        INTROSPECTABLE_IFACE,
+        "Introspect",
+    );
+    let introspect_bytes = marshal_message(&introspect);
+    let introspect_reply = process_wire_request(&introspect_bytes)
+        .ok_or("Introspect dispatch produced no reply")?;
+    if introspect_reply.is_empty() {
+        return Err("Introspect reply was empty");
     }
 
     // Test connection
