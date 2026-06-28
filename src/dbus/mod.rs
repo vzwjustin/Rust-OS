@@ -1607,7 +1607,7 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
             let mut reply = Message::new_method_return(
                 bus.next_bus_serial(),
                 serial,
-                header.sender().unwrap_or(":1"),
+                &name,
             );
             reply.header = reply
                 .header
