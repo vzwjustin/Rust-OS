@@ -128,14 +128,20 @@ impl ContextSwitcher {
     ) -> Result<(), &'static str> {
         self.switch_count += 1;
 
+        let mut tmp_cr0: u64;
+
         // Handle FPU context switching. This must run BEFORE the register switch
         // below, because `context_switch_asm` does not return here until this task
         // is scheduled back in.
         if self.fpu_lazy_switching {
-            // Lazy FPU switching - only save/restore when necessary
+            // Lazy FPU switching: set the Task Switched flag so the next FPU
+            // instruction triggers a #NM exception.  The #NM handler
+            // (`handle_fpu_exception`) saves the previous owner's state and
+            // restores the new owner's state on first use.
             if self.fpu_owner.is_some() {
-                // Clear TS bit to allow FPU access for next process
-                self.clear_task_switched_flag();
+                asm!("mov {0:r}, cr0", out(reg) tmp_cr0, options(nomem, preserves_flags));
+                tmp_cr0 |= 0x8; // TS bit
+                asm!("mov cr0, {0:r}", in(reg) tmp_cr0, options(nomem, preserves_flags));
             }
         } else {
             // Always save/restore FPU state
@@ -270,16 +276,19 @@ impl ContextSwitcher {
     }
 
     /// Switch kernel stack
+    ///
+    /// Updates the TSS RSP0 entry so that the next ring-0 entry (syscall or
+    /// interrupt) uses the target process's kernel stack.
     unsafe fn switch_kernel_stack(&self, kernel_stack: u64) {
         if kernel_stack != 0 {
-            // Update TSS kernel stack pointer
-            // This would typically involve updating the TSS structure
-            // For now, we'll just note the stack change
-            // In a full implementation, this would update the appropriate TSS field
+            crate::gdt::set_kernel_stack(x86_64::VirtAddr::new(kernel_stack));
         }
     }
 
     /// Handle FPU exception (for lazy switching)
+    ///
+    /// Saves the previous owner's FPU state to its persistent PCB, then restores
+    /// the current process's FPU state and marks it as the new owner.
     pub unsafe fn handle_fpu_exception(
         &mut self,
         current_pid: Pid,
@@ -289,11 +298,17 @@ impl ContextSwitcher {
             // Clear task switched flag to allow FPU access
             self.clear_task_switched_flag();
 
-            // If a different process owned the FPU, save its state
+            // If a different process owned the FPU, save its state persistently.
             if let Some(owner_pid) = self.fpu_owner {
                 if owner_pid != current_pid {
-                    // In a real implementation, we would save the FPU state
-                    // of the previous owner here
+                    let process_manager = crate::process::get_process_manager();
+                    if let Some(owner) = process_manager.get_process(owner_pid) {
+                        let mut owner_fpu = owner.fpu;
+                        self.save_fpu_context(&mut owner_fpu)?;
+                        process_manager.with_process_mut(owner_pid, |p| {
+                            p.fpu = owner_fpu;
+                        });
+                    }
                 }
             }
 

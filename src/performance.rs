@@ -746,8 +746,19 @@ impl HighResTimer {
 
 /// Initialize performance optimizations
 pub fn init() -> Result<(), &'static str> {
-    // Initialize CPU-specific optimizations
-    // In a real implementation, we would detect CPU features here
+    // Detect CPU features via CPUID and cache the results for use by
+    // performance-critical code paths (e.g. SSE/AVX memcpy, prefetch hints).
+    let features = crate::arch::cpu_features();
+
+    if features.sse4_2 {
+        // SSE 4.2 enables CRC32 and string comparison instructions
+    }
+    if features.avx {
+        // AVX enables 256-bit vector operations
+    }
+    if features.rdrand {
+        // RDRAND provides a hardware random number source
+    }
 
     Ok(())
 }

@@ -1079,7 +1079,9 @@ impl GPUMemoryManager {
     /// MMIO BAR; the old code wrote it at 0xFED00000 — the HPET timer, not a GPU —
     /// which faults. Needs the device's actual BAR + GGTT offset to be real.
     fn configure_intel_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
-        Ok(())
+        // No Intel GPU has been detected.  Configuring the GGTT requires
+        // writing to the GPU's MMIO BAR, which is not mapped.
+        Err("No Intel GPU detected — cannot configure GGTT")
     }
 
     /// Configure AMD GPU memory management (GMMU).
@@ -1087,14 +1089,16 @@ impl GPUMemoryManager {
     /// No-op until a real AMD GPU is detected — same reason as the Intel path:
     /// the page tables live in the GPU's MMIO BAR, not at the HPET address.
     fn configure_amd_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
-        Ok(())
+        // No AMD GPU has been detected.  Configuring the GMMU requires
+        // writing to the GPU's MMIO BAR, which is not mapped.
+        Err("No AMD GPU detected — cannot configure GMMU")
     }
 
     /// Configure NVIDIA GPU memory management
     fn configure_nvidia_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
-        // NVIDIA GPU memory management requires proprietary drivers
-        // Nouveau driver would handle this
-        Ok(())
+        // No NVIDIA GPU has been detected.  NVIDIA GPU memory management
+        // requires the Nouveau driver or proprietary drivers.
+        Err("No NVIDIA GPU detected — cannot configure GPU MMU")
     }
 
     /// Track allocation for cleanup
@@ -1122,14 +1126,11 @@ impl GPUMemoryManager {
 
     /// Get GPU vendor for this memory manager
     fn get_gpu_vendor(&self) -> GPUVendor {
-        // In production, this would be determined during initialization
-        // For now, return based on GPU ID
-        match self.gpu_id {
-            0 => GPUVendor::Intel,
-            1 => GPUVendor::AMD,
-            2 => GPUVendor::Nvidia,
-            _ => GPUVendor::Unknown,
-        }
+        // No real GPU detection has been performed.  The old code hardcoded
+        // vendor based on gpu_id (0=Intel, 1=AMD, 2=NVIDIA), which is not
+        // based on actual hardware detection.  Return Unknown until a real
+        // GPU driver populates this field.
+        GPUVendor::Unknown
     }
 
     /// Unmap a virtual page

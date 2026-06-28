@@ -660,8 +660,8 @@ impl IdeDriver {
         Ok(())
     }
 
-    /// Get device model string
-    pub fn get_model(&self) -> Option<String> {
+    /// Get device model string from IDENTIFY data.
+    fn model_string(&self) -> Option<String> {
         if let Some(ref identify) = self.identify_data {
             // SAFETY: identify is a packed struct representing IDE on-disk format.
             // We use addr_of! to avoid creating misaligned references.
@@ -692,8 +692,8 @@ impl IdeDriver {
         }
     }
 
-    /// Get device serial number
-    pub fn get_serial(&self) -> Option<String> {
+    /// Get device serial number from IDENTIFY data.
+    fn serial_string(&self) -> Option<String> {
         if let Some(ref identify) = self.identify_data {
             // SAFETY: identify is a packed struct representing IDE on-disk format.
             // We use addr_of! to avoid creating misaligned references.
@@ -948,6 +948,14 @@ impl StorageDriver for IdeDriver {
         self.wait_ready()?;
 
         Ok(smart_data)
+    }
+
+    fn get_model(&self) -> Option<String> {
+        self.model_string()
+    }
+
+    fn get_serial(&self) -> Option<String> {
+        self.serial_string()
     }
 }
 

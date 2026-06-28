@@ -701,24 +701,47 @@ fn estimate_cpu_frequency() -> usize {
 }
 
 fn detect_memory_size() -> usize {
-    // Try to read from memory map or use fallback
-    // In real implementation, this would use boot info
-    256 // Default fallback in MB
+    // Query the memory manager for the actual total memory.
+    // Falls back to 256 MB only if the manager is not yet initialized.
+    crate::memory::get_memory_stats()
+        .map(|s| s.total_memory / (1024 * 1024))
+        .unwrap_or(256)
 }
 
 fn detect_storage_devices() -> usize {
-    // Detect IDE/SATA/NVMe devices
-    // This would scan PCI for storage controllers
-    1 // Default fallback
+    // Scan PCI bus for mass storage controllers (IDE, SATA/AHCI, NVMe, USB).
+    // Falls back to 1 if PCI is not yet initialized.
+    use crate::pci::{self, PciClass};
+    let devices = pci::get_all_devices();
+    let count = devices
+        .iter()
+        .filter(|d| d.class_code == PciClass::MassStorage)
+        .count();
+    if count == 0 { 1 } else { count }
 }
 
 fn detect_network_interfaces() -> usize {
-    // Detect network adapters from PCI
-    0 // Default - no network in basic boot
+    // Scan PCI bus for network and wireless controllers.
+    use crate::pci::{self, PciClass};
+    let devices = pci::get_all_devices();
+    devices
+        .iter()
+        .filter(|d| d.class_code == PciClass::Network || d.class_code == PciClass::Wireless)
+        .count()
 }
 
 fn detect_display_adapter() -> Option<String> {
-    // Detect GPU from PCI or use VGA fallback
+    // Scan PCI bus for display controllers. Falls back to VGA if none found.
+    use crate::pci::{self, PciClass};
+    let devices = pci::get_all_devices();
+    for dev in devices {
+        if dev.class_code == PciClass::Display {
+            return Some(format!(
+                "{:04x}:{:04x}",
+                dev.vendor_id, dev.device_id
+            ));
+        }
+    }
     Some(String::from("VGA Compatible"))
 }
 

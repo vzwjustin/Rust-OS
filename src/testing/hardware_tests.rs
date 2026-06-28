@@ -62,21 +62,48 @@ pub fn create_hardware_test_suite() -> TestSuite {
 
 // Setup and teardown functions
 fn setup_all_hardware_tests() {
-    // Initialize hardware testing environment
+    crate::testing_framework::get_test_framework().enable_mocks();
 }
 
 fn teardown_all_hardware_tests() {
-    // Clean up hardware testing environment
+    crate::testing_framework::get_test_framework().disable_mocks();
 }
 
-fn setup_hardware_tests() {}
-fn teardown_hardware_tests() {}
-fn setup_acpi_tests() {}
-fn teardown_acpi_tests() {}
-fn setup_interrupt_tests() {}
-fn teardown_interrupt_tests() {}
-fn setup_timer_tests() {}
-fn teardown_timer_tests() {}
+fn setup_hardware_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
+}
+
+fn teardown_hardware_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_acpi_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_timer().reset();
+}
+
+fn teardown_acpi_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_interrupt_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
+}
+
+fn teardown_interrupt_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_timer_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_timer().reset();
+}
+
+fn teardown_timer_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
 
 // Hardware test implementations
 

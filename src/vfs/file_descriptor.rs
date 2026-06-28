@@ -124,6 +124,13 @@ impl OpenFileTable {
         Ok(self.get(fd)?.kind.clone())
     }
 
+    /// Set flags on an existing file descriptor
+    pub fn set_flags(&mut self, fd: i32, flags: OpenFlags) -> VfsResult<()> {
+        let file = self.get_mut(fd)?;
+        file.flags = flags;
+        Ok(())
+    }
+
     /// Remove a file descriptor
     pub fn remove(&mut self, fd: i32) -> VfsResult<()> {
         self.files.remove(&fd).ok_or(VfsError::BadFileDescriptor)?;

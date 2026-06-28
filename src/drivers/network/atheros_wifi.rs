@@ -136,7 +136,9 @@ impl AtherosWifiDriver {
             let mac_hi = unsafe { base.add(ATH9K_MAC_ADDR_HI as usize) as *mut u32 };
             let mode_reg = unsafe { base.add(ATH9K_MODE_REG as usize) as *mut u32 };
 
-            unsafe { core::ptr::write_volatile(reset, 1); }
+            unsafe {
+                core::ptr::write_volatile(reset, 1);
+            }
             let mut retries = 0;
             const RESET_TIMEOUT: u32 = 100_000;
             loop {
@@ -163,7 +165,9 @@ impl AtherosWifiDriver {
                 ((hi >> 8) & 0xFF) as u8,
             ];
 
-            unsafe { core::ptr::write_volatile(mode_reg, 0); }
+            unsafe {
+                core::ptr::write_volatile(mode_reg, 0);
+            }
         } else {
             self.mac_address = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
         }
@@ -317,24 +321,34 @@ impl AtherosWifiDriver {
 
         let ssid_bytes = ssid.as_bytes();
         for (i, &byte) in ssid_bytes.iter().enumerate().take(32) {
-            unsafe { core::ptr::write_volatile(ssid_buf.add(i), byte); }
+            unsafe {
+                core::ptr::write_volatile(ssid_buf.add(i), byte);
+            }
         }
-        unsafe { core::ptr::write_volatile(ssid_len, ssid_bytes.len() as u32); }
+        unsafe {
+            core::ptr::write_volatile(ssid_len, ssid_bytes.len() as u32);
+        }
 
         let mode_val = match password {
             None => 0u32,
             Some(_) => 1u32,
         };
-        unsafe { core::ptr::write_volatile(auth_mode, mode_val); }
+        unsafe {
+            core::ptr::write_volatile(auth_mode, mode_val);
+        }
 
         if let Some(pw) = password {
             let pw_bytes = pw.as_bytes();
             for (i, &byte) in pw_bytes.iter().enumerate().take(64) {
-                unsafe { core::ptr::write_volatile(auth_key.add(i), byte); }
+                unsafe {
+                    core::ptr::write_volatile(auth_key.add(i), byte);
+                }
             }
         }
 
-        unsafe { core::ptr::write_volatile(assoc_cmd, 1); }
+        unsafe {
+            core::ptr::write_volatile(assoc_cmd, 1);
+        }
 
         let mut retries = 0;
         const MAX_RETRIES: u32 = 500_000;
@@ -376,13 +390,35 @@ impl AtherosWifiDriver {
         let base = self.base_addr as *mut u8;
         const ATH9K_DISASSOC_CMD: u64 = 0x0518;
         let disassoc = unsafe { base.add(ATH9K_DISASSOC_CMD as usize) as *mut u32 };
-        unsafe { core::ptr::write_volatile(disassoc, 1); }
+        unsafe {
+            core::ptr::write_volatile(disassoc, 1);
+        }
     }
 
     /// Set the channel
     pub fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
         if channel < 1 || channel > 165 {
             return Err("Invalid channel");
+        }
+
+        // Program the hardware channel register when MMIO is mapped.
+        if self.base_addr != 0 {
+            let base = self.base_addr as *mut u8;
+            const ATH9K_CHANNEL_REG: u64 = 0x0030;
+            const ATH9K_CHANNEL_FREQ: u64 = 0x0034;
+            let chan_reg = unsafe { base.add(ATH9K_CHANNEL_REG as usize) as *mut u32 };
+            let freq_reg = unsafe { base.add(ATH9K_CHANNEL_FREQ as usize) as *mut u32 };
+
+            let freq_mhz: u32 = if channel <= 14 {
+                2412 + (channel as u32 - 1) * 5
+            } else {
+                5000 + (channel as u32 - 36) * 5
+            };
+
+            unsafe {
+                core::ptr::write_volatile(chan_reg, channel as u32);
+                core::ptr::write_volatile(freq_reg, freq_mhz);
+            }
         }
 
         self.current_channel = channel;
@@ -437,7 +473,9 @@ impl AtherosWifiDriver {
 
         let frame_len = data.len().min(2048);
         for (i, &byte) in data.iter().take(frame_len).enumerate() {
-            unsafe { core::ptr::write_volatile(tx_buf.add(i), byte); }
+            unsafe {
+                core::ptr::write_volatile(tx_buf.add(i), byte);
+            }
         }
 
         unsafe {
@@ -485,7 +523,9 @@ impl AtherosWifiDriver {
 
         let len = unsafe { core::ptr::read_volatile(rx_len) } as usize;
         if len == 0 || len > 4096 {
-            unsafe { core::ptr::write_volatile(rx_ack, 1); }
+            unsafe {
+                core::ptr::write_volatile(rx_ack, 1);
+            }
             return Err(crate::net::NetworkError::InvalidPacket);
         }
 
@@ -495,7 +535,9 @@ impl AtherosWifiDriver {
             frame.push(byte);
         }
 
-        unsafe { core::ptr::write_volatile(rx_ack, 1); }
+        unsafe {
+            core::ptr::write_volatile(rx_ack, 1);
+        }
 
         Ok(Some(frame))
     }
@@ -697,7 +739,19 @@ impl super::NetworkDriver for AtherosWifiDriverWrapper {
     }
 
     fn start(&mut self) -> Result<(), crate::net::NetworkError> {
-        // WiFi doesn't "start" the same way as Ethernet - needs connection
+        // Enable the NIC mode register for the configured operating mode.
+        if self.inner.base_addr != 0 {
+            let base = self.inner.base_addr as *mut u8;
+            const ATH9K_MODE_REG: u64 = 0x0020;
+            let mode_reg = unsafe { base.add(ATH9K_MODE_REG as usize) as *mut u32 };
+            let mode_val = match self.inner.mode {
+                WifiMode::Station => 0u32,
+                WifiMode::AccessPoint => 1u32,
+                WifiMode::Monitor => 2u32,
+                WifiMode::AdHoc => 3u32,
+            };
+            unsafe { core::ptr::write_volatile(mode_reg, mode_val); }
+        }
         Ok(())
     }
 

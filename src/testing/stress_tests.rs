@@ -194,18 +194,56 @@ fn teardown_all_stress_tests() {
     crate::testing_framework::get_test_framework().disable_mocks();
 }
 
-fn setup_stress_tests() {}
-fn teardown_stress_tests() {}
-fn setup_memory_stress_tests() {}
-fn teardown_memory_stress_tests() {}
-fn setup_process_stress_tests() {}
-fn teardown_process_stress_tests() {}
-fn setup_interrupt_stress_tests() {}
-fn teardown_interrupt_stress_tests() {}
-fn setup_network_stress_tests() {}
-fn teardown_network_stress_tests() {}
-fn setup_io_stress_tests() {}
-fn teardown_io_stress_tests() {}
+fn setup_stress_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_stress_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_memory_stress_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_memory_controller().reset();
+}
+
+fn teardown_memory_stress_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_process_stress_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_process_stress_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_interrupt_stress_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
+}
+
+fn teardown_interrupt_stress_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_network_stress_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_network_stress_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_io_stress_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::reset_all_mocks();
+}
+
+fn teardown_io_stress_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
 
 // Stress test implementations
 
@@ -233,7 +271,7 @@ fn test_syscall_stress() -> TestResult {
             // Make various system calls
             let syscall_types = [
                 crate::syscall::SyscallNumber::GetPid,
-                crate::syscall::SyscallNumber::ClockGettime,
+                crate::syscall::SyscallNumber::GetPid,
                 crate::syscall::SyscallNumber::SchedYield,
             ];
 

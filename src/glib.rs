@@ -5354,9 +5354,21 @@ fn glib_smoke_hook(data: usize) {
     GLIB_SMOKE_HOOK_COUNT.fetch_add(data, core::sync::atomic::Ordering::SeqCst);
 }
 
-fn glib_threadpool_noop(_data: usize) {}
+static GLIB_THREADPOOL_COUNT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+static GLIB_TEST_COUNT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
-fn glib_test_noop() {}
+fn glib_threadpool_noop(_data: usize) {
+    // The inline thread pool implementation executes the callback synchronously.
+    // Record that the callback was invoked so tests can verify the API path.
+    GLIB_THREADPOOL_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+}
+
+fn glib_test_noop() {
+    // Record that the test case body was executed.
+    GLIB_TEST_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+}
 
 fn rustos_glib_clock_us() -> i64 {
     crate::time::uptime_us().min(i64::MAX as u64) as i64

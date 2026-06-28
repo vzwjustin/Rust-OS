@@ -934,6 +934,17 @@ impl VfsManager {
         Ok(bytes_written)
     }
 
+    /// Get file size by file descriptor
+    pub fn fstat_size(&self, fd: FileDescriptor) -> FsResult<u64> {
+        let open_files = self.open_files.read();
+        let open_file = open_files.get(&fd).ok_or(FsError::BadFileDescriptor)?;
+
+        let mount_points = self.mount_points.read();
+        let mount_point = &mount_points[open_file.mount_index];
+        let metadata = mount_point.filesystem.metadata(open_file.inode)?;
+        Ok(metadata.size)
+    }
+
     /// Seek in a file
     pub fn seek(&self, fd: FileDescriptor, pos: SeekFrom) -> FsResult<u64> {
         let mut open_files = self.open_files.write();
@@ -1175,11 +1186,18 @@ pub fn init() -> FsResult<()> {
         VFS_MANAGER.mount("/", root_fs, MountFlags::default())?;
     }
 
-    // Mount devfs at /dev
+// Mount devfs at /dev — leak the box to get a stable instance for
+    // dynamic device registration, then mount a thin wrapper around it.
     let dev_fs = Box::new(devfs::DevFs::new());
-    VFS_MANAGER.mount("/dev", dev_fs, MountFlags::default())?;
+    let dev_fs_ref: &'static devfs::DevFs = Box::leak(dev_fs);
+    devfs::register_devfs(dev_fs_ref);
+    VFS_MANAGER.mount(
+        "/dev",
+        Box::new(devfs::DevFsMount(dev_fs_ref)),
+        MountFlags::default(),
+    )?;
 
-    // Create standard directories (only if using RAM filesystem)
+        // Create standard directories (only if using RAM filesystem)
     if !root_mounted {
         VFS_MANAGER.mkdir("/tmp", FilePermissions::from_octal(0o755))?;
         VFS_MANAGER.mkdir("/proc", FilePermissions::from_octal(0o755))?;

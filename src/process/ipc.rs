@@ -197,8 +197,8 @@ impl Pipe {
 pub struct SharedMemorySegment {
     /// Segment ID
     pub id: IpcId,
-    /// Physical memory address
-    pub physical_addr: u64,
+    /// Virtual memory address returned by the memory manager
+    pub virtual_addr: u64,
     /// Size in bytes
     pub size: usize,
     /// Access permissions
@@ -279,7 +279,7 @@ impl SharedMemorySegment {
 
         Ok(Self {
             id,
-            physical_addr: region.start.as_u64(),
+            virtual_addr: region.start.as_u64(),
             size,
             permissions,
             attached_processes: Vec::new(),
@@ -297,10 +297,10 @@ impl SharedMemorySegment {
         }
         self.last_access = get_system_time();
 
-        // Map into process virtual address space
-        // This would typically involve updating the process page tables
-        // For now, return a virtual address based on the physical address
-        Ok(VirtAddr::new(self.physical_addr))
+        // The memory manager already mapped the region into the kernel
+        // page tables when `new()` called `allocate_region`.  We return
+        // the virtual address so the caller can access the shared pages.
+        Ok(VirtAddr::new(self.virtual_addr))
     }
 
     /// Detach process from shared memory segment

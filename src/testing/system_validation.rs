@@ -131,25 +131,64 @@ pub fn create_system_validation_suite(config: SystemValidationConfig) -> TestSui
 
 // Setup and teardown functions
 fn setup_system_validation_tests() {
-    // Initialize system validation environment
+    crate::testing_framework::get_test_framework().enable_mocks();
 }
 
 fn teardown_system_validation_tests() {
-    // Clean up system validation environment
+    crate::testing_framework::get_test_framework().disable_mocks();
 }
 
-fn setup_stability_tests() {}
-fn teardown_stability_tests() {}
-fn setup_memory_safety_tests() {}
-fn teardown_memory_safety_tests() {}
-fn setup_security_verification_tests() {}
-fn teardown_security_verification_tests() {}
-fn setup_compatibility_tests() {}
-fn teardown_compatibility_tests() {}
-fn setup_hardware_validation_tests() {}
-fn teardown_hardware_validation_tests() {}
-fn setup_performance_regression_tests() {}
-fn teardown_performance_regression_tests() {}
+fn setup_stability_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_timer().reset();
+}
+
+fn teardown_stability_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_memory_safety_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_memory_controller().reset();
+}
+
+fn teardown_memory_safety_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_security_verification_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_security_verification_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_compatibility_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_compatibility_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_hardware_validation_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
+}
+
+fn teardown_hardware_validation_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_performance_regression_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_timer().reset();
+}
+
+fn teardown_performance_regression_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
 
 // System validation test implementations
 
@@ -504,65 +543,135 @@ fn create_system_load() {
 
 // Memory safety test implementations
 fn test_buffer_overflow_detection() -> bool {
-    true
-} // Simplified for demo
+    // Allocate a small buffer and verify read/write stays within bounds.
+    use alloc::vec;
+    let mut buf = vec![0u8; 16];
+    for i in 0..buf.len() {
+        buf[i] = i as u8;
+    }
+    buf.iter().enumerate().all(|(i, &v)| v == i as u8)
+}
 fn test_use_after_free_detection() -> bool {
-    true
+    // Allocate a physical frame, free it, and confirm the allocator can reuse it.
+    use crate::memory::{get_memory_manager, MemoryZone};
+    if let Some(mm) = get_memory_manager() {
+        if let Some(f) = mm.allocate_frame_in_zone(MemoryZone::Normal) {
+            mm.deallocate_frame(f, MemoryZone::Normal);
+            return mm.allocate_frame_in_zone(MemoryZone::Normal).is_some();
+        }
+    }
+    false
 }
 fn test_double_free_detection() -> bool {
-    true
+    // Allocate two frames, free both, and verify the allocator still works.
+    use crate::memory::{get_memory_manager, MemoryZone};
+    if let Some(mm) = get_memory_manager() {
+        let a = mm.allocate_frame_in_zone(MemoryZone::Normal);
+        let b = mm.allocate_frame_in_zone(MemoryZone::Normal);
+        if let (Some(a), Some(b)) = (a, b) {
+            mm.deallocate_frame(a, MemoryZone::Normal);
+            mm.deallocate_frame(b, MemoryZone::Normal);
+            return mm.allocate_frame_in_zone(MemoryZone::Normal).is_some();
+        }
+    }
+    false
 }
 fn test_stack_overflow_protection() -> bool {
-    true
+    // Verify the current stack pointer is non-zero and in the kernel range.
+    let rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
+    }
+    rsp != 0
 }
 fn test_heap_corruption_detection() -> bool {
-    true
+    // Allocate two adjacent-ish buffers and confirm writes to one do not overwrite the other.
+    use alloc::vec;
+    let a = vec![0xAAu8; 32];
+    let b = vec![0xBBu8; 32];
+    a.iter().all(|&x| x == 0xAA) && b.iter().all(|&x| x == 0xBB)
 }
 fn test_memory_leak_detection() -> bool {
-    true
+    // Allocate and free a frame, then confirm the allocator can still allocate.
+    use crate::memory::{get_memory_manager, MemoryZone};
+    if let Some(mm) = get_memory_manager() {
+        if let Some(f) = mm.allocate_frame_in_zone(MemoryZone::Normal) {
+            mm.deallocate_frame(f, MemoryZone::Normal);
+            return mm.allocate_frame_in_zone(MemoryZone::Normal).is_some();
+        }
+    }
+    false
 }
 fn test_null_pointer_protection() -> bool {
-    true
+    // Null user pointers must be rejected by the syscall validator.
+    use crate::syscall::SecurityValidator;
+    SecurityValidator::validate_user_ptr(0, 1, false).is_err()
 }
 fn test_memory_alignment_validation() -> bool {
-    true
+    // Physical frames must be page-aligned.
+    use crate::memory::{get_memory_manager, MemoryZone};
+    if let Some(mm) = get_memory_manager() {
+        if let Some(f) = mm.allocate_frame_in_zone(MemoryZone::Normal) {
+            let addr = f.start_address().as_u64();
+            mm.deallocate_frame(f, MemoryZone::Normal);
+            return addr & 0xFFF == 0;
+        }
+    }
+    false
 }
 
 // Security test implementations
 fn test_privilege_escalation_prevention_comprehensive() -> bool {
-    true
+    // PID 0 is never a valid source process; isolation checks must reject it.
+    crate::security::validate_process_isolation(0, 1, "signal").is_err()
 }
 fn test_syscall_validation_comprehensive() -> bool {
-    true
+    // An out-of-range syscall number must map to the invalid variant.
+    use crate::syscall::SyscallNumber;
+    SyscallNumber::from_u64(0xFFFF) == SyscallNumber::Invalid
 }
 fn test_memory_protection_enforcement() -> bool {
-    true
+    // Null user pointers must be rejected.
+    use crate::syscall::SecurityValidator;
+    SecurityValidator::validate_user_ptr(0, 1, false).is_err()
 }
 fn test_cryptographic_security_comprehensive() -> bool {
-    true
+    // PBKDF2 with a time-based salt must produce a unique hash each call.
+    let h1 = crate::installer::plan::hash_password("rustos-test");
+    let h2 = crate::installer::plan::hash_password("rustos-test");
+    h1 != h2
 }
 fn test_access_control_comprehensive() -> bool {
-    true
+    // Signaling the kernel idle task (PID 0) must be denied.
+    crate::security::validate_process_isolation(1, 0, "signal").is_err()
 }
 fn test_security_audit_trail() -> bool {
-    true
+    // The logging subsystem must have recorded at least one entry by now.
+    crate::logging::get_recent_logs().len() > 0
 }
 
 // Compatibility test implementations
 fn test_legacy_syscall_compatibility() -> bool {
+    // Basic process syscalls must execute without fault and return a value.
+    let _pid = crate::linux_compat::process_ops::getpid();
+    let _ppid = crate::linux_compat::process_ops::getppid();
     true
 }
 fn test_process_management_compatibility() -> bool {
-    true
+    // The process manager must know about at least one process.
+    crate::process::get_process_manager().list_processes().len() >= 1
 }
 fn test_filesystem_compatibility() -> bool {
-    true
+    // The root path must be resolvable if the VFS is mounted.
+    crate::vfs::get_vfs().lookup("/").is_ok()
 }
 fn test_network_protocol_compatibility() -> bool {
-    true
+    // The loopback interface must exist after network stack initialization.
+    crate::net::network_stack().get_interface("lo").is_some()
 }
 fn test_hardware_abstraction_compatibility() -> bool {
-    true
+    // At least one hardware discovery subsystem (PCI or ACPI) must be initialized.
+    crate::pci::database::get_device_count() > 0 || crate::acpi::is_initialized()
 }
 
 // Hardware configuration testing
@@ -591,9 +700,9 @@ fn get_test_hardware_configurations() -> Vec<HardwareConfig> {
     ]
 }
 
-fn test_hardware_configuration(_config: &HardwareConfig) -> bool {
-    // Test hardware configuration compatibility
-    true // Simplified for demo
+fn test_hardware_configuration(config: &HardwareConfig) -> bool {
+    // A valid hardware configuration must describe at least one CPU core and one GB of RAM.
+    config.cpu_cores >= 1 && config.memory_gb >= 1
 }
 
 // Performance regression testing

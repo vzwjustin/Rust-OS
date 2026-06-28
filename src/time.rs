@@ -760,10 +760,11 @@ fn update_timer_statistics() {
                 static APIC_RECALIBRATION_COUNTER: AtomicU64 = AtomicU64::new(0);
                 let counter = APIC_RECALIBRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-                // Recalibrate every 60 seconds (60000 ticks at 1kHz)
+                // Set pending flag every 60 seconds (60000 ticks at 1kHz).
+                // The actual recalibration is done outside interrupt context
+                // by checking this flag in the main loop or a kernel thread.
                 if counter % 60000 == 0 {
-                    // Schedule recalibration (can't do it in interrupt context)
-                    // This would be handled by a kernel thread in a full implementation
+                    RECALIBRATION_PENDING.store(true, Ordering::Release);
                 }
             }
             TimerType::Pit => {
@@ -1009,6 +1010,19 @@ pub fn recalibrate_tsc() -> Result<u64, &'static str> {
         Err("TSC calibration failed")
     }
 }
+
+/// Check if APIC timer recalibration is pending and perform it if so.
+/// Should be called from the main loop or a kernel thread (not interrupt context).
+pub fn check_pending_recalibration() {
+    // The static flag is defined inside the tick handler. We use a separate
+    // global to avoid scoping issues.
+    if RECALIBRATION_PENDING.load(Ordering::Acquire) {
+        RECALIBRATION_PENDING.store(false, Ordering::Release);
+        let _ = recalibrate_tsc();
+    }
+}
+
+static RECALIBRATION_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Sleep for specified milliseconds (busy wait)
 pub fn sleep_ms(ms: u64) {

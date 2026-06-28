@@ -94,6 +94,39 @@ pub fn get_video_memory_bytes() -> u64 {
     blocks as u64 * 64 * 1024
 }
 
+/// Read the current VBE resolution from the Bochs VBE I/O ports.
+/// Returns `None` if the controller is not enabled or the ID is invalid.
+pub fn get_current_mode() -> Option<VbeIoMode> {
+    let version = vbe_read(VBE_DISPI_INDEX_ID);
+    if version < 0x0200 && version < 0xB0C0 {
+        return None;
+    }
+    let enable = vbe_read(VBE_DISPI_INDEX_ENABLE);
+    if (enable & VBE_DISPI_ENABLED) == 0 {
+        return None;
+    }
+    let width = vbe_read(VBE_DISPI_INDEX_XRES);
+    let height = vbe_read(VBE_DISPI_INDEX_YRES);
+    let bpp = vbe_read(VBE_DISPI_INDEX_BPP) as u8;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let pitch = (width as usize) * ((bpp as usize + 7) / 8);
+    let framebuffer_phys = vbe_read(VBE_DISPI_INDEX_BANK) as u64;
+    Some(VbeIoMode {
+        width,
+        height,
+        bpp,
+        pixel_format: PixelFormat::BGRA8888,
+        framebuffer_phys: if framebuffer_phys == 0 {
+            QEMU_VBE_FRAMEBUFFER_PHYS
+        } else {
+            (framebuffer_phys as u64) * 64 * 1024
+        },
+        pitch,
+    })
+}
+
 pub fn set_mode(width: u16, height: u16, bpp: u8) -> Result<VbeIoMode, &'static str> {
     set_mode_with_fb(width, height, bpp, None)
 }

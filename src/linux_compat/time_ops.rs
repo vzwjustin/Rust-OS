@@ -47,6 +47,10 @@ struct ITimerSpec {
 /// In-memory POSIX timer entry.
 struct PosixTimer {
     clockid: i32,
+    /// Expiration time in ns (0 = disarmed).
+    expires_ns: u64,
+    /// Interval for periodic timers in ns (0 = one-shot).
+    interval_ns: u64,
 }
 
 lazy_static! {
@@ -246,6 +250,20 @@ pub fn gettimeofday(tv: *mut TimeVal, tz: *mut u8) -> LinuxResult<i32> {
     Ok(0)
 }
 
+/// time - return seconds since the Epoch
+///
+/// If `tloc` is non-null, the current time is also written there.  This is the
+/// legacy Linux `time` syscall (number 201 on x86_64).
+pub fn time(tloc: *mut Time) -> LinuxResult<Time> {
+    inc_ops();
+    let secs = crate::time::system_time();
+    if !tloc.is_null() {
+        // SAFETY: caller guarantees tloc points to a valid, writable Time value.
+        unsafe { *tloc = secs as i64 };
+    }
+    Ok(secs as i64)
+}
+
 /// settimeofday - set time of day
 pub fn settimeofday(tv: *const TimeVal, tz: *const u8) -> LinuxResult<i32> {
     inc_ops();
@@ -296,7 +314,7 @@ pub fn timer_create(
     match clockid {
         clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
             let id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-            POSIX_TIMERS.lock().insert(id, PosixTimer { clockid });
+            POSIX_TIMERS.lock().insert(id, PosixTimer { clockid, expires_ns: 0, interval_ns: 0 });
             unsafe {
                 *timerid = id;
             }
@@ -309,7 +327,7 @@ pub fn timer_create(
 /// timer_settime - arm/disarm a timer
 pub fn timer_settime(
     timerid: TimerId,
-    _flags: i32,
+    flags: i32,
     new_value: *const u8, // struct itimerspec
     old_value: *mut u8,   // struct itimerspec
 ) -> LinuxResult<i32> {
@@ -319,11 +337,37 @@ pub fn timer_settime(
         return Err(LinuxError::EFAULT);
     }
 
-    if !POSIX_TIMERS.lock().contains_key(&timerid) {
-        return Err(LinuxError::EINVAL);
+    let mut timers = POSIX_TIMERS.lock();
+    let timer = timers.get_mut(&timerid).ok_or(LinuxError::EINVAL)?;
+
+    let spec = unsafe { *(new_value as *const ITimerSpec) };
+
+    // Store previous timer settings in old_value.
+    if !old_value.is_null() {
+        unsafe {
+            *(old_value as *mut ITimerSpec) = ITimerSpec {
+                it_interval_sec: timer.interval_ns / 1_000_000_000,
+                it_interval_nsec: timer.interval_ns % 1_000_000_000,
+                it_value_sec: 0,
+                it_value_nsec: 0,
+            };
+        }
     }
 
-    zero_itimerspec(old_value);
+    timer.interval_ns = spec.it_interval_sec * 1_000_000_000 + spec.it_interval_nsec;
+    let value_ns = spec.it_value_sec * 1_000_000_000 + spec.it_value_nsec;
+
+    if value_ns == 0 {
+        timer.expires_ns = 0;
+    } else {
+        // TIMER_ABSTIME (1): value is absolute clock time.
+        timer.expires_ns = if (flags & 1) != 0 {
+            value_ns
+        } else {
+            crate::time::uptime_ns() + value_ns
+        };
+    }
+
     Ok(0)
 }
 
@@ -338,11 +382,25 @@ pub fn timer_gettime(
         return Err(LinuxError::EFAULT);
     }
 
-    if !POSIX_TIMERS.lock().contains_key(&timerid) {
-        return Err(LinuxError::EINVAL);
+    let timers = POSIX_TIMERS.lock();
+    let timer = timers.get(&timerid).ok_or(LinuxError::EINVAL)?;
+
+    let now = crate::time::uptime_ns();
+    let remaining = if timer.expires_ns == 0 {
+        0
+    } else {
+        timer.expires_ns.saturating_sub(now)
+    };
+
+    unsafe {
+        *(curr_value as *mut ITimerSpec) = ITimerSpec {
+            it_interval_sec: timer.interval_ns / 1_000_000_000,
+            it_interval_nsec: timer.interval_ns % 1_000_000_000,
+            it_value_sec: remaining / 1_000_000_000,
+            it_value_nsec: remaining % 1_000_000_000,
+        };
     }
 
-    zero_itimerspec(curr_value);
     Ok(0)
 }
 

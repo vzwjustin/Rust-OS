@@ -371,7 +371,7 @@ impl BenchmarkSuite {
                 "syscall_throughput" => {
                     let context = crate::syscall::SyscallContext {
                         pid: 1,
-                        syscall_num: crate::syscall::SyscallNumber::ClockGettime,
+                        syscall_num: crate::syscall::SyscallNumber::GetPid,
                         args: [0; 6],
                         user_sp: 0x7fff_0000,
                         user_ip: 0x4000_0000,
@@ -614,15 +614,22 @@ pub fn create_performance_benchmark_suite() -> TestSuite {
 
 // Setup and teardown functions
 fn setup_all_performance_tests() {
-    // Initialize performance testing environment
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_all_performance_tests() {
-    // Clean up performance testing environment
+    crate::testing_framework::get_test_framework().disable_mocks();
 }
 
-fn setup_performance_tests() {}
-fn teardown_performance_tests() {}
+fn setup_performance_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_timer().reset();
+}
+
+fn teardown_performance_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
 
 // Benchmark test implementations
 

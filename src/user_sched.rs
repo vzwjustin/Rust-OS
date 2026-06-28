@@ -131,7 +131,12 @@ fn end_user_bootstrap() {
     USER_IRETQ_RSP.store(RESUME_NONE, Ordering::Release);
 }
 
-extern "C" fn user_bootstrap_after_exit() {
+extern "C" fn user_bootstrap_kernel_entry() {
+    // First kernel code executed after a bootstrap Ring-3 task exits.
+    // The iretq return frame was patched by the syscall handler to land
+    // here with the bootstrap stack. We finish the bootstrap, run any
+    // registered post-exit hook, and jump to the kernel resume address
+    // registered by `service_pending` before the user task started.
     end_user_bootstrap();
 
     if let Some(hook) = AFTER_USER_HOOK.lock().take() {
@@ -144,12 +149,11 @@ extern "C" fn user_bootstrap_after_exit() {
             core::arch::asm!("jmp {}", in(reg) resume, options(noreturn));
         }
     }
+
     loop {
         x86_64::instructions::hlt();
     }
 }
-
-extern "C" fn user_bootstrap_kernel_entry() {}
 
 fn begin_user_bootstrap(parent_pid: u32, entry_rip: u64, entry_rsp: u64) {
     USER_HOST_PARENT.store(parent_pid, Ordering::Release);
@@ -176,14 +180,6 @@ fn bootstrap_stack_top() -> u64 {
     }
 }
 
-fn push_return_address(sp: u64, return_addr: u64) -> u64 {
-    let sp = sp.wrapping_sub(8);
-    unsafe {
-        (sp as *mut u64).write(return_addr);
-    }
-    sp
-}
-
 fn run_user_process(child_pid: u32) -> Result<(), ()> {
     if user_bootstrap_active() {
         return Err(());
@@ -199,14 +195,10 @@ fn run_user_process(child_pid: u32) -> Result<(), ()> {
     let entry = pcb.entry_point;
     let rsp = pcb.context.rsp;
     let parent_pid = process::current_pid();
-    let resume_sp = push_return_address(
-        bootstrap_stack_top(),
-        user_bootstrap_after_exit as *const () as u64,
-    );
     begin_user_bootstrap(
         parent_pid,
         user_bootstrap_kernel_entry as *const () as u64,
-        resume_sp,
+        bootstrap_stack_top(),
     );
 
     let pm = crate::process_manager::get_process_manager();

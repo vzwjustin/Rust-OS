@@ -145,13 +145,42 @@ impl PartitionLayout {
     }
 }
 
-/// Simple password hash stub (kernel install — not cryptographically strong).
+/// Hash a password using PBKDF2-SHA256 with a time-based salt.
+///
+/// The output format is `pbkdf2-sha256$<iterations>$<salt-hex>$<hash-hex>`.
+/// This is a real key derivation function, not a stub; the salt is unique per
+/// call based on uptime and the password bytes.
 pub fn hash_password(password: &str) -> String {
-    let mut hash: u64 = 5381;
-    for b in password.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(b as u64);
+    const ITERATIONS: u32 = 100_000;
+
+    // Build a salt from uptime and the password bytes. It is not truly random
+    // (kernel install environment lacks a CSPRNG), but it is unique per call
+    // and per password, defeating precomputed hash tables.
+    let mut salt = [0u8; 16];
+    let time = crate::time::uptime_ns();
+    salt[..8].copy_from_slice(&time.to_le_bytes());
+    for (i, b) in password.bytes().enumerate().take(8) {
+        salt[8 + i] = b;
     }
-    format!("rustos:{:016x}", hash)
+
+    let derived = crate::security::derive_key(password.as_bytes(), &salt, ITERATIONS, 32);
+
+    let mut salt_hex = String::new();
+    let mut hash_hex = String::new();
+    for b in salt {
+        push_hex_byte(&mut salt_hex, b);
+    }
+    for b in derived {
+        push_hex_byte(&mut hash_hex, b);
+    }
+
+    format!("pbkdf2-sha256${}${}${}", ITERATIONS, salt_hex, hash_hex)
+}
+
+fn push_hex_byte(out: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(HEX[(byte >> 4) as usize] as char);
+    out.push(HEX[(byte & 0x0f) as usize] as char);
 }
 
 #[cfg(test)]

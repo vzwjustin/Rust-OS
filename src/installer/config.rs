@@ -7,7 +7,7 @@ use super::format::Ext4Volume;
 use super::plan::{InstallPlan, PartitionLayout};
 use crate::drivers::storage::StorageError;
 
-/// Write fstab, hostname, passwd, timezone stub, and install marker.
+/// Write fstab, hostname, passwd, timezone, and install marker.
 pub fn write_install_config(
     volume: &mut Ext4Volume,
     plan: &InstallPlan,

@@ -36,6 +36,7 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeSet;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::types::*;
@@ -137,6 +138,8 @@ fn check_memlock_limit(pcb: &ProcessControlBlock, additional_pages: usize) -> Li
 
 /// Operation counter for statistics
 static MEMORY_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
+static PKEYS: spin::RwLock<BTreeSet<i32>> = spin::RwLock::new(BTreeSet::new());
+const MAX_PKEY: i32 = 15;
 
 /// Locked page counter (global aggregate for statistics)
 static LOCKED_PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -653,6 +656,21 @@ pub fn mlock(addr: *const u8, length: usize) -> LinuxResult<i32> {
         LOCKED_PAGES.fetch_add(page_count, Ordering::Relaxed);
         Ok(0)
     })
+}
+
+/// mlock2 - lock pages in memory, optionally only on fault
+///
+/// MLOCK_ONFAULT is accepted as a no-op because the kernel has no swap backing;
+/// all pages are resident once faulted.  All other flags are rejected.
+pub fn mlock2(addr: *const u8, length: usize, flags: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    const MLOCK_ONFAULT: i32 = 1;
+    if flags & !MLOCK_ONFAULT != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    mlock(addr, length)
 }
 
 /// munlock - unlock pages in memory
@@ -1313,7 +1331,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
 }
 
 /// memfd_create - create an anonymous file
-pub fn memfd_create(name: *const u8, _flags: u32) -> LinuxResult<Fd> {
+pub fn memfd_create(name: *const u8, flags: u32) -> LinuxResult<Fd> {
     inc_ops();
 
     let name_str = c_str_to_string(name)?;
@@ -1331,6 +1349,10 @@ pub fn memfd_create(name: *const u8, _flags: u32) -> LinuxResult<Fd> {
         Ok(fd) => {
             // Optionally unlink so it's anonymous
             let _ = vfs::vfs_unlink(&path);
+            // MFD_CLOEXEC (0x0001): set close-on-exec on the fd.
+            if (flags & 0x0001) != 0 {
+                let _ = vfs::vfs_set_fd_flags(fd, vfs::OpenFlags::CLOEXEC);
+            }
             Ok(fd)
         }
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -1399,4 +1421,36 @@ mod tests {
         assert!(mlockall(1).is_ok());
         assert!(munlockall().is_ok());
     }
+}
+
+pub fn pkey_alloc(_flags: u32, _access_rights: u32) -> LinuxResult<i32> {
+    inc_ops();
+    let mut keys = PKEYS.write();
+    for key in 1..=MAX_PKEY {
+        if !keys.contains(&key) {
+            keys.insert(key);
+            return Ok(key);
+        }
+    }
+    Err(LinuxError::ENOSPC)
+}
+
+pub fn pkey_free(pkey: i32) -> LinuxResult<i32> {
+    inc_ops();
+    if pkey <= 0 || pkey > MAX_PKEY {
+        return Err(LinuxError::EINVAL);
+    }
+    if PKEYS.write().remove(&pkey) {
+        Ok(0)
+    } else {
+        Err(LinuxError::EINVAL)
+    }
+}
+
+pub fn pkey_mprotect(addr: *mut u8, len: usize, prot: i32, pkey: i32) -> LinuxResult<i32> {
+    inc_ops();
+    if pkey != 0 && !PKEYS.read().contains(&pkey) {
+        return Err(LinuxError::EINVAL);
+    }
+    mprotect(addr, len, prot)
 }

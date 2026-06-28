@@ -29,6 +29,7 @@ static FLOCK_TABLE: RwLock<BTreeMap<(u32, i32), i32>> = RwLock::new(BTreeMap::ne
 struct FdMeta {
     cloexec: bool,
     status_flags: i32,
+    async_owner: i32,
 }
 
 /// Initialize ioctl operations subsystem
@@ -315,10 +316,14 @@ pub fn fcntl(fd: Fd, cmd: i32, arg: u64) -> LinuxResult<i32> {
         }
         fcntl_cmd::F_GETOWN => {
             validate_fd(fd)?;
-            Ok(0)
+            let meta = fd_meta(pid, fd);
+            Ok(meta.async_owner)
         }
         fcntl_cmd::F_SETOWN => {
             validate_fd(fd)?;
+            let mut meta = fd_meta(pid, fd);
+            meta.async_owner = arg as i32;
+            set_fd_meta(pid, fd, meta);
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),

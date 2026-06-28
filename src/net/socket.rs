@@ -157,6 +157,10 @@ pub struct Socket {
     pub pending_connections: VecDeque<u32>,
     /// Socket statistics
     pub stats: SocketStats,
+    /// Receive side has been shut down
+    pub recv_shutdown: bool,
+    /// Send side has been shut down
+    pub send_shutdown: bool,
 }
 
 impl Socket {
@@ -174,6 +178,8 @@ impl Socket {
             send_buffer: VecDeque::new(),
             pending_connections: VecDeque::new(),
             stats: SocketStats::default(),
+            recv_shutdown: false,
+            send_shutdown: false,
         }
     }
 
@@ -273,6 +279,9 @@ impl Socket {
         if self.state != SocketState::Connected {
             return Err(NetworkError::ConnectionRefused);
         }
+        if self.send_shutdown {
+            return Err(NetworkError::ConnectionRefused);
+        }
 
         // Check send buffer space
         if self.send_buffer.len() + data.len() > self.options.send_buffer_size {
@@ -313,6 +322,9 @@ impl Socket {
         if self.state != SocketState::Connected && self.state != SocketState::Listening {
             return Err(NetworkError::ConnectionRefused);
         }
+        if self.recv_shutdown {
+            return Ok(0); // EOF: read side shut down
+        }
 
         let bytes_to_read = core::cmp::min(buffer.len(), self.recv_buffer.len());
 
@@ -329,6 +341,28 @@ impl Socket {
         self.stats.packets_received += 1;
 
         // Production: data received successfully
+        Ok(bytes_to_read)
+    }
+
+    /// Peek at data in the receive buffer without consuming it (MSG_PEEK).
+    pub fn recv_peek(&self, buffer: &mut [u8]) -> NetworkResult<usize> {
+        if self.state != SocketState::Connected && self.state != SocketState::Listening {
+            return Err(NetworkError::ConnectionRefused);
+        }
+        if self.recv_shutdown {
+            return Ok(0);
+        }
+
+        let bytes_to_read = core::cmp::min(buffer.len(), self.recv_buffer.len());
+        if bytes_to_read == 0 {
+            return Ok(0);
+        }
+
+        // Copy without removing from the buffer
+        for (i, byte) in self.recv_buffer.iter().take(bytes_to_read).enumerate() {
+            buffer[i] = *byte;
+        }
+
         Ok(bytes_to_read)
     }
 
@@ -384,6 +418,25 @@ impl Socket {
         } else {
             Err(NetworkError::InvalidAddress)
         }
+    }
+
+    /// Shut down part or all of the socket.
+    pub fn shutdown(&mut self, how: i32) -> NetworkResult<()> {
+        const SHUT_RD: i32 = 0;
+        const SHUT_WR: i32 = 1;
+        const SHUT_RDWR: i32 = 2;
+
+        match how {
+            SHUT_RD => self.recv_shutdown = true,
+            SHUT_WR => self.send_shutdown = true,
+            SHUT_RDWR => {
+                self.recv_shutdown = true;
+                self.send_shutdown = true;
+                self.close()?;
+            }
+            _ => return Err(NetworkError::InvalidArgument),
+        }
+        Ok(())
     }
 
     /// Close the socket

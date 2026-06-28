@@ -296,18 +296,39 @@ impl ThreadManager {
     where
         F: FnOnce() + Send + 'static,
     {
-        // Convert function to address for storage
-        // In a real kernel, we'd store the closure properly
-        let entry_addr = core::ptr::addr_of!(entry_point) as *const () as u64;
+        // Box and leak the closure so it lives for the lifetime of the
+        // thread.  The closure is stored at a stable heap address and the
+        // thread's entry point is a monomorphized trampoline function.
+        // The context switch sets RDI = closure_ptr before jumping to the
+        // trampoline; the x86_64 calling convention passes RDI as the first
+        // argument, so the trampoline receives it as `ptr`.
+        let boxed: alloc::boxed::Box<F> = alloc::boxed::Box::new(entry_point);
+        let closure_ptr = alloc::boxed::Box::into_raw(boxed) as u64;
 
-        self.create_thread_internal(
+        extern "C" fn thread_trampoline<F: FnOnce() + Send + 'static>(ptr: u64) {
+            let boxed = unsafe { alloc::boxed::Box::from_raw(ptr as *mut F) };
+            boxed();
+        }
+
+        let entry_addr = thread_trampoline::<F> as u64;
+        let tid = self.create_thread_internal(
             0, // Kernel process PID
             ThreadType::Kernel,
             name,
             priority,
             stack_size,
             entry_addr,
-        )
+        )?;
+
+        // Set RDI to the closure pointer so the trampoline receives it
+        {
+            let mut threads = self.threads.write();
+            if let Some(tcb) = threads.get_mut(&tid) {
+                tcb.context.rdi = closure_ptr;
+            }
+        }
+
+        Ok(tid)
     }
 
     /// Create a new user thread
@@ -641,10 +662,13 @@ impl ThreadManager {
         self.current_thread.store(tid as u32, Ordering::SeqCst);
     }
 
-    /// Get current thread from CPU context (attempts to determine from stack or registers)
+    /// Get current thread from CPU context.
+    ///
+    /// On a uniprocessor kernel, the current thread is tracked via an atomic
+    /// that is updated during context switches. This is the canonical way to
+    /// determine the running thread — examining raw CPU registers would only
+    /// yield a stack pointer, which still requires a mapping to a TID.
     pub fn get_current_thread_from_context() -> Tid {
-        // In a real implementation, this would examine CPU registers or stack
-        // to determine the current thread. For now, we use the stored value.
         THREAD_MANAGER.current_thread()
     }
 }

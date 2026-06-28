@@ -1781,8 +1781,12 @@ fn detect_hardware_cursor() -> bool {
 }
 
 fn detect_max_resolution() -> (usize, usize) {
-    // Bochs/std-VGA VBE comfortably supports Full HD; report it as the ceiling
-    // without probing phantom GPU registers.
+    // Prefer the actual Bochs/QEMU VBE resolution from the I/O port driver.
+    // If no VBE mode is active, report the standard Full HD ceiling that
+    // std-VGA comfortably supports without probing phantom GPU registers.
+    if let Some(mode) = crate::drivers::vbe_io::get_current_mode() {
+        return (mode.width as usize, mode.height as usize);
+    }
     (1920, 1080)
 }
 

@@ -223,60 +223,66 @@ where
     Ok((image.entry_point.as_u64(), stack_pointer.as_u64()))
 }
 
-/// Start the init process from initramfs
-pub fn start_init() -> Result<(), InitramfsError> {
+/// Start the init process from initramfs.
+///
+/// Loads `/init`, maps its segments and user stack, and switches to user mode.
+/// This function never returns on success.
+///
+/// # Safety
+/// Must be called with a valid kernel stack and with interrupts in a state
+/// consistent with the scheduler. See `usermode::switch_to_user_mode`.
+pub unsafe fn start_init() -> ! {
     // 1. Load /init from VFS
     let vfs = get_vfs();
-    let init_inode = vfs
-        .lookup("/init")
-        .map_err(|_| InitramfsError::InitNotFound)?;
+    let init_inode = vfs.lookup("/init").expect("/init not found");
 
-    // 2. Read the entire /init binary into memory
     let mut binary_data = Vec::new();
-    let file_size = init_inode
-        .stat()
-        .map_err(|_| InitramfsError::VfsError)?
-        .size;
-
+    let file_size = init_inode.stat().expect("stat /init failed").size;
     binary_data.resize(file_size as usize, 0);
     init_inode
         .read_at(0, &mut binary_data)
-        .map_err(|_| InitramfsError::VfsError)?;
+        .expect("read /init failed");
 
-    // 3. Load and validate the ELF binary
-    let (_entry_point, _stack_pointer) = load_and_execute_elf(&binary_data)?;
+    let (entry_point, stack_pointer) =
+        load_and_execute_elf(&binary_data).expect("load /init failed");
 
-    // 4. Set up user mode execution context
-    // This would involve:
-    // - Creating a new process context
-    // - Setting up user mode stack with arguments (argc, argv, envp)
-    // - Configuring registers (RIP = entry_point, RSP = stack_pointer)
-    // - Switching privilege level to ring 3
-    // - Using IRET to jump to user mode
+    let process_manager = crate::process::get_process_manager();
+    if let Ok(init_pid) =
+        process_manager.create_process("init", None, crate::process::Priority::Normal)
+    {
+        process_manager.with_process_mut(init_pid, |pcb| {
+            pcb.entry_point = entry_point;
+            pcb.context.rip = entry_point;
+            pcb.context.rsp = stack_pointer;
+            pcb.memory.code_start = entry_point;
+            pcb.set_state(crate::process::ProcessState::Ready);
+        });
 
-    // For now, we'll prepare but not execute
-    // In a full implementation, this would:
-    // 1. Create a process: process_manager::create_user_process()
-    // 2. Set up execution context with entry point and stack
-    // 3. Jump to user mode: usermode::switch_to_user_mode(entry_point, stack_pointer)
+        #[cfg(feature = "serial")]
+        {
+            use crate::serial_println;
+            serial_println!(
+                "Init process created: PID {}, entry={:#x}, stack={:#x}",
+                init_pid,
+                entry_point,
+                stack_pointer
+            );
+        }
+    }
 
-    // Log that we're ready to execute (for debugging)
     #[cfg(feature = "serial")]
     {
         use crate::serial_println;
-        serial_println!("Init binary loaded:");
-        serial_println!("  Entry point: {:#x}", entry_point);
-        serial_println!("  Stack pointer: {:#x}", stack_pointer);
+        serial_println!("Jumping to user mode init...");
     }
 
-    Ok(())
+    execute_init(entry_point, stack_pointer);
 }
 
-/// Execute the init process (transitions to user mode)
+/// Execute init process (transitions to user mode)
 ///
 /// # Safety
 /// Never returns on success.
-#[allow(dead_code)]
 pub unsafe fn execute_init(entry_point: u64, stack_pointer: u64) -> ! {
     crate::usermode::switch_to_user_mode(entry_point, stack_pointer)
 }

@@ -27,6 +27,9 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use core::cmp;
 use spin::RwLock;
 
+/// Maximum number of pending connections in the accept queue per listening socket
+const MAX_BACKLOG: usize = 16;
+
 /// TCP header minimum size
 pub const TCP_HEADER_MIN_SIZE: usize = 20;
 
@@ -482,6 +485,10 @@ impl TcpConnection {
 pub struct TcpManager {
     connections: RwLock<BTreeMap<(NetworkAddress, u16, NetworkAddress, u16), TcpConnection>>,
     next_port: RwLock<u16>,
+    /// Listening sockets: (local_addr, local_port) -> backlog limit
+    listening: RwLock<BTreeMap<(NetworkAddress, u16), usize>>,
+    /// Accept queue: (local_addr, local_port) -> Vec of established connections
+    accept_queue: RwLock<BTreeMap<(NetworkAddress, u16), Vec<TcpConnection>>>,
 }
 
 impl TcpManager {
@@ -489,6 +496,8 @@ impl TcpManager {
         Self {
             connections: RwLock::new(BTreeMap::new()),
             next_port: RwLock::new(32768), // Start of dynamic port range
+            listening: RwLock::new(BTreeMap::new()),
+            accept_queue: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -563,11 +572,75 @@ impl TcpManager {
             Err(NetworkError::InvalidAddress)
         }
     }
+
+    /// Register a listening socket with a backlog limit.
+    pub fn add_listener(
+        &self,
+        local_addr: NetworkAddress,
+        local_port: u16,
+        backlog: usize,
+    ) -> NetworkResult<()> {
+        let key = (local_addr, local_port);
+        let mut listening = self.listening.write();
+        if listening.contains_key(&key) {
+            return Err(NetworkError::AddressInUse);
+        }
+        listening.insert(key, backlog);
+        self.accept_queue.write().insert(key, Vec::new());
+        Ok(())
+    }
+
+    /// Remove a listening socket.
+    pub fn remove_listener(
+        &self,
+        local_addr: &NetworkAddress,
+        local_port: u16,
+    ) -> NetworkResult<()> {
+        let key = (*local_addr, local_port);
+        self.listening.write().remove(&key);
+        self.accept_queue.write().remove(&key);
+        Ok(())
+    }
+
+    /// Check if a listening socket exists for the given local address/port.
+    pub fn is_listening(
+        &self,
+        local_addr: &NetworkAddress,
+        local_port: u16,
+    ) -> bool {
+        self.listening.read().contains_key(&(*local_addr, local_port))
+    }
+
+    /// Push an established connection onto the accept queue for a listener.
+    /// Returns an error if the queue is full.
+    pub fn push_accept(&self, local_addr: NetworkAddress, local_port: u16, conn: TcpConnection) -> NetworkResult<()> {
+        let key = (local_addr, local_port);
+        let mut queue = self.accept_queue.write();
+        let q = queue.get_mut(&key).ok_or(NetworkError::InvalidAddress)?;
+        if q.len() >= MAX_BACKLOG {
+            return Err(NetworkError::ConnectionRefused);
+        }
+        q.push(conn);
+        Ok(())
+    }
+
+    /// Pop an established connection from the accept queue (for `accept()`).
+    pub fn pop_accept(
+        &self,
+        local_addr: &NetworkAddress,
+        local_port: u16,
+    ) -> Option<TcpConnection> {
+        let key = (*local_addr, local_port);
+        let mut queue = self.accept_queue.write();
+        queue.get_mut(&key).and_then(|q| q.pop())
+    }
 }
 
 static TCP_MANAGER: TcpManager = TcpManager {
     connections: RwLock::new(BTreeMap::new()),
     next_port: RwLock::new(32768),
+    listening: RwLock::new(BTreeMap::new()),
+    accept_queue: RwLock::new(BTreeMap::new()),
 };
 
 /// Get current time in milliseconds
@@ -822,11 +895,19 @@ fn handle_syn_received_state(
     header: &TcpHeader,
 ) -> NetworkResult<()> {
     if header.flags.ack && !header.flags.syn {
-        // ACK received
+        // ACK received — 3-way handshake complete
         if header.acknowledgment_number == connection.send_sequence.wrapping_add(1) {
             connection.send_sequence = connection.send_sequence.wrapping_add(1);
             connection.state = TcpState::Established;
             connection.established_time = current_time_ms();
+
+            // Push the established connection onto the accept queue so
+            // `accept()` can return it to the listening application.
+            let _ = TCP_MANAGER.push_accept(
+                connection.local_addr,
+                connection.local_port,
+                connection.clone(),
+            );
         } else {
             // Invalid ACK, send RST
             send_rst_packet(
@@ -1047,6 +1128,19 @@ fn handle_new_connection(
     remote_port: u16,
     header: &TcpHeader,
 ) -> NetworkResult<()> {
+    // Check if there is a listening socket for this local address/port.
+    // If not, send a RST to reject the connection attempt.
+    if !TCP_MANAGER.is_listening(&local_addr, local_port) {
+        send_rst_packet(
+            local_addr,
+            local_port,
+            remote_addr,
+            remote_port,
+            header.sequence_number.wrapping_add(1),
+        )?;
+        return Err(NetworkError::ConnectionRefused);
+    }
+
     // Create new connection
     let mut connection = TcpConnection::new(local_addr, local_port, remote_addr, remote_port);
     connection.state = TcpState::Listen;
@@ -1223,17 +1317,31 @@ pub fn tcp_connect(
 
 /// TCP listen
 pub fn tcp_listen(local_addr: NetworkAddress, local_port: u16) -> NetworkResult<()> {
-    // Create listening connection (placeholder for actual listening socket)
+    // Register the listening socket with a default backlog.
+    TCP_MANAGER.add_listener(local_addr, local_port, MAX_BACKLOG)?;
+
+    // Also create a connection entry in the Listen state so the packet
+    // processing path can find it for incoming SYNs that match exactly.
     let dummy_remote = NetworkAddress::IPv4([0, 0, 0, 0]);
-    TCP_MANAGER.create_connection(local_addr, local_port, dummy_remote, 0)?;
-
+    let _ = TCP_MANAGER.create_connection(local_addr, local_port, dummy_remote, 0);
     let key = (local_addr, local_port, dummy_remote, 0);
-    TCP_MANAGER.update_connection(key, |conn| {
+    let _ = TCP_MANAGER.update_connection(key, |conn| {
         conn.state = TcpState::Listen;
-    })?;
+    });
 
-    // TCP socket listening
     Ok(())
+}
+
+/// TCP accept — dequeue an established connection from the listen backlog.
+/// Returns (remote_addr, remote_port) for the accepted connection.
+pub fn tcp_accept(
+    local_addr: NetworkAddress,
+    local_port: u16,
+) -> NetworkResult<(NetworkAddress, u16)> {
+    match TCP_MANAGER.pop_accept(&local_addr, local_port) {
+        Some(conn) => Ok((conn.remote_addr, conn.remote_port)),
+        None => Err(NetworkError::NotConnected),
+    }
 }
 
 /// TCP close - Initiate graceful connection teardown

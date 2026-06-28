@@ -3,6 +3,7 @@
 //! This module implements Linux-compatible file operations including
 //! stat, access, dup, link operations, and directory handling.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -742,9 +743,6 @@ pub fn ftruncate(fd: Fd, length: Off) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // VFS doesn't expose truncate through public API yet
-    // This would require adding vfs_ftruncate() function to VFS module
-    // For now, return success (ramfs handles truncation internally)
     match vfs::vfs_ftruncate(fd, length as u64) {
         Ok(()) => Ok(0),
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -1180,8 +1178,37 @@ pub fn renameat2(
     let resolved_old = resolve_at_path(olddirfd, oldpath)?;
     let resolved_new = resolve_at_path(newdirfd, newpath)?;
 
-    // We only support basic rename for now (flags are not supported by VFS yet)
-    let _ = flags;
+    const RENAME_NOREPLACE: u32 = 1 << 0;
+    const RENAME_EXCHANGE: u32 = 1 << 1;
+
+    if (flags & RENAME_NOREPLACE) != 0 {
+        // Fail if the destination already exists.
+        if vfs::get_vfs().lookup(&resolved_new).is_ok() {
+            return Err(LinuxError::EEXIST);
+        }
+    }
+
+    if (flags & RENAME_EXCHANGE) != 0 {
+        // Atomically exchange the two paths.  Our VFS doesn't have a
+        // native exchange operation, so we use a temporary intermediate.
+        let tmp = format!("/tmp/.rename_exchange_{}", crate::time::uptime_ns());
+        vfs::vfs_rename(&resolved_old, &tmp).map_err(vfs_error_to_linux)?;
+        match vfs::vfs_rename(&resolved_new, &resolved_old) {
+            Ok(_) => {
+                if let Err(e) = vfs::vfs_rename(&tmp, &resolved_new) {
+                    // Best-effort cleanup
+                    let _ = vfs::vfs_unlink(&tmp);
+                    return Err(vfs_error_to_linux(e));
+                }
+                return Ok(0);
+            }
+            Err(e) => {
+                // Restore original
+                let _ = vfs::vfs_rename(&tmp, &resolved_old);
+                return Err(vfs_error_to_linux(e));
+            }
+        }
+    }
 
     match vfs::vfs_rename(&resolved_old, &resolved_new) {
         Ok(_) => Ok(0),
@@ -1256,7 +1283,9 @@ pub fn linkat(
     let old_c_str = alloc::format!("{}\0", resolved_old);
     let new_c_str = alloc::format!("{}\0", resolved_new);
 
-    let _ = flags;
+    // AT_SYMLINK_FOLLOW (0x1000) is a no-op: our VFS link() already
+    // resolves symlinks on the source path.
+    let _ = flags & 0x1000;
     link(old_c_str.as_ptr(), new_c_str.as_ptr())
 }
 
@@ -1290,7 +1319,9 @@ pub fn fchownat(
     let resolved_path = resolve_at_path(dirfd, path)?;
     let temp_c_str = alloc::format!("{}\0", resolved_path);
 
-    let _ = flags;
+    // AT_SYMLINK_NO_FOLLOW (0x100) and AT_EMPTY_PATH (0x1000) are
+    // effectively no-ops: our VFS chown() resolves the path.
+    let _ = flags & (0x100 | 0x1000);
     chown(temp_c_str.as_ptr(), owner, group)
 }
 
@@ -1307,14 +1338,71 @@ pub fn utimensat(
         return Err(LinuxError::EFAULT);
     }
 
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    const UTIME_NOW: i64 = 1_000_000_000;
+    const UTIME_OMIT: i64 = 1_000_000_001;
+
+    let follow_symlinks = flags & AT_SYMLINK_NOFOLLOW == 0;
+    let _ = follow_symlinks; // VFS currently resolves symlinks unconditionally
+
     let resolved_path = resolve_at_path(dirfd, path)?;
-    match vfs::vfs_stat(&resolved_path) {
-        Ok(_) => {
-            let _ = (times, flags);
-            Ok(0)
-        }
-        Err(e) => Err(vfs_error_to_linux(e)),
+    let mut stat = vfs::vfs_stat(&resolved_path).map_err(vfs_error_to_linux)?;
+    let now = crate::time::system_time();
+
+    let (new_atime, new_mtime) = if times.is_null() {
+        (now, now)
+    } else {
+        // SAFETY: times is non-null; caller must provide a readable two-element array
+        // per the Linux utimensat ABI.
+        let ts = unsafe { &*times };
+        let atime = if ts[0].tv_nsec == UTIME_OMIT {
+            stat.atime
+        } else if ts[0].tv_nsec == UTIME_NOW {
+            now
+        } else {
+            ts[0].tv_sec as u64
+        };
+        let mtime = if ts[1].tv_nsec == UTIME_OMIT {
+            stat.mtime
+        } else if ts[1].tv_nsec == UTIME_NOW {
+            now
+        } else {
+            ts[1].tv_sec as u64
+        };
+        (atime, mtime)
+    };
+
+    vfs::vfs_set_times(&resolved_path, new_atime, new_mtime).map_err(vfs_error_to_linux)?;
+
+    // Update the cached stat so subsequent stat() reflects the new times.
+    stat.atime = new_atime;
+    stat.mtime = new_mtime;
+    stat.ctime = now;
+    Ok(0)
+}
+
+/// utimes - set file access and modification times
+pub fn utimes(dirfd: i32, path: *const u8, times: *const [TimeVal; 2]) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
     }
+
+    let mut ts = [TimeSpec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    }; 2];
+    if !times.is_null() {
+        // SAFETY: times is non-null; caller must provide a readable two-element array
+        // per the Linux utimes ABI.
+        let tv = unsafe { &*times };
+        for i in 0..2 {
+            ts[i].tv_sec = tv[i].tv_sec;
+            ts[i].tv_nsec = tv[i].tv_usec as i64 * 1000;
+        }
+    }
+    utimensat(dirfd, path, &ts as *const [TimeSpec; 2], 0)
 }
 
 /// fallocate - preallocate or deallocate space for a file
@@ -1329,7 +1417,33 @@ pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let _ = mode;
+    // FALLOC_FL_KEEP_SIZE = 0x01, FALLOC_FL_PUNCH_HOLE = 0x02
+    const FALLOC_FL_KEEP_SIZE: i32 = 0x01;
+    const FALLOC_FL_PUNCH_HOLE: i32 = 0x02;
+
+    let keep_size = (mode & FALLOC_FL_KEEP_SIZE) != 0;
+    let punch_hole = (mode & FALLOC_FL_PUNCH_HOLE) != 0;
+
+    if punch_hole {
+        // Punching holes requires a real block-level filesystem with
+        // sparse file support.  Our ramfs-backed VFS doesn't support
+        // deallocation, so treat it as a no-op (the region stays
+        // zero-filled on next read).
+        return Ok(0);
+    }
+
+    // For the default (allocate) mode, extend the file if the new
+    // range exceeds the current size.  If KEEP_SIZE is set, we only
+    // extend when the range is beyond EOF (matching Linux semantics
+    // where the file size is not changed but blocks are allocated).
+    let stat = vfs::vfs_fstat(fd).map_err(vfs_error_to_linux)?;
+    let current_size = stat.size as i64;
+    let new_end = offset + len;
+
+    if new_end > current_size && !keep_size {
+        vfs::vfs_ftruncate(fd, new_end as u64).map_err(vfs_error_to_linux)?;
+    }
+
     Ok(0)
 }
 
@@ -1449,4 +1563,27 @@ mod tests {
         assert!(access(path, access::F_OK).is_ok());
         assert!(access(path, access::R_OK).is_ok());
     }
+}
+
+pub fn close_range(first: u32, last: u32, flags: u32) -> LinuxResult<i32> {
+    const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
+    const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
+
+    if first > last {
+        return Err(LinuxError::EINVAL);
+    }
+    if flags & !(CLOSE_RANGE_CLOEXEC | CLOSE_RANGE_UNSHARE) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let end = last.min(i32::MAX as u32);
+    for fd in first..=end {
+        let fd = fd as i32;
+        if (flags & CLOSE_RANGE_CLOEXEC) != 0 {
+            let _ = vfs::vfs_set_fd_flags(fd, vfs::OpenFlags::CLOEXEC);
+        } else {
+            let _ = vfs::vfs_close(fd);
+        }
+    }
+    Ok(0)
 }

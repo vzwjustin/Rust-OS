@@ -591,6 +591,24 @@ pub fn clone3(cl_args: *const CloneArgs, size: usize) -> LinuxResult<Pid> {
     )
 }
 
+/// getcpu - determine current CPU and NUMA node
+///
+/// Single-core stub: always reports CPU 0, node 0.  This is sufficient for
+/// userspace that only needs a stable cpu number for per-thread caching; the
+/// tcache pointer is ignored.
+pub fn getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> LinuxResult<i32> {
+    inc_ops();
+    if !cpu.is_null() {
+        // SAFETY: caller guarantees cpu points to a valid, writable u32.
+        unsafe { *cpu = 0 };
+    }
+    if !node.is_null() {
+        // SAFETY: caller guarantees node points to a valid, writable u32.
+        unsafe { *node = 0 };
+    }
+    Ok(0)
+}
+
 #[cfg(any())]
 mod tests {
     use super::*;

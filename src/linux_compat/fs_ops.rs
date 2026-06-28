@@ -159,9 +159,14 @@ fn cooperative_block_mount(
 
 static NEXT_INOTIFY_ID: AtomicU32 = AtomicU32::new(1);
 
+struct InotifyWatch {
+    path: String,
+    mask: u32,
+}
+
 struct InotifyInstance {
     flags: i32,
-    watches: BTreeMap<i32, String>,
+    watches: BTreeMap<i32, InotifyWatch>,
     next_wd: AtomicI32,
 }
 
@@ -243,6 +248,30 @@ fn normalize_mount_path(path: &str) -> String {
         return String::from("/");
     }
     String::from(path.trim_end_matches('/'))
+}
+
+fn record_tmpfs_mount(source: *const u8, target: &str, flags: u64) -> LinuxResult<()> {
+    if source.is_null() {
+        record_mount("tmpfs", target, "tmpfs", flags);
+    } else {
+        let src = c_str_to_string(source)?;
+        record_mount(&src, target, "tmpfs", flags);
+    }
+    Ok(())
+}
+
+fn kernel_overlay_socket_ready(path: &str) -> bool {
+    matches!(
+        vfs::vfs_stat(path),
+        Ok(stat) if stat.inode_type == InodeType::Socket
+    )
+}
+
+fn should_preserve_kernel_runtime_mount(target: &str) -> bool {
+    target == "/run"
+        && crate::gnome_overlay::is_ready()
+        && kernel_overlay_socket_ready(crate::gnome_overlay::DBUS_SESSION_SOCKET)
+        && kernel_overlay_socket_ready(crate::gnome_overlay::WAYLAND_SOCKET)
 }
 
 fn root_inode() -> Arc<dyn vfs::InodeOps> {
@@ -461,7 +490,18 @@ pub fn mount(
     ensure_mount_target(&target_str)?;
     validate_mount_target(&target_str)?;
 
-    if mountflags & (mount_flags::MS_MOVE | mount_flags::MS_REMOUNT) != 0 {
+    if mountflags & mount_flags::MS_REMOUNT != 0 {
+        // Update the flags of an existing mount. The target must already be
+        // mounted; source and filesystemtype are ignored for remount.
+        let mut table = MOUNT_TABLE.lock();
+        if let Some(entry) = table.iter_mut().find(|e| e.target == target_str) {
+            entry.flags = mountflags & !mount_flags::MS_REMOUNT;
+            return Ok(0);
+        }
+        return Err(LinuxError::EINVAL);
+    }
+
+    if mountflags & mount_flags::MS_MOVE != 0 {
         return Err(LinuxError::ENOSYS);
     }
 
@@ -492,28 +532,39 @@ pub fn mount(
     let fstype = c_str_to_string(filesystemtype)?;
     match fstype.as_str() {
         "tmpfs" => {
+            if should_preserve_kernel_runtime_mount(&target_str) {
+                record_tmpfs_mount(source, &target_str, mountflags)?;
+                return Ok(0);
+            }
+
             let sb = Arc::new(ramfs::RamFs::new());
             vfs::vfs_mount(&target_str, sb).map_err(|e| match e {
                 VfsError::AlreadyExists => LinuxError::EBUSY,
                 VfsError::NotFound => LinuxError::ENOENT,
                 _ => LinuxError::ENOSYS,
             })?;
-            if source.is_null() {
-                record_mount("tmpfs", &target_str, "tmpfs", mountflags);
-            } else {
-                let src = c_str_to_string(source)?;
-                record_mount(&src, &target_str, "tmpfs", mountflags);
-            }
+            record_tmpfs_mount(source, &target_str, mountflags)?;
             Ok(0)
         }
         "proc" | "sysfs" | "devtmpfs" | "devpts" => {
-            let src = if source.is_null() {
-                fstype.clone()
-            } else {
-                c_str_to_string(source)?
-            };
-            record_mount(&src, &target_str, &fstype, mountflags);
-            Ok(0)
+            // Mount a real in-memory filesystem at the target. This is a
+            // best-effort virtual filesystem implementation; userspace can read
+            // and write entries in the mounted tree.
+            let sb = Arc::new(ramfs::RamFs::new());
+            match vfs::vfs_mount(&target_str, sb) {
+                Ok(()) => {
+                    let src = if source.is_null() {
+                        fstype.clone()
+                    } else {
+                        c_str_to_string(source)?
+                    };
+                    record_mount(&src, &target_str, &fstype, mountflags);
+                    Ok(0)
+                }
+                Err(VfsError::AlreadyExists) => Err(LinuxError::EBUSY),
+                Err(VfsError::NotFound) => Err(LinuxError::ENOENT),
+                Err(_) => Err(LinuxError::ENOSYS),
+            }
         }
         "ext4" | "ext3" | "ext2" | "vfat" | "msdos" | "fat" | "squashfs" | "overlay" => {
             if source.is_null() {
@@ -833,7 +884,7 @@ pub fn inotify_init1(flags: i32) -> LinuxResult<Fd> {
 }
 
 /// inotify_add_watch - add watch to inotify instance
-pub fn inotify_add_watch(fd: Fd, pathname: *const u8, _mask: u32) -> LinuxResult<i32> {
+pub fn inotify_add_watch(fd: Fd, pathname: *const u8, mask: u32) -> LinuxResult<i32> {
     inc_ops();
 
     if fd < 0 {
@@ -852,8 +903,19 @@ pub fn inotify_add_watch(fd: Fd, pathname: *const u8, _mask: u32) -> LinuxResult
     let id = inotify_id_for_fd(fd)?;
     let mut instances = INOTIFY_INSTANCES.lock();
     let instance = instances.get_mut(&id).ok_or(LinuxError::EBADF)?;
+
+    // If a watch already exists for this path, update its mask and
+    // return the existing wd (matching Linux inotify_add_watch semantics).
+    let existing_wd = instance.watches.iter().find(|(_, w)| w.path == path).map(|(wd, _)| *wd);
+    if let Some(wd) = existing_wd {
+        if let Some(w) = instance.watches.get_mut(&wd) {
+            w.mask |= mask;
+        }
+        return Ok(wd);
+    }
+
     let wd = instance.next_wd.fetch_add(1, Ordering::Relaxed);
-    instance.watches.insert(wd, path);
+    instance.watches.insert(wd, InotifyWatch { path, mask });
     Ok(wd)
 }
 

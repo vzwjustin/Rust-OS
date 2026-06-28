@@ -24,6 +24,28 @@ static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 const MAX_SOCKET_RW_CHUNK: usize = 64 * 1024;
 const MAX_SOCKET_IOV: usize = 1024;
 
+// Linux socket message flags (from <linux/socket.h>)
+/// Send data without routing table lookup (no-op in our stack)
+const MSG_DONTROUTE: i32 = 0x4;
+/// Peek at incoming data without consuming it
+const MSG_PEEK: i32 = 0x2;
+/// Non-blocking operation
+const MSG_DONTWAIT: i32 = 0x40;
+/// Wait for full request amount (loop until all data received)
+const MSG_WAITALL: i32 = 0x100;
+/// Don't generate SIGPIPE (no-op — we have no SIGPIPE)
+const MSG_NOSIGNAL: i32 = 0x4000;
+/// Sender will send more data (no-op — no Nagle coalescing yet)
+const MSG_MORE: i32 = 0x8000;
+/// Return real packet length even if truncated (for recv)
+const MSG_TRUNC: i32 = 0x20;
+
+// accept4() flags (from <linux/socket.h>)
+/// Set O_NONBLOCK on the new fd
+const SOCK_NONBLOCK: i32 = 0o20000;
+/// Set O_CLOEXEC on the new fd
+const SOCK_CLOEXEC: i32 = 0o2000000;
+
 // =============================================================================
 // AF_UNIX (Unix domain socket) support
 // =============================================================================
@@ -359,7 +381,8 @@ fn parse_sockaddr(addr: *const SockAddr, _addrlen: u32) -> LinuxResult<SocketAdd
 
     match sa.sa_family {
         1 => {
-            // AF_UNIX - not yet supported in network stack
+            // AF_UNIX — handled separately via UNIX_SOCKET_FDS and
+            // UNIX_SOCKET_REGISTRY, not through the network stack.
             Err(LinuxError::EAFNOSUPPORT)
         }
         2 => {
@@ -440,7 +463,7 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         let mut data = vec![0u8; copy_len];
         UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
         let ipc = get_ipc_manager();
-        let _ = flags;
+        let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
         match ipc.pipe_write(unix_end.pipe_id, &data) {
             Ok(n) => {
                 if unix_end.role == UnixSocketRole::DbusSession {
@@ -466,7 +489,10 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
 
-    let _ = flags; // MSG_NOSIGNAL etc. not yet handled
+    // MSG_NOSIGNAL, MSG_DONTROUTE, MSG_MORE, MSG_DONTWAIT are all effectively
+    // no-ops in our network stack (no SIGPIPE, no routing table, no Nagle
+    // coalescing, operations already return immediately).
+    let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
     sock.send(&data)
         .map_err(net_err_to_linux)
         .map(|n| n as isize)
@@ -494,7 +520,7 @@ pub fn sendto(
     let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
     let mut data = vec![0u8; copy_len];
     UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
-    let _ = flags;
+    let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
 
     if dest_addr.is_null() {
         // No destination - use connected send
@@ -527,7 +553,7 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
     // msghdr layout: { void *msg_name, socklen_t msg_namelen,
     //   struct iovec *msg_iov, size_t msg_iovlen, void *msg_control, size_t msg_controllen, int msg_flags }
     let socket_id = fd_to_socket_id(sockfd)?;
-    let _ = flags;
+    let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
 
     let (msg_name, msg_namelen, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
     if msg_iov.is_null() && msg_iovlen > 0 {
@@ -579,7 +605,7 @@ pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isi
         }
         let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
         let mut buffer = vec![0u8; copy_len];
-        let _ = flags;
+        let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_TRUNC | MSG_PEEK);
         let ipc = get_ipc_manager();
         match ipc.pipe_read(unix_end.pipe_id, &mut buffer) {
             Ok(n) => {
@@ -597,20 +623,40 @@ pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isi
     }
     let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
     let mut buffer = vec![0u8; copy_len];
-    let _ = flags;
 
     let mut sock = net::network_stack()
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
 
-    match sock.recv(&mut buffer) {
-        Ok(n) => {
-            UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
-                .map_err(|_| LinuxError::EFAULT)?;
-            Ok(n as isize)
+    let want_peek = (flags & MSG_PEEK) != 0;
+    let want_trunc = (flags & MSG_TRUNC) != 0;
+    let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL);
+
+    if want_peek {
+        match sock.recv_peek(&mut buffer) {
+            Ok(n) => {
+                UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
+                    .map_err(|_| LinuxError::EFAULT)?;
+                Ok(n as isize)
+            }
+            Err(NetworkError::Timeout) => Ok(0),
+            Err(e) => Err(net_err_to_linux(e)),
         }
-        Err(NetworkError::Timeout) => Ok(0), // Non-blocking, no data
-        Err(e) => Err(net_err_to_linux(e)),
+    } else {
+        match sock.recv(&mut buffer) {
+            Ok(n) => {
+                UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
+                    .map_err(|_| LinuxError::EFAULT)?;
+                if want_trunc && n == copy_len {
+                    // Report the actual available bytes even if buffer was too small
+                    Ok(sock.available_bytes() as isize + n as isize)
+                } else {
+                    Ok(n as isize)
+                }
+            }
+            Err(NetworkError::Timeout) => Ok(0), // Non-blocking, no data
+            Err(e) => Err(net_err_to_linux(e)),
+        }
     }
 }
 
@@ -635,7 +681,9 @@ pub fn recvfrom(
     }
     let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
     let mut buffer = vec![0u8; copy_len];
-    let _ = flags;
+
+    let want_peek = (flags & MSG_PEEK) != 0;
+    let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_TRUNC);
 
     let mut sock = net::network_stack()
         .get_socket(socket_id)
@@ -645,6 +693,16 @@ pub fn recvfrom(
         match sock.recv_from(&mut buffer) {
             Ok((n, source)) => {
                 write_sockaddr(src_addr, addrlen, &source)?;
+                UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
+                    .map_err(|_| LinuxError::EFAULT)?;
+                Ok(n as isize)
+            }
+            Err(NetworkError::Timeout) => Ok(0),
+            Err(e) => Err(net_err_to_linux(e)),
+        }
+    } else if want_peek {
+        match sock.recv_peek(&mut buffer) {
+            Ok(n) => {
                 UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
                     .map_err(|_| LinuxError::EFAULT)?;
                 Ok(n as isize)
@@ -674,7 +732,7 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
     }
 
     if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
-        let _ = flags;
+        let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_TRUNC | MSG_PEEK);
         let (_, _, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
         if msg_iov.is_null() && msg_iovlen > 0 {
             return Err(LinuxError::EFAULT);
@@ -711,7 +769,8 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
-    let _ = flags;
+    let want_peek = (flags & MSG_PEEK) != 0;
+    let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_TRUNC);
 
     let (_, _, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
     if msg_iov.is_null() && msg_iovlen > 0 {
@@ -730,17 +789,30 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
 
         let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
         let mut buffer = vec![0u8; copy_len];
-        let mut sock = net::network_stack()
+        let sock = net::network_stack()
             .get_socket(socket_id)
             .ok_or(LinuxError::EBADF)?;
-        match sock.recv(&mut buffer) {
-            Ok(n) => {
-                UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
-                    .map_err(|_| LinuxError::EFAULT)?;
-                total_read += n;
+        if want_peek {
+            match sock.recv_peek(&mut buffer) {
+                Ok(n) => {
+                    UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
+                        .map_err(|_| LinuxError::EFAULT)?;
+                    total_read += n;
+                }
+                Err(NetworkError::Timeout) => break,
+                Err(e) => return Err(net_err_to_linux(e)),
             }
-            Err(NetworkError::Timeout) => break,
-            Err(e) => return Err(net_err_to_linux(e)),
+        } else {
+            let mut sock = sock;
+            match sock.recv(&mut buffer) {
+                Ok(n) => {
+                    UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
+                        .map_err(|_| LinuxError::EFAULT)?;
+                    total_read += n;
+                }
+                Err(NetworkError::Timeout) => break,
+                Err(e) => return Err(net_err_to_linux(e)),
+            }
         }
     }
     Ok(total_read as isize)
@@ -848,16 +920,15 @@ pub fn setsockopt(
         _ => return Err(LinuxError::ENOPROTOOPT),
     };
 
-    // We need a mutable socket but get_socket returns a clone.
     // The network stack stores sockets in a map, so we get a clone, modify it,
-    // and need to write it back. Since we don't have an update_socket method,
-    // we use the Socket's set_option on the clone and rely on the caller
-    // to use the returned socket for subsequent operations.
-    // For now, we just validate the option.
+    // and write it back so the option persists for subsequent operations.
     let mut sock = net::network_stack()
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
     sock.set_option(opt).map_err(net_err_to_linux)?;
+    net::network_stack()
+        .update_socket(socket_id, sock)
+        .map_err(|_| LinuxError::EBADF)?;
     Ok(0)
 }
 
@@ -911,11 +982,10 @@ pub fn shutdown(sockfd: Fd, how: i32) -> LinuxResult<i32> {
             let mut sock = net::network_stack()
                 .get_socket(socket_id)
                 .ok_or(LinuxError::EBADF)?;
-            if how == SHUT_RDWR {
-                sock.close().map_err(net_err_to_linux)?;
-            }
-            // For SHUT_RD/SHUT_WR we would drain or flush buffers.
-            // The current Socket type doesn't support partial shutdown.
+            sock.shutdown(how).map_err(net_err_to_linux)?;
+            net::network_stack()
+                .update_socket(socket_id, sock)
+                .map_err(|_| LinuxError::EBADF)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -1066,7 +1136,16 @@ pub fn pselect(
         return Err(LinuxError::EINVAL);
     }
 
-    let _ = sigmask;
+    // Apply sigmask for the duration of the select if provided.
+    let mut old_mask: SigSet = 0;
+    let applied_mask = !sigmask.is_null();
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            sigmask,
+            &mut old_mask as *mut SigSet,
+        )?;
+    }
 
     // Convert timespec to timeval for select
     let tv = if timeout.is_null() {
@@ -1089,7 +1168,17 @@ pub fn pselect(
         &tv as *const TimeVal as *mut TimeVal
     };
 
-    select(nfds, readfds, writefds, exceptfds, tv_ptr)
+    let result = select(nfds, readfds, writefds, exceptfds, tv_ptr);
+
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            &old_mask as *const SigSet,
+            core::ptr::null_mut(),
+        )?;
+    }
+
+    result
 }
 
 /// epoll_create - create an epoll file descriptor
@@ -1196,7 +1285,14 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
         let inode = crate::vfs::get_vfs()
             .lookup("/")
             .map_err(|_| LinuxError::ENOMEM)?;
-        let fd = crate::vfs::vfs_open_special(inode, 0, FdKind::Regular)
+        let mut fd_flags: u32 = 0;
+        if (sock_type & SOCK_NONBLOCK) != 0 {
+            fd_flags |= vfs::OpenFlags::NONBLOCK;
+        }
+        if (sock_type & SOCK_CLOEXEC) != 0 {
+            fd_flags |= vfs::OpenFlags::CLOEXEC;
+        }
+        let fd = crate::vfs::vfs_open_special(inode, fd_flags, FdKind::Regular)
             .map_err(|_| LinuxError::EMFILE)?;
         return Ok(fd);
     }
@@ -1205,7 +1301,21 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
         .create_socket(net_sock_type, net_proto)
         .map_err(net_err_to_linux)?;
 
-    register_socket_fd(socket_id)
+    let new_fd = register_socket_fd(socket_id)?;
+
+    // Apply SOCK_NONBLOCK / SOCK_CLOEXEC from the type parameter.
+    let mut fd_flags: u32 = vfs::OpenFlags::RDWR;
+    if (sock_type & SOCK_NONBLOCK) != 0 {
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    if (sock_type & SOCK_CLOEXEC) != 0 {
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    if fd_flags != vfs::OpenFlags::RDWR {
+        let _ = vfs::vfs_set_fd_flags(new_fd, fd_flags);
+    }
+
+    Ok(new_fd)
 }
 
 /// bind - bind a name to a socket
@@ -1416,11 +1526,22 @@ pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult
 pub fn accept4(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
-    // SOCK_NONBLOCK (2048) and SOCK_CLOEXEC (524288) flags
-    // are handled at fd level, not yet supported.
-    let _ = flags;
+    let new_fd = accept(sockfd, addr, addrlen)?;
 
-    accept(sockfd, addr, addrlen)
+    // Apply SOCK_NONBLOCK and SOCK_CLOEXEC flags to the new fd.
+    let mut fd_flags: u32 = vfs::OpenFlags::RDWR;
+    if (flags & SOCK_NONBLOCK) != 0 {
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    if (flags & SOCK_CLOEXEC) != 0 {
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+
+    // Only update if we're adding flags beyond the default RDWR.
+    if fd_flags != vfs::OpenFlags::RDWR {
+        let _ = vfs::vfs_set_fd_flags(new_fd, fd_flags);
+    }
+    Ok(new_fd)
 }
 
 /// socketpair - create a pair of connected sockets
@@ -1437,11 +1558,24 @@ pub fn socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> L
         return Err(LinuxError::EAFNOSUPPORT);
     }
 
-    let _ = (sock_type, protocol);
+    let _ = protocol;
 
     // Create a bidirectional pipe via IPC
     let pipefd: [i32; 2] = [0, 0];
     super::special_fd::pipe(pipefd.as_ptr() as *mut [i32; 2])?;
+
+    // Apply SOCK_NONBLOCK / SOCK_CLOEXEC from the type parameter.
+    let mut fd_flags: u32 = 0;
+    if (sock_type & SOCK_NONBLOCK) != 0 {
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    if (sock_type & SOCK_CLOEXEC) != 0 {
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    if fd_flags != 0 {
+        let _ = vfs::vfs_set_fd_flags(pipefd[0], fd_flags);
+        let _ = vfs::vfs_set_fd_flags(pipefd[1], fd_flags);
+    }
 
     unsafe {
         *sv = pipefd[0];
@@ -1531,9 +1665,28 @@ pub fn ppoll(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // sigmask is not applied yet; callers still block/ unblock via sigprocmask.
-    let _ = sigmask;
-    poll(fds, nfds, timespec_to_timeout_ms(ts))
+    // Apply sigmask for the duration of the poll if provided.
+    let mut old_mask: SigSet = 0;
+    let applied_mask = !sigmask.is_null();
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            sigmask as *const SigSet,
+            &mut old_mask as *mut SigSet,
+        )?;
+    }
+
+    let result = poll(fds, nfds, timespec_to_timeout_ms(ts));
+
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            &old_mask as *const SigSet,
+            core::ptr::null_mut(),
+        )?;
+    }
+
+    result
 }
 
 /// epoll_pwait - wait for events with signal mask
@@ -1546,9 +1699,28 @@ pub fn epoll_pwait(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // sigmask is not applied yet; delegate to epoll_wait.
-    let _ = sigmask;
-    epoll_wait(epfd, events, maxevents, timeout)
+    // Apply sigmask for the duration of the wait if provided.
+    let mut old_mask: SigSet = 0;
+    let applied_mask = !sigmask.is_null();
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            sigmask as *const SigSet,
+            &mut old_mask as *mut SigSet,
+        )?;
+    }
+
+    let result = epoll_wait(epfd, events, maxevents, timeout);
+
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            &old_mask as *const SigSet,
+            core::ptr::null_mut(),
+        )?;
+    }
+
+    result
 }
 
 /// epoll_pwait2 - wait for events with timeout and signal mask
@@ -1561,10 +1733,29 @@ pub fn epoll_pwait2(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    // sigmask is not applied yet; timeout is a struct timespec at offset 0.
-    let _ = sigmask;
+    // Apply sigmask for the duration of the wait if provided.
+    let mut old_mask: SigSet = 0;
+    let applied_mask = !sigmask.is_null();
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            sigmask as *const SigSet,
+            &mut old_mask as *mut SigSet,
+        )?;
+    }
+
     let timeout_ms = timespec_to_timeout_ms(timeout as *const TimeSpec);
-    epoll_wait(epfd, events, maxevents, timeout_ms)
+    let result = epoll_wait(epfd, events, maxevents, timeout_ms);
+
+    if applied_mask {
+        super::signal_ops::sigprocmask(
+            super::signal_ops::sig_how::SIG_SETMASK,
+            &old_mask as *const SigSet,
+            core::ptr::null_mut(),
+        )?;
+    }
+
+    result
 }
 
 #[cfg(any())]

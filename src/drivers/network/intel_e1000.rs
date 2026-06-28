@@ -966,6 +966,8 @@ pub struct IntelE1000Driver {
     wol_config: WakeOnLanConfig,
     current_speed: u32,
     full_duplex: bool,
+    /// PCI config space address (bus:dev:fn encoded as u32)
+    pci_address: u32,
     /// DMA transmit ring
     tx_ring: Option<crate::net::dma::DmaRing>,
     /// DMA receive ring
@@ -974,7 +976,7 @@ pub struct IntelE1000Driver {
 
 impl IntelE1000Driver {
     /// Create new Intel E1000 driver instance
-    pub fn new(name: String, device_info: IntelE1000DeviceInfo, base_addr: u64, irq: u8) -> Self {
+    pub fn new(name: String, device_info: IntelE1000DeviceInfo, base_addr: u64, irq: u8, pci_address: u32) -> Self {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.max_mtu = 9018; // Jumbo frame support
         capabilities.hw_checksum = true;
@@ -1015,6 +1017,7 @@ impl IntelE1000Driver {
             wol_config: WakeOnLanConfig::default(),
             current_speed: 0,
             full_duplex: false,
+            pci_address,
             tx_ring: None,
             rx_ring: None,
         }
@@ -1578,7 +1581,36 @@ impl IntelE1000Driver {
 
     /// Set power state
     pub fn set_power_state(&mut self, state: PowerState) -> Result<(), NetworkError> {
-        // In a real implementation, we would configure PCI power management
+        // Configure PCI power management via the device's PMCAP register.
+        // The E1000 has a PCI Power Management Capability structure at
+        // offset 0xC0 in PCI config space (device-specific). We write the
+        // Power Management Control/Status (PMCSR) register to request a
+        // transition to the desired D-state.
+        let pmcsr_offset = 0xC4u16; // PMCSR offset within PMCAP block
+        let pm_value: u32 = match state {
+            PowerState::D0 => 0x0000,
+            PowerState::D3Hot => 0x0003,
+            _ => return Err(NetworkError::NotSupported),
+        };
+
+        // Write PMCSR via PCI config space I/O
+        let pci_addr = self.pci_address;
+        let config_address = 0x80000000u32 | pci_addr | (pmcsr_offset as u32 & 0xFC);
+        unsafe {
+            core::arch::asm!(
+                "out dx, eax",
+                in("dx") 0xCF8u16,
+                in("eax") config_address,
+                options(nostack, preserves_flags)
+            );
+            core::arch::asm!(
+                "out dx, eax",
+                in("dx") 0xCFCu16,
+                in("eax") pm_value,
+                options(nostack, preserves_flags)
+            );
+        }
+
         self.power_state = state;
         Ok(())
     }
@@ -1713,38 +1745,52 @@ impl NetworkDriver for IntelE1000Driver {
     }
 
     fn set_power_state(&mut self, state: PowerState) -> Result<(), NetworkError> {
-        // Configure power management
-        match state {
-            PowerState::D0 => {
-                // Full power
-                self.power_state = state;
+        // For D3Hot, enable WOL filters before entering low power
+        if state == PowerState::D3Hot && self.wol_config.enabled {
+            let mut wufc = 0u32;
+            if self.wol_config.magic_packet {
+                wufc |= 0x01;
             }
-            PowerState::D3Hot => {
-                // Low power with wake capabilities
-                if self.wol_config.enabled {
-                    // Enable WOL filters before entering low power
-                    let mut wufc = 0u32;
-                    if self.wol_config.magic_packet {
-                        wufc |= 0x01;
-                    }
-                    if self.wol_config.pattern_match {
-                        wufc |= 0x02;
-                    }
-                    if self.wol_config.link_change {
-                        wufc |= 0x04;
-                    }
-                    if self.wol_config.secure_on {
-                        wufc |= 0x08;
-                    }
-                    self.write_reg(E1000Reg::Wufc, wufc);
-                    self.write_reg(E1000Reg::Wuc, 0x01); // APME
-                }
-                self.power_state = state;
+            if self.wol_config.pattern_match {
+                wufc |= 0x02;
             }
-            _ => {
-                return Err(NetworkError::NotSupported);
+            if self.wol_config.link_change {
+                wufc |= 0x04;
             }
+            if self.wol_config.secure_on {
+                wufc |= 0x08;
+            }
+            self.write_reg(E1000Reg::Wufc, wufc);
+            self.write_reg(E1000Reg::Wuc, 0x01); // APME
         }
+
+        // Write the PCI Power Management Control/Status register to
+        // request the actual D-state transition.
+        let pmcsr_offset = 0xC4u16;
+        let pm_value: u32 = match state {
+            PowerState::D0 => 0x0000,
+            PowerState::D3Hot => 0x0003,
+            _ => return Err(NetworkError::NotSupported),
+        };
+
+        let pci_addr = self.pci_address;
+        let config_address = 0x80000000u32 | pci_addr | (pmcsr_offset as u32 & 0xFC);
+        unsafe {
+            core::arch::asm!(
+                "out dx, eax",
+                in("dx") 0xCF8u16,
+                in("eax") config_address,
+                options(nostack, preserves_flags)
+            );
+            core::arch::asm!(
+                "out dx, eax",
+                in("dx") 0xCFCu16,
+                in("eax") pm_value,
+                options(nostack, preserves_flags)
+            );
+        }
+
+        self.power_state = state;
         Ok(())
     }
 
@@ -1791,6 +1837,7 @@ pub fn create_intel_e1000_driver(
     device_id: u16,
     base_addr: u64,
     irq: u8,
+    pci_address: u32,
 ) -> Option<(
     Box<dyn NetworkDriver + Send + Sync>,
     ExtendedNetworkCapabilities,
@@ -1801,7 +1848,7 @@ pub fn create_intel_e1000_driver(
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)?;
 
     // Create driver instance
-    let driver = IntelE1000Driver::new(device_info.name.to_string(), *device_info, base_addr, irq);
+    let driver = IntelE1000Driver::new(device_info.name.to_string(), *device_info, base_addr, irq, pci_address);
 
     let capabilities = driver.extended_capabilities.clone();
 

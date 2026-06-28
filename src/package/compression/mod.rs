@@ -77,7 +77,8 @@ pub fn decompress(data: &[u8]) -> PackageResult<Vec<u8>> {
     match format {
         CompressionFormat::Gzip => GzipDecoder::decode(data),
         CompressionFormat::Xz => Err(PackageError::InvalidFormat(
-            "XZ/LZMA2 decompression requires a liblzma port — not available in no_std kernel".into(),
+            "XZ/LZMA2 decompression requires a liblzma port — not available in no_std kernel"
+                .into(),
         )),
         CompressionFormat::Zstd => Err(PackageError::InvalidFormat(
             "Zstd decompression requires a libzstd port — not available in no_std kernel".into(),
