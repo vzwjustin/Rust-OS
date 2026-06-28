@@ -84,7 +84,8 @@ impl SyncObject {
             SyncType::Mutex => self.try_acquire_mutex(pid),
             SyncType::Semaphore => self.try_acquire_semaphore(pid),
             SyncType::RwLock => self.try_acquire_rwlock(pid, false), // Read lock
-            _ => Err("Unsupported sync type for acquire"),
+            SyncType::ConditionVariable => self.try_wait_condvar(pid),
+            SyncType::Barrier => self.try_wait_barrier(pid),
         }
     }
 
@@ -94,7 +95,8 @@ impl SyncObject {
             SyncType::Mutex => self.release_mutex(pid),
             SyncType::Semaphore => self.release_semaphore(pid),
             SyncType::RwLock => self.release_rwlock(pid),
-            _ => Err("Unsupported sync type for release"),
+            SyncType::ConditionVariable => self.signal_condvar(pid),
+            SyncType::Barrier => self.release_barrier(pid),
         }
     }
 
@@ -287,6 +289,76 @@ impl SyncObject {
         Ok(to_wake)
     }
 
+    /// Try to wait on a condition variable.
+    ///
+    /// For a condition variable, "acquire" means the caller wants to block
+    /// until the condition is signaled. We add the process to the wait queue
+    /// and report `false` (not yet acquired — the caller should block).
+    fn try_wait_condvar(&self, pid: Pid) -> Result<bool, &'static str> {
+        self.add_to_wait_queue(pid, super::Priority::Normal);
+        Ok(false)
+    }
+
+    /// Signal a condition variable.
+    ///
+    /// "Release" on a condition variable wakes one waiting process
+    /// (signal). If the `value` counter is non-zero, a broadcast is
+    /// requested instead and all waiters are woken.
+    fn signal_condvar(&self, _pid: Pid) -> Result<Vec<Pid>, &'static str> {
+        let mut wait_queue = self.wait_queue.lock();
+        let broadcast = self.value.load(Ordering::Acquire) != 0;
+
+        if broadcast {
+            let to_wake: Vec<Pid> = wait_queue.drain(..).map(|e| e.pid).collect();
+            Ok(to_wake)
+        } else if let Some(entry) = wait_queue.pop_front() {
+            Ok(vec![entry.pid])
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// Try to wait at a barrier.
+    ///
+    /// For a barrier, "acquire" means the calling process arrives at the
+    /// barrier. The `value` counter tracks how many processes have arrived;
+    /// `max_value` is the barrier threshold. When the count reaches the
+    /// threshold, all waiting processes are released.
+    fn try_wait_barrier(&self, pid: Pid) -> Result<bool, &'static str> {
+        let current = self.value.fetch_add(1, Ordering::AcqRel);
+        let target = self.max_value;
+
+        if current + 1 >= target {
+            // Barrier tripped — all waiters can proceed.
+            Ok(true)
+        } else {
+            // Not enough arrivals yet; queue this process.
+            self.add_to_wait_queue(pid, super::Priority::Normal);
+            Ok(false)
+        }
+    }
+
+    /// Release a barrier.
+    ///
+    /// When the barrier threshold has been reached, "release" wakes all
+    /// waiting processes and resets the arrival counter for reuse.
+    fn release_barrier(&self, _pid: Pid) -> Result<Vec<Pid>, &'static str> {
+        let current = self.value.load(Ordering::Acquire);
+        if current < self.max_value {
+            // Barrier not yet tripped; nothing to release.
+            return Ok(vec![]);
+        }
+
+        // Wake all waiters.
+        let mut wait_queue = self.wait_queue.lock();
+        let to_wake: Vec<Pid> = wait_queue.drain(..).map(|e| e.pid).collect();
+
+        // Reset the arrival counter so the barrier can be reused.
+        self.value.store(0, Ordering::Release);
+
+        Ok(to_wake)
+    }
+
     /// Add process to wait queue
     fn add_to_wait_queue(&self, pid: Pid, priority: super::Priority) {
         let mut wait_queue = self.wait_queue.lock();
@@ -374,6 +446,35 @@ impl SyncManager {
         {
             let mut objects = self.objects.write();
             objects.insert(id, rwlock);
+        }
+
+        id
+    }
+
+    /// Create a condition variable.
+    ///
+    /// The `value` field is used as a broadcast flag: when non-zero,
+    /// `release` wakes all waiters instead of just one.
+    pub fn create_condvar(&self) -> SyncId {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let condvar = SyncObject::new(SyncType::ConditionVariable, id, 0, 1);
+
+        {
+            let mut objects = self.objects.write();
+            objects.insert(id, condvar);
+        }
+
+        id
+    }
+
+    /// Create a barrier that waits for `count` processes to arrive.
+    pub fn create_barrier(&self, count: u32) -> SyncId {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let barrier = SyncObject::new(SyncType::Barrier, id, 0, count);
+
+        {
+            let mut objects = self.objects.write();
+            objects.insert(id, barrier);
         }
 
         id
