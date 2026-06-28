@@ -25,8 +25,7 @@ pub const WAYLAND_SOCKET: &str = "/run/user/0/wayland-0";
 /// D-Bus session bus address in standard form.
 pub const DBUS_SESSION_ADDRESS: &str = "unix:path=/run/user/0/bus";
 
-static OVERLAY_READY: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static OVERLAY_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Returns true once the overlay paths and pre-bound sockets are installed.
 pub fn is_ready() -> bool {

@@ -20,3 +20,7 @@ headroom_memory.db
 # Backup files
 backup_*.tar.gz
 *_backup.*
+
+# Mutter upstream clone and build artifacts
+/mutter/
+/build/

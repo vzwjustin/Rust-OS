@@ -5,7 +5,7 @@
 //!
 //! Integrated with RustOS process manager, scheduler, and ELF loader.
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -427,54 +427,164 @@ fn build_linux_initial_stack(
     Ok(sp)
 }
 
-/// Load an executable from the VFS and parse it with the ELF loader.
-fn load_executable_from_vfs(
-    path: &str,
-    pid: KernelPid,
-) -> Result<(Vec<u8>, crate::process::elf_loader::LoadedBinary), LinuxError> {
-    use crate::fs::OpenFlags;
-    use crate::process::elf_loader::ElfLoader;
+struct ResolvedExec {
+    load_path: String,
+    argv: Vec<String>,
+}
 
-    let vfs = crate::fs::vfs();
-    let fd = vfs
-        .open(
-            path,
-            OpenFlags {
-                read: true,
-                write: false,
-                create: false,
-                append: false,
-                truncate: false,
-                exclusive: false,
-            },
-        )
-        .map_err(fs_error_to_linux)?;
+/// Read a regular file from the syscall VFS (where initramfs and rootfs live).
+fn read_file_bytes_from_vfs(path: &str) -> Result<Vec<u8>, LinuxError> {
+    use crate::linux_compat::file_ops::vfs_error_to_linux;
+    use crate::vfs::{self, OpenFlags as VfsOpenFlags};
 
-    let file_size = vfs.stat(path).map_err(fs_error_to_linux)?.size as usize;
+    let stat = vfs::vfs_stat(path).map_err(vfs_error_to_linux)?;
+    if stat.inode_type == crate::vfs::InodeType::Directory {
+        return Err(LinuxError::EISDIR);
+    }
 
+    let file_size = stat.size as usize;
     if file_size == 0 || file_size > MAX_EXEC_SIZE {
-        let _ = vfs.close(fd);
         return Err(LinuxError::ENOEXEC);
     }
 
+    let fd = vfs::vfs_open(path, VfsOpenFlags::RDONLY, 0).map_err(vfs_error_to_linux)?;
     let mut binary_data = Vec::with_capacity(file_size);
     binary_data.resize(file_size, 0);
-
-    match vfs.read(fd, &mut binary_data) {
+    match vfs::vfs_read(fd, &mut binary_data) {
         Ok(n) if n == file_size => {}
         _ => {
-            let _ = vfs.close(fd);
+            let _ = vfs::vfs_close(fd);
             return Err(LinuxError::EIO);
         }
     }
-    let _ = vfs.close(fd);
+    let _ = vfs::vfs_close(fd);
+    Ok(binary_data)
+}
+
+/// Resolve a path to an ELF load target and argv, honoring `#!` interpreter lines.
+fn resolve_executable(path: &str, user_argv: &[String]) -> Result<ResolvedExec, LinuxError> {
+    let data = read_file_bytes_from_vfs(path)?;
+
+    if data.starts_with(b"#!") {
+        let line_end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len());
+        let shebang = core::str::from_utf8(&data[2..line_end])
+            .map_err(|_| LinuxError::ENOEXEC)?
+            .trim();
+        if shebang.is_empty() {
+            return Err(LinuxError::ENOEXEC);
+        }
+
+        let parts: Vec<&str> = shebang.split_whitespace().collect();
+        let interpreter = parts[0].to_string();
+        let mut argv = vec![interpreter.clone()];
+        argv.extend(parts[1..].iter().map(|s| (*s).to_string()));
+        argv.push(path.to_string());
+        if user_argv.len() > 1 {
+            argv.extend(user_argv[1..].iter().cloned());
+        }
+        return Ok(ResolvedExec {
+            load_path: interpreter,
+            argv,
+        });
+    }
+
+    let mut argv = if user_argv.is_empty() {
+        vec![path.to_string()]
+    } else {
+        user_argv.to_vec()
+    };
+    if argv[0].is_empty() {
+        argv[0] = path.to_string();
+    }
+    Ok(ResolvedExec {
+        load_path: path.to_string(),
+        argv,
+    })
+}
+
+/// Default GNOME/Wayland session environment for PID 1 bootstrap.
+pub fn default_session_envp() -> Vec<String> {
+    [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "XDG_RUNTIME_DIR=/run/user/0",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus",
+        "XDG_CURRENT_DESKTOP=ubuntu:GNOME",
+        "XDG_SESSION_DESKTOP=ubuntu",
+        "XDG_SESSION_TYPE=wayland",
+        "WAYLAND_DISPLAY=wayland-0",
+        "GDK_BACKEND=wayland",
+        "CLUTTER_BACKEND=wayland",
+        "NO_AT_BRIDGE=1",
+        "HOME=/root",
+        "USER=root",
+        "LOGNAME=root",
+        "SHELL=/bin/sh",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+fn default_desktop_envp() -> Vec<String> {
+    default_session_envp()
+}
+
+/// Load an executable from the syscall VFS and parse it with the ELF loader.
+fn load_executable_from_vfs(
+    path: &str,
+    pid: KernelPid,
+    user_argv: &[String],
+) -> Result<
+    (
+        Vec<u8>,
+        crate::process::elf_loader::LoadedBinary,
+        ResolvedExec,
+    ),
+    LinuxError,
+> {
+    use crate::process::elf_loader::ElfLoader;
+
+    let resolved = resolve_executable(path, user_argv)?;
+    let binary_data = read_file_bytes_from_vfs(&resolved.load_path)?;
 
     let elf_loader = ElfLoader::new(true, true);
     let loaded = elf_loader
         .load_elf_binary(&binary_data, pid)
         .map_err(elf_error_to_linux)?;
 
-    Ok((binary_data, loaded))
+    Ok((binary_data, loaded, resolved))
+}
+
+/// Load `path` into `pid`, set up argv/envp, and mark the process ready to run.
+pub fn exec_program_for_pid(
+    pid: KernelPid,
+    path: &str,
+    user_argv: &[String],
+    extra_envp: &[&str],
+) -> Result<(), LinuxError> {
+    use crate::process::elf_loader::Elf64Header;
+
+    let (binary_data, loaded, resolved) = load_executable_from_vfs(path, pid, user_argv)?;
+    if binary_data.len() < core::mem::size_of::<Elf64Header>() {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let header = unsafe { core::ptr::read(binary_data.as_ptr() as *const Elf64Header) };
+    let mut envp_strings = default_desktop_envp();
+    envp_strings.extend(extra_envp.iter().map(|s| (*s).to_string()));
+
+    let rsp = build_linux_initial_stack(
+        loaded.stack_top.as_u64(),
+        &resolved.argv,
+        &envp_strings,
+        &loaded,
+        &header,
+        &resolved.load_path,
+    )?;
+
+    let prog_name = resolved.argv.first().map(|s| s.as_str()).unwrap_or(path);
+
+    apply_loaded_binary(pid, &loaded, rsp, prog_name)
 }
 
 /// Apply a loaded ELF image and initial stack to the process PCB.
@@ -558,7 +668,7 @@ pub fn execve(
 
     let pid = process::current_pid();
 
-    let (binary_data, loaded) = load_executable_from_vfs(&path, pid)?;
+    let (binary_data, loaded, resolved) = load_executable_from_vfs(&path, pid, &argv_strings)?;
 
     if binary_data.len() < core::mem::size_of::<Elf64Header>() {
         return Err(LinuxError::ENOEXEC);
@@ -568,11 +678,11 @@ pub fn execve(
 
     let rsp = build_linux_initial_stack(
         loaded.stack_top.as_u64(),
-        &argv_strings,
+        &resolved.argv,
         &envp_strings,
         &loaded,
         &header,
-        &path,
+        &resolved.load_path,
     )?;
 
     let prog_name = argv_strings
@@ -610,7 +720,7 @@ pub unsafe fn execve_and_enter_user_mode(
     let envp_strings = read_string_array(envp)?;
     let pid = process::current_pid();
 
-    let (binary_data, loaded) = load_executable_from_vfs(&path, pid)?;
+    let (binary_data, loaded, resolved) = load_executable_from_vfs(&path, pid, &argv_strings)?;
     if binary_data.len() < core::mem::size_of::<Elf64Header>() {
         return Err(LinuxError::ENOEXEC);
     }
@@ -618,14 +728,15 @@ pub unsafe fn execve_and_enter_user_mode(
     let header = core::ptr::read(binary_data.as_ptr() as *const Elf64Header);
     let rsp = build_linux_initial_stack(
         loaded.stack_top.as_u64(),
-        &argv_strings,
+        &resolved.argv,
         &envp_strings,
         &loaded,
         &header,
-        &path,
+        &resolved.load_path,
     )?;
 
-    let prog_name = argv_strings
+    let prog_name = resolved
+        .argv
         .first()
         .map(|s| s.as_str())
         .unwrap_or(path.as_str());

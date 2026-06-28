@@ -34,6 +34,7 @@ import tempfile
 bootimage = os.environ["BOOTIMAGE"]
 patterns = [p for p in os.environ["PATTERNS"].split("|") if p]
 timeout = float(os.environ["TIMEOUT"])
+qemu_memory = os.environ.get("RUSTOS_QEMU_MEMORY", "512M")
 tmpdir = tempfile.TemporaryDirectory(prefix="rustos-boot-", dir="/tmp")
 atexit.register(tmpdir.cleanup)
 qemu_bootimage = os.path.join(tmpdir.name, "bootimage.bin")
@@ -42,7 +43,7 @@ shutil.copyfile(bootimage, qemu_bootimage)
 cmd = [
     "qemu-system-x86_64",
     "-drive", f"format=raw,file={qemu_bootimage}",
-    "-m", "512M",
+    "-m", qemu_memory,
     "-serial", "stdio",
     "-display", "none",
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",

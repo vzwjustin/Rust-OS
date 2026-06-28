@@ -545,6 +545,83 @@ pub fn set_cursor_visible(visible: bool) -> bool {
     false
 }
 
+/// Focus the GNOME-style application search overlay.
+pub fn gnome_focus_search() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_focus_search();
+        }
+    }
+    false
+}
+
+/// Show the GNOME-style applications overlay.
+pub fn gnome_show_applications() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_show_applications();
+        }
+    }
+    false
+}
+
+/// Hide GNOME-style overview/application overlays.
+pub fn gnome_hide_overview() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_hide_overview();
+        }
+    }
+    false
+}
+
+/// Toggle the GNOME-style activities overview.
+pub fn gnome_toggle_overview() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_toggle_overview();
+        }
+    }
+    false
+}
+
+/// Show GNOME-style OSD text.
+pub fn gnome_show_osd(text: &str) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_show_osd(text);
+        }
+    }
+    false
+}
+
+/// Show GNOME-style monitor labels.
+pub fn gnome_show_monitor_labels() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_show_monitor_labels();
+        }
+    }
+    false
+}
+
+/// Hide GNOME-style monitor labels.
+pub fn gnome_hide_monitor_labels() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            return wm.gnome_hide_monitor_labels();
+        }
+    }
+    false
+}
+
 /// Handle mouse move
 pub fn handle_mouse_move(x: usize, y: usize) {
     let mut global = GLOBAL_DESKTOP.lock();

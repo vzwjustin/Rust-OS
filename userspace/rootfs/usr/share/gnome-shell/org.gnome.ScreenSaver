@@ -1,0 +1,9 @@
+import {programInvocationName, programArgs} from 'system';
+
+imports.package.init({
+    name: 'gnome-shell',
+    prefix: '/usr',
+    libdir: '/usr/lib',
+});
+const {main} = await import(`${imports.package.moduledir}/main.js`);
+await main([programInvocationName, ...programArgs]);

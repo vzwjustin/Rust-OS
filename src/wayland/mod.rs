@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
+pub mod core_protocol;
 pub mod input;
 pub mod render;
 pub mod server;
@@ -60,6 +61,11 @@ pub mod interfaces {
     pub const WL_REGION: &str = "wl_region";
     pub const WL_SUBCOMPOSITOR: &str = "wl_subcompositor";
     pub const WL_SUBSURFACE: &str = "wl_subsurface";
+    pub const XDG_WM_BASE: &str = "xdg_wm_base";
+    pub const XDG_SURFACE: &str = "xdg_surface";
+    pub const XDG_TOPLEVEL: &str = "xdg_toplevel";
+    pub const XDG_POPUP: &str = "xdg_popup";
+    pub const XDG_POSITIONER: &str = "xdg_positioner";
 }
 
 // ── Pixel Formats ───────────────────────────────────────────────────────
@@ -599,6 +605,7 @@ pub struct ClientConnection {
     pub pointers: BTreeMap<ObjectId, ObjectId>,
     pub keyboards: BTreeMap<ObjectId, ObjectId>,
     pub keyboard_keymap_pipes: BTreeMap<ObjectId, u32>,
+    pub xdg_surface_to_surface: BTreeMap<ObjectId, ObjectId>,
     pub next_object_id: AtomicU32,
     pub display_serial: AtomicU32,
     pub input_serial: AtomicU32,
@@ -626,6 +633,7 @@ impl ClientConnection {
             pointers: BTreeMap::new(),
             keyboards: BTreeMap::new(),
             keyboard_keymap_pipes: BTreeMap::new(),
+            xdg_surface_to_surface: BTreeMap::new(),
             next_object_id: AtomicU32::new(2), // Start after wl_display
             display_serial: AtomicU32::new(1),
             input_serial: AtomicU32::new(1),
@@ -827,6 +835,13 @@ impl Compositor {
             version: 1,
         });
 
+        // xdg_wm_base (required by Mutter for window management)
+        globals.push(GlobalEntry {
+            name: 7,
+            interface: interfaces::XDG_WM_BASE,
+            version: 6,
+        });
+
         globals
     }
 }
@@ -858,6 +873,7 @@ pub fn init() -> Result<(), &'static str> {
                 crate::early_serial_write_str("\r\n");
             }
         } else {
+            server::mark_handshake_ready();
             unsafe {
                 crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
             }
@@ -895,6 +911,31 @@ pub fn poll_input() {
     if is_ready() {
         server::poll_kernel_input();
     }
+}
+
+/// Composite all connected clients' committed surfaces to the framebuffer.
+/// Called from the desktop main loop after the desktop render pass.
+pub fn render_clients() {
+    if !is_ready() {
+        return;
+    }
+    let comp = COMPOSITOR.read();
+    for (_id, client) in &comp.clients {
+        for (_surface_id, surface) in &client.surfaces {
+            if surface.buffer.is_some() {
+                render::render_surface(client, surface);
+            }
+        }
+    }
+}
+
+/// Count connected Wayland clients (excluding smoke-test pipe).
+pub fn client_count() -> usize {
+    if !is_ready() {
+        return 0;
+    }
+    let comp = COMPOSITOR.read();
+    comp.clients.len()
 }
 
 // ── wl_display Event Constructors ───────────────────────────────────────

@@ -1,9 +1,5 @@
 #!/bin/sh
-# RustOS Mutter / Wayland compositor launcher.
-#
-# When a real Mutter binary is present this script execs it. Otherwise the
-# kernel-provided Wayland socket on $XDG_RUNTIME_DIR/wayland-0 is used and
-# this script reports readiness for the GNOME session probe.
+# RustOS Mutter launcher.
 
 set -u
 
@@ -13,11 +9,21 @@ SOCKET="$RUNTIME_DIR/$WAYLAND_DISPLAY"
 
 export XDG_RUNTIME_DIR=$RUNTIME_DIR
 export WAYLAND_DISPLAY=$WAYLAND_DISPLAY
-export GDK_BACKEND=${GDK_BACKEND:-wayland,x11}
+export GDK_BACKEND=${GDK_BACKEND:-wayland}
 export CLUTTER_BACKEND=${CLUTTER_BACKEND:-wayland}
 
 log() {
     echo "rustos-mutter: $*"
+}
+
+real_mutter() {
+    candidate=$(command -v mutter 2>/dev/null || true)
+    if [ -n "$candidate" ] && [ "$candidate" != "/usr/bin/rustos-mutter" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
 }
 
 probe_socket() {
@@ -30,8 +36,24 @@ probe_socket() {
     return 1
 }
 
+serve_kernel_compositor() {
+    probe_socket || exit 1
+    log "serving kernel Wayland compositor on $SOCKET"
+    while :; do
+        if ! probe_socket >/dev/null 2>&1; then
+            log "warning: Wayland socket lost"
+            exit 1
+        fi
+        sleep 3600
+    done
+}
+
 case "${1:-}" in
     --probe)
+        if real_mutter >/dev/null; then
+            log "ready: userspace Mutter ($(real_mutter))"
+            exit 0
+        fi
         probe_socket
         exit $?
         ;;
@@ -40,15 +62,19 @@ case "${1:-}" in
         printf 'WAYLAND_DISPLAY=%s\n' "$WAYLAND_DISPLAY"
         exit 0
         ;;
+    --serve)
+        if mutter_bin=$(real_mutter); then
+            log "serve: delegating to userspace Mutter ($mutter_bin)"
+            exec "$mutter_bin" --wayland --wayland-display="$WAYLAND_DISPLAY"
+        fi
+        serve_kernel_compositor
+        ;;
 esac
 
-if ! probe_socket; then
-    exit 1
+if mutter_bin=$(real_mutter); then
+    exec "$mutter_bin" --wayland --wayland-display="$WAYLAND_DISPLAY" "$@"
 fi
 
-if command -v mutter >/dev/null 2>&1 && [ "$(command -v mutter)" != "/usr/bin/rustos-mutter" ]; then
-    exec mutter --wayland --wayland-display="$WAYLAND_DISPLAY" "$@"
-fi
-
-log "kernel compositor active on $SOCKET"
-exit 0
+probe_socket || exit 1
+log "using kernel Wayland compositor on $SOCKET until userspace Mutter is installed"
+serve_kernel_compositor

@@ -74,7 +74,8 @@ pub fn probe() -> GnomeReadiness {
     let input_ready = driver_status
         .as_ref()
         .map(|status| status.input_ready)
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || crate::drivers::input_manager::is_initialized();
 
     GnomeReadiness {
         glib_gio: if GLIB_GIO_READY.load(Ordering::Acquire)

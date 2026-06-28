@@ -57,50 +57,50 @@ pub const WORKSPACE_COUNT: usize = 4;
 pub mod colors {
     use crate::graphics::framebuffer::Color;
 
-    // Modern system-desktop theme: blue true-color wallpaper, graphite chrome,
-    // and a Windows/macOS/Linux-style active blue accent instead of flat gray.
-    pub const DESKTOP_BACKGROUND_TOP: Color = Color::rgb(28, 113, 191);
-    pub const DESKTOP_BACKGROUND_BOTTOM: Color = Color::rgb(14, 22, 38);
-    pub const DESKTOP_GLOW: Color = Color::rgb(95, 197, 255);
-    pub const MENU_BAR_BACKGROUND: Color = Color::rgb(24, 27, 34);
-    pub const MENU_BAR_TOP: Color = Color::rgb(48, 55, 68);
-    pub const MENU_BAR_BOTTOM: Color = Color::rgb(22, 25, 32);
-    pub const DOCK_TOP: Color = Color::rgb(50, 57, 70);
-    pub const DOCK_BOTTOM: Color = Color::rgb(18, 22, 30);
-    pub const TITLE_ACTIVE_TOP: Color = Color::rgb(33, 150, 243);
-    pub const TITLE_ACTIVE_BOTTOM: Color = Color::rgb(0, 103, 184);
-    pub const MENU_BAR_HIGHLIGHT: Color = Color::rgb(64, 72, 88);
-    pub const MENU_BAR_ACCENT: Color = Color::rgb(12, 15, 22);
-    pub const MENU_BAR_ICON: Color = Color::rgb(244, 247, 252);
+    // Ubuntu / Yaru desktop palette (Jammy-style aubergine wallpaper, dark panel,
+    // left dock, Ubuntu orange accents).
+    pub const DESKTOP_BACKGROUND_TOP: Color = Color::rgb(44, 0, 30); // #2C001E
+    pub const DESKTOP_BACKGROUND_BOTTOM: Color = Color::rgb(94, 39, 80); // #5E2750
+    pub const DESKTOP_GLOW: Color = Color::rgb(233, 84, 32); // #E95420 Ubuntu orange
+    pub const MENU_BAR_BACKGROUND: Color = Color::rgb(26, 26, 26);
+    pub const MENU_BAR_TOP: Color = Color::rgb(30, 30, 30);
+    pub const MENU_BAR_BOTTOM: Color = Color::rgb(19, 19, 19);
+    pub const DOCK_TOP: Color = Color::rgb(48, 48, 48);
+    pub const DOCK_BOTTOM: Color = Color::rgb(36, 36, 36);
+    pub const TITLE_ACTIVE_TOP: Color = Color::rgb(119, 41, 83); // aubergine accent
+    pub const TITLE_ACTIVE_BOTTOM: Color = Color::rgb(94, 39, 80);
+    pub const MENU_BAR_HIGHLIGHT: Color = Color::rgb(55, 55, 55);
+    pub const MENU_BAR_ACCENT: Color = Color::rgb(12, 12, 12);
+    pub const MENU_BAR_ICON: Color = Color::rgb(255, 255, 255);
     pub const DESKTOP_BACKGROUND: Color = DESKTOP_BACKGROUND_TOP;
-    pub const WINDOW_BACKGROUND: Color = Color::rgb(247, 249, 253);
+    pub const WINDOW_BACKGROUND: Color = Color::rgb(250, 250, 250);
     pub const WINDOW_SURFACE_TOP: Color = Color::rgb(255, 255, 255);
-    pub const WINDOW_SURFACE_BOTTOM: Color = Color::rgb(233, 238, 247);
-    pub const WINDOW_SURFACE_ALT: Color = Color::rgb(242, 246, 252);
-    pub const WINDOW_SHADOW: Color = Color::rgb(4, 8, 18);
-    pub const TITLE_BAR_ACTIVE: Color = Color::rgb(0, 120, 212);
-    pub const TITLE_BAR_INACTIVE: Color = Color::rgb(74, 82, 96);
-    pub const BORDER_ACTIVE: Color = Color::rgb(35, 150, 255);
-    pub const BORDER_INACTIVE: Color = Color::rgb(102, 112, 128);
-    pub const TEXT_COLOR: Color = Color::rgb(22, 26, 34);
-    pub const TEXT_COLOR_WHITE: Color = Color::rgb(252, 253, 255);
-    pub const TEXT_COLOR_MUTED: Color = Color::rgb(97, 109, 126);
-    pub const SHELL_BACKGROUND_TOP: Color = Color::rgb(18, 24, 34);
-    pub const SHELL_BACKGROUND_BOTTOM: Color = Color::rgb(8, 12, 20);
-    pub const SHELL_TEXT: Color = Color::rgb(210, 238, 223);
-    pub const SHELL_PROMPT: Color = Color::rgb(95, 197, 255);
-    pub const BUTTON_BACKGROUND: Color = Color::rgb(239, 243, 248);
-    pub const BUTTON_HOVER: Color = Color::rgb(218, 231, 247);
-    pub const BUTTON_PRESSED: Color = Color::rgb(185, 211, 239);
-    pub const DOCK_BACKGROUND: Color = Color::rgb(24, 27, 34);
-    pub const DOCK_GLASS: Color = Color::rgb(46, 54, 68);
-    pub const DOCK_HIGHLIGHT: Color = Color::rgb(78, 91, 111);
-    pub const DOCK_ICON_ACCENT: Color = Color::rgb(0, 120, 212);
+    pub const WINDOW_SURFACE_BOTTOM: Color = Color::rgb(245, 245, 245);
+    pub const WINDOW_SURFACE_ALT: Color = Color::rgb(248, 248, 248);
+    pub const WINDOW_SHADOW: Color = Color::rgb(8, 4, 12);
+    pub const TITLE_BAR_ACTIVE: Color = Color::rgb(119, 41, 83);
+    pub const TITLE_BAR_INACTIVE: Color = Color::rgb(90, 90, 90);
+    pub const BORDER_ACTIVE: Color = Color::rgb(233, 84, 32);
+    pub const BORDER_INACTIVE: Color = Color::rgb(120, 120, 120);
+    pub const TEXT_COLOR: Color = Color::rgb(28, 28, 28);
+    pub const TEXT_COLOR_WHITE: Color = Color::rgb(255, 255, 255);
+    pub const TEXT_COLOR_MUTED: Color = Color::rgb(140, 140, 140);
+    pub const SHELL_BACKGROUND_TOP: Color = Color::rgb(44, 0, 30);
+    pub const SHELL_BACKGROUND_BOTTOM: Color = Color::rgb(26, 26, 26);
+    pub const SHELL_TEXT: Color = Color::rgb(255, 255, 255);
+    pub const SHELL_PROMPT: Color = Color::rgb(233, 84, 32);
+    pub const BUTTON_BACKGROUND: Color = Color::rgb(245, 245, 245);
+    pub const BUTTON_HOVER: Color = Color::rgb(235, 235, 235);
+    pub const BUTTON_PRESSED: Color = Color::rgb(220, 220, 220);
+    pub const DOCK_BACKGROUND: Color = Color::rgb(44, 44, 44);
+    pub const DOCK_GLASS: Color = Color::rgb(58, 58, 58);
+    pub const DOCK_HIGHLIGHT: Color = Color::rgb(72, 72, 72);
+    pub const DOCK_ICON_ACCENT: Color = Color::rgb(233, 84, 32);
     pub const DOCK_INDICATOR: Color = Color::rgb(255, 255, 255);
     pub const WINDOW_BTN_MIN: Color = Color::rgb(255, 189, 68);
     pub const WINDOW_BTN_MAX: Color = Color::rgb(40, 200, 64);
     pub const WINDOW_BTN_CLOSE: Color = Color::rgb(255, 95, 87);
-    pub const FM_SELECTION: Color = Color::rgb(0, 120, 212);
+    pub const FM_SELECTION: Color = Color::rgb(233, 84, 32);
 }
 
 /// Window state enumeration
@@ -411,6 +411,12 @@ pub struct WindowManager {
     app_grid_query: HString<32>,
     /// Current app-grid page
     app_grid_page: usize,
+    /// GNOME-style OSD text.
+    gnome_osd_text: HString<64>,
+    /// Uptime second when OSD should disappear.
+    gnome_osd_until: u64,
+    /// Uptime second when monitor labels should disappear.
+    gnome_monitor_labels_until: u64,
 }
 
 impl WindowManager {
@@ -468,6 +474,9 @@ impl WindowManager {
             app_grid_open: false,
             app_grid_query: HString::new(),
             app_grid_page: 0,
+            gnome_osd_text: HString::new(),
+            gnome_osd_until: 0,
+            gnome_monitor_labels_until: 0,
         }
     }
 
@@ -568,6 +577,13 @@ impl WindowManager {
         }
         if self.network_status_window.is_some() {
             self.refresh_network_status();
+        }
+        if self.gnome_osd_until != 0 && second >= self.gnome_osd_until {
+            self.gnome_osd_until = 0;
+            self.gnome_osd_text.clear();
+        }
+        if self.gnome_monitor_labels_until != 0 && second >= self.gnome_monitor_labels_until {
+            self.gnome_monitor_labels_until = 0;
         }
         self.needs_redraw = true;
     }
@@ -2404,6 +2420,14 @@ impl WindowManager {
             self.render_app_grid();
         }
 
+        if self.gnome_monitor_labels_until != 0 {
+            self.render_monitor_labels();
+        }
+
+        if self.gnome_osd_until != 0 {
+            self.render_gnome_osd();
+        }
+
         // Render context menu on top
         if self.context_menu.visible {
             self.render_context_menu();
@@ -2949,6 +2973,7 @@ impl WindowManager {
 
     fn render_background(&self) {
         let height = max(self.desktop_rect.height, 1);
+        let width = max(self.desktop_rect.width, 1);
         for row in 0..height {
             let color = Self::lerp_color(
                 colors::DESKTOP_BACKGROUND_TOP,
@@ -2964,12 +2989,148 @@ impl WindowManager {
             );
             crate::graphics::framebuffer::fill_rect(stripe, color);
         }
+
+        // Ubuntu Jammy-style wallpaper accents: soft orange orb + aubergine glow.
+        let orb_cx = self.desktop_rect.x + width * 3 / 4;
+        let orb_cy = self.desktop_rect.y + height * 4 / 5;
+        for (radius, color) in [
+            (140usize, Color::rgb(180, 50, 20)),
+            (110, Color::rgb(210, 70, 28)),
+            (82, Color::rgb(233, 84, 32)),
+            (58, Color::rgb(245, 120, 60)),
+        ] {
+            crate::graphics::primitives::fill_circle(orb_cx, orb_cy, radius, color);
+        }
+        let glow_cx = self.desktop_rect.x + width / 5;
+        let glow_cy = self.desktop_rect.y + height / 3;
+        for (radius, color) in [
+            (120usize, Color::rgb(60, 10, 45)),
+            (90, Color::rgb(94, 39, 80)),
+            (62, Color::rgb(119, 41, 83)),
+        ] {
+            crate::graphics::primitives::fill_circle(glow_cx, glow_cy, radius, color);
+        }
     }
 
     fn render_desktop_icons(&self) {
-        // Clean desktop wallpaper — no diagnostic overlay text.
-        // Apps are launched from the dock; the desktop surface stays uncluttered.
-        let _ = self;
+        // Ubuntu keeps the desktop clean — wallpaper only, no center watermark.
+    }
+
+    /// Draw text scaled by an integer factor (1x, 2x, etc.)
+    fn draw_text_scaled(
+        text: &str,
+        x: usize,
+        y: usize,
+        color: Color,
+        font: &crate::graphics::BitmapFont,
+        scale: usize,
+    ) {
+        let mut cx = x;
+        for ch in text.chars() {
+            let char_code = ch as usize;
+            if char_code >= 256 {
+                cx += font.char_width * scale;
+                continue;
+            }
+            let offset = char_code.saturating_mul(font.char_height);
+            if offset >= font.data.len() {
+                cx += font.char_width * scale;
+                continue;
+            }
+            for row in 0..font.char_height {
+                let byte = font.data[offset + row];
+                for col in 0..font.char_width {
+                    if (byte >> (7 - col)) & 1 == 1 {
+                        let px = cx + col * scale;
+                        let py = y + row * scale;
+                        let pixel = Rect::new(px, py, scale, scale);
+                        crate::graphics::framebuffer::fill_rect(pixel, color);
+                    }
+                }
+            }
+            cx += font.char_width * scale;
+        }
+    }
+
+    /// Render a GNOME subsystem readiness panel in the bottom-right corner.
+    fn render_gnome_status_panel(&self) {
+        let font = crate::graphics::get_default_font();
+        let panel_w = 220;
+        let panel_h = 148;
+        let panel_x = self.desktop_rect.width.saturating_sub(panel_w + 16);
+        let panel_y = self
+            .desktop_rect
+            .height
+            .saturating_sub(panel_h + DOCK_HEIGHT + 16);
+        let panel = Rect::new(panel_x, panel_y, panel_w, panel_h);
+
+        // Semi-transparent dark background
+        self.fill_vertical_gradient(panel, Color::rgb(20, 24, 32), Color::rgb(12, 16, 24));
+        crate::graphics::framebuffer::draw_rect(panel, Color::rgb(54, 132, 245), 1);
+
+        let mut ty = panel_y + 10;
+        crate::graphics::draw_text(
+            "GNOME Status",
+            panel_x + 12,
+            ty,
+            Color::rgb(244, 247, 252),
+            font,
+        );
+        ty += font.char_height + 6;
+
+        // Separator line
+        let sep = Rect::new(panel_x + 12, ty, panel_w - 24, 1);
+        crate::graphics::framebuffer::fill_rect(sep, Color::rgb(54, 132, 245));
+        ty += 6;
+
+        // Subsystem status rows
+        let subsystems: [(&str, bool); 5] = [
+            ("D-Bus", crate::dbus::is_ready()),
+            ("Wayland", crate::wayland::is_ready()),
+            ("Mutter", crate::mutter::is_ready()),
+            ("GNOME Overlay", crate::gnome_overlay::is_ready()),
+            ("DRM/KMS", crate::vfs::drmfs::smoke_check().is_ok()),
+        ];
+
+        for (name, ready) in subsystems {
+            // Status dot
+            let dot_color = if ready {
+                Color::rgb(46, 204, 113)
+            } else {
+                Color::rgb(231, 76, 60)
+            };
+            crate::graphics::primitives::fill_circle(panel_x + 18, ty + 5, 4, dot_color);
+
+            // Label
+            crate::graphics::draw_text(
+                name,
+                panel_x + 30,
+                ty,
+                if ready {
+                    Color::rgb(200, 220, 240)
+                } else {
+                    Color::rgb(140, 150, 170)
+                },
+                font,
+            );
+
+            // Status text
+            let status = if ready { "Ready" } else { "Blocked" };
+            let st_x = panel_x + panel_w.saturating_sub((status.len() + 2) * font.char_width);
+            crate::graphics::draw_text(
+                status,
+                st_x,
+                ty,
+                if ready {
+                    Color::rgb(46, 204, 113)
+                } else {
+                    Color::rgb(231, 76, 60)
+                },
+                font,
+            );
+
+            ty += font.char_height + 4;
+        }
     }
 
     fn render_activities_overview(&self) {
@@ -3053,6 +3214,54 @@ impl WindowManager {
             colors::MENU_BAR_ICON,
             font,
         );
+    }
+
+    pub fn gnome_focus_search(&mut self) -> bool {
+        self.open_app_grid();
+        true
+    }
+
+    pub fn gnome_show_applications(&mut self) -> bool {
+        self.open_app_grid();
+        true
+    }
+
+    pub fn gnome_hide_overview(&mut self) -> bool {
+        self.activities_open = false;
+        self.app_grid_open = false;
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn gnome_toggle_overview(&mut self) -> bool {
+        self.activities_open = !self.activities_open;
+        self.quick_settings_open = false;
+        if self.activities_open {
+            self.app_grid_open = false;
+        }
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn gnome_show_osd(&mut self, text: &str) -> bool {
+        self.gnome_osd_text.clear();
+        let label = if text.is_empty() { "OSD" } else { text };
+        let _ = self.gnome_osd_text.push_str(label);
+        self.gnome_osd_until = crate::time::uptime_ms() / 1000 + 3;
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn gnome_show_monitor_labels(&mut self) -> bool {
+        self.gnome_monitor_labels_until = crate::time::uptime_ms() / 1000 + 3;
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn gnome_hide_monitor_labels(&mut self) -> bool {
+        self.gnome_monitor_labels_until = 0;
+        self.needs_redraw = true;
+        true
     }
 
     fn open_app_grid(&mut self) {
@@ -3185,6 +3394,55 @@ impl WindowManager {
         Rect::new(x, y, w, h)
     }
 
+    fn render_gnome_osd(&self) {
+        let font = crate::graphics::get_default_font();
+        let text = self.gnome_osd_text.as_str();
+        let text_w = text.len().saturating_mul(font.char_width);
+        let w = (text_w + 44).clamp(180, self.desktop_rect.width.saturating_sub(40));
+        let h = 58;
+        let x = (self.desktop_rect.width.saturating_sub(w)) / 2;
+        let y = self
+            .desktop_rect
+            .height
+            .saturating_sub(h + DOCK_ICON_GAP + 24);
+        let panel = Rect::new(x, y, w, h);
+        self.fill_vertical_gradient(panel, colors::DOCK_GLASS, colors::MENU_BAR_BACKGROUND);
+        crate::graphics::framebuffer::draw_rect(panel, colors::DOCK_ICON_ACCENT, 2);
+        crate::graphics::draw_text(
+            text,
+            panel.x + 22,
+            panel.y + (panel.height.saturating_sub(font.char_height)) / 2,
+            colors::TEXT_COLOR_WHITE,
+            font,
+        );
+    }
+
+    fn render_monitor_labels(&self) {
+        let font = crate::graphics::get_default_font();
+        let w = 180;
+        let h = 74;
+        let x = (self.desktop_rect.width.saturating_sub(w)) / 2;
+        let y = self.menu_bar_rect.height + 36;
+        let panel = Rect::new(x, y, w, h);
+        let dims = format!("{}x{}", self.desktop_rect.width, self.desktop_rect.height);
+        self.fill_vertical_gradient(panel, colors::TITLE_ACTIVE_TOP, colors::TITLE_ACTIVE_BOTTOM);
+        crate::graphics::framebuffer::draw_rect(panel, colors::TEXT_COLOR_WHITE, 2);
+        crate::graphics::draw_text(
+            "Monitor 1",
+            panel.x + 26,
+            panel.y + 18,
+            colors::TEXT_COLOR_WHITE,
+            font,
+        );
+        crate::graphics::draw_text(
+            &dims,
+            panel.x + 26,
+            panel.y + 40,
+            colors::MENU_BAR_ICON,
+            font,
+        );
+    }
+
     fn render_quick_settings(&self) {
         let font = crate::graphics::get_default_font();
         let panel = Rect::new(
@@ -3297,15 +3555,7 @@ impl WindowManager {
             colors::MENU_BAR_ICON,
             font,
         );
-        crate::graphics::draw_text(
-            "RustOS Desktop",
-            self.menu_bar_rect.x + 104,
-            text_y,
-            colors::MENU_BAR_ICON,
-            font,
-        );
-
-        let mut task_x = self.menu_bar_rect.x + 220;
+        let mut task_x = self.menu_bar_rect.x + 120;
         let task_limit = self.menu_bar_rect.width.saturating_sub(160);
         for window in self
             .windows
@@ -3410,13 +3660,13 @@ impl WindowManager {
         let mut icon_y = launcher_rect.y + 16;
         let icon_colors = [
             colors::DOCK_ICON_ACCENT,
-            Color::rgb(84, 160, 255),
-            Color::rgb(78, 188, 116),
-            Color::rgb(212, 152, 48),
-            Color::rgb(160, 100, 220),
-            Color::rgb(218, 76, 50),
+            Color::rgb(119, 41, 83),
+            Color::rgb(53, 132, 228),
+            Color::rgb(46, 204, 113),
+            Color::rgb(241, 196, 15),
+            Color::rgb(155, 89, 182),
         ];
-        let icon_labels = ["Sh", "Fi", "Mo", "Ac", "Te", "Nw"];
+        let icon_labels = ["Tm", "Fi", "Mo", "St", "Tx", "Nw"];
 
         for i in 0..DOCK_ICON_COUNT {
             if icon_y + DOCK_ICON_SIZE > launcher_rect.y + launcher_rect.height {

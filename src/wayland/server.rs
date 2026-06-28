@@ -8,24 +8,38 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 use super::{
-    compositor, compositor_mut, display_error, event_global, event_output_geometry,
-    event_output_mode, interfaces, Arg, ArgType, ClientConnection, GlobalEntry, Message,
-    ObjectId, DISPLAY_OBJECT_ID,
+    compositor, compositor_mut, core_protocol, display_error, event_global, event_output_geometry,
+    event_output_mode, interfaces, Arg, ArgType, ClientConnection, GlobalEntry, Message, ObjectId,
+    DISPLAY_OBJECT_ID,
 };
 
 static PIPE_CLIENTS: Mutex<BTreeMap<u32, u32>> = Mutex::new(BTreeMap::new());
 static READ_BUFFERS: Mutex<BTreeMap<u32, Vec<u8>>> = Mutex::new(BTreeMap::new());
 static HANDSHAKE_READY: AtomicBool = AtomicBool::new(false);
+const SMOKE_TEST_PIPE: u32 = 0x9001;
 
 /// Returns true once a successful Wayland wire handshake has been observed.
 pub fn is_handshake_ready() -> bool {
     HANDSHAKE_READY.load(Ordering::Acquire)
+}
+
+fn mark_runtime_handshake_ready(pipe_id: u32) {
+    if pipe_id != SMOKE_TEST_PIPE {
+        HANDSHAKE_READY.store(true, Ordering::Release);
+    }
+}
+
+/// Mark the Wayland wire handshake as ready. Called by `wayland::init()`
+/// after the smoke check verifies the wire protocol end-to-end.
+pub fn mark_handshake_ready() {
+    HANDSHAKE_READY.store(true, Ordering::Release);
 }
 
 /// Attach a compositor client to a Unix socket connection pipe.
@@ -50,6 +64,11 @@ pub fn detach_connection(pipe_id: u32) {
         compositor_mut().disconnect_client(client_id);
     }
     READ_BUFFERS.lock().remove(&pipe_id);
+}
+
+/// Get the compositor client ID associated with a pipe.
+pub fn pipe_client_id(pipe_id: u32) -> Option<u32> {
+    PIPE_CLIENTS.lock().get(&pipe_id).copied()
 }
 
 /// Process Wayland wire data from a connected client and return reply bytes.
@@ -120,24 +139,28 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
         object.interface
     };
 
-    if interface == interfaces::WL_REGISTRY && header.opcode == 0 {
-        return Some(vec![ArgType::UInt, ArgType::NewId, ArgType::UInt]);
+    if let Some(types) = core_protocol::request_arg_types(interface, header.opcode) {
+        return Some(types.to_vec());
     }
 
     match interface {
-        interfaces::WL_COMPOSITOR if header.opcode == 0 => Some(vec![ArgType::NewId]),
+        interfaces::WL_COMPOSITOR => match header.opcode {
+            0 => Some(vec![ArgType::NewId]),
+            1 => Some(vec![ArgType::NewId]),
+            _ => None,
+        },
+        interfaces::WL_SUBCOMPOSITOR if header.opcode == 0 => {
+            Some(vec![ArgType::NewId, ArgType::Object, ArgType::Object])
+        }
         interfaces::WL_SURFACE => match header.opcode {
-            0 | 3 => Some(Vec::new()),
-            1 => Some(vec![ArgType::Object, ArgType::Int, ArgType::Int]),
-            2 | 6 => Some(vec![
-                ArgType::Int,
-                ArgType::Int,
-                ArgType::Int,
-                ArgType::Int,
-            ]),
-            4 => Some(vec![ArgType::UInt]),
-            5 => Some(vec![ArgType::Int]),
-            7 => Some(vec![ArgType::NewId]),
+            0 => Some(Vec::new()),                                        // destroy
+            1 => Some(vec![ArgType::Object, ArgType::Int, ArgType::Int]), // attach
+            2 => Some(vec![ArgType::Int, ArgType::Int, ArgType::Int, ArgType::Int]), // damage
+            3 => Some(vec![ArgType::NewId]),                              // frame
+            4 | 5 => Some(vec![ArgType::Object]), // set_opaque_region, set_input_region
+            6 => Some(Vec::new()),                // commit
+            7 | 8 => Some(vec![ArgType::Int]),    // set_buffer_transform, set_buffer_scale
+            9 => Some(vec![ArgType::Int, ArgType::Int, ArgType::Int, ArgType::Int]), // damage_buffer
             _ => None,
         },
         interfaces::WL_SEAT => match header.opcode {
@@ -146,7 +169,7 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
             _ => None,
         },
         interfaces::WL_SHM if header.opcode == 0 => {
-            Some(vec![ArgType::Fd, ArgType::NewId, ArgType::Int])
+            Some(vec![ArgType::NewId, ArgType::Fd, ArgType::Int])
         }
         interfaces::WL_SHM_POOL => match header.opcode {
             0 => Some(vec![
@@ -162,6 +185,71 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
             _ => None,
         },
         interfaces::WL_BUFFER if header.opcode == 0 => Some(Vec::new()),
+        interfaces::WL_DATA_DEVICE_MANAGER => match header.opcode {
+            0 => Some(vec![ArgType::NewId]),
+            1 => Some(vec![ArgType::NewId, ArgType::Object]),
+            _ => None,
+        },
+        interfaces::WL_DATA_SOURCE => match header.opcode {
+            0 | 2 | 3 => Some(vec![ArgType::String]),
+            1 => Some(Vec::new()),
+            _ => None,
+        },
+        interfaces::WL_DATA_DEVICE => match header.opcode {
+            0 => Some(vec![ArgType::Object]),
+            1 | 2 | 4 => Some(Vec::new()),
+            3 => Some(vec![ArgType::UInt, ArgType::String, ArgType::Object]),
+            _ => None,
+        },
+        interfaces::WL_REGION => match header.opcode {
+            0 | 1 => Some(vec![ArgType::Int, ArgType::Int, ArgType::Int, ArgType::Int]),
+            2 => Some(Vec::new()),
+            _ => None,
+        },
+        interfaces::XDG_WM_BASE => match header.opcode {
+            0 => Some(Vec::new()),
+            1 => Some(vec![ArgType::NewId]),
+            2 => Some(vec![ArgType::NewId, ArgType::Object]),
+            3 => Some(vec![ArgType::UInt]),
+            _ => None,
+        },
+        interfaces::XDG_SURFACE => match header.opcode {
+            0 => Some(Vec::new()),
+            1 => Some(vec![ArgType::NewId]),
+            2 => Some(vec![ArgType::NewId, ArgType::Object, ArgType::Object]),
+            3 => Some(vec![ArgType::Int, ArgType::Int, ArgType::Int, ArgType::Int]),
+            4 => Some(vec![ArgType::UInt]),
+            _ => None,
+        },
+        interfaces::XDG_TOPLEVEL => match header.opcode {
+            0 => Some(Vec::new()),
+            1 => Some(vec![ArgType::Object]),
+            2 => Some(vec![ArgType::String]),
+            3 => Some(vec![ArgType::String]),
+            4 => Some(vec![ArgType::UInt, ArgType::Int, ArgType::Int]),
+            5 => Some(vec![ArgType::UInt, ArgType::UInt]),
+            6 => Some(vec![ArgType::UInt, ArgType::UInt, ArgType::UInt]),
+            7 | 8 => Some(vec![ArgType::Int, ArgType::Int]),
+            9 | 10 | 12 | 13 => Some(Vec::new()),
+            11 => Some(vec![ArgType::UInt, ArgType::Object]),
+            _ => None,
+        },
+        interfaces::XDG_POPUP => match header.opcode {
+            0 => Some(Vec::new()),
+            1 => Some(vec![ArgType::Object, ArgType::UInt]),
+            2 => Some(vec![ArgType::Object, ArgType::UInt]),
+            _ => None,
+        },
+        interfaces::XDG_POSITIONER => match header.opcode {
+            0 => Some(Vec::new()),
+            1 => Some(vec![ArgType::Int, ArgType::Int, ArgType::Int, ArgType::Int]),
+            2 => Some(vec![ArgType::Int, ArgType::Int]),
+            3 => Some(vec![ArgType::UInt]),
+            4 => Some(vec![ArgType::UInt]),
+            5 => Some(vec![ArgType::Int]),
+            6 => Some(vec![ArgType::UInt]),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -173,12 +261,12 @@ fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<V
         return match message.header.opcode {
             0 => {
                 let client = comp.get_client_mut(client_id)?;
-                handle_display_sync(client, message)
+                handle_display_sync(pipe_id, client, message)
             }
             1 => {
                 let globals = comp.global_list();
                 let client = comp.get_client_mut(client_id)?;
-                handle_display_get_registry(client, &globals, message)
+                handle_display_get_registry(pipe_id, client, &globals, message)
             }
             _ => Some(encode_error(
                 DISPLAY_OBJECT_ID,
@@ -199,7 +287,7 @@ fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<V
         let globals = comp.global_list();
         let outputs: Vec<_> = comp.list_outputs().into_iter().cloned().collect();
         let client = comp.get_client_mut(client_id)?;
-        return handle_registry_bind(client, &globals, &outputs, message);
+        return handle_registry_bind(pipe_id, client, &globals, &outputs, message);
     }
 
     let object_iface = comp
@@ -210,10 +298,17 @@ fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<V
         .unwrap_or("");
 
     match object_iface {
-        interfaces::WL_COMPOSITOR if message.header.opcode == 0 => {
-            let client = comp.get_client_mut(client_id)?;
-            handle_compositor_create_surface(client, message)
-        }
+        interfaces::WL_COMPOSITOR => match message.header.opcode {
+            0 => {
+                let client = comp.get_client_mut(client_id)?;
+                handle_compositor_create_surface(client, message)
+            }
+            1 => {
+                let client = comp.get_client_mut(client_id)?;
+                handle_compositor_create_region(client, message)
+            }
+            _ => None,
+        },
         interfaces::WL_SURFACE => {
             let client = comp.get_client_mut(client_id)?;
             handle_surface_request(client, message)
@@ -231,15 +326,59 @@ fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<V
             handle_buffer_destroy(client, message.header.object_id);
             None
         }
+        interfaces::WL_DATA_DEVICE_MANAGER => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_data_device_manager_request(client, message)
+        }
+        interfaces::WL_DATA_SOURCE => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_data_source_request(client, message)
+        }
+        interfaces::WL_DATA_DEVICE => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_data_device_request(client, message)
+        }
         interfaces::WL_SEAT => {
             let client = comp.get_client_mut(client_id)?;
             handle_seat_request(pipe_id, client, message)
+        }
+        interfaces::WL_REGION => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_region_request(client, message)
+        }
+        interfaces::WL_SUBCOMPOSITOR if message.header.opcode == 0 => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_subcompositor_get_subsurface(client, message)
+        }
+        interfaces::XDG_WM_BASE => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_xdg_wm_base_request(client, message)
+        }
+        interfaces::XDG_SURFACE => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_xdg_surface_request(client, message)
+        }
+        interfaces::XDG_TOPLEVEL => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_xdg_toplevel_request(client, message)
+        }
+        interfaces::XDG_POPUP => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_xdg_popup_request(client, message)
+        }
+        interfaces::XDG_POSITIONER => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_xdg_positioner_request(client, message)
         }
         _ => None,
     }
 }
 
-fn handle_display_sync(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+fn handle_display_sync(
+    pipe_id: u32,
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
     let callback_id = match message.args.first() {
         Some(Arg::NewId(id)) => *id,
         _ => return None,
@@ -256,11 +395,12 @@ fn handle_display_sync(client: &mut ClientConnection, message: &Message) -> Opti
 
     let serial = client.next_serial();
     let done = Message::new(callback_id, 0, vec![Arg::UInt(serial)]);
-    HANDSHAKE_READY.store(true, Ordering::Release);
+    mark_runtime_handshake_ready(pipe_id);
     Some(done.encode())
 }
 
 fn handle_display_get_registry(
+    pipe_id: u32,
     client: &mut ClientConnection,
     globals: &[GlobalEntry],
     message: &Message,
@@ -286,11 +426,12 @@ fn handle_display_get_registry(
         );
     }
 
-    HANDSHAKE_READY.store(true, Ordering::Release);
+    mark_runtime_handshake_ready(pipe_id);
     Some(out)
 }
 
 fn handle_registry_bind(
+    pipe_id: u32,
     client: &mut ClientConnection,
     globals: &[GlobalEntry],
     outputs: &[super::Output],
@@ -298,6 +439,10 @@ fn handle_registry_bind(
 ) -> Option<Vec<u8>> {
     let (name, new_id, version) = match (&message.args[0], &message.args[1], &message.args[2]) {
         (Arg::UInt(name), Arg::NewId(id), Arg::UInt(version)) => (*name, *id, *version),
+        (Arg::UInt(name), Arg::String(_), Arg::UInt(version)) => match message.args.get(3) {
+            Some(Arg::NewId(id)) => (*name, *id, *version),
+            _ => return None,
+        },
         _ => return None,
     };
 
@@ -316,8 +461,20 @@ fn handle_registry_bind(
     let mut out = Vec::new();
 
     match global.interface {
-        interfaces::WL_COMPOSITOR | interfaces::WL_SHM
-        | interfaces::WL_DATA_DEVICE_MANAGER | interfaces::WL_SUBCOMPOSITOR => {}
+        interfaces::WL_COMPOSITOR
+        | interfaces::WL_DATA_DEVICE_MANAGER
+        | interfaces::WL_SUBCOMPOSITOR
+        | interfaces::XDG_WM_BASE => {}
+        interfaces::WL_SHM => {
+            for &fmt in &[
+                super::formats::XRGB8888,
+                super::formats::ARGB8888,
+                super::formats::RGB888,
+                super::formats::RGB565,
+            ] {
+                out.extend_from_slice(&Message::new(new_id, 0, vec![Arg::UInt(fmt)]).encode());
+            }
+        }
         interfaces::WL_SEAT => {
             super::input::register_seat(client, new_id);
             out.extend_from_slice(&super::input::seat_bind_events(new_id));
@@ -351,12 +508,17 @@ fn handle_registry_bind(
                     )
                     .encode(),
                 );
+
+                // wl_output.done (opcode 2) — signals output description complete
+                out.extend_from_slice(&Message::new(new_id, 2, vec![]).encode());
+                // wl_output.scale (opcode 3) — scale factor 1
+                out.extend_from_slice(&Message::new(new_id, 3, vec![Arg::Int(1)]).encode());
             }
         }
         _ => {}
     }
 
-    HANDSHAKE_READY.store(true, Ordering::Release);
+    mark_runtime_handshake_ready(pipe_id);
 
     if out.is_empty() {
         None
@@ -386,7 +548,9 @@ fn handle_compositor_create_surface(
             version: 4,
         },
     );
-    client.surfaces.insert(surface_id, super::Surface::new(surface_id));
+    client
+        .surfaces
+        .insert(surface_id, super::Surface::new(surface_id));
     None
 }
 
@@ -417,7 +581,8 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
             }
             None
         }
-        2 | 6 => {
+        2 | 7 => {
+            // wl_surface.damage (opcode 2) or wl_surface.damage_buffer (opcode 7)
             let rect = super::DamageRect {
                 x: arg_i32(&message.args, 0),
                 y: arg_i32(&message.args, 1),
@@ -430,16 +595,29 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
             None
         }
         3 => {
+            // wl_surface.frame (opcode 3) — register a frame callback
+            let callback_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.frame_callback = Some(callback_id);
+            }
+            None
+        }
+        6 => {
+            // wl_surface.commit (opcode 6)
             if let Some(surface) = client.surfaces.get_mut(&surface_id) {
                 surface.commit();
             }
 
-            let (mut events, entered_output) = if let Some(surface) = client.surfaces.get(&surface_id) {
-                super::render::render_surface(client, surface);
-                super::render::surface_commit_events(client, surface)
-            } else {
-                (Vec::new(), None)
-            };
+            let (mut events, entered_output) =
+                if let Some(surface) = client.surfaces.get(&surface_id) {
+                    super::render::render_surface(client, surface);
+                    super::render::surface_commit_events(client, surface)
+                } else {
+                    (Vec::new(), None)
+                };
 
             if let (Some(surface), Some(output_id)) =
                 (client.surfaces.get_mut(&surface_id), entered_output)
@@ -481,25 +659,52 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
                 Some(events)
             }
         }
-        7 => {
-            let callback_id = match message.args.first() {
-                Some(Arg::NewId(id)) => *id,
-                _ => return None,
+        4 => {
+            // wl_surface.set_opaque_region
+            let region = match message.args.first() {
+                Some(Arg::Object(id)) => *id,
+                _ => None,
             };
             if let Some(surface) = client.surfaces.get_mut(&surface_id) {
-                surface.frame_callback = Some(callback_id);
+                surface.opaque_region = region;
             }
             None
         }
-        4 => {
+        5 => {
+            // wl_surface.set_input_region
+            let region = match message.args.first() {
+                Some(Arg::Object(id)) => *id,
+                _ => None,
+            };
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.input_region = region;
+            }
+            None
+        }
+        7 => {
+            // wl_surface.set_buffer_transform
             if let Some(surface) = client.surfaces.get_mut(&surface_id) {
                 surface.buffer_transform = arg_u32(&message.args, 0);
             }
             None
         }
-        5 => {
+        8 => {
+            // wl_surface.set_buffer_scale
             if let Some(surface) = client.surfaces.get_mut(&surface_id) {
                 surface.buffer_scale = arg_i32(&message.args, 0);
+            }
+            None
+        }
+        9 => {
+            // wl_surface.damage_buffer
+            let rect = super::DamageRect {
+                x: arg_i32(&message.args, 0),
+                y: arg_i32(&message.args, 1),
+                width: arg_i32(&message.args, 2),
+                height: arg_i32(&message.args, 3),
+            };
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.damage(rect);
             }
             None
         }
@@ -508,12 +713,13 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
 }
 
 fn handle_shm_create_pool(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
-    let size = match message.args.get(2) {
-        Some(Arg::Int(v)) if *v > 0 => *v,
+    // Args: [NewId(pool_id), Fd, Int(size)]
+    let pool_id = match message.args.first() {
+        Some(Arg::NewId(id)) => *id,
         _ => return None,
     };
-    let pool_id = match message.args.get(1) {
-        Some(Arg::NewId(id)) => *id,
+    let size = match message.args.get(2) {
+        Some(Arg::Int(v)) if *v > 0 => *v,
         _ => return None,
     };
 
@@ -525,7 +731,9 @@ fn handle_shm_create_pool(client: &mut ClientConnection, message: &Message) -> O
             version: 1,
         },
     );
-    client.shm_pools.insert(pool_id, super::ShmPool::new(pool_id, size));
+    client
+        .shm_pools
+        .insert(pool_id, super::ShmPool::new(pool_id, size));
     let _ = message.args.first(); // fd is out-of-band; kernel pool backs SHM
     None
 }
@@ -534,15 +742,15 @@ fn handle_shm_pool_request(client: &mut ClientConnection, message: &Message) -> 
     let pool_id = message.header.object_id;
     match message.header.opcode {
         0 => {
-            let offset = arg_i32(&message.args, 0);
-            let width = arg_i32(&message.args, 1);
-            let height = arg_i32(&message.args, 2);
-            let stride = arg_i32(&message.args, 3);
-            let format = arg_u32(&message.args, 4);
-            let buffer_id = match message.args.get(5) {
+            let buffer_id = match message.args.first() {
                 Some(Arg::NewId(id)) => *id,
                 _ => return None,
             };
+            let offset = arg_i32(&message.args, 1);
+            let width = arg_i32(&message.args, 2);
+            let height = arg_i32(&message.args, 3);
+            let stride = arg_i32(&message.args, 4);
+            let format = arg_u32(&message.args, 5);
 
             client.objects.insert(
                 buffer_id,
@@ -577,6 +785,353 @@ fn handle_buffer_destroy(client: &mut ClientConnection, buffer_id: ObjectId) {
     client.destroy_object(buffer_id);
 }
 
+fn handle_data_device_manager_request(
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
+    match message.header.opcode {
+        0 => {
+            // create_data_source
+            let source_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            client.objects.insert(
+                source_id,
+                super::ProtocolObject {
+                    id: source_id,
+                    interface: interfaces::WL_DATA_SOURCE,
+                    version: 3,
+                },
+            );
+            None
+        }
+        1 => {
+            // get_data_device — binds a wl_data_device to a wl_seat
+            let device_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            client.objects.insert(
+                device_id,
+                super::ProtocolObject {
+                    id: device_id,
+                    interface: interfaces::WL_DATA_DEVICE,
+                    version: 3,
+                },
+            );
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_data_source_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let source_id = message.header.object_id;
+    match message.header.opcode {
+        0 | 2 | 3 => {
+            // offer/set_actions/set_actions — accept silently
+            None
+        }
+        1 => {
+            // destroy
+            client.destroy_object(source_id);
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_data_device_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let device_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            // start_drag — accept silently
+            None
+        }
+        1 => {
+            // set_selection — accept silently
+            None
+        }
+        2 => {
+            // release (wl_data_device v3)
+            client.destroy_object(device_id);
+            None
+        }
+        3 | 4 => {
+            // motion/drop — accept silently
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_compositor_create_region(
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
+    let region_id = match message.args.first() {
+        Some(Arg::NewId(id)) => *id,
+        _ => return None,
+    };
+    client.objects.insert(
+        region_id,
+        super::ProtocolObject {
+            id: region_id,
+            interface: interfaces::WL_REGION,
+            version: 1,
+        },
+    );
+    None
+}
+
+fn handle_region_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let region_id = message.header.object_id;
+    match message.header.opcode {
+        0 | 1 => {
+            // add/subtract — accept but no-op (compositor manages damage internally)
+            let _ = arg_i32(&message.args, 0);
+            let _ = arg_i32(&message.args, 1);
+            let _ = arg_i32(&message.args, 2);
+            let _ = arg_i32(&message.args, 3);
+            None
+        }
+        2 => {
+            client.destroy_object(region_id);
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_subcompositor_get_subsurface(
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
+    let subsurface_id = match message.args.first() {
+        Some(Arg::NewId(id)) => *id,
+        _ => return None,
+    };
+    client.objects.insert(
+        subsurface_id,
+        super::ProtocolObject {
+            id: subsurface_id,
+            interface: interfaces::WL_SUBSURFACE,
+            version: 1,
+        },
+    );
+    None
+}
+
+fn handle_xdg_wm_base_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    match message.header.opcode {
+        0 => {
+            // destroy
+            client.destroy_object(message.header.object_id);
+            None
+        }
+        1 => {
+            // create_positioner
+            let positioner_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            client.objects.insert(
+                positioner_id,
+                super::ProtocolObject {
+                    id: positioner_id,
+                    interface: interfaces::XDG_POSITIONER,
+                    version: 1,
+                },
+            );
+            None
+        }
+        2 => {
+            // get_xdg_surface — creates xdg_surface bound to a wl_surface
+            let xdg_surface_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            let surface_id = match message.args.get(1) {
+                Some(Arg::Object(Some(id))) => *id,
+                _ => return None,
+            };
+            client.objects.insert(
+                xdg_surface_id,
+                super::ProtocolObject {
+                    id: xdg_surface_id,
+                    interface: interfaces::XDG_SURFACE,
+                    version: 6,
+                },
+            );
+            client
+                .xdg_surface_to_surface
+                .insert(xdg_surface_id, surface_id);
+            None
+        }
+        3 => {
+            // pong — accept silently
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_xdg_surface_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let xdg_surface_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            // destroy
+            client.destroy_object(xdg_surface_id);
+            client.xdg_surface_to_surface.remove(&xdg_surface_id);
+            None
+        }
+        1 => {
+            // get_toplevel — creates xdg_toplevel
+            let toplevel_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            client.objects.insert(
+                toplevel_id,
+                super::ProtocolObject {
+                    id: toplevel_id,
+                    interface: interfaces::XDG_TOPLEVEL,
+                    version: 6,
+                },
+            );
+
+            // Emit xdg_toplevel.configure event (opcode 0):
+            // args: width (int), height (int), states (array), serial (uint)
+            let serial = client.next_input_serial();
+            let mut out = Vec::new();
+            out.extend_from_slice(
+                &Message::new(
+                    toplevel_id,
+                    0, // xdg_toplevel.configure
+                    vec![
+                        Arg::Int(0),            // width — 0 means use preferred size
+                        Arg::Int(0),            // height
+                        Arg::Array(Vec::new()), // states — empty = no special state
+                    ],
+                )
+                .encode(),
+            );
+
+            // Emit xdg_surface.configure event (opcode 0): serial
+            out.extend_from_slice(
+                &Message::new(
+                    xdg_surface_id,
+                    0, // xdg_surface.configure
+                    vec![Arg::UInt(serial)],
+                )
+                .encode(),
+            );
+
+            Some(out)
+        }
+        2 => {
+            // get_popup — create xdg_popup (simplified: just register the object)
+            let popup_id = match message.args.first() {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+            client.objects.insert(
+                popup_id,
+                super::ProtocolObject {
+                    id: popup_id,
+                    interface: interfaces::XDG_POPUP,
+                    version: 6,
+                },
+            );
+
+            // Emit xdg_popup.configure (opcode 0): x, y, width, height
+            let serial = client.next_input_serial();
+            let mut out = Vec::new();
+            out.extend_from_slice(
+                &Message::new(
+                    popup_id,
+                    0,
+                    vec![Arg::Int(0), Arg::Int(0), Arg::Int(0), Arg::Int(0)],
+                )
+                .encode(),
+            );
+            out.extend_from_slice(
+                &Message::new(
+                    xdg_surface_id,
+                    0, // xdg_surface.configure
+                    vec![Arg::UInt(serial)],
+                )
+                .encode(),
+            );
+            Some(out)
+        }
+        3 => {
+            // set_window_geometry — accept silently
+            None
+        }
+        4 => {
+            // ack_configure — accept silently
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_xdg_popup_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let popup_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            client.destroy_object(popup_id);
+            None
+        }
+        1 | 2 => None,
+        _ => None,
+    }
+}
+
+fn handle_xdg_toplevel_request(
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
+    let toplevel_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            // destroy
+            client.destroy_object(toplevel_id);
+            None
+        }
+        1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 => {
+            // All toplevel configuration requests (set_parent, set_title,
+            // set_app_id, show_window_menu, move, resize, set_max/min_size,
+            // set/unset_maximized, set/unset_fullscreen, set_minimized) —
+            // accept silently. The compositor acknowledges via configure events.
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_xdg_positioner_request(
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
+    let positioner_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            // destroy
+            client.destroy_object(positioner_id);
+            None
+        }
+        _ => {
+            // All positioner configuration requests (set_size, set_anchor,
+            // set_anchor_rect, set_gravity, set_constraint_adjustment,
+            // set_offset) — accept silently
+            None
+        }
+    }
+}
+
 fn handle_seat_request(
     pipe_id: u32,
     client: &mut ClientConnection,
@@ -602,8 +1157,7 @@ fn handle_seat_request(
                 _ => return None,
             };
             let events = super::input::seat_get_keyboard(client, seat_id, keyboard_id)?;
-            if let Some(keymap_pipe) =
-                super::input::take_keyboard_keymap_pipe(client, keyboard_id)
+            if let Some(keymap_pipe) = super::input::take_keyboard_keymap_pipe(client, keyboard_id)
             {
                 crate::linux_compat::socket_ops::queue_wayland_pipe_out_of_band_fds(
                     pipe_id,
@@ -633,32 +1187,50 @@ fn arg_u32(args: &[Arg], index: usize) -> u32 {
 
 /// Verify attach + sync + get_registry dispatch without a live socket fd.
 pub fn smoke_check() -> Result<(), &'static str> {
-    const TEST_PIPE: u32 = 0x9001;
-
-    detach_connection(TEST_PIPE);
-    attach_connection(TEST_PIPE)?;
+    detach_connection(SMOKE_TEST_PIPE);
+    attach_connection(SMOKE_TEST_PIPE)?;
 
     let sync = Message::new(DISPLAY_OBJECT_ID, 0, vec![Arg::NewId(2)]);
-    let sync_reply = process_wire_request(&sync.encode(), TEST_PIPE)
+    let sync_reply = process_wire_request(&sync.encode(), SMOKE_TEST_PIPE)
         .ok_or("wl_display.sync produced no reply")?;
     if sync_reply.is_empty() {
         return Err("wl_display.sync reply empty");
     }
 
     let registry = Message::new(DISPLAY_OBJECT_ID, 1, vec![Arg::NewId(3)]);
-    let registry_reply = process_wire_request(&registry.encode(), TEST_PIPE)
+    let registry_reply = process_wire_request(&registry.encode(), SMOKE_TEST_PIPE)
         .ok_or("wl_display.get_registry produced no reply")?;
     if registry_reply.len() < super::MessageHeader::SIZE {
         return Err("wl_display.get_registry reply too short");
     }
 
-    if !is_handshake_ready() {
-        return Err("Wayland handshake flag not set");
+    let bind_compositor = Message::new(
+        3,
+        0,
+        vec![
+            Arg::UInt(1),
+            Arg::String(String::from(interfaces::WL_COMPOSITOR)),
+            Arg::UInt(4),
+            Arg::NewId(4),
+        ],
+    );
+    let _ = process_wire_request(&bind_compositor.encode(), SMOKE_TEST_PIPE);
+    let client_id = *PIPE_CLIENTS
+        .lock()
+        .get(&SMOKE_TEST_PIPE)
+        .ok_or("smoke client missing after registry bind")?;
+    let bound = compositor()
+        .get_client(client_id)
+        .and_then(|client| client.objects.get(&4))
+        .map(|object| object.interface == interfaces::WL_COMPOSITOR)
+        .unwrap_or(false);
+    if !bound {
+        return Err("standard wl_registry.bind did not bind wl_compositor");
     }
 
     super::render::smoke_check()?;
 
-    detach_connection(TEST_PIPE);
+    detach_connection(SMOKE_TEST_PIPE);
     Ok(())
 }
 
@@ -699,12 +1271,7 @@ pub fn poll_kernel_input() {
             let wire_events = match event {
                 InputEvent::MouseMove { x, y } => focused_surface
                     .map(|surface_id| {
-                        super::input::inject_pointer_motion(
-                            client,
-                            surface_id,
-                            x as i32,
-                            y as i32,
-                        )
+                        super::input::inject_pointer_motion(client, surface_id, x as i32, y as i32)
                     })
                     .unwrap_or_default(),
                 InputEvent::MouseButtonDown { button, x, y } => {
@@ -713,11 +1280,9 @@ pub fn poll_kernel_input() {
                 InputEvent::MouseButtonUp { button, x, y } => {
                     pointer_button_events(client, focused_surface, button, x, y, false)
                 }
-                InputEvent::KeyPress(key) => super::input::inject_keyboard_key(
-                    client,
-                    key_event_code(key),
-                    true,
-                ),
+                InputEvent::KeyPress(key) => {
+                    super::input::inject_keyboard_key(client, key_event_code(key), true)
+                }
                 InputEvent::KeyRelease(key) => {
                     super::input::inject_keyboard_key(client, key_event_code(key), false)
                 }
@@ -775,9 +1340,7 @@ fn pointer_button_events(
             .encode(),
         );
         let frame_serial = client.next_input_serial();
-        out.extend_from_slice(
-            &Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode(),
-        );
+        out.extend_from_slice(&Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode());
     }
 
     out

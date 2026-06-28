@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Shell.Notifications
+Exec=/usr/bin/gjs -m /usr/share/gnome-shell/org.gnome.Shell.Notifications

@@ -1,82 +1,61 @@
 #!/bin/sh
-# RustOS Init Script - First userspace program
+# RustOS userspace PID 1: boot directly into the desktop session.
 
-echo ""
-echo "=========================================="
-echo "  RustOS + Linux Userspace"
-echo "=========================================="
-echo ""
-echo "Kernel: RustOS v1.0 (Custom Rust Kernel)"
-echo "Userspace: Alpine Linux 3.19"
-echo ""
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
-# Mount essential filesystems
-echo "Mounting filesystems..."
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+mount_if_needed() {
+    target=$1
+    type=$2
+    source=$3
 
-# Create device nodes if needed
-if [ ! -e /dev/console ]; then
-    mknod /dev/console c 5 1
-fi
-if [ ! -e /dev/null ]; then
-    mknod /dev/null c 1 3
-fi
+    mkdir -p "$target" 2>/dev/null || true
+    if ! grep -q " $target " /proc/mounts 2>/dev/null; then
+        mount -t "$type" "$source" "$target" 2>/dev/null || true
+    fi
+}
 
-echo "Filesystems mounted."
-echo ""
+make_node() {
+    path=$1
+    type=$2
+    major=$3
+    minor=$4
 
-# Display system information
-echo "System Information:"
-uname -a
-echo ""
-echo "Memory:"
-free -m
-echo ""
-echo "Disk:"
-df -h
-echo ""
+    if [ ! -e "$path" ]; then
+        mknod "$path" "$type" "$major" "$minor" 2>/dev/null || true
+    fi
+}
 
-# Start a simple framebuffer console
-echo "Starting framebuffer console..."
+mount_if_needed /proc proc proc
+mount_if_needed /sys sysfs sysfs
+mount_if_needed /dev devtmpfs devtmpfs
+mount_if_needed /run tmpfs tmpfs
+mount_if_needed /tmp tmpfs tmpfs
 
-# Check for framebuffer device
-if [ -e /dev/fb0 ]; then
-    echo "Framebuffer device detected: /dev/fb0"
-    # Could start fbterm or similar here
-else
-    echo "No framebuffer device found, using text console"
-fi
+mkdir -p /run/user/0 /dev/input /dev/dri 2>/dev/null || true
+chmod 700 /run/user/0 2>/dev/null || true
+chmod 1777 /tmp 2>/dev/null || true
 
-echo ""
-echo "=========================================="
-echo "  Welcome to RustOS Linux Environment"
-echo "=========================================="
-echo ""
-echo "Available commands:"
-echo "  ls, cat, echo, mount, ps, top, etc."
-echo "  Type 'busybox --list' for full list"
-echo ""
-echo "To install packages: apk add <package>"
-echo "To get a GUI: apk add xorg-server xf86-video-fbdev jwm"
-echo ""
+make_node /dev/console c 5 1
+make_node /dev/null c 1 3
+make_node /dev/zero c 1 5
+make_node /dev/tty c 5 0
 
-# Start interactive shell after GNOME stack probes
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/0}
+export XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-ubuntu:GNOME}
+export XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-ubuntu}
+export XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}
+export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
+export GDK_BACKEND=${GDK_BACKEND:-wayland}
+export CLUTTER_BACKEND=${CLUTTER_BACKEND:-wayland}
+export NO_AT_BRIDGE=${NO_AT_BRIDGE:-1}
+
+echo "RustOS: starting Ubuntu desktop session"
+
 if [ -x /usr/bin/rustos-gnome-session ]; then
-    echo "Running RustOS GNOME userspace probe..."
-    /usr/bin/rustos-gnome-session --probe || true
+    exec /usr/bin/rustos-gnome-session
 fi
 
-if [ -x /usr/bin/rustos-dbus-probe ]; then
-    echo "Running RustOS D-Bus probe..."
-    /usr/bin/rustos-dbus-probe || true
-fi
-
-if [ -x /usr/bin/rustos-wayland-probe ]; then
-    echo "Running RustOS Wayland probe..."
-    /usr/bin/rustos-wayland-probe || true
-fi
-
-echo "Starting shell..."
+echo "RustOS: desktop session launcher missing; entering emergency shell"
 exec /bin/sh

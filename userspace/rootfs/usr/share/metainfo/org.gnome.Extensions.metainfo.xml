@@ -1,0 +1,467 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.gnome.Extensions</id>
+  <name>Extensions</name>
+  <name xml:lang="zh_TW">擴充套件</name>
+  <name xml:lang="zh_CN">扩展</name>
+  <name xml:lang="vi">Phần mở rộng</name>
+  <name xml:lang="uk">Розширення</name>
+  <name xml:lang="tr">Uzantılar</name>
+  <name xml:lang="sv">Tillägg</name>
+  <name xml:lang="sr@latin">Proširenja</name>
+  <name xml:lang="sr">Проширења</name>
+  <name xml:lang="sl">Razširitve lupine</name>
+  <name xml:lang="sk">Rozšírenia</name>
+  <name xml:lang="ru">Расширения</name>
+  <name xml:lang="ro">Extensii</name>
+  <name xml:lang="pt_BR">Extensões</name>
+  <name xml:lang="pt">Extensões</name>
+  <name xml:lang="pl">Rozszerzenia</name>
+  <name xml:lang="pa">ਇਕਸਟੈਨਸ਼ਨ</name>
+  <name xml:lang="os">Уӕлӕмхасӕнтӕ</name>
+  <name xml:lang="oc">Extensions</name>
+  <name xml:lang="nl">Uitbreidingen</name>
+  <name xml:lang="ne">विस्तारहरू</name>
+  <name xml:lang="nb">Utvidelser</name>
+  <name xml:lang="mjw">Extensions</name>
+  <name xml:lang="lv">Paplašinājumi</name>
+  <name xml:lang="lt">Plėtiniai</name>
+  <name xml:lang="ko">확장</name>
+  <name xml:lang="kk">Кеңейтулер</name>
+  <name xml:lang="kab">Isiɣzaf</name>
+  <name xml:lang="ka">გაფართოებები</name>
+  <name xml:lang="ja">拡張機能</name>
+  <name xml:lang="it">Estensioni</name>
+  <name xml:lang="is">Forritsviðaukar</name>
+  <name xml:lang="ie">Extensiones</name>
+  <name xml:lang="id">Ekstensi</name>
+  <name xml:lang="hu">Kiterjesztések</name>
+  <name xml:lang="hr">Proširenja</name>
+  <name xml:lang="hi">एक्सटेंशन्स</name>
+  <name xml:lang="he">הרחבות</name>
+  <name xml:lang="gl">Extensións</name>
+  <name xml:lang="fy">Útwreidingen</name>
+  <name xml:lang="fur">Estensions</name>
+  <name xml:lang="fr">Extensions</name>
+  <name xml:lang="fi">Laajennukset</name>
+  <name xml:lang="fa">افزونه‌ها</name>
+  <name xml:lang="eu">Hedapenak</name>
+  <name xml:lang="es">Extensiones</name>
+  <name xml:lang="eo">Etendaĵoj</name>
+  <name xml:lang="en_GB">Extensions</name>
+  <name xml:lang="el">Επεκτάσεις</name>
+  <name xml:lang="de">Erweiterungen</name>
+  <name xml:lang="da">Udvidelser</name>
+  <name xml:lang="cs">Rozšíření</name>
+  <name xml:lang="ca">Extensions</name>
+  <name xml:lang="bn_IN">এক্সটেনশনগুলি</name>
+  <name xml:lang="bg">Разширения</name>
+  <name xml:lang="be">Пашырэнні</name>
+  <summary>Manage your GNOME Extensions</summary>
+  <summary xml:lang="zh_TW">管理《GNOME Shell》的擴充套件</summary>
+  <summary xml:lang="zh_CN">管理您的 GNOME 扩展</summary>
+  <summary xml:lang="vi">Quản lý các phần mở rộng GNOME của bạn</summary>
+  <summary xml:lang="uk">Керуйте вашими розширеннями GNOME</summary>
+  <summary xml:lang="tr">GNOME Uzantılarını Yönet</summary>
+  <summary xml:lang="th">จัดการส่วนขยายต่างๆ ของ GNOME ของคุณ</summary>
+  <summary xml:lang="sv">Hantera dina GNOME-tillägg</summary>
+  <summary xml:lang="sr@latin">Podesite proširenja Gnoma</summary>
+  <summary xml:lang="sr">Подесите проширења Гнома</summary>
+  <summary xml:lang="sl">Upravljanje z razširitvami Lupine GNOME</summary>
+  <summary xml:lang="sk">Spravuje vaše rozšírenia prostredia GNOME</summary>
+  <summary xml:lang="ru">Управление расширениями GNOME Shell</summary>
+  <summary xml:lang="ro">Administrați Exensiile GNOME</summary>
+  <summary xml:lang="pt_BR">Gerencie suas extensões do GNOME</summary>
+  <summary xml:lang="pt">Gerir as extensões do GNOME</summary>
+  <summary xml:lang="pl">Zarządzanie rozszerzeniami GNOME</summary>
+  <summary xml:lang="pa">ਗਨੋਮ ਇਕਸਟੈਸ਼ਨਾਂ ਦਾ ਇੰਤਜ਼ਾਮ ਕਰੋ</summary>
+  <summary xml:lang="oc">Gerir vòstras extensions GNOME</summary>
+  <summary xml:lang="nl">Beheer uw GNOME-uitbreidingen</summary>
+  <summary xml:lang="ne">तपाईँको जिनोम विस्तार व्यवस्थापन गर्नुहोस्</summary>
+  <summary xml:lang="nb">Hold styr på GNOME-utvidelsene dine</summary>
+  <summary xml:lang="lv">Pārvaldiet savus GNOME paplašinājumus</summary>
+  <summary xml:lang="lt">Tvarkyti GNOME plėtinius</summary>
+  <summary xml:lang="ko">그놈 확장을 관리합니다</summary>
+  <summary xml:lang="kk">GNOME кеңейтулерін басқару</summary>
+  <summary xml:lang="ka">GNOME-ის თქვენი გაფართოებების მართვა</summary>
+  <summary xml:lang="ja">GNOME 拡張機能を管理します</summary>
+  <summary xml:lang="it">Gestione delle Estensioni GNOME</summary>
+  <summary xml:lang="is">Sýsla með GNOME Shell Extension forritsviðauka</summary>
+  <summary xml:lang="id">Kelola Ekstensi GNOME Anda</summary>
+  <summary xml:lang="hu">Saját GNOME kiterjesztések kezelése</summary>
+  <summary xml:lang="hr">Upravljajte svojim GNOME proširenjima</summary>
+  <summary xml:lang="hi">अपने गनोम एक्सटेंशन प्रबंधित करें</summary>
+  <summary xml:lang="he">ניהול הרחבות GNOME שלך</summary>
+  <summary xml:lang="gl">Xestione as súas extensións de GNOME</summary>
+  <summary xml:lang="fy">Jo GNOME Útwreidingen behearre</summary>
+  <summary xml:lang="fur">Gjestìs lis tôs Estensions di GNOME</summary>
+  <summary xml:lang="fr">Gérer vos extensions GNOME</summary>
+  <summary xml:lang="fi">Hallitse Gnome-laajennuksia</summary>
+  <summary xml:lang="fa">مدیریت افزونه‌های پوستهٔ گنوم</summary>
+  <summary xml:lang="eu">Kudeatu zure GNOME hedapenak</summary>
+  <summary xml:lang="es">Gestionar sus extensiones de GNOME Shell</summary>
+  <summary xml:lang="eo">Agordi viajn GNOME etendaĵojn</summary>
+  <summary xml:lang="en_GB">Manage your GNOME Extensions</summary>
+  <summary xml:lang="el">Διαχείριση επεκτάσεων GNOME</summary>
+  <summary xml:lang="de">Ihre GNOME-Erweiterungen verwalten</summary>
+  <summary xml:lang="da">Håndtér dine GNOME-udvidelser</summary>
+  <summary xml:lang="cs">Správa vašich rozšíření GNOME</summary>
+  <summary xml:lang="ca">Gestioneu les extensions del GNOME Shell</summary>
+  <summary xml:lang="bn_IN">আপনার জিনোম এক্সটেনশনগুলি পরিচালনা করুন</summary>
+  <summary xml:lang="bg">Управление на разширенията на GNOME</summary>
+  <summary xml:lang="be">Кіраванне пашырэннямі GNOME</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <url type="homepage">https://apps.gnome.org/Extensions/</url>
+  <url type="bugtracker">https://gitlab.gnome.org/GNOME/gnome-shell/issues</url>
+  <url type="contribute">https://welcome.gnome.org/app/Extensions/</url>
+  <url type="donation">https://www.gnome.org/donate/</url>
+  <url type="translate">https://l10n.gnome.org/module/gnome-shell/</url>
+  <url type="vcs-browser">https://gitlab.gnome.org/GNOME/gnome-shell/-/tree/HEAD/subprojects/extensions-app</url>
+  <project_group>GNOME</project_group>
+  <!-- developer_name tag deprecated with Appstream 1.0 -->
+  <developer_name>The GNOME Project</developer_name>
+  <developer_name xml:lang="zh_TW">GNOME 專案</developer_name>
+  <developer_name xml:lang="zh_CN">GNOME 项目</developer_name>
+  <developer_name xml:lang="vi">Dự án GNOME</developer_name>
+  <developer_name xml:lang="uk">Проєкт GNOME</developer_name>
+  <developer_name xml:lang="tr">GNOME Projesi</developer_name>
+  <developer_name xml:lang="th">The GNOME Project</developer_name>
+  <developer_name xml:lang="sv">GNOME-projektet</developer_name>
+  <developer_name xml:lang="sr@latin">Gnom projekat</developer_name>
+  <developer_name xml:lang="sr">Гном пројекат</developer_name>
+  <developer_name xml:lang="sl">Projekt GNOME</developer_name>
+  <developer_name xml:lang="sk">Projekt GNOME</developer_name>
+  <developer_name xml:lang="ru">Проект GNOME</developer_name>
+  <developer_name xml:lang="ro">Proiectul GNOME</developer_name>
+  <developer_name xml:lang="pt_BR">O Projeto GNOME</developer_name>
+  <developer_name xml:lang="pt">Projeto GNOME</developer_name>
+  <developer_name xml:lang="pl">Projekt GNOME</developer_name>
+  <developer_name xml:lang="pa">ਗਨੋਮ ਪਰੋਜੈਕਟ</developer_name>
+  <developer_name xml:lang="oc">Lo projècte GNOME</developer_name>
+  <developer_name xml:lang="nl">Het GNOME-project</developer_name>
+  <developer_name xml:lang="ne">जिनोम परियोजना</developer_name>
+  <developer_name xml:lang="nb">GNOME</developer_name>
+  <developer_name xml:lang="lv">"GNOME projekts"</developer_name>
+  <developer_name xml:lang="lt">GNOME projektas</developer_name>
+  <developer_name xml:lang="ko">그놈 프로젝트</developer_name>
+  <developer_name xml:lang="kk">GNOME жобасы</developer_name>
+  <developer_name xml:lang="kab">Asenfaṛ n GNOME</developer_name>
+  <developer_name xml:lang="ka">პროექტი "GNOME"</developer_name>
+  <developer_name xml:lang="ja">The GNOME Project</developer_name>
+  <developer_name xml:lang="it">Il progetto GNOME</developer_name>
+  <developer_name xml:lang="is">GNOME verkefnið</developer_name>
+  <developer_name xml:lang="ie">Li projecte GNOME</developer_name>
+  <developer_name xml:lang="id">Proyek GNOME</developer_name>
+  <developer_name xml:lang="hu">A GNOME projekt</developer_name>
+  <developer_name xml:lang="hr">GNOME projekt</developer_name>
+  <developer_name xml:lang="hi">गनोम परियोजना</developer_name>
+  <developer_name xml:lang="he">מיזם GNOME</developer_name>
+  <developer_name xml:lang="gl">O Proxecto GNOME</developer_name>
+  <developer_name xml:lang="fy">It GNOME Projekt</developer_name>
+  <developer_name xml:lang="fur">Il progjet GNOME</developer_name>
+  <developer_name xml:lang="fr">Le projet GNOME</developer_name>
+  <developer_name xml:lang="fi">Gnome-projekti</developer_name>
+  <developer_name xml:lang="fa">پروژهٔ گنوم</developer_name>
+  <developer_name xml:lang="eu">GNOME proiektua</developer_name>
+  <developer_name xml:lang="es">El Proyecto GNOME</developer_name>
+  <developer_name xml:lang="eo">La GNOME-projekto</developer_name>
+  <developer_name xml:lang="en_GB">The GNOME Project</developer_name>
+  <developer_name xml:lang="el">Το έργο GNOME</developer_name>
+  <developer_name xml:lang="de">Das GNOME-Projekt</developer_name>
+  <developer_name xml:lang="da">GNOME-projektet</developer_name>
+  <developer_name xml:lang="cs">Projekt GNOME</developer_name>
+  <developer_name xml:lang="ca">El projecte GNOME</developer_name>
+  <developer_name xml:lang="bn_IN">জিনোম প্রকল্প</developer_name>
+  <developer_name xml:lang="bg">Проектът GNOME</developer_name>
+  <developer_name xml:lang="be">Праект GNOME</developer_name>
+  <developer_name xml:lang="ab">The GNOME Project</developer_name>
+  <developer id="org.gnome">
+    <name>The GNOME Project</name>
+    <name xml:lang="zh_TW">GNOME 專案</name>
+    <name xml:lang="zh_CN">GNOME 项目</name>
+    <name xml:lang="vi">Dự án GNOME</name>
+    <name xml:lang="uk">Проєкт GNOME</name>
+    <name xml:lang="tr">GNOME Projesi</name>
+    <name xml:lang="th">The GNOME Project</name>
+    <name xml:lang="sv">GNOME-projektet</name>
+    <name xml:lang="sr@latin">Gnom projekat</name>
+    <name xml:lang="sr">Гном пројекат</name>
+    <name xml:lang="sl">Projekt GNOME</name>
+    <name xml:lang="sk">Projekt GNOME</name>
+    <name xml:lang="ru">Проект GNOME</name>
+    <name xml:lang="ro">Proiectul GNOME</name>
+    <name xml:lang="pt_BR">O Projeto GNOME</name>
+    <name xml:lang="pt">Projeto GNOME</name>
+    <name xml:lang="pl">Projekt GNOME</name>
+    <name xml:lang="pa">ਗਨੋਮ ਪਰੋਜੈਕਟ</name>
+    <name xml:lang="oc">Lo projècte GNOME</name>
+    <name xml:lang="nl">Het GNOME-project</name>
+    <name xml:lang="ne">जिनोम परियोजना</name>
+    <name xml:lang="nb">GNOME</name>
+    <name xml:lang="lv">"GNOME projekts"</name>
+    <name xml:lang="lt">GNOME projektas</name>
+    <name xml:lang="ko">그놈 프로젝트</name>
+    <name xml:lang="kk">GNOME жобасы</name>
+    <name xml:lang="kab">Asenfaṛ n GNOME</name>
+    <name xml:lang="ka">პროექტი "GNOME"</name>
+    <name xml:lang="ja">The GNOME Project</name>
+    <name xml:lang="it">Il progetto GNOME</name>
+    <name xml:lang="is">GNOME verkefnið</name>
+    <name xml:lang="ie">Li projecte GNOME</name>
+    <name xml:lang="id">Proyek GNOME</name>
+    <name xml:lang="hu">A GNOME projekt</name>
+    <name xml:lang="hr">GNOME projekt</name>
+    <name xml:lang="hi">गनोम परियोजना</name>
+    <name xml:lang="he">מיזם GNOME</name>
+    <name xml:lang="gl">O Proxecto GNOME</name>
+    <name xml:lang="fy">It GNOME Projekt</name>
+    <name xml:lang="fur">Il progjet GNOME</name>
+    <name xml:lang="fr">Le projet GNOME</name>
+    <name xml:lang="fi">Gnome-projekti</name>
+    <name xml:lang="fa">پروژهٔ گنوم</name>
+    <name xml:lang="eu">GNOME proiektua</name>
+    <name xml:lang="es">El Proyecto GNOME</name>
+    <name xml:lang="eo">La GNOME-projekto</name>
+    <name xml:lang="en_GB">The GNOME Project</name>
+    <name xml:lang="el">Το έργο GNOME</name>
+    <name xml:lang="de">Das GNOME-Projekt</name>
+    <name xml:lang="da">GNOME-projektet</name>
+    <name xml:lang="cs">Projekt GNOME</name>
+    <name xml:lang="ca">El projecte GNOME</name>
+    <name xml:lang="bn_IN">জিনোম প্রকল্প</name>
+    <name xml:lang="bg">Проектът GNOME</name>
+    <name xml:lang="be">Праект GNOME</name>
+    <name xml:lang="ab">The GNOME Project</name>
+  </developer>
+  <translation type="gettext">gnome-shell</translation>
+  <launchable type="desktop-id">org.gnome.Extensions.desktop</launchable>
+  <kudos>
+    <kudo>HiDpiIcon</kudo>
+    <kudo>HighContrast</kudo>
+    <kudo>ModernToolkit</kudo>
+  </kudos>
+  <branding>
+    <color type="primary" scheme_preference="light">#c5eeb2</color>
+    <color type="primary" scheme_preference="dark">#447637</color>
+  </branding>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </recommends>
+  <content_rating type="oars-1.0"/>
+  <description>
+    <p>
+      GNOME Extensions handles updating extensions, configuring extension preferences and removing or disabling unwanted extensions.
+    </p>
+    <p xml:lang="zh_TW">《GNOME 擴充套件》能管理擴充套件更新、調整擴充套件偏好設定、移除或停用不想用的擴充套件等。</p>
+    <p xml:lang="zh_CN">GNOME 扩展程序可用于升级扩展，配置扩展首选项和移除、禁用不想要的扩展。</p>
+    <p xml:lang="vi">Phần mở rộng GNOME xử lý việc cập nhật tiện ích mở rộng, cấu hình tùy chọn tiện ích mở rộng và xóa hoặc vô hiệu hóa các tiện ích mở rộng không mong muốn.</p>
+    <p xml:lang="uk">«Розширення» GNOME обробляють оновлення розширень, налаштовування параметрів розширень, а також вилучення та вимикання небажаних розширень.</p>
+    <p xml:lang="tr">GNOME Uzantılar; uzantıları güncellemeyi, uzantı tercihlerini yapılandırmayı ve istenmeyen uzantıları kaldırmayı veya devre dışı bırakmanızı sağlar.</p>
+    <p xml:lang="sv">GNOME Tillägg hanterar uppdatering av tillägg, konfiguration av inställningar för tillägg samt att ta bort eller inaktivera oönskade tillägg.</p>
+    <p xml:lang="sr@latin">Gnomova proširenja rukovode ažuriranjem proširenja, podešavanjem postavki proširenja i uklanjanjem ili onemogućavanjem proširenja.</p>
+    <p xml:lang="sr">Гномова проширења руководе ажурирањем проширења, подешавањем поставки проширења и уклањањем или онемогућавањем проширења.</p>
+    <p xml:lang="sl">Program Razširitve GNOME omogoča nameščanje in posodabljanje razširitev, prilagajanje nastavitev in upravljanje njihovega delovanja.</p>
+    <p xml:lang="sk">Rozšírenia prostredia GNOME spravujú aktualizácie rozšírení, konfiguráciu predvolieb rozšírení a odstraňovanie alebo zakázanie nechcených rozšírení.</p>
+    <p xml:lang="ru">Приложение "Расширения GNOME" занимается обновлением расширений, настройкой параметров расширений и удалением или отключением ненужных расширений.</p>
+    <p xml:lang="ro">Exensii GNOME gestionează actualizarea extensiilor, configurarea preferințelor extensiei și eliminarea sau dezactivarea extensiilor nedorite.</p>
+    <p xml:lang="pt_BR">Extensões do GNOME lida com a atualização, configuração e preferências das extensões, e também remove ou desabilita as extensões indesejadas.</p>
+    <p xml:lang="pt">O Extensões do GNOME lida com a atualização da extensões, configuração das preferências de extensões e remoção ou desativação de extensões já não desejadas.</p>
+    <p xml:lang="pl">Ten program obsługuje aktualizowanie, konfigurowanie preferencji oraz usuwanie i wyłączanie niechcianych rozszerzeń.</p>
+    <p xml:lang="pa">ਗਨੋਮ ਇਕਸਟੈਨਸ਼ਨਾਂ ਇਕਸਟੈਨਸ਼ਨਾਂ ਨੂੰ ਅੱਪਡੇਟ ਕਰਨ, ਇਕਸਟੈਨਸ਼ਨ ਪਸੰਦਾਂ ਦੀ ਸੰਰਚਨਾ ਕਰਨ ਅਤੇ ਬੇਲੋੜੀਆਂ ਇਕਸਟੈਨਸ਼ਨਾਂ ਹਟਾਉਣ ਜਾਂ ਅਸਮਰੱਥ ਕਰਨ ਦੇ ਕੰਮ ਆਉਂਦੀਆਂ ਹਨ।</p>
+    <p xml:lang="oc">GNOME Extensions gerís las mesas a jorn d'extensions, lo parametratge de la preferéncias d'extensions e la supression o desactivacion de las extensions pas volguda.</p>
+    <p xml:lang="nl">GNOME Uitbreidingen staat in voor het bijwerken van uitbreidingen, hun voorkeuren te configureren of ongewenste uitbreidingen te verwijderen of uit te schakelen.</p>
+    <p xml:lang="ne">जिनोम विस्तारले विस्तारअद्यावधिक ह्यान्डल गर्दछ, विस्तार प्राथमिकताहरू कन्फिगर गर्दछ र नचाहिएका विस्तारहरू हटाउँदै वा अक्षम पार्दैछ।</p>
+    <p xml:lang="nb">GNOME Utvidelser håndterer oppdatering og tilpassing av utvidelser, og lar deg fjerne eller slå av uønskede utvidelser.</p>
+    <p xml:lang="lv">“GNOME paplašinājumi” nodrošina paplašinājumu atjaunināšanu un konfigurēšanu, kā arī nevajadzīgo paplašinājumu izslēgšanu vai izņemšanu.</p>
+    <p xml:lang="lt">GNOME Plėtiniai atnaujina plėtinius, konfigūruoja jų nustatymus bei šalina arba išjungia nepageidaujamus plėtinius.</p>
+    <p xml:lang="ko">그놈 확장 관리자에서는 확장 기능의 업데이트, 확장 기능의 설정, 원하지 않는 확장 기능 제거 또는 사용 중지를 처리합니다.</p>
+    <p xml:lang="kk">GNOME кеңейтулері көмегімен кеңейтулерді жаңарту, баптау және оларды өшіру немесе сөндіруге болады.</p>
+    <p xml:lang="ka">GNOME-ის გაფართოებები დაკავებულია გაფართოებების განახლებით, მათი პარამეტრების მორგებით და არასასურველი გაფართოებების წაშლით ან გამორთვით.</p>
+    <p xml:lang="ja">“拡張機能”は GNOME Shell 拡張機能の設定、更新、削除、不要な拡張機能の無効化を行うことができます。</p>
+    <p xml:lang="it">Estensioni GNOME gestisce l'aggiornamento e la configurazione delle preferenze delle estensioni e la rimozione o la disabilitazione di estensioni indesiderate.</p>
+    <p xml:lang="id">Ekstensi GNOME menangani pemutakhiran ekstensi, mengkonfigurasi preferensi ekstensi, dan menghapus atau menonaktifkan ekstensi yang tidak diinginkan.</p>
+    <p xml:lang="hu">A GNOME kiterjesztések kezeli a kiterjesztések frissítését, a kiterjesztésbeállítások konfigurálást és a nem kívánatos kiterjesztések eltávolítását vagy letiltását.</p>
+    <p xml:lang="hr">GNOME Proširenja rukuje nadopunama proširenja, podešavanjem osobitostima proširenja i uklanjanjem ili onemogućavanjem neželjenih proširenja.</p>
+    <p xml:lang="hi">'गनोम एक्सटेंशन्स' एक्सटेंशन को अद्यतन करने, एक्सटेंशन वरीयताओं को विन्यस्त करने और अवांछित एक्सटेंशन को हटाने या अक्षम करने का काम संभालता है।</p>
+    <p xml:lang="he">הרחבות GNOME מטפל בעדכון הרחבות, הגדרת אפשרויות של כל הרחבה, הסרה והשבתת הרחבות לא רצויות.</p>
+    <p xml:lang="gl">Extensións de GNOME xestiona a actualización de extensions, a súa configuración, eliminación e a desactivación das extensións que non quere.</p>
+    <p xml:lang="fur">Estensions di GNOME al gjestìs l'inzornament des estensions, la configurazion des preferencis des estensions e la rimozion o la disabilitazion des estensions che no son desideradis.</p>
+    <p xml:lang="fr">Extensions de GNOME gère la mise à jour des extensions, la configuration des préférences des extensions et la suppression ou la désactivation des extensions non désirées.</p>
+    <p xml:lang="fi">Gnomen laajennussovellus Laajennukset käsittelee laajennusten päivitykset, niiden asetukset ja sen avulla voi poistaa laajennuksia käytöstä tai kokonaan järjestelmästä.</p>
+    <p xml:lang="fa">افزونه‌های گنوم؛ به‌روز رسانی، پیکربندی، برداشتن یا از کار انداختن افزونه‌ها را مدیریت می‌کند.</p>
+    <p xml:lang="eu">GNOME Hedapenak aplikazioak hedapenak eguneratzea, hedapenen hobespenak konfiguratzea eta gehiago nahi ez diren hedapenak kentzea edo desgaitzea ahalbidetzen du.</p>
+    <p xml:lang="es">Extensiones de GNOME gestiona las actualizaciones de las extensiones, configurando sus preferencias y quitando o desactivando las que no quiera.</p>
+    <p xml:lang="eo">GNOME-etendaĵoj administras ĝisdatigon de etendaĵoj, adoptadon de etendaĵaj agordoj kaj forigo aŭ malŝaltigo de nebezonataj etendaĵoj.</p>
+    <p xml:lang="en_GB">GNOME Extensions handles updating extensions, configuring extension preferences and removing or disabling unwanted extensions.</p>
+    <p xml:lang="el">Το πρόγραμμα Επεκτάσεις GNOME χειρίζεται την ενημέρωση επεκτάσεων, τη ρύθμιση προτιμήσεων και την αφαίρεση ή απενεργοποίηση ανεπιθύμητων επεκτάσεων.</p>
+    <p xml:lang="de">GNOME-Erweiterungen dient der Aktualisierung von Erweiterungen, dem Konfigurieren der Voreinstellungen von Erweiterungen und dem Entfernen oder Deaktivieren nicht gewünschter Erweiterungen.</p>
+    <p xml:lang="da">GNOME Udvidelser håndterer opdatering af udvidelser, konfigurering af deres indstillinger og fjernelse eller deaktivering af uønskede udvidelser.</p>
+    <p xml:lang="cs">Aplikace Rozšíření GNOME umožňuje aktualizaci a nastavení předvoleb rozšíření a odstranění nebo vypnutí nechtěných rozšíření.</p>
+    <p xml:lang="ca">Les extensions del GNOME gestiona les actualitzacions de les extensions, configurant les preferències de l'extensió i suprimint o desactivant les extensions no desitjades.</p>
+    <p xml:lang="bn_IN">জিনোম এক্সটেনশনস এক্সটেনশানগুলি আপডেট করতে, এক্সটেনশান পছন্দগুলি কনফিগার করে এবং অযাচিত এক্সটেনশানগুলি সরিয়ে বা অক্ষম করে।</p>
+    <p xml:lang="bg">С „Разширенията на GNOME“ може да променяте настройките им, да инсталирате нови, да деинсталирате или изключвате нежеланите разширения.</p>
+    <p xml:lang="be">Пашырэнні GNOME ажыццяўляюць абнаўленне і змяненне параметраў пашырэнняў, выдаленне або адключэнне непажаданых пашырэнняў.</p>
+  </description>
+  <releases>
+    <release version="47.9" date="2025-08-03"/>
+    <release version="47.8" date="2025-06-29"/>
+    <release version="47.7" date="2025-05-25"/>
+    <release version="47.6" date="2025-04-13"/>
+    <release version="47.5" date="2025-03-03"/>
+    <release version="47.4" date="2025-02-03"/>
+    <release version="47.3" date="2025-01-10"/>
+    <release version="47.2" date="2024-11-23"/>
+    <release version="47.1" date="2024-10-19"/>
+    <release version="47.0" date="2024-09-14"/>
+  </releases>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://gitlab.gnome.org/GNOME/gnome-shell/raw/HEAD/subprojects/extensions-app/data/metainfo/extensions-main.png</image>
+      <caption>Main Window</caption>
+      <caption xml:lang="zh_TW">主視窗</caption>
+      <caption xml:lang="zh_CN">主窗口</caption>
+      <caption xml:lang="uk">Головне вікно</caption>
+      <caption xml:lang="tr">Ana Pencere</caption>
+      <caption xml:lang="sv">Huvudfönster</caption>
+      <caption xml:lang="sr@latin">Glavni prozor</caption>
+      <caption xml:lang="sr">Главни прозор</caption>
+      <caption xml:lang="sl">Glavno okno</caption>
+      <caption xml:lang="sk">Hlavné okno</caption>
+      <caption xml:lang="ru">Главное окно</caption>
+      <caption xml:lang="ro">Fereastră principală</caption>
+      <caption xml:lang="pt_BR">Janela principal</caption>
+      <caption xml:lang="pt">Janela de Principal</caption>
+      <caption xml:lang="pl">Okno główne</caption>
+      <caption xml:lang="pa">ਮੁੱਖ ਵਿੰਡੋ</caption>
+      <caption xml:lang="oc">Fenèstra principala</caption>
+      <caption xml:lang="nl">Hoofdvenster</caption>
+      <caption xml:lang="nb">Hovedvindu</caption>
+      <caption xml:lang="lv">Galvenais logs</caption>
+      <caption xml:lang="lt">Pagrindinis langas</caption>
+      <caption xml:lang="ko">메인 창</caption>
+      <caption xml:lang="kk">Басты терезе</caption>
+      <caption xml:lang="kab">Asfaylu agejdan</caption>
+      <caption xml:lang="ka">მთავარი ფანჯარა</caption>
+      <caption xml:lang="it">Finestra principale</caption>
+      <caption xml:lang="id">Jendela Utama</caption>
+      <caption xml:lang="hu">Főablak</caption>
+      <caption xml:lang="hi">मुख्य विंडो</caption>
+      <caption xml:lang="he">חלון ראשי</caption>
+      <caption xml:lang="gl">Xanela principal</caption>
+      <caption xml:lang="fur">Barcon principâl</caption>
+      <caption xml:lang="fr">Fenêtre principale</caption>
+      <caption xml:lang="fi">Pääikkuna</caption>
+      <caption xml:lang="fa">پنجرهٔ اصلی</caption>
+      <caption xml:lang="eu">Leiho nagusia</caption>
+      <caption xml:lang="es">Ventana principal</caption>
+      <caption xml:lang="en_GB">Main Window</caption>
+      <caption xml:lang="el">Κυρίως παράθυρο</caption>
+      <caption xml:lang="de">Hauptfenster</caption>
+      <caption xml:lang="da">Hovedvindue</caption>
+      <caption xml:lang="cs">Hlavní okno</caption>
+      <caption xml:lang="ca">Finestra principal</caption>
+      <caption xml:lang="bg">Основен прозорец</caption>
+      <caption xml:lang="be">Галоўнае акно</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.gnome.org/GNOME/gnome-shell/raw/HEAD/subprojects/extensions-app/data/metainfo/extensions-update.png</image>
+      <caption>Available Updates</caption>
+      <caption xml:lang="zh_TW">可用的更新</caption>
+      <caption xml:lang="zh_CN">可用更新</caption>
+      <caption xml:lang="uk">Доступні оновлення</caption>
+      <caption xml:lang="tr">Kullanılabilir Güncellemeler</caption>
+      <caption xml:lang="sv">Tillgängliga uppdateringar</caption>
+      <caption xml:lang="sr@latin">Dostupna ažuriranja</caption>
+      <caption xml:lang="sr">Доступна ажурирања</caption>
+      <caption xml:lang="sl">Razpoložljive posodobitve</caption>
+      <caption xml:lang="sk">Dostupné aktualizácie</caption>
+      <caption xml:lang="ru">Доступные обновления</caption>
+      <caption xml:lang="ro">Actualizări disponibile</caption>
+      <caption xml:lang="pt_BR">Atualizações disponíveis</caption>
+      <caption xml:lang="pt">Actualizações disponíveis</caption>
+      <caption xml:lang="pl">Dostępne aktualizacje</caption>
+      <caption xml:lang="pa">ਅੱਪਡੇਟ ਮੌਜੂਦ ਹਨ</caption>
+      <caption xml:lang="oc">Mesas a jorn disponiblas</caption>
+      <caption xml:lang="nl">Beschikbare updates</caption>
+      <caption xml:lang="nb">Tilgjengelige oppdateringer</caption>
+      <caption xml:lang="lv">Pieejami atjauninājumi</caption>
+      <caption xml:lang="lt">Prieinami atnaujinimai</caption>
+      <caption xml:lang="ko">사용 가능 업데이트</caption>
+      <caption xml:lang="kk">Қолжетімді жаңартулар</caption>
+      <caption xml:lang="kab">Ileqman yellan</caption>
+      <caption xml:lang="ka">ხელმისაწვდომი განახლებები</caption>
+      <caption xml:lang="it">Aggiornamenti disponibili</caption>
+      <caption xml:lang="id">Pemutakhiran yang Tersedia</caption>
+      <caption xml:lang="hu">Elérhető frissítések</caption>
+      <caption xml:lang="hi">उपलब्ध अद्यतन</caption>
+      <caption xml:lang="he">עדכונים זמינים</caption>
+      <caption xml:lang="gl">Actualizacións dispoñíbeis</caption>
+      <caption xml:lang="fur">Inzornaments disponibii</caption>
+      <caption xml:lang="fr">Mises à jour disponibles</caption>
+      <caption xml:lang="fi">Saatavilla olevat päivitykset</caption>
+      <caption xml:lang="fa">به‌روز رسانی‌های موجود</caption>
+      <caption xml:lang="eu">Eguneratze eskuragarriak</caption>
+      <caption xml:lang="es">Actualizaciones disponibles</caption>
+      <caption xml:lang="en_GB">Available Updates</caption>
+      <caption xml:lang="el">Διαθέσιμες ενημερώσεις</caption>
+      <caption xml:lang="de">Verfügbare Aktualisierungen</caption>
+      <caption xml:lang="da">Tilgængelige opdateringer</caption>
+      <caption xml:lang="cs">Dostupné aktualizace</caption>
+      <caption xml:lang="ca">Actualitzacions disponibles</caption>
+      <caption xml:lang="bg">Налични обновления</caption>
+      <caption xml:lang="be">Даступны абнаўленні</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.gnome.org/GNOME/gnome-shell/raw/HEAD/subprojects/extensions-app/data/metainfo/extensions-search.png</image>
+      <caption>Search View</caption>
+      <caption xml:lang="zh_TW">搜尋檢視</caption>
+      <caption xml:lang="zh_CN">搜索视图</caption>
+      <caption xml:lang="uk">Панель пошуку</caption>
+      <caption xml:lang="tr">Arama Görünümü</caption>
+      <caption xml:lang="sv">Sökvy</caption>
+      <caption xml:lang="sr@latin">Pregled pretrage</caption>
+      <caption xml:lang="sr">Преглед претраге</caption>
+      <caption xml:lang="sl">Iskalni pogled</caption>
+      <caption xml:lang="sk">Zobrazenie vyhľadávania</caption>
+      <caption xml:lang="ru">Отображение поиска</caption>
+      <caption xml:lang="ro">Vizualizarea căutării</caption>
+      <caption xml:lang="pt_BR">Visualização da pesquisa</caption>
+      <caption xml:lang="pt">Procurar</caption>
+      <caption xml:lang="pl">Widok wyszukiwania</caption>
+      <caption xml:lang="pa">ਖੋਜ ਝਲਕ</caption>
+      <caption xml:lang="oc">Vista recèrca</caption>
+      <caption xml:lang="nl">Zoekweergave</caption>
+      <caption xml:lang="nb">Søkeside</caption>
+      <caption xml:lang="lv">Meklēšanas skats</caption>
+      <caption xml:lang="lt">Paieškos rodinys</caption>
+      <caption xml:lang="ko">검색 보기</caption>
+      <caption xml:lang="kk">Іздеу көрінісі</caption>
+      <caption xml:lang="ka">ძებნის ხედი</caption>
+      <caption xml:lang="it">Vista di ricerca</caption>
+      <caption xml:lang="id">Tampilan Pencarian</caption>
+      <caption xml:lang="hu">Keresési nézet</caption>
+      <caption xml:lang="hi">खोज दृश्य</caption>
+      <caption xml:lang="he">תצוגת חיפוש</caption>
+      <caption xml:lang="gl">Vista de buscar</caption>
+      <caption xml:lang="fur">Viodude ricercje</caption>
+      <caption xml:lang="fr">Vue de la recherche</caption>
+      <caption xml:lang="fi">Hakunäkymä</caption>
+      <caption xml:lang="fa">نمای جست‌وجو</caption>
+      <caption xml:lang="eu">Bilaketa-ikuspegia</caption>
+      <caption xml:lang="es">Vista de búsqueda</caption>
+      <caption xml:lang="en_GB">Search View</caption>
+      <caption xml:lang="de">Suchansicht</caption>
+      <caption xml:lang="da">Søgevisning</caption>
+      <caption xml:lang="cs">Zobrazení vyhledávání</caption>
+      <caption xml:lang="ca">Vista de cerca</caption>
+      <caption xml:lang="bg">Изглед за търсене</caption>
+      <caption xml:lang="be">Пошук</caption>
+    </screenshot>
+  </screenshots>
+</component>

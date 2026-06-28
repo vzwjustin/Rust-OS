@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2015 Richard Hughes <richard@hughsie.com> -->
+<component type="desktop">
+  <id>org.gnome.Settings.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <name>Settings</name>
+  <name xml:lang="zh_TW">設定</name>
+  <name xml:lang="zh_HK">設定值</name>
+  <name xml:lang="zh_CN">设置</name>
+  <name xml:lang="vi">Cài đặt</name>
+  <name xml:lang="uk">Параметри</name>
+  <name xml:lang="ug">تەڭشەكلەر</name>
+  <name xml:lang="tr">Ayarlar</name>
+  <name xml:lang="th">การตั้งค่า</name>
+  <name xml:lang="tg">Танзимот</name>
+  <name xml:lang="te">అమరికలు</name>
+  <name xml:lang="ta">அமைவுகள்</name>
+  <name xml:lang="sv">Inställningar</name>
+  <name xml:lang="sr@latin">Podešavanja</name>
+  <name xml:lang="sr">Подешавања</name>
+  <name xml:lang="sl">Nastavitve</name>
+  <name xml:lang="sk">Nastavenia</name>
+  <name xml:lang="ru">Настройки</name>
+  <name xml:lang="ro">Configurări</name>
+  <name xml:lang="pt_BR">Configurações</name>
+  <name xml:lang="pt">Definições</name>
+  <name xml:lang="pl">Ustawienia</name>
+  <name xml:lang="pa">ਸੈਟਿੰਗਾਂ</name>
+  <name xml:lang="or">ସେଟିଙ୍ଗଗୁଡିକ</name>
+  <name xml:lang="oc">Paramètres</name>
+  <name xml:lang="nl">Instellingen</name>
+  <name xml:lang="ne">सेटिङ</name>
+  <name xml:lang="nb">Innstillinger</name>
+  <name xml:lang="my">သတ်မှတ်ချက်များ</name>
+  <name xml:lang="ms">Tetapan</name>
+  <name xml:lang="mr">सेटिंग्ज</name>
+  <name xml:lang="ml">സജ്ജീകരണങ്ങള്‍</name>
+  <name xml:lang="lv">Iestatījumi</name>
+  <name xml:lang="lt">Nustatymai</name>
+  <name xml:lang="ko">설정</name>
+  <name xml:lang="kn">ಸಿದ್ಧತೆಗಳು</name>
+  <name xml:lang="kk">Баптаулар</name>
+  <name xml:lang="kab">Iɣewwaṛen</name>
+  <name xml:lang="ka">მორგება</name>
+  <name xml:lang="ja">設定</name>
+  <name xml:lang="it">Impostazioni</name>
+  <name xml:lang="is">Stillingar</name>
+  <name xml:lang="ie">Parametres</name>
+  <name xml:lang="id">Pengaturan</name>
+  <name xml:lang="hu">Beállítások</name>
+  <name xml:lang="hr">Postavke</name>
+  <name xml:lang="hi">सेटिंग</name>
+  <name xml:lang="he">הגדרות</name>
+  <name xml:lang="gu">સુયોજનો</name>
+  <name xml:lang="gl">Preferencias</name>
+  <name xml:lang="gd">Roghainnean</name>
+  <name xml:lang="ga">Socruithe</name>
+  <name xml:lang="fur">Impostazions</name>
+  <name xml:lang="fr">Paramètres</name>
+  <name xml:lang="fo">Stillingar</name>
+  <name xml:lang="fi">Asetukset</name>
+  <name xml:lang="fa">تنظیمات</name>
+  <name xml:lang="eu">Ezarpenak</name>
+  <name xml:lang="et">Sätted</name>
+  <name xml:lang="es">Configuración</name>
+  <name xml:lang="eo">Agordoj</name>
+  <name xml:lang="en_GB">Settings</name>
+  <name xml:lang="el">Ρυθμίσεις</name>
+  <name xml:lang="de">Einstellungen</name>
+  <name xml:lang="da">Indstillinger</name>
+  <name xml:lang="cs">Nastavení</name>
+  <name xml:lang="crh">Ayarlar</name>
+  <name xml:lang="ckb">ڕێكخستنەكان</name>
+  <name xml:lang="ca@valencia">Paràmetres</name>
+  <name xml:lang="ca">Paràmetres</name>
+  <name xml:lang="bs">Postavke</name>
+  <name xml:lang="br">Arventennoù</name>
+  <name xml:lang="bn_IN">সেটিং</name>
+  <name xml:lang="bg">Настройки</name>
+  <name xml:lang="be@latin">Nałady</name>
+  <name xml:lang="be">Налады</name>
+  <name xml:lang="as">সংহতিসমূহ</name>
+  <name xml:lang="ar">الإعدادات</name>
+  <name xml:lang="an">Configuración</name>
+  <name xml:lang="af">Instellings</name>
+  <summary>Utility to configure the GNOME desktop</summary>
+  <summary xml:lang="zh_TW">設定 GNOME 桌面的工具程式</summary>
+  <summary xml:lang="zh_CN">用来配置 GNOME 桌面的工具</summary>
+  <summary xml:lang="vi">Tiện ích để cấu hình môi trường máy tính để bàn GNOME</summary>
+  <summary xml:lang="uk">Програма для налаштовування середовища GNOME</summary>
+  <summary xml:lang="tr">GNOME masaüstünü yapılandırma aracı</summary>
+  <summary xml:lang="th">เครื่องมือสำหรับตั้งค่าเดสก์ท็อป GNOME</summary>
+  <summary xml:lang="sv">Verktyg för att konfigurera GNOME-skrivbordet</summary>
+  <summary xml:lang="sr@latin">Alatka za podešavanje Gnomovog radnog okruženja</summary>
+  <summary xml:lang="sr">Алатка за подешавање Гномовог радног окружења</summary>
+  <summary xml:lang="sl">Orodje za nastavljanje namizja GNOME</summary>
+  <summary xml:lang="sk">Nástroj na konfiguráciu prostredia GNOME</summary>
+  <summary xml:lang="ru">Инструмент для настройки рабочего стола GNOME</summary>
+  <summary xml:lang="ro">Utilitate de configurare pentru desktopul GNOME</summary>
+  <summary xml:lang="pt_BR">Utilitário para configurar o ambiente GNOME</summary>
+  <summary xml:lang="pt">Utilitários para configurar o ambiente de trabalho GNOME</summary>
+  <summary xml:lang="pl">Narzędzie do konfigurowania środowiska GNOME</summary>
+  <summary xml:lang="pa">ਗਨੋਮ ਡੈਸਕਟਾਪ ਦੀ ਸੰਰਚਨਾ ਵਾਸਤੇ ਸਹੂਲਤ</summary>
+  <summary xml:lang="oc">Utilitari per configurar l’environament GNOME</summary>
+  <summary xml:lang="nl">Hulpprogramma om het GNOME-bureaublad te configureren</summary>
+  <summary xml:lang="ne">जिनोम डेस्कटप कन्फिगर गर्ने युटिलिटी</summary>
+  <summary xml:lang="nb">Still inn systemet ditt</summary>
+  <summary xml:lang="my">နုန်ဒက်စ်တော့ပ်ကို ပြင်ဆင်ရန်အတွက် လက်သုံးကိရိယာ</summary>
+  <summary xml:lang="ms">Utiliti untuk mengkonfigur atas meja GNOME</summary>
+  <summary xml:lang="lv">Utilītprogramma GNOME darbvirsmas konfigurēšanai</summary>
+  <summary xml:lang="lt">Įrankis GNOME grafinės aplinkos konfigūravimui</summary>
+  <summary xml:lang="ko">그놈 데스크톱 설정 프로그램</summary>
+  <summary xml:lang="kk">GNOME жұмыс үстелін баптау утилитасы</summary>
+  <summary xml:lang="ka">სამუშაო გარემო GNOME-ის მორგების პროგრამა</summary>
+  <summary xml:lang="ja">GNOME デスクトップの設定ユーティリティ</summary>
+  <summary xml:lang="it">Applicazione per configurare l'ambiente grafico GNOME</summary>
+  <summary xml:lang="is">Tól til að stilla GNOME skjáborðsumhverfið</summary>
+  <summary xml:lang="id">Utilitas untuk mengonfigurasi destop GNOME</summary>
+  <summary xml:lang="hu">Segédprogram a GNOME asztali környezet személyre szabásához</summary>
+  <summary xml:lang="hr">Pomagalo za podešavanje GNOME radne površine</summary>
+  <summary xml:lang="hi">गनोम डेस्कटॉप को विन्यस्त करने की उपयोगिता</summary>
+  <summary xml:lang="he">כלים להגדרת שולחן העבודה GNOME</summary>
+  <summary xml:lang="gl">Utilidades para configurar o escritorio GNOME</summary>
+  <summary xml:lang="fur">Utilitât par configurâ l'ambient grafic GNOME</summary>
+  <summary xml:lang="fr">Utilitaire pour configurer l’environnement GNOME</summary>
+  <summary xml:lang="fi">Työkalu Gnome-työpöydän asetusten muokkaukseen</summary>
+  <summary xml:lang="fa">ابزاری برای پیکربندی میزکار گنوم</summary>
+  <summary xml:lang="eu">GNOME mahaigaina konfiguratzeko utilitatea</summary>
+  <summary xml:lang="es">Utilidad para configurar el escritorio GNOME</summary>
+  <summary xml:lang="eo">Ilo por agordi la labortablon de GNOME</summary>
+  <summary xml:lang="en_GB">Utility to configure the GNOME desktop</summary>
+  <summary xml:lang="el">Εργαλείο για τη ρύθμιση του GNOME</summary>
+  <summary xml:lang="de">Dienstprogramme zur Einrichtung der GNOME Arbeitsumgebung</summary>
+  <summary xml:lang="da">Redskab til at konfigurere GNOME-skrivebordet</summary>
+  <summary xml:lang="cs">Nástroj pro nastavení uživatelského prostředí GNOME</summary>
+  <summary xml:lang="ckb">ئامرازێکە بۆ ڕێکخستنی ڕوومێزی گنۆم</summary>
+  <summary xml:lang="ca">Utilitats per a configurar l'escriptori GNOME</summary>
+  <summary xml:lang="bn_IN">জিনোম ডেস্কটপ কনফিগার করতে ইউটিলিটি</summary>
+  <summary xml:lang="bg">Инструменти за настройването на работната среда GNOME</summary>
+  <summary xml:lang="be@latin">Utylita dla kanfihuravannia asiaroddzia GNOME</summary>
+  <summary xml:lang="be">Утыліта для канфігуравання асяроддзя GNOME</summary>
+  <summary xml:lang="ar">أدوات لضبط سطح مكتب جنوم</summary>
+  <description>
+    <p>
+      Settings is the primary interface for configuring your system.
+    </p>
+    <p xml:lang="zh_TW">《設定》是設定系統的主要介面。</p>
+    <p xml:lang="zh_CN">“设置”是配置您的系统的主要界面。</p>
+    <p xml:lang="vi">Cài đặt là giao diện chính để cấu hình hệ thống của bạn.</p>
+    <p xml:lang="uk">«Параметри» є основним інтерфейсом для налаштовування вашої системи.</p>
+    <p xml:lang="tr">Ayarlar, sisteminizi yapılandırmak için birincil arayüzdür.</p>
+    <p xml:lang="th">"การตั้งค่า" เป็นส่วนติดต่อหลักที่ใช้ตั้งค่าต่างๆ ของระบบคุณ</p>
+    <p xml:lang="sv">Inställningar är det primära gränssnittet för att konfigurera ditt system.</p>
+    <p xml:lang="sr@latin">Podešavanja su glavno sredstvo za podešavanje vašeg sistema.</p>
+    <p xml:lang="sr">Подешавања су главно средство за подешавање вашег система.</p>
+    <p xml:lang="sl">Program je osnovni vmesnik za prilagajanje nastavitev sistema.</p>
+    <p xml:lang="sk">Aplikácia Nastavenia je hlavným rozhraním na konfiguráciu vášho systému.</p>
+    <p xml:lang="ru">Настройки — основной интерфейс для настройки вашей системы.</p>
+    <p xml:lang="ro">Configurări este interfața primară pentru a vă configura sistemul.</p>
+    <p xml:lang="pt_BR">Configurações é a interface primária para configurar seu sistema.</p>
+    <p xml:lang="pt">Definições é a sua interface principal para configurar o seu sistema.</p>
+    <p xml:lang="pl">Główny interfejs do konfigurowania komputera.</p>
+    <p xml:lang="pa">ਸੈਟਿੰਗਾਂ ਤੁਹਾਡੇ ਸਿਸਟਮ ਦੀ ਸੰਰਚਨਾ ਕਰਨ ਲਈ ਮੁੱਢਲਾ ਦਰ ਹੈ।</p>
+    <p xml:lang="oc">Paramètres es l’interfàcia principala de configuracion del sistèma.</p>
+    <p xml:lang="nl">Instellingen is de hoofdinterface voor de configuratie van uw systeem.</p>
+    <p xml:lang="ne">तपाईँको प्रणाली कन्फिगर गर्नका लागि सेटिङ प्राथमिक इन्टरफेस हो ।</p>
+    <p xml:lang="nb">Innstillinger lar deg endre systeminnstillinger raskt og enkelt. Med en ryddig inndeling og et bevisst utvalg av tilgjengelige innstillinger, er det lett å finne frem til akkurat det du trenger å endre.</p>
+    <p xml:lang="my">သတ််မှတ်ချက်များ(Settings)သည် သင်၏စစ်စတမ်ကို စီမခန့်ခွဲရန်အတွက် အဓိကအသုံးပြုရမည့် ပရိုဂရမ်ဖြစ်သည်။</p>
+    <p xml:lang="ms">Tetapan ialah antara muka utama untuk Mengkonfigur sistem anda.</p>
+    <p xml:lang="lv">“Iestatījumi” ir galvenā sistēmas konfigurēšanas saskarne.</p>
+    <p xml:lang="lt">Nustatymai yra pirminė sąsaja jūsų sistemos konfigūravimui.</p>
+    <p xml:lang="ko">설정은 시스템을 설정하는 주요 인터페이스 프로그램입니다.</p>
+    <p xml:lang="kk">Баптаулар қолданбасы жүйеңізді баптаудың негізгі сайманы болып табылады.</p>
+    <p xml:lang="ka">მორგება - თქვენი სისტემის პარამეტრების გამართვის მთავარი ადგილი.</p>
+    <p xml:lang="ja">“設定”はシステム設定用のプライマリインターフェースです。</p>
+    <p xml:lang="it">«Impostazioni» è il programma principale per la configurazione del sistema.</p>
+    <p xml:lang="is">Stillingar er aðalviðmótið til að laga stillingar kerfisins þíns.</p>
+    <p xml:lang="id">Pengaturan adalah antarmuka utama untuk mengkonfigurasi sistem Anda.</p>
+    <p xml:lang="hu">A Beállítások az elsődleges felület a rendszer beállításához.</p>
+    <p xml:lang="hr">Postavke su glavno sučelje za podešavanje vašeg sustava.</p>
+    <p xml:lang="hi">सेटिंग्स आपके सिस्टम को विन्यस्त करने के लिए प्राथमिक इंटरफ़ेस है।</p>
+    <p xml:lang="he">הגדרות הוא הממשק העיקרי להגדיר את המערכת שלך.</p>
+    <p xml:lang="gl">Preferencias é a interface principal para configurar o seu sistema.</p>
+    <p xml:lang="fur">Impostazions e je la interface principâl par configurâ il sisteme.</p>
+    <p xml:lang="fr">Paramètres est l’interface principale de configuration du système.</p>
+    <p xml:lang="fi">Asetukset on ensisijainen käyttöliittymä järjestelmäsi asetusten määrittämiseen.</p>
+    <p xml:lang="fa">تنظیمات، واسط اصلی برای پیکربندی سامانه‌تان است.</p>
+    <p xml:lang="eu">Ezarpenak zure sistema konfiguratzeko interfaze nagusia da.</p>
+    <p xml:lang="es">Configuración es la interfaz principal para configurar su sistema.</p>
+    <p xml:lang="eo">Agordoj estas la ĉefa fasado por agordi vian sistemon.</p>
+    <p xml:lang="en_GB">Settings is the primary interface for configuring your system.</p>
+    <p xml:lang="el">Οι ρυθμίσεις είναι η κύρια διεπαφή για τη διαμόρφωση του συστήματός σας.</p>
+    <p xml:lang="de">Einstellungen ist die wichtigste Komponente zur Einrichtung Ihres Systems.</p>
+    <p xml:lang="da">Indstillinger er den primære grænseflade til konfigurering af dit system.</p>
+    <p xml:lang="cs">Aplikace Nastavení je hlavním rozhraním pro nastavení vašeho systému.</p>
+    <p xml:lang="ca">El Paràmetres és la interfície principal per a configurar el sistema.</p>
+    <p xml:lang="bn_IN">আপনার সিস্টেমটি কনফিগার করার জন্য সেটিংস হল প্রাথমিক ইন্টারফেস।</p>
+    <p xml:lang="bg">Това е основният интерфейс за настройването на системата ви.</p>
+    <p xml:lang="be@latin">Nałady — heta asnoŭny interfiejs dla kanfihuravannia sistemy.</p>
+    <p xml:lang="be">Налады — гэта асноўны інтэрфейс для канфігуравання сістэмы.</p>
+  </description>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://gitlab.gnome.org/GNOME/gnome-control-center/raw/HEAD/shell/appdata/screenshot-appearance.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.gnome.org/GNOME/gnome-control-center/raw/HEAD/shell/appdata/screenshot-sound.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.gnome.org/GNOME/gnome-control-center/raw/HEAD/shell/appdata/screenshot-mouse.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.gnome.org/GNOME/gnome-control-center/raw/HEAD/shell/appdata/screenshot-keyboard.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://apps.gnome.org/Settings/</url>
+  <url type="bugtracker">https://gitlab.gnome.org/GNOME/gnome-control-center/issues/</url>
+  <url type="contact">https://discourse.gnome.org/tag/settings</url>
+  <url type="donation">https://www.gnome.org/donate/</url>
+  <url type="help">https://discourse.gnome.org/tag/settings</url>
+  <url type="translate">https://l10n.gnome.org/module/gnome-control-center/</url>
+  <url type="contribute">https://welcome.gnome.org/app/Settings/</url>
+  <url type="vcs-browser">https://gitlab.gnome.org/GNOME/gnome-control-center/</url>
+  <project_group>GNOME</project_group>
+  <launchable type="desktop-id">org.gnome.Settings.desktop</launchable>
+  <!-- developer_name tag deprecated with Appstream 1.0 -->
+  <developer_name>The GNOME Project</developer_name>
+  <developer_name xml:lang="zh_TW">GNOME 專案</developer_name>
+  <developer_name xml:lang="zh_CN">GNOME 项目</developer_name>
+  <developer_name xml:lang="vi">Dự án GNOME</developer_name>
+  <developer_name xml:lang="uk">Проєкт GNOME</developer_name>
+  <developer_name xml:lang="tr">GNOME Projesi</developer_name>
+  <developer_name xml:lang="th">โครงการ GNOME</developer_name>
+  <developer_name xml:lang="sv">GNOME-projektet</developer_name>
+  <developer_name xml:lang="sr@latin">Gnom projekat</developer_name>
+  <developer_name xml:lang="sr">Гном пројекат</developer_name>
+  <developer_name xml:lang="sl">Projekt GNOME</developer_name>
+  <developer_name xml:lang="sk">Projekt GNOME</developer_name>
+  <developer_name xml:lang="ru">Проект GNOME</developer_name>
+  <developer_name xml:lang="ro">Proiectul Gnome</developer_name>
+  <developer_name xml:lang="pt_BR">O Projeto GNOME</developer_name>
+  <developer_name xml:lang="pt">Projeto GNOME</developer_name>
+  <developer_name xml:lang="pl">Projekt GNOME</developer_name>
+  <developer_name xml:lang="pa">ਗਨੋਮ ਪਰੋਜੈਕਟ</developer_name>
+  <developer_name xml:lang="oc">Lo projècte GNOME</developer_name>
+  <developer_name xml:lang="nl">Het GNOME-project</developer_name>
+  <developer_name xml:lang="ne">जिनोम परियोजना</developer_name>
+  <developer_name xml:lang="nb">GNOME</developer_name>
+  <developer_name xml:lang="my">GNOME ပရောဂျက်</developer_name>
+  <developer_name xml:lang="ms">Projek GNOME</developer_name>
+  <developer_name xml:lang="mjw">The GNOME Project</developer_name>
+  <developer_name xml:lang="lv">GNOME projekts</developer_name>
+  <developer_name xml:lang="lt">GNOME projektas</developer_name>
+  <developer_name xml:lang="ko">그놈 프로젝트</developer_name>
+  <developer_name xml:lang="kk">GNOME жобасы</developer_name>
+  <developer_name xml:lang="kab">Asenfar n GNOME</developer_name>
+  <developer_name xml:lang="ka">პროექტი "GNOME"</developer_name>
+  <developer_name xml:lang="ja">The GNOME Project</developer_name>
+  <developer_name xml:lang="it">Il progetto GNOME</developer_name>
+  <developer_name xml:lang="is">GNOME verkefnið</developer_name>
+  <developer_name xml:lang="ie">Li projecte GNOME</developer_name>
+  <developer_name xml:lang="id">Proyek GNOME</developer_name>
+  <developer_name xml:lang="hu">A GNOME projekt</developer_name>
+  <developer_name xml:lang="hr">GNOME projekt</developer_name>
+  <developer_name xml:lang="hi">गनोम परियोजना</developer_name>
+  <developer_name xml:lang="he">מיזם GNOME</developer_name>
+  <developer_name xml:lang="gl">O proxecto GNOME</developer_name>
+  <developer_name xml:lang="fur">Il progjet GNOME</developer_name>
+  <developer_name xml:lang="fr">Le projet GNOME</developer_name>
+  <developer_name xml:lang="fi">Gnome-projekti</developer_name>
+  <developer_name xml:lang="fa">پروژهٔ گنوم</developer_name>
+  <developer_name xml:lang="eu">GNOME proiektua</developer_name>
+  <developer_name xml:lang="es">El Proyecto GNOME</developer_name>
+  <developer_name xml:lang="eo">La GNOME Projekto</developer_name>
+  <developer_name xml:lang="en_GB">The GNOME Project</developer_name>
+  <developer_name xml:lang="el">Το έργο GNOME</developer_name>
+  <developer_name xml:lang="de">Das GNOME-Pojekt</developer_name>
+  <developer_name xml:lang="da">GNOME-projektet</developer_name>
+  <developer_name xml:lang="cs">Projekt GNOME</developer_name>
+  <developer_name xml:lang="ca">El projecte GNOME</developer_name>
+  <developer_name xml:lang="bn_IN">জিনোম প্রকল্প</developer_name>
+  <developer_name xml:lang="bg">Проектът GNOME</developer_name>
+  <developer_name xml:lang="be@latin">Prajekt GNOME</developer_name>
+  <developer_name xml:lang="be">Праект GNOME</developer_name>
+  <developer_name xml:lang="ab">The GNOME Project</developer_name>
+  <developer id="org.gnome">
+    <name>The GNOME Project</name>
+    <name xml:lang="zh_TW">GNOME 專案</name>
+    <name xml:lang="zh_CN">GNOME 项目</name>
+    <name xml:lang="vi">Dự án GNOME</name>
+    <name xml:lang="uk">Проєкт GNOME</name>
+    <name xml:lang="tr">GNOME Projesi</name>
+    <name xml:lang="th">โครงการ GNOME</name>
+    <name xml:lang="sv">GNOME-projektet</name>
+    <name xml:lang="sr@latin">Gnom projekat</name>
+    <name xml:lang="sr">Гном пројекат</name>
+    <name xml:lang="sl">Projekt GNOME</name>
+    <name xml:lang="sk">Projekt GNOME</name>
+    <name xml:lang="ru">Проект GNOME</name>
+    <name xml:lang="ro">Proiectul Gnome</name>
+    <name xml:lang="pt_BR">O Projeto GNOME</name>
+    <name xml:lang="pt">Projeto GNOME</name>
+    <name xml:lang="pl">Projekt GNOME</name>
+    <name xml:lang="pa">ਗਨੋਮ ਪਰੋਜੈਕਟ</name>
+    <name xml:lang="oc">Lo projècte GNOME</name>
+    <name xml:lang="nl">Het GNOME-project</name>
+    <name xml:lang="ne">जिनोम परियोजना</name>
+    <name xml:lang="nb">GNOME</name>
+    <name xml:lang="my">GNOME ပရောဂျက်</name>
+    <name xml:lang="ms">Projek GNOME</name>
+    <name xml:lang="mjw">The GNOME Project</name>
+    <name xml:lang="lv">GNOME projekts</name>
+    <name xml:lang="lt">GNOME projektas</name>
+    <name xml:lang="ko">그놈 프로젝트</name>
+    <name xml:lang="kk">GNOME жобасы</name>
+    <name xml:lang="kab">Asenfar n GNOME</name>
+    <name xml:lang="ka">პროექტი "GNOME"</name>
+    <name xml:lang="ja">The GNOME Project</name>
+    <name xml:lang="it">Il progetto GNOME</name>
+    <name xml:lang="is">GNOME verkefnið</name>
+    <name xml:lang="ie">Li projecte GNOME</name>
+    <name xml:lang="id">Proyek GNOME</name>
+    <name xml:lang="hu">A GNOME projekt</name>
+    <name xml:lang="hr">GNOME projekt</name>
+    <name xml:lang="hi">गनोम परियोजना</name>
+    <name xml:lang="he">מיזם GNOME</name>
+    <name xml:lang="gl">O proxecto GNOME</name>
+    <name xml:lang="fur">Il progjet GNOME</name>
+    <name xml:lang="fr">Le projet GNOME</name>
+    <name xml:lang="fi">Gnome-projekti</name>
+    <name xml:lang="fa">پروژهٔ گنوم</name>
+    <name xml:lang="eu">GNOME proiektua</name>
+    <name xml:lang="es">El Proyecto GNOME</name>
+    <name xml:lang="eo">La GNOME Projekto</name>
+    <name xml:lang="en_GB">The GNOME Project</name>
+    <name xml:lang="el">Το έργο GNOME</name>
+    <name xml:lang="de">Das GNOME-Pojekt</name>
+    <name xml:lang="da">GNOME-projektet</name>
+    <name xml:lang="cs">Projekt GNOME</name>
+    <name xml:lang="ca">El projecte GNOME</name>
+    <name xml:lang="bn_IN">জিনোম প্রকল্প</name>
+    <name xml:lang="bg">Проектът GNOME</name>
+    <name xml:lang="be@latin">Prajekt GNOME</name>
+    <name xml:lang="be">Праект GNOME</name>
+    <name xml:lang="ab">The GNOME Project</name>
+  </developer>
+  <compulsory_for_desktop>GNOME</compulsory_for_desktop>
+  <kudos>
+    <kudo>HiDpiIcon</kudo>
+    <kudo>HighContrast</kudo>
+    <kudo>ModernToolkit</kudo>
+    <kudo>SearchProvider</kudo>
+    <kudo>UserDocs</kudo>
+  </kudos>
+  <releases>
+    <release version="47.6" date="2025-05-26">
+      <description>
+        <ul>
+          <li>Fix multiple GPU name display with NVIDIA GPU on Desktop PC</li>
+          <li>Fix crash when modifying app notification settings multiple times</li>
+          <li>Improve password generation logic and word list</li>
+          <li>Get motion history from tablets in test drawing area</li>
+          <li>Various additional fixes, translation updates and UI/UX tweaks</li>
+        </ul>
+      </description>
+    </release>
+    <release version="47.5" date="2025-04-14">
+      <description>
+        <ul>
+          <li>Fix duplicated "Search" rows in the Keyboard Custom Shortcut settings</li>
+          <li>Fix saving printer detail changes</li>
+          <li>Various additional fixes, translation updates and UI/UX tweaks</li>
+        </ul>
+      </description>
+    </release>
+    <release version="47.4" date="2025-02-03">
+      <description>
+        <ul>
+          <li>Use static hostname when displaying hostname based addresses</li>
+          <li>Various translation updates</li>
+        </ul>
+      </description>
+    </release>
+    <release version="47.3" date="2025-01-09">
+      <description>
+        <ul>
+          <li>Handle when tuned-ppd has an unsupported power profile</li>
+          <li>Fix wrong GPU names when Settings is launched using dGPU</li>
+          <li>Update Notification settings when the underlying setting changes</li>
+          <li>Make metered connection and hotspot settings adaptive to small screens</li>
+          <li>Prevent crash in Sound Volume Levels when stream has no name</li>
+          <li>Make screen reader read user avatar file names when there are no names</li>
+          <li>Various fixes to the color calibration tool</li>
+          <li>Various translation updates</li>
+        </ul>
+      </description>
+    </release>
+    <release version="47.2" date="2024-11-25">
+      <description>
+        <ul>
+          <li>Update Mouse illustrations and avoid dependency on gstreamer-plugins-bad</li>
+          <li>Fix accidental reset of accent color setting</li>
+          <li>Fix some memory leaks in the App settings</li>
+          <li>Ensure color profiles are connected before operating on them</li>
+          <li>Simplify Crosshair length slider in Accessibility Zoom settings</li>
+          <li>Fix alignment of status pages in the Mobile Networks settings</li>
+          <li>Remove wrong tooltip in the "Add Printer" button</li>
+          <li>Various translation updates</li>
+        </ul>
+      </description>
+    </release>
+    <release version="47.1" date="2024-10-21">
+      <description>
+        <ul>
+          <li>Fix performance issue when loading Backgrounds</li>
+          <li>Hide "Remote Desktop" row when service is not available</li>
+          <li>Fix value of system language row after selecting new language</li>
+          <li>Fix crash when handling unkown stylus IDs in the Wacom settings</li>
+          <li>Fix untranslated account provider info text</li>
+          <li>Various translation updates</li>
+        </ul>
+      </description>
+    </release>
+    <release version="47.0" date="2024-09-16">
+      <description>
+        <ul>
+          <li>Modernize the "Add User" dialog</li>
+          <li>Implement accent colors</li>
+          <li>Move "Screen Reader" settings to the top of the Accessibility settings</li>
+          <li>Rename "Reduce Animation" setting to "Animation Effects"</li>
+          <li>Rename "File and Link Associations" page to "Files and Links"</li>
+          <li>Add "Activate Windows on Hover" setting to Accessibility settings</li>
+          <li>Show status page when Parental Controls aren't available</li>
+          <li>Don't show "App is not sandboxed" banner for system components</li>
+          <li>Rename "File and Link Associations" page to "Files and Links"</li>
+          <li>Adapt display rotation labels to the screen ratio</li>
+          <li>Add suspend time options for mobile devices</li>
+          <li>Load input choice locales asynchronously in Keyboard settings</li>
+          <li>Fix "Move" buttons in Keyboard settings</li>
+          <li>Remove references to now retired Mozilla Location Services</li>
+          <li>Use accent colors for the animations in the Mouse settings</li>
+          <li>Don't set empty ignored hosts in Network settings</li>
+          <li>Turn "App Notifications" dialog into a subpage</li>
+          <li>Add a notifications overlay to the Online Accounts settings</li>
+          <li>Respect user account password enforcing based on pwquality configs</li>
+          <li>Sort fingerprint list with the most used options on top</li>
+          <li>Show correctly the list of remanining fingerprint options to enroll</li>
+          <li>Various user interface improvements to the Printer PPD selection dialog</li>
+          <li>Fix crash of the SIM Unlock dialog on Mobile Networks settings</li>
+          <li>Various icon artwork updates in the Accessibility settings</li>
+          <li>Improve description of "Default Apps" settings</li>
+          <li>Turn app settings dialogs into subpages</li>
+          <li>Fix "No Search Results" page in Apps settings</li>
+          <li>Don't show "Open" button for Settings itself in App settings</li>
+          <li>Show the number of static permissions in the "Required Access" row in App settings</li>
+          <li>Indicate when no apps are available for a mime type in "Default Apps"</li>
+          <li>Improve window preview style in Appearance settings</li>
+          <li>Modernize looks of the Color settings</li>
+          <li>Rename "Laptop Screen" to "Built-In Screen"</li>
+          <li>Fix Displays panel crash when closing laptop lid</li>
+          <li>Add icon to the Night Light settings in Display settings</li>
+          <li>Allow previewing keyboard layouts in Input Sources dialog</li>
+          <li>Remove primary indicator delay for Mouse Test dialog</li>
+          <li>Make Mouse Test not respond to middle click</li>
+          <li>Make the WiFi QR Code dialog contents readable by screen readers</li>
+          <li>Add 6GHz to the "Supported Frequencies" in WiFi settings</li>
+          <li>Sort VPNs list in Network settings</li>
+          <li>Fix row removal when a Bluetooth Wifi device is removed</li>
+          <li>Add stable-ssid support for cloned-mac</li>
+          <li>Rename Windows Live provider to "Microsoft" in Online Accounts</li>
+          <li>Rename MS365 provider in Online Accounts</li>
+          <li>Close new online account dialog when account creation is complete</li>
+          <li>Modernize Printer Jobs dialog</li>
+          <li>Modernize Printer Details dialog</li>
+          <li>Fix spelling inconsistency for the word "Cancelled"</li>
+          <li>Close "Add Printer" dialog when pressing "Escape" key</li>
+          <li>Improve text description of the Sharing features</li>
+          <li>Add DAV address in the File Sharing dialog</li>
+          <li>Add notice about shared files not being encrypted</li>
+          <li>Hide Sharing settings panel when none of the Sharing features are available in the system</li>
+          <li>Use AppInfo to get app icons and fallback to icon-theme in the Sound settings</li>
+          <li>Adjust sound of the "Click" sound effect closer to the freedesktop.org bell sound</li>
+          <li>Make sound setting sliders more accessible with keyboard</li>
+          <li>Load subpages on demand to speed up System settings panel startup</li>
+          <li>Don't show unwanted system accounts in User settings</li>
+          <li>Fix parental controls settings visibility in User settings</li>
+          <li>Rename "Add Enterprise User" to "Add Enterprise Login" in User settings</li>
+          <li>Always allow calibration for display tablets in Wacom settings</li>
+          <li>Enforce a Z-shape sequence of calibration points in Wacom settings</li>
+          <li>Fix wrong alignment detection in the calibrator in Wacom settings</li>
+          <li>Reset the clock after any click on the calibrator in Wacom settings</li>
+          <li>Up the calibrator threshold to 50 pixels in Wacom settings</li>
+          <li>Fall back to the generic tablet provided by libwacom in Wacom settings</li>
+          <li>Fix accessibility regression when reading wallpaper names</li>
+          <li>Handle opening GNOME Software when clicking "View Details" of webapps</li>
+          <li>Use the new file chooser portal when adding new folder to "Media Sharing"</li>
+          <li>Fix visibility of action buttons in the Color settings</li>
+          <li>Improve performance when loading Wallpapers</li>
+          <li>Avoid crash in App settings when handling invalid permissions</li>
+          <li>Update feedback icons for validating user names and password settings</li>
+          <li>Fix adding "Shared Media" folders</li>
+          <li>Fix crash when unplugging removable WiFi adapter</li>
+          <li>Various widgets ported to modern libadwaita widgets</li>
+          <li>Various dialogs have been ported to subpages</li>
+          <li>Various translation updates</li>
+          <li>Various CI fixes</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  <translation type="gettext">gnome-control-center-2.0</translation>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+</component>
