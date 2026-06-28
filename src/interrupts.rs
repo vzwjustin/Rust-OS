@@ -66,8 +66,8 @@ lazy_static! {
         idt.overflow.set_handler_fn(overflow_handler);
         idt.bound_range_exceeded.set_handler_fn(bound_range_exceeded_handler);
         idt.invalid_tss.set_handler_fn(invalid_tss_handler);
-        // Machine check exception handler not yet implemented
-        // SIMD floating point exception handler not yet implemented
+        idt.machine_check.set_handler_fn(machine_check_handler);
+        idt.simd_floating_point.set_handler_fn(simd_floating_point_handler);
         idt.virtualization.set_handler_fn(virtualization_handler);
         idt.alignment_check.set_handler_fn(alignment_check_handler);
 
@@ -721,6 +721,63 @@ extern "x86-interrupt" fn alignment_check_handler(
         crate::serial_println!("CRITICAL: Alignment check - error manager unavailable");
         terminate_current_process("Alignment check exception (error manager unavailable)");
     }
+}
+
+extern "x86-interrupt" fn machine_check_handler(_stack_frame: InterruptStackFrame) -> ! {
+    use crate::error::{
+        ErrorContext, ErrorSeverity, HardwareError, KernelError, RecoveryAction, ERROR_MANAGER,
+    };
+
+    crate::serial_println!("CRITICAL: Machine check exception (#MC)");
+    EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let error_context = ErrorContext::new(
+        KernelError::Hardware(HardwareError::HardwareFault),
+        ErrorSeverity::Critical,
+        "machine_check_handler",
+        "Machine check exception - hardware error detected".to_string(),
+    )
+    .with_recovery(RecoveryAction::Shutdown);
+
+    if let Some(mut manager) = ERROR_MANAGER.try_lock() {
+        let _ = manager.handle_error(error_context);
+    }
+
+    // Machine check exceptions are typically fatal. Halt the system.
+    crate::serial_println!("PANIC: Machine check exception - halting");
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptStackFrame) {
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, ProcessError, RecoveryAction, ERROR_MANAGER,
+    };
+
+    crate::serial_println!("CRITICAL: SIMD floating point exception (#XF)");
+    EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // The MXCSR register contains the cause: IE (bit 0), DE (bit 1),
+    // ZE (bit 2), OE (bit 3), UE (bit 4), PE (bit 5).
+    // For now, report and terminate the faulting process.
+    let error_context = ErrorContext::new(
+        KernelError::Process(ProcessError::InvalidState),
+        ErrorSeverity::Error,
+        "simd_floating_point_handler",
+        "SIMD floating point exception - numerical error".to_string(),
+    )
+    .with_recovery(RecoveryAction::None);
+
+    if let Some(mut manager) = ERROR_MANAGER.try_lock() {
+        let _ = manager.handle_error(error_context);
+    } else {
+        crate::serial_println!(
+            "CRITICAL: SIMD FP exception - error manager unavailable"
+        );
+    }
+
+    terminate_current_process("SIMD floating point exception");
 }
 
 // ========== HARDWARE INTERRUPT HANDLERS ==========

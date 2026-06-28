@@ -847,14 +847,15 @@ fn syscall_openat(dirfd: i32, pathname: *const u8, flags: i32, mode: u32) -> i64
 }
 
 fn syscall_newfstatat(dirfd: i32, pathname: *const u8, statbuf: *mut u8, flags: i32) -> i64 {
-    if dirfd == crate::linux_compat::file_ops::AT_FDCWD && flags == 0 {
-        return syscall_stat(pathname, statbuf);
+    match crate::linux_compat::file_ops::newfstatat(
+        dirfd,
+        pathname,
+        statbuf as *mut crate::linux_compat::types::Stat,
+        flags,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
     }
-    if dirfd == crate::linux_compat::file_ops::AT_FDCWD && (flags & 0x100) != 0 {
-        // AT_SYMLINK_NOFOLLOW
-        return syscall_lstat(pathname, statbuf);
-    }
-    -(crate::linux_compat::LinuxError::ENOSYS as i64)
 }
 
 fn syscall_access(path: *const u8, mode: i32) -> i64 {
@@ -1898,11 +1899,40 @@ fn syscall_eventfd2(initval: u32, flags: i32) -> i64 {
         Err(e) => -(e as i64),
     }
 }
-fn syscall_signalfd(_fd: i32, _mask: *const u8, _sizemask: u32) -> i64 {
-    -38
+fn syscall_signalfd(fd: i32, mask: *const u8, sizemask: u32) -> i64 {
+    match read_signalfd_mask(mask, sizemask) {
+        Ok(m) => match crate::linux_compat::special_fd::signalfd(fd, m, 0) {
+            Ok(fd) => fd as i64,
+            Err(e) => -(e as i64),
+        },
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_signalfd4(_fd: i32, _mask: *const u8, _sizemask: u32, _flags: i32) -> i64 {
-    -38
+fn syscall_signalfd4(fd: i32, mask: *const u8, sizemask: u32, flags: i32) -> i64 {
+    match read_signalfd_mask(mask, sizemask) {
+        Ok(m) => match crate::linux_compat::special_fd::signalfd(fd, m, flags) {
+            Ok(fd) => fd as i64,
+            Err(e) => -(e as i64),
+        },
+        Err(e) => -(e as i64),
+    }
+}
+
+/// Read a sigset_t from userspace and return it as a u64.
+fn read_signalfd_mask(mask: *const u8, sizemask: u32) -> crate::linux_compat::LinuxResult<u64> {
+    use crate::linux_compat::LinuxError;
+    if mask.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    if sizemask < 8 {
+        return Err(LinuxError::EINVAL);
+    }
+    let mut bytes = [0u8; 8];
+    // SAFETY: caller guarantees mask points to at least sizemask bytes.
+    unsafe {
+        core::ptr::copy_nonoverlapping(mask, bytes.as_mut_ptr(), 8);
+    }
+    Ok(u64::from_ne_bytes(bytes))
 }
 fn syscall_timerfd_create(clockid: i32, flags: i32) -> i64 {
     match crate::linux_compat::special_fd::timerfd_create(clockid, flags) {
@@ -1961,6 +1991,15 @@ fn syscall_waitid(idtype: i32, id: i32, infop: *mut u8, options: i32, _rusage: *
     if idtype == 1 && id > 0 {
         // P_PID
         return syscall_wait4(id, infop as *mut i32, options, core::ptr::null_mut());
+    }
+    if idtype == 2 {
+        // P_PGID: wait for any child in process group `id`.
+        // wait4 interprets pid < -1 as "wait for pgid == -pid".
+        if id > 0 {
+            return syscall_wait4(-id, infop as *mut i32, options, core::ptr::null_mut());
+        }
+        // id == 0 means wait for any child in the caller's process group
+        return syscall_wait4(0, infop as *mut i32, options, core::ptr::null_mut());
     }
     -38
 }
@@ -2026,15 +2065,63 @@ fn syscall_rt_sigpending(_set: *mut u8, _sigsetsize: usize) -> i64 {
     0
 }
 fn syscall_rt_sigtimedwait(
-    _set: *const u8,
-    _info: *mut u8,
-    _timeout: *const u8,
-    _sigsetsize: usize,
+    set: *const u8,
+    info: *mut u8,
+    timeout: *const u8,
+    sigsetsize: usize,
 ) -> i64 {
-    -38
+    use crate::linux_compat::LinuxError;
+
+    if set.is_null() || sigsetsize < 8 {
+        return -(LinuxError::EINVAL as i64);
+    }
+
+    // Read the signal set
+    let mut set_bytes = [0u8; 8];
+    unsafe {
+        core::ptr::copy_nonoverlapping(set, set_bytes.as_mut_ptr(), 8);
+    }
+    let set_val = u64::from_ne_bytes(set_bytes);
+
+    // Read the timeout if provided (struct timespec: tv_sec: i64, tv_nsec: i64)
+    let timeout_ns = if timeout.is_null() {
+        None
+    } else {
+        let mut ts = [0u8; 16];
+        unsafe {
+            core::ptr::copy_nonoverlapping(timeout, ts.as_mut_ptr(), 16);
+        }
+        let secs = i64::from_ne_bytes([ts[0], ts[1], ts[2], ts[3], ts[4], ts[5], ts[6], ts[7]]);
+        let nsecs = i64::from_ne_bytes([ts[8], ts[9], ts[10], ts[11], ts[12], ts[13], ts[14], ts[15]]);
+        if secs < 0 || nsecs < 0 {
+            return -(LinuxError::EINVAL as i64);
+        }
+        Some(secs as u64 * 1_000_000_000 + nsecs as u64)
+    };
+
+    match crate::linux_compat::signal_ops::rt_sigtimedwait(set_val, timeout_ns) {
+        Ok(sig) => {
+            // Write signinfo if requested
+            if !info.is_null() {
+                let mut siginfo = [0u8; 128];
+                siginfo[..4].copy_from_slice(&(sig as u32).to_ne_bytes());
+                unsafe {
+                    core::ptr::copy_nonoverlapping(siginfo.as_ptr(), info, 128);
+                }
+            }
+            sig as i64
+        }
+        Err(e) => -(e as i64),
+    }
 }
-fn syscall_rt_sigsuspend(_mask: *const u8, _sigsetsize: usize) -> i64 {
-    -38
+fn syscall_rt_sigsuspend(mask: *const u8, sigsetsize: usize) -> i64 {
+    match crate::linux_compat::signal_ops::rt_sigsuspend(
+        mask as *const crate::linux_compat::types::SigSet,
+        sigsetsize,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_sigaltstack(_ss: *const u8, _old_ss: *mut u8) -> i64 {
     0

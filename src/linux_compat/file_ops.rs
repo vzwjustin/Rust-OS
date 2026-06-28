@@ -381,6 +381,35 @@ pub fn lstat(path: *const u8, statbuf: *mut Stat) -> LinuxResult<i32> {
     stat(path, statbuf)
 }
 
+/// newfstatat - get file status relative to a directory file descriptor
+///
+/// # Arguments
+/// * `dirfd` - Directory fd or AT_FDCWD
+/// * `pathname` - File path (may be relative to dirfd)
+/// * `statbuf` - Output stat buffer
+/// * `flags` - AT_SYMLINK_NOFOLLOW (0x100) or 0
+pub fn newfstatat(dirfd: Fd, pathname: *const u8, statbuf: *mut Stat, flags: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if pathname.is_null() || statbuf.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Resolve the path relative to dirfd
+    let path_str = resolve_at_path(dirfd, pathname)?;
+
+    // For now, lstat and stat are the same (no symlink distinction)
+    let _ = flags; // AT_SYMLINK_NOFOLLOW not yet differentiated
+
+    match vfs::vfs_stat(&path_str) {
+        Ok(vfs_stat) => {
+            populate_linux_stat(statbuf, &vfs_stat);
+            Ok(0)
+        }
+        Err(e) => Err(vfs_error_to_linux(e)),
+    }
+}
+
 /// access - check file accessibility
 pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
     inc_ops();

@@ -27,6 +27,7 @@ pub mod poll_events {
 static NEXT_EVENT_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_TIMER_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_SIGNALFD_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Initialize special fd subsystem.
 pub fn init_special_fd() {}
@@ -43,6 +44,12 @@ struct TimerFdState {
     armed: AtomicU64,
 }
 
+/// State for a signalfd: the signal mask to watch and the owning pid.
+struct SignalFdState {
+    mask: AtomicU64,
+    pid: u32,
+}
+
 #[derive(Clone)]
 struct EpollEntry {
     fd: i32,
@@ -57,6 +64,7 @@ struct EpollState {
 static EVENTFD_BY_ID: RwLock<BTreeMap<u32, EventFdState>> = RwLock::new(BTreeMap::new());
 static TIMERFD_BY_ID: RwLock<BTreeMap<u32, TimerFdState>> = RwLock::new(BTreeMap::new());
 static EPOLL_BY_ID: RwLock<BTreeMap<u32, EpollState>> = RwLock::new(BTreeMap::new());
+static SIGNALFD_BY_ID: RwLock<BTreeMap<u32, SignalFdState>> = RwLock::new(BTreeMap::new());
 
 fn placeholder_inode() -> alloc::sync::Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root")
@@ -123,6 +131,46 @@ pub fn try_read(fd: i32, buf: &mut [u8]) -> Option<LinuxResult<isize>> {
                 Err(e) => Some(Err(super::socket_ops::net_err_to_linux(e))),
             }
         }
+        FdKind::Signalfd(id) => {
+            // signalfd read returns one or more signalfd_siginfo structs.
+            // Each is 128 bytes. We return one signal at a time.
+            if buf.len() < 128 {
+                return Some(Err(LinuxError::EINVAL));
+            }
+            let table = SIGNALFD_BY_ID.read();
+            let state = table.get(&id)?;
+            let mask = state.mask.load(Ordering::SeqCst);
+            let pid = state.pid;
+
+            // Check pending signals against the signalfd mask
+            let process_manager = process::get_process_manager();
+            if let Some(pcb) = process_manager.get_process(pid) {
+                for &sig in &pcb.pending_signals {
+                    let bit = 1u64 << ((sig - 1) & 63);
+                    if (mask & bit) != 0 {
+                        // Consume this signal
+                        drop(table);
+                        process_manager.with_process_mut(pid, |p| {
+                            p.pending_signals.retain(|s| *s != sig);
+                        });
+                        // Write signalfd_siginfo (128 bytes, simplified)
+                        // Fields: ssi_signo(4), ssi_errno(4), ssi_code(4),
+                        // ssi_pid(4), ssi_uid(4), ssi_fd(4), ssi_tid(4),
+                        // ssi_band(8), ssi_overrun(4), ssi_trapno(4),
+                        // ssi_status(4), ssi_int(4), ssi_ptr(8), ssi_utime(8),
+                        // ssi_stime(8), ssi_addr(8), ... padding to 128
+                        let mut info = [0u8; 128];
+                        info[..4].copy_from_slice(&(sig as u32).to_ne_bytes());
+                        // ssi_pid = sender (0 for kernel)
+                        info[20..24].copy_from_slice(&0u32.to_ne_bytes());
+                        info[24..28].copy_from_slice(&0u32.to_ne_bytes()); // ssi_uid
+                        buf[..128].copy_from_slice(&info);
+                        return Some(Ok(128));
+                    }
+                }
+            }
+            Some(Err(LinuxError::EAGAIN))
+        }
         _ => None,
     }
 }
@@ -185,6 +233,10 @@ pub fn try_close(fd: i32) -> Option<LinuxResult<()>> {
         }
         FdKind::Epoll(id) => {
             EPOLL_BY_ID.write().remove(&id);
+            Some(Ok(()))
+        }
+        FdKind::Signalfd(id) => {
+            SIGNALFD_BY_ID.write().remove(&id);
             Some(Ok(()))
         }
         FdKind::Socket(socket_id) => {
@@ -258,7 +310,24 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
                 }
             }
         }
-        FdKind::Epoll(_) | FdKind::Signalfd(_) | FdKind::Inotify(_) => {}
+        FdKind::Signalfd(id) => {
+            if events & poll_events::POLLIN != 0 {
+                if let Some(state) = SIGNALFD_BY_ID.read().get(&id) {
+                    let mask = state.mask.load(Ordering::SeqCst);
+                    let pid = state.pid;
+                    if let Some(pcb) = process::get_process_manager().get_process(pid) {
+                        for &sig in &pcb.pending_signals {
+                            let bit = 1u64 << ((sig - 1) & 63);
+                            if (mask & bit) != 0 {
+                                revents |= poll_events::POLLIN;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        FdKind::Epoll(_) | FdKind::Inotify(_) => {}
     }
     revents
 }
@@ -473,6 +542,40 @@ pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
     );
     let _ = flags;
     register_special(FdKind::TimerFd(id), OpenFlags::RDWR)
+}
+
+/// signalfd - create or update a signalfd
+///
+/// Creates a new signalfd watching the signals in `mask`, or updates
+/// the mask of an existing signalfd if `fd` is valid (>= 0). The mask
+/// is a 64-bit signal set where bit N-1 corresponds to signal N.
+pub fn signalfd(fd: i32, mask: u64, _flags: i32) -> LinuxResult<i32> {
+    // If fd is valid, update the existing signalfd's mask
+    if fd >= 0 {
+        let kind = vfs::vfs_fd_kind(fd).map_err(|_| LinuxError::EBADF)?;
+        match kind {
+            FdKind::Signalfd(id) => {
+                if let Some(state) = SIGNALFD_BY_ID.write().get(&id) {
+                    state.mask.store(mask, Ordering::SeqCst);
+                    return Ok(fd);
+                }
+                return Err(LinuxError::EBADF);
+            }
+            _ => return Err(LinuxError::EINVAL),
+        }
+    }
+
+    // Create a new signalfd
+    let id = NEXT_SIGNALFD_ID.fetch_add(1, Ordering::SeqCst);
+    let pid = process::current_pid();
+    SIGNALFD_BY_ID.write().insert(
+        id,
+        SignalFdState {
+            mask: AtomicU64::new(mask),
+            pid,
+        },
+    );
+    register_special(FdKind::Signalfd(id), OpenFlags::RDWR)
 }
 
 #[repr(C)]
