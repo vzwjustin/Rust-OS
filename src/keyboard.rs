@@ -17,9 +17,20 @@ use x86_64::instructions::port::Port;
 /// Maximum number of key events in the buffer
 const KEY_BUFFER_SIZE: usize = 64;
 
+/// Maximum number of raw scancodes in the buffer
+const SCANCODE_BUFFER_SIZE: usize = 128;
+
 // Global key event queue - properly synchronized
 lazy_static! {
     static ref KEY_EVENT_QUEUE: Mutex<Queue<KeyEvent, KEY_BUFFER_SIZE>> = Mutex::new(Queue::new());
+}
+
+// Global raw scancode queue - fed by the interrupt handler, drained by
+// `get_scancode` for consumers that want raw scancodes (e.g. IPC keyboard
+// event forwarding).
+lazy_static! {
+    static ref SCANCODE_QUEUE: Mutex<Queue<u8, SCANCODE_BUFFER_SIZE>> =
+        Mutex::new(Queue::new());
 }
 
 /// Keyboard scan codes for special keys
@@ -625,19 +636,36 @@ pub fn handle_keyboard_interrupt() {
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    // Process the scancode
+    // Buffer the raw scancode for consumers that read via `get_scancode`.
+    // The queue is bounded; on overflow we drop the oldest scancode to make
+    // room for the newest one (ring-buffer semantics).
+    {
+        let mut queue = SCANCODE_QUEUE.lock();
+        if queue.enqueue(scancode).is_err() {
+            // Buffer full: dequeue the oldest to make room, then enqueue.
+            queue.dequeue();
+            let _ = queue.enqueue(scancode);
+        }
+    }
+
+    // Process the scancode into key events
     if let Err(_e) = process_scancode(scancode) {
         // Handle error silently in production
     }
+
+    // Forward to IPC keyboard event subscribers.
+    crate::ipc::send_keyboard_event(scancode as u32);
 }
 
 // Integration with existing interrupt system
 // Note: handle_keyboard_interrupt is called directly from interrupts.rs
 
 /// Get scancode from keyboard buffer (non-blocking)
+///
+/// Returns the next raw scancode from the interrupt-fed ring buffer, or
+/// `None` if no scancodes are available.
 pub fn get_scancode() -> Option<u8> {
-    // Return next available scancode if any
-    None // Placeholder - would integrate with keyboard interrupt handler
+    SCANCODE_QUEUE.lock().dequeue()
 }
 
 #[cfg(test)]
