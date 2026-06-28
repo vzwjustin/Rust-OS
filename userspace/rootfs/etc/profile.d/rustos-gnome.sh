@@ -1,12 +1,11 @@
 # RustOS Ubuntu/GNOME session defaults.
-
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-ubuntu:GNOME}"
 export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-ubuntu}"
 export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
-export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"
+export GDK_BACKEND="${GDK_BACKEND:-wayland}"
 export CLUTTER_BACKEND="${CLUTTER_BACKEND:-wayland}"
 export NO_AT_BRIDGE="${NO_AT_BRIDGE:-1}"
-export GTK_THEME="${GTK_THEME:-Adwaita-dark}"
+export GTK_THEME="${GTK_THEME:-Adwaita:dark}"

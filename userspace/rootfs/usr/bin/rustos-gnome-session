@@ -113,6 +113,10 @@ print_env() {
 }
 
 launch_compositor() {
+    if have_command rustos-gnome-shell; then
+        status "launch: rustos-gnome-shell (compositor bridge)"
+        exec rustos-gnome-shell --wayland "$@"
+    fi
     if have_command mutter; then
         status "launch: userspace mutter"
         exec mutter --wayland --wayland-display="$WAYLAND_DISPLAY" "$@"
@@ -133,6 +137,16 @@ launch_bridge_session() {
     if have_command rustos-mutter; then
         rustos-mutter --serve &
         status "ready: compositor bridge PID $!"
+    fi
+
+    if have_command rustos-gnome-shell; then
+        status "launch: rustos-gnome-shell (bridge)"
+        exec rustos-gnome-shell --wayland
+    fi
+
+    if have_command gnome-shell; then
+        status "launch: gnome-shell (bridge)"
+        exec gnome-shell --wayland
     fi
 
     while :; do
@@ -182,8 +196,8 @@ if have_command gnome-shell; then
         rustos-mutter --serve &
         status "launch: gnome-shell --wayland (compositor bridge PID $!)"
     fi
-    status "launch: gnome-shell --wayland"
-    exec gnome-shell --wayland
+    status "launch: rustos-gnome-shell"
+    exec rustos-gnome-shell --wayland
 fi
 
 launch_bridge_session

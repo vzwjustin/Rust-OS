@@ -298,9 +298,12 @@ pub fn userspace_init_available() -> bool {
 
 /// Spawn `/bin/init` or `/init` via `linux_compat::desktop` while the kernel
 /// compositor loop keeps running.
-pub fn spawn_userspace_init() -> Result<u32, InitramfsError> {
+pub fn spawn_userspace_init(
+    boot: crate::linux_compat::desktop::SessionBoot,
+) -> Result<u32, InitramfsError> {
     let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
-    crate::linux_compat::desktop::spawn_session_init(path).map_err(|_| InitramfsError::InitNotFound)
+    crate::linux_compat::desktop::spawn_session_init(path, boot)
+        .map_err(|_| InitramfsError::InitNotFound)
 }
 
 /// Try to exec `/bin/init` or `/init` and enter user mode.
@@ -308,7 +311,7 @@ pub fn spawn_userspace_init() -> Result<u32, InitramfsError> {
 /// # Safety
 /// Never returns on success.
 pub unsafe fn boot_userspace_init() -> ! {
-    match spawn_userspace_init() {
+    match spawn_userspace_init(crate::linux_compat::desktop::SessionBoot::Desktop) {
         Ok(pid) => {
             crate::serial_println!(
                 "init: PID {} queued; kernel desktop loop will service it",

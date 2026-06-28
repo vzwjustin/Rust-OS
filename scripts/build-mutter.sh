@@ -19,7 +19,7 @@ BUILD_DIR="$PROJECT_DIR/build/mutter-build"
 SYSROOT="$PROJECT_DIR/build/mutter-sysroot"
 ROOTFS="$PROJECT_DIR/userspace/rootfs"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
-ALPINE_VERSION="v3.21"
+ALPINE_VERSION="edge"
 ALPINE_ARCH="x86_64"
 
 # --- Phase 1: Download Alpine packages directly (curl, no apk-static needed) ---
@@ -166,6 +166,16 @@ PACKAGES="
     libdisplay-info-dev
     libdrm
     libdrm-dev
+    mesa
+    mesa-dev
+    mesa-gles
+    mesa-egl
+    mesa-gl
+    mesa-glapi
+    elogind
+    elogind-dev
+    libgudev
+    libgudev-dev
 "
 
 fetch_package() {
@@ -173,7 +183,12 @@ fetch_package() {
     for repo in main community; do
         URL="$ALPINE_MIRROR/$ALPINE_VERSION/$repo/$ALPINE_ARCH/"
         # List directory and find matching package
-        PKG_FILE=$(curl -s "$URL" | grep -o "href=\"${pkg}-[0-9][^\"]*\.apk\"" | head -1 | sed 's/href="//;s/"//')
+        PKG_FILE=$(curl -fsSL "$URL" | APK_PKG="$pkg" python3 -c 'import os, re, sys
+pkg = os.environ["APK_PKG"]
+for href, label in re.findall(r"href=\"([^\"]*\.apk)\">([^<]*\.apk)<", sys.stdin.read()):
+    if label.startswith(pkg + "-"):
+        print(href)
+        break')
         if [ -n "$PKG_FILE" ]; then
             echo "  Downloading $PKG_FILE..."
             curl -sL "$URL$PKG_FILE" -o "$BUILD_DIR/${pkg}.apk"
@@ -196,6 +211,9 @@ echo "  Creating GCC compatibility stubs..."
 LLVM_BIN="/opt/homebrew/opt/llvm/bin"
 "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/usr/lib/libgcc.a" 2>/dev/null || true
 "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/usr/lib/libgcc_s.a" 2>/dev/null || true
+"$LLVM_BIN/llvm-ar" rcs "$SYSROOT/usr/lib/libintl.a" 2>/dev/null || true
+rm -f "$SYSROOT/usr/lib/libintl.so"
+ln -s libintl.a "$SYSROOT/usr/lib/libintl.so"
 echo '' | clang -target x86_64-alpine-linux-musl -c -x c - -o "$SYSROOT/usr/lib/crtbeginS.o" 2>/dev/null || true
 echo '' | clang -target x86_64-alpine-linux-musl -c -x c - -o "$SYSROOT/usr/lib/crtendS.o" 2>/dev/null || true
 echo '' | clang -target x86_64-alpine-linux-musl -c -x c - -o "$SYSROOT/usr/lib/crtbegin.o" 2>/dev/null || true
@@ -227,6 +245,33 @@ Description: GSettings desktop schemas (stub for cross-compile)
 Version: 47.1
 Cflags: -I${includedir}
 GDS_EOF
+
+# libei-1.0 and libeis-1.0 stubs (Alpine 3.21 has 1.3.0, Mutter needs >= 1.3.901)
+cat > "$SYSROOT/usr/lib/pkgconfig/libeis-1.0.pc" << 'LIBEIS_EOF'
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libeis-1.0
+Description: libeis (stub for cross-compile)
+Version: 1.3.901
+Libs: -L${libdir} -leis-1.0
+Cflags: -I${includedir}
+LIBEIS_EOF
+
+cat > "$SYSROOT/usr/lib/pkgconfig/libei-1.0.pc" << 'LIBEI_EOF'
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libei-1.0
+Description: libei (stub for cross-compile)
+Version: 1.3.901
+Libs: -L${libdir} -lei-1.0
+Cflags: -I${includedir}
+LIBEI_EOF
 
 # --- Phase 3: Set up cross-compilation ---
 
@@ -276,8 +321,8 @@ rm -rf build-rustos
 meson setup build-rustos \
     --cross-file "$BUILD_DIR/mutter-cross.txt" \
     -Dopengl=false \
-    -Dgles2=false \
-    -Degl=false \
+    -Dgles2=true \
+    -Degl=true \
     -Dxwayland=false \
     -Dremote_desktop=false \
     -Dlibgnome_desktop=false \
@@ -288,6 +333,7 @@ meson setup build-rustos \
     -Ddocs=false \
     -Dprofiler=false \
     -Dfonts=false \
+    -Dbash_completion=false \
     -Dtests=disabled \
     -Dcogl_tests=false \
     -Dclutter_tests=false \

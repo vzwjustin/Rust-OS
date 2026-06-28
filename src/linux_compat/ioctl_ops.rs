@@ -499,6 +499,14 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
             }
             Ok(0)
         }
+        req if crate::vfs::drmfs::is_drm_ioctl(req) => {
+            if argp == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            crate::vfs::drmfs::dispatch_ioctl_for_fd(fd, req as u32, argp)
+                .map(|_| 0)
+                .map_err(|_| LinuxError::ENOTTY)
+        }
         _ => Err(LinuxError::ENOTTY),
     }
 }

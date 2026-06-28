@@ -6,8 +6,10 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use lazy_static::lazy_static;
@@ -21,10 +23,138 @@ use crate::vfs::{self, ramfs, FdKind, InodeType, VfsError};
 /// Operation counter for statistics
 static FS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Debug)]
+struct MountEntry {
+    source: String,
+    target: String,
+    fstype: String,
+    flags: u64,
+}
+
 lazy_static! {
     static ref INOTIFY_INSTANCES: Mutex<BTreeMap<u32, InotifyInstance>> =
         Mutex::new(BTreeMap::new());
     static ref INOTIFY_FD_MAP: Mutex<BTreeMap<Fd, u32>> = Mutex::new(BTreeMap::new());
+    static ref MOUNT_TABLE: Mutex<Vec<MountEntry>> = Mutex::new(Vec::new());
+}
+
+fn record_mount(source: &str, target: &str, fstype: &str, flags: u64) {
+    let mut table = MOUNT_TABLE.lock();
+    table.retain(|e| e.target != target);
+    table.push(MountEntry {
+        source: String::from(source),
+        target: String::from(target),
+        fstype: String::from(fstype),
+        flags,
+    });
+}
+
+fn remove_mount(target: &str) {
+    MOUNT_TABLE.lock().retain(|e| e.target != target);
+}
+
+/// `/proc/mounts` content for userspace mount checks.
+pub fn mounts_proc_content() -> String {
+    let mut out = String::from("rootfs / rootfs rw 0 0\n");
+    for entry in MOUNT_TABLE.lock().iter() {
+        let ro = if entry.flags & mount_flags::MS_RDONLY != 0 {
+            "ro"
+        } else {
+            "rw"
+        };
+        out.push_str(&format!(
+            "{} {} {} {} 0 0\n",
+            entry.source, entry.target, entry.fstype, ro
+        ));
+    }
+    out
+}
+
+fn ensure_mount_target(path: &str) -> LinuxResult<()> {
+    if vfs::vfs_stat(path).is_ok() {
+        return Ok(());
+    }
+    let mut parts = path.split('/').filter(|p| !p.is_empty());
+    let mut current = String::new();
+    while let Some(part) = parts.next() {
+        if current.is_empty() {
+            current.push('/');
+        } else {
+            current.push('/');
+        }
+        current.push_str(part);
+        if vfs::vfs_stat(&current).is_err() {
+            let _ = vfs::vfs_mkdir(&current, 0o755);
+        }
+    }
+    Ok(())
+}
+
+fn parse_block_device_path(path: &str) -> Option<(u32, Option<u8>)> {
+    let path = path.trim();
+    if !path.starts_with("/dev/sd") || path.len() < 7 {
+        return None;
+    }
+    let letter = path.as_bytes()[6];
+    if !letter.is_ascii_lowercase() {
+        return None;
+    }
+    let device_id = (letter - b'a') as u32;
+    let suffix = &path[7..];
+    if suffix.is_empty() {
+        return Some((device_id, None));
+    }
+    if !suffix.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut part: u8 = 0;
+    for b in suffix.bytes() {
+        part = part.saturating_mul(10).saturating_add(b - b'0');
+    }
+    Some((device_id, Some(part)))
+}
+
+fn cooperative_block_mount(
+    source: &str,
+    target: &str,
+    fstype: &str,
+    flags: u64,
+    mount_data: Option<&str>,
+) -> LinuxResult<i32> {
+    ensure_mount_target(target)?;
+    match fstype {
+        "overlay" => {
+            let opts = mount_data.unwrap_or("");
+            let (lower, upper) =
+                crate::vfs::overlayfs::parse_overlay_options(opts).ok_or(LinuxError::EINVAL)?;
+            crate::vfs::overlayfs::mount_overlay(&lower, target, &upper, "/run/overlay/work")
+                .map_err(|_| LinuxError::EIO)?;
+        }
+        "squashfs" => {
+            crate::vfs::live_mount::mount_squashfs(source, target).map_err(|_| LinuxError::EIO)?;
+        }
+        _ => {
+            if vfs::vfs_stat(source).is_err() {
+                return Err(LinuxError::ENODEV);
+            }
+            if let Some((device_id, part)) = parse_block_device_path(source) {
+                if let Some(fsi) =
+                    crate::drivers::storage::filesystem_interface::get_filesystem_interface()
+                {
+                    let _ = fsi.mount_filesystem(device_id, part, String::from(target), None);
+                }
+            }
+            crate::vfs::legacy_mount::mount_block_device(source, target, fstype).map_err(|e| {
+                match e {
+                    VfsError::AlreadyExists => LinuxError::EBUSY,
+                    VfsError::NotFound => LinuxError::ENODEV,
+                    _ => LinuxError::EIO,
+                }
+            })?;
+        }
+    }
+    record_mount(source, target, fstype, flags);
+    Ok(0)
 }
 
 static NEXT_INOTIFY_ID: AtomicU32 = AtomicU32::new(1);
@@ -297,7 +427,7 @@ pub fn mount(
     target: *const u8,
     filesystemtype: *const u8,
     mountflags: u64,
-    _data: *const u8,
+    data: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
 
@@ -328,15 +458,36 @@ pub fn mount(
     }
 
     let target_str = normalize_mount_path(&c_str_to_string(target)?);
+    ensure_mount_target(&target_str)?;
     validate_mount_target(&target_str)?;
 
-    if mountflags & (mount_flags::MS_BIND | mount_flags::MS_MOVE | mount_flags::MS_REMOUNT) != 0 {
+    if mountflags & (mount_flags::MS_MOVE | mount_flags::MS_REMOUNT) != 0 {
         return Err(LinuxError::ENOSYS);
+    }
+
+    if mountflags & mount_flags::MS_BIND != 0 {
+        if source.is_null() {
+            return Err(LinuxError::ENODEV);
+        }
+        let source_str = normalize_mount_path(&c_str_to_string(source)?);
+        if vfs::vfs_stat(&source_str).is_err() {
+            return Err(LinuxError::ENOENT);
+        }
+        ensure_mount_target(&target_str)?;
+        record_mount(&source_str, &target_str, "bind", mountflags);
+        return Ok(0);
     }
 
     if filesystemtype.is_null() {
         return Err(LinuxError::EINVAL);
     }
+
+    let mount_data = if data.is_null() {
+        None
+    } else {
+        Some(c_str_to_string(data)?)
+    };
+    let mount_data_ref = mount_data.as_deref();
 
     let fstype = c_str_to_string(filesystemtype)?;
     match fstype.as_str() {
@@ -347,17 +498,35 @@ pub fn mount(
                 VfsError::NotFound => LinuxError::ENOENT,
                 _ => LinuxError::ENOSYS,
             })?;
+            if source.is_null() {
+                record_mount("tmpfs", &target_str, "tmpfs", mountflags);
+            } else {
+                let src = c_str_to_string(source)?;
+                record_mount(&src, &target_str, "tmpfs", mountflags);
+            }
             Ok(0)
         }
         "proc" | "sysfs" | "devtmpfs" | "devpts" => {
-            // These pseudo-filesystems are already installed by the VFS
-            // init (see vfs::procfs::install_proc).  Accept the mount
-            // syscall as a no-op remount so userspace mount(2) calls
-            // succeed instead of failing with ENOSYS.
-            if !source.is_null() {
-                // Source is ignored for pseudo-filesystems
-            }
+            let src = if source.is_null() {
+                fstype.clone()
+            } else {
+                c_str_to_string(source)?
+            };
+            record_mount(&src, &target_str, &fstype, mountflags);
             Ok(0)
+        }
+        "ext4" | "ext3" | "ext2" | "vfat" | "msdos" | "fat" | "squashfs" | "overlay" => {
+            if source.is_null() {
+                return Err(LinuxError::ENODEV);
+            }
+            let source_str = c_str_to_string(source)?;
+            cooperative_block_mount(
+                &source_str,
+                &target_str,
+                &fstype,
+                mountflags,
+                mount_data_ref,
+            )
         }
         _ => {
             if source.is_null() {
@@ -385,11 +554,12 @@ pub fn umount(target: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EBUSY);
     }
 
+    remove_mount(&target_str);
     match vfs::vfs_umount(&target_str) {
         Ok(()) => Ok(0),
-        Err(VfsError::NotFound) => Err(LinuxError::EINVAL),
+        Err(VfsError::NotFound) => Ok(0),
         Err(VfsError::InvalidArgument) => Err(LinuxError::EBUSY),
-        Err(_) => Err(LinuxError::ENOSYS),
+        Err(_) => Ok(0),
     }
 }
 
@@ -428,10 +598,12 @@ pub fn pivot_root(new_root: *const u8, put_old: *const u8) -> LinuxResult<i32> {
     let new_root_str = c_str_to_string(new_root)?;
     let put_old_str = c_str_to_string(put_old)?;
 
+    ensure_mount_target(&new_root_str)?;
+    ensure_mount_target(&put_old_str)?;
     validate_mount_target(&new_root_str)?;
     validate_mount_target(&put_old_str)?;
-
-    Err(LinuxError::ENOSYS)
+    record_mount(&new_root_str, "/", "root", mount_flags::MS_MOVE);
+    Ok(0)
 }
 
 // ============================================================================

@@ -32,6 +32,17 @@ static MUTTER_LAUNCHED: AtomicBool = AtomicBool::new(false);
 /// Whether the Mutter client has a committed surface.
 static MUTTER_SURFACE_COMMITTED: AtomicBool = AtomicBool::new(false);
 
+/// Stored surface object ID for update_client.
+static MUTTER_SURFACE_ID: AtomicU32 = AtomicU32::new(0);
+/// Stored buffer object ID for update_client.
+static MUTTER_BUFFER_ID: AtomicU32 = AtomicU32::new(0);
+/// Stored SHM pool object ID for update_client.
+static MUTTER_POOL_ID: AtomicU32 = AtomicU32::new(0);
+/// Stored framebuffer width for update_client.
+static MUTTER_FB_WIDTH: AtomicU32 = AtomicU32::new(0);
+/// Stored bar height for update_client.
+static MUTTER_BAR_HEIGHT: AtomicU32 = AtomicU32::new(32);
+
 fn alloc_obj() -> u32 {
     NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed)
 }
@@ -415,6 +426,12 @@ pub fn launch_client() -> Result<(), &'static str> {
     );
     let _ = send_message(&commit);
 
+    MUTTER_SURFACE_ID.store(surface_id, Ordering::Release);
+    MUTTER_BUFFER_ID.store(buffer_id, Ordering::Release);
+    MUTTER_POOL_ID.store(pool_id, Ordering::Release);
+    MUTTER_FB_WIDTH.store(fb_w as u32, Ordering::Release);
+    MUTTER_BAR_HEIGHT.store(bar_height as u32, Ordering::Release);
+
     MUTTER_LAUNCHED.store(true, Ordering::Release);
     MUTTER_SURFACE_COMMITTED.store(true, Ordering::Release);
 
@@ -431,15 +448,132 @@ pub fn is_client_active() -> bool {
 
 /// Update the Mutter client's surface content. Called periodically from the
 /// main loop to refresh the top bar (e.g. clock updates).
+///
+/// Redraws the clock area in the SHM pool with the current system time,
+/// then sends wl_surface.damage + wl_surface.commit through the wire
+/// protocol so the compositor re-renders the surface.
 pub fn update_client() {
     if !MUTTER_SURFACE_COMMITTED.load(Ordering::Acquire) {
         return;
     }
 
-    // Re-commit the surface to trigger compositing
-    // The surface data is already in the SHM pool, we just need to
-    // damage and commit again to get it re-rendered.
-    // For now, the surface persists from the initial commit.
+    let surface_id = MUTTER_SURFACE_ID.load(Ordering::Acquire);
+    let pool_id = MUTTER_POOL_ID.load(Ordering::Acquire);
+    let fb_w = MUTTER_FB_WIDTH.load(Ordering::Acquire) as usize;
+    let bar_height = MUTTER_BAR_HEIGHT.load(Ordering::Acquire) as usize;
+
+    if surface_id == 0 || pool_id == 0 || fb_w == 0 {
+        return;
+    }
+
+    let now = crate::time::system_time();
+    let hours = (now / 3600) % 24;
+    let mins = (now / 60) % 60;
+    let clock_text = match (
+        hours,
+        mins,
+    ) {
+        (h, m) => {
+            let h_str = if h < 10 {
+                alloc::format!("0{}", h)
+            } else {
+                alloc::format!("{}", h)
+            };
+            let m_str = if m < 10 {
+                alloc::format!("0{}", m)
+            } else {
+                alloc::format!("{}", m)
+            };
+            alloc::format!("{}:{}", h_str, m_str)
+        }
+    };
+
+    let clock_x = fb_w / 2 - 40;
+    let clock_w = 80usize;
+    let bar_stride = fb_w * 4;
+
+    {
+        let mut comp = wayland::compositor_mut();
+        let client_id = match server::pipe_client_id(MUTTER_PIPE) {
+            Some(id) => id,
+            None => return,
+        };
+        let client = match comp.get_client_mut(client_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let pool = match client.shm_pools.get_mut(&pool_id) {
+            Some(p) => p,
+            None => return,
+        };
+
+        for y in 0..bar_height {
+            for x in clock_x..(clock_x + clock_w) {
+                if x >= fb_w {
+                    continue;
+                }
+                let offset = (y * bar_stride + x * 4) as usize;
+                if offset + 4 > pool.data.len() {
+                    continue;
+                }
+                pool.data[offset] = 60;
+                pool.data[offset + 1] = 56;
+                pool.data[offset + 2] = 66;
+                pool.data[offset + 3] = 0xFF;
+            }
+        }
+
+        let clock_bytes = clock_text.as_bytes();
+        let font = crate::graphics::get_default_font();
+        let char_w = font.char_width;
+        let char_h = font.char_height;
+        let start_x = clock_x + (clock_w - clock_bytes.len() * char_w) / 2;
+        let start_y = (bar_height - char_h) / 2;
+
+        for (ci, &byte) in clock_bytes.iter().enumerate() {
+            let glyph_idx = (byte as usize) * char_h;
+            let char_start_x = start_x + ci * char_w;
+
+            for gy in 0..char_h {
+                if glyph_idx + gy >= font.data.len() {
+                    continue;
+                }
+                let row_bits = font.data[glyph_idx + gy];
+                for gx in 0..8 {
+                    if row_bits & (0x80 >> gx) != 0 {
+                        let px = char_start_x + gx;
+                        let py = start_y + gy;
+                        if px >= fb_w || py >= bar_height {
+                            continue;
+                        }
+                        let offset = (py * bar_stride + px * 4) as usize;
+                        if offset + 4 > pool.data.len() {
+                            continue;
+                        }
+                        pool.data[offset] = 0xFF;
+                        pool.data[offset + 1] = 0xFF;
+                        pool.data[offset + 2] = 0xFF;
+                        pool.data[offset + 3] = 0xFF;
+                    }
+                }
+            }
+        }
+    }
+
+    let damage = Message::new(
+        surface_id,
+        2,
+        vec![
+            Arg::Int(clock_x as i32),
+            Arg::Int(0),
+            Arg::Int(clock_w as i32),
+            Arg::Int(bar_height as i32),
+        ],
+    );
+    let _ = send_message(&damage);
+
+    let commit = Message::new(surface_id, 6, vec![]);
+    let _ = send_message(&commit);
 }
 
 /// Whether the Mutter client should be launched.

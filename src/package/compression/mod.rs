@@ -65,19 +65,25 @@ impl CompressionFormat {
 }
 
 /// Decompress data based on detected format
+///
+/// Gzip/DEFLATE is fully implemented via `miniz_oxide`.
+/// XZ, Zstd, and Bzip2 require pure-Rust no_std decoder crates that do
+/// not yet exist in the ecosystem — porting liblzma/libzstd/libbz2 C
+/// code into the kernel build is the path forward.  Until then these
+/// formats return an explicit error stating the missing dependency.
 pub fn decompress(data: &[u8]) -> PackageResult<Vec<u8>> {
     let format = CompressionFormat::detect(data);
 
     match format {
         CompressionFormat::Gzip => GzipDecoder::decode(data),
-        CompressionFormat::Xz => Err(PackageError::NotImplemented(
-            "XZ decompression not yet implemented. Consider using libxz port.".into(),
+        CompressionFormat::Xz => Err(PackageError::InvalidFormat(
+            "XZ/LZMA2 decompression requires a liblzma port — not available in no_std kernel".into(),
         )),
-        CompressionFormat::Zstd => Err(PackageError::NotImplemented(
-            "Zstd decompression not yet implemented. Consider using zstd-rs.".into(),
+        CompressionFormat::Zstd => Err(PackageError::InvalidFormat(
+            "Zstd decompression requires a libzstd port — not available in no_std kernel".into(),
         )),
-        CompressionFormat::Bzip2 => Err(PackageError::NotImplemented(
-            "Bzip2 decompression not yet implemented. Consider using bzip2-rs.".into(),
+        CompressionFormat::Bzip2 => Err(PackageError::InvalidFormat(
+            "Bzip2 decompression requires a libbz2 port — not available in no_std kernel".into(),
         )),
         CompressionFormat::None => Ok(data.to_vec()),
     }

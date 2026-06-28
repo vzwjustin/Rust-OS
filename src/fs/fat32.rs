@@ -121,6 +121,7 @@ pub struct Fat32LfnEntry {
 #[derive(Debug)]
 pub struct Fat32FileSystem {
     device_id: u32,
+    sector_base: u64,
     boot_sector: Fat32BootSector,
     fs_info: Fat32FsInfo,
     bytes_per_sector: u32,
@@ -139,8 +140,13 @@ pub struct Fat32FileSystem {
 impl Fat32FileSystem {
     /// Create new FAT32 filesystem instance
     pub fn new(device_id: u32) -> FsResult<Self> {
+        Self::new_at(device_id, 0)
+    }
+
+    pub fn new_at(device_id: u32, sector_base: u64) -> FsResult<Self> {
         let mut fs = Self {
             device_id,
+            sector_base,
             boot_sector: unsafe { mem::zeroed() },
             fs_info: unsafe { mem::zeroed() },
             bytes_per_sector: 0,
@@ -167,7 +173,8 @@ impl Fat32FileSystem {
         let mut buffer = vec![0u8; 512];
 
         // Boot sector is at sector 0
-        read_storage_sectors(self.device_id, 0, &mut buffer).map_err(|_| FsError::IoError)?;
+        read_storage_sectors(self.device_id, self.sector_base, &mut buffer)
+            .map_err(|_| FsError::IoError)?;
 
         // Parse boot sector
         self.boot_sector =
@@ -205,8 +212,12 @@ impl Fat32FileSystem {
 
         let mut buffer = vec![0u8; 512];
 
-        read_storage_sectors(self.device_id, self.boot_sector.fs_info as u64, &mut buffer)
-            .map_err(|_| FsError::IoError)?;
+        read_storage_sectors(
+            self.device_id,
+            self.sector_base + self.boot_sector.fs_info as u64,
+            &mut buffer,
+        )
+        .map_err(|_| FsError::IoError)?;
 
         self.fs_info = unsafe { core::ptr::read_unaligned(buffer.as_ptr() as *const Fat32FsInfo) };
 
@@ -278,8 +289,12 @@ impl Fat32FileSystem {
 
         // Read FAT sector
         let mut buffer = vec![0u8; self.bytes_per_sector as usize];
-        read_storage_sectors(self.device_id, fat_sector as u64, &mut buffer)
-            .map_err(|_| FsError::IoError)?;
+        read_storage_sectors(
+            self.device_id,
+            self.sector_base + fat_sector as u64,
+            &mut buffer,
+        )
+        .map_err(|_| FsError::IoError)?;
 
         // Extract FAT entry (mask off high 4 bits)
         let fat_entry = u32::from_le_bytes([
@@ -333,8 +348,12 @@ impl Fat32FileSystem {
         let start_sector = self.cluster_to_sector(cluster);
         let mut buffer = vec![0u8; self.bytes_per_cluster as usize];
 
-        read_storage_sectors(self.device_id, start_sector as u64, &mut buffer)
-            .map_err(|_| FsError::IoError)?;
+        read_storage_sectors(
+            self.device_id,
+            self.sector_base + start_sector as u64,
+            &mut buffer,
+        )
+        .map_err(|_| FsError::IoError)?;
 
         // Cache the cluster
         {
@@ -673,8 +692,12 @@ impl Fat32FileSystem {
 
                 // Read-modify-write FAT sector
                 let mut buffer = vec![0u8; self.bytes_per_sector as usize];
-                read_storage_sectors(self.device_id, fat_sector as u64, &mut buffer)
-                    .map_err(|_| FsError::IoError)?;
+                read_storage_sectors(
+                    self.device_id,
+                    self.sector_base + fat_sector as u64,
+                    &mut buffer,
+                )
+                .map_err(|_| FsError::IoError)?;
 
                 let value_bytes = (value & 0x0FFFFFFF).to_le_bytes();
                 buffer[entry_offset..entry_offset + 4].copy_from_slice(&value_bytes);

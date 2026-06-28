@@ -17,6 +17,7 @@
 - `make check`: compile and link the debug kernel (same as `make build`; catches link failures that `cargo check` / `--check-only` miss).
 - `./build_rustos.sh --check-only --test --release`: scripted builds; see `./build_rustos.sh --help`.
 - `RUSTOS_QEMU_DISPLAY=cocoa|gtk` selects the QEMU display backend for scripts.
+- Live/install media: `make installer-rootfs`, `make installer-initramfs`, `make live-squashfs`, `make live-iso`, or `make install-media` for the full pipeline (installer initramfs + compressed live rootfs + ISO tree). See `docs/INSTALLER.md`.
 
 ## Coding Style & Naming Conventions
 - Rust nightly is required (`rust-toolchain.toml`); the kernel is `no_std`, so prefer `core`/`alloc` over `std`.

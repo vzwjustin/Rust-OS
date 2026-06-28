@@ -1,75 +1,124 @@
 #!/usr/bin/env python3
-"""Resolve Alpine apk package names (with dependencies) from APKINDEX."""
+"""Resolve Alpine apk package names and virtual dependencies from APKINDEX."""
 
 from __future__ import annotations
 
+import os
+import re
 import sys
 import tarfile
+from dataclasses import dataclass
 from io import BytesIO
 from urllib.request import urlopen
 
-MIRROR = "https://dl-cdn.alpinelinux.org/alpine"
-VERSION = "v3.21"
-ARCH = "x86_64"
+
+MIRROR = os.environ.get("ALPINE_MIRROR", "https://dl-cdn.alpinelinux.org/alpine")
+VERSION = os.environ.get("ALPINE_VERSION", "v3.21")
+ARCH = os.environ.get("ALPINE_ARCH", "x86_64")
 REPOS = ("main", "community")
 
 
-def fetch_index(repo: str) -> dict[str, set[str]]:
+@dataclass
+class Package:
+    deps: set[str]
+    provides: set[str]
+
+
+def dep_name(token: str) -> str:
+    token = token.strip()
+    if not token or token.startswith("!"):
+        return ""
+    return re.split(r"[<>=~]", token, maxsplit=1)[0]
+
+
+def flush_record(
+    record: dict[str, str],
+    packages: dict[str, Package],
+    providers: dict[str, set[str]],
+) -> None:
+    name = record.get("P", "")
+    if not name:
+        return
+
+    deps = {dep for dep in (dep_name(token) for token in record.get("D", "").split()) if dep}
+    provides = {
+        dep for dep in (dep_name(token) for token in record.get("p", "").split()) if dep
+    }
+    packages[name] = Package(deps=deps, provides=provides)
+
+    providers.setdefault(name, set()).add(name)
+    for provided in provides:
+        providers.setdefault(provided, set()).add(name)
+
+
+def fetch_index(repo: str) -> tuple[dict[str, Package], dict[str, set[str]]]:
     url = f"{MIRROR}/{VERSION}/{repo}/{ARCH}/APKINDEX.tar.gz"
     data = urlopen(url, timeout=120).read()
-    packages: dict[str, set[str]] = {}
+    packages: dict[str, Package] = {}
+    providers: dict[str, set[str]] = {}
 
     with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as tf:
-        text = tf.extractfile("APKINDEX").read().decode("utf-8", errors="replace")
+        member = tf.extractfile("APKINDEX")
+        if member is None:
+            return packages, providers
+        text = member.read().decode("utf-8", errors="replace")
 
     record: dict[str, str] = {}
     for line in text.splitlines():
         if not line.strip():
-            if "P" in record:
-                name = record["P"]
-                deps: set[str] = set()
-                for token in record.get("D", "").split():
-                    if token.startswith("so:") or token.startswith("cmd:") or token.startswith("pc:"):
-                        continue
-                    dep = token.split("=")[0].split("<")[0].split(">")[0]
-                    if dep:
-                        deps.add(dep)
-                packages[name] = deps
+            flush_record(record, packages, providers)
             record = {}
             continue
         if ":" in line:
             key, val = line.split(":", 1)
             record[key] = val.strip()
 
-    return packages
+    flush_record(record, packages, providers)
+    return packages, providers
 
 
-def merge_indexes() -> dict[str, set[str]]:
-    merged: dict[str, set[str]] = {}
+def merge_indexes() -> tuple[dict[str, Package], dict[str, set[str]]]:
+    packages: dict[str, Package] = {}
+    providers: dict[str, set[str]] = {}
     for repo in REPOS:
-        idx = fetch_index(repo)
-        for name, deps in idx.items():
-            merged.setdefault(name, set()).update(deps)
-    return merged
+        repo_packages, repo_providers = fetch_index(repo)
+        packages.update(repo_packages)
+        for provided, names in repo_providers.items():
+            providers.setdefault(provided, set()).update(names)
+    return packages, providers
 
 
-def resolve(packages: dict[str, set[str]], roots: list[str]) -> list[str]:
-    seen: set[str] = set()
-    order: list[str] = []
+def choose_provider(token: str, providers: dict[str, set[str]]) -> str | None:
+    choices = sorted(providers.get(token, ()))
+    if not choices:
+        return None
+    exact = [name for name in choices if name == token]
+    if exact:
+        return exact[0]
+    return choices[0]
 
-    def visit(name: str) -> None:
-        if name in seen:
-            return
-        if name not in packages:
-            return
-        seen.add(name)
-        for dep in sorted(packages[name]):
-            visit(dep)
-        order.append(name)
 
-    for root in roots:
-        visit(root)
-    return order
+def resolve(
+    packages: dict[str, Package],
+    providers: dict[str, set[str]],
+    roots: list[str],
+) -> tuple[list[str], list[str]]:
+    resolved: set[str] = set()
+    missing: set[str] = set()
+    stack = list(reversed(roots))
+
+    while stack:
+        token = stack.pop()
+        package_name = choose_provider(token, providers)
+        if package_name is None:
+            missing.add(token)
+            continue
+        if package_name in resolved:
+            continue
+        resolved.add(package_name)
+        stack.extend(sorted(packages[package_name].deps, reverse=True))
+
+    return sorted(resolved), sorted(missing)
 
 
 def main() -> int:
@@ -82,11 +131,11 @@ def main() -> int:
         "cantarell-fonts",
         "mutter",
     ]
-    packages = merge_indexes()
-    missing = [r for r in roots if r not in packages]
+
+    packages, providers = merge_indexes()
+    resolved, missing = resolve(packages, providers, roots)
     if missing:
-        print(f"WARNING: packages not in index: {missing}", file=sys.stderr)
-    resolved = resolve(packages, roots)
+        print(f"WARNING: unresolved dependencies: {', '.join(missing)}", file=sys.stderr)
     for name in resolved:
         print(name)
     return 0
