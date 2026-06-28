@@ -9,8 +9,9 @@
 //! - Robust error handling
 
 use crate::memory::{
-    align_up, allocate_memory, allocate_memory_with_guards, translate_addr, MemoryProtection,
-    MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE, USER_SPACE_END, USER_SPACE_START,
+    align_up, allocate_memory, allocate_memory_at, allocate_memory_with_guards, translate_addr,
+    MemoryProtection, MemoryRegionType, VirtualMemoryRegion, PAGE_SIZE, USER_SPACE_END,
+    USER_SPACE_START,
 };
 use crate::process::Pid;
 use alloc::vec::Vec;
@@ -282,6 +283,7 @@ impl ElfLoader {
         &self,
         phdrs: &[Elf64ProgramHeader],
         file_size: usize,
+        load_base: Option<VirtAddr>,
     ) -> Result<(), ElfLoaderError> {
         for phdr in phdrs.iter() {
             // Only validate LOAD segments
@@ -304,8 +306,15 @@ impl ElfLoader {
                 return Err(ElfLoaderError::InvalidSegmentSize);
             }
 
-            // Validate virtual address is in user space
-            if phdr.p_vaddr < USER_SPACE_START as u64 || phdr.p_vaddr >= USER_SPACE_END as u64 {
+            // Validate virtual address is in user space (ET_DYN uses load_base + p_vaddr)
+            let vaddr = if let Some(base) = load_base {
+                base.as_u64()
+                    .checked_add(phdr.p_vaddr)
+                    .ok_or(ElfLoaderError::InvalidVirtualAddress)?
+            } else {
+                phdr.p_vaddr
+            };
+            if vaddr < USER_SPACE_START as u64 || vaddr >= USER_SPACE_END as u64 {
                 return Err(ElfLoaderError::InvalidVirtualAddress);
             }
 
@@ -366,16 +375,18 @@ impl ElfLoader {
         }
     }
 
-    /// Load a single segment from ELF file
+    /// Load a single segment from ELF file.
+    ///
+    /// When `map_address` is set, the segment is mapped at that fixed virtual
+    /// address (used for ET_DYN shared libraries). Otherwise a fresh region is
+    /// allocated at an arbitrary address (used for ET_EXEC / PIE executables).
     fn load_segment(
         &self,
         phdr: &Elf64ProgramHeader,
         binary_data: &[u8],
         base_address: VirtAddr,
+        map_address: Option<VirtAddr>,
     ) -> Result<VirtualMemoryRegion, ElfLoaderError> {
-        // Calculate load address (base + virtual address)
-        let _load_vaddr = VirtAddr::new(base_address.as_u64() + phdr.p_vaddr);
-
         // Determine protection and region type
         let protection = self.flags_to_protection(phdr.p_flags);
         let region_type = if protection.executable {
@@ -389,8 +400,12 @@ impl ElfLoader {
         let aligned_size = align_up(phdr.p_memsz as usize, PAGE_SIZE);
         let mut load_protection = protection;
         load_protection.writable = true;
-        let region_start = allocate_memory(aligned_size, region_type, load_protection)
-            .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
+        let region_start = if let Some(vaddr) = map_address {
+            allocate_memory_at(vaddr, aligned_size, region_type, load_protection)
+        } else {
+            allocate_memory(aligned_size, region_type, load_protection)
+        }
+        .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
 
         // Copy file data to memory if present
         if phdr.p_filesz > 0 {
@@ -449,10 +464,16 @@ impl ElfLoader {
 
         // Parse and validate program headers
         let program_headers = self.parse_program_headers(binary_data, &elf_header)?;
-        self.validate_program_headers(&program_headers, binary_data.len())?;
 
         // Calculate base address with ASLR
         let base_address = self.calculate_base_address(elf_header.e_type);
+
+        let load_base = if elf_header.e_type == elf_constants::ET_DYN {
+            Some(base_address)
+        } else {
+            None
+        };
+        self.validate_program_headers(&program_headers, binary_data.len(), load_base)?;
 
         // Load all PT_LOAD segments
         let mut code_regions = Vec::new();
@@ -463,7 +484,7 @@ impl ElfLoader {
                 continue;
             }
 
-            let region = self.load_segment(phdr, binary_data, base_address)?;
+            let region = self.load_segment(phdr, binary_data, base_address, None)?;
 
             if region.protection.executable {
                 code_regions.push(region);
@@ -558,7 +579,7 @@ impl ElfLoader {
         }
 
         let program_headers = self.parse_program_headers(binary_data, &elf_header)?;
-        self.validate_program_headers(&program_headers, binary_data.len())?;
+        self.validate_program_headers(&program_headers, binary_data.len(), Some(load_base))?;
 
         let mut total_size = 0usize;
         for phdr in program_headers.iter() {
@@ -566,7 +587,8 @@ impl ElfLoader {
                 continue;
             }
 
-            let _region = self.load_segment(phdr, binary_data, load_base)?;
+            let map_addr = VirtAddr::new(load_base.as_u64() + phdr.p_vaddr);
+            let _region = self.load_segment(phdr, binary_data, load_base, Some(map_addr))?;
             let segment_end = phdr.p_vaddr.saturating_add(phdr.p_memsz);
             if segment_end as usize > total_size {
                 total_size = segment_end as usize;

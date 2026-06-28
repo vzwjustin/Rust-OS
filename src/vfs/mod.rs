@@ -466,11 +466,9 @@ impl Vfs {
                 }
 
                 if component == ".." {
-                    if ancestors.pop().is_some() {
-                        current = Arc::clone(ancestors.last().unwrap_or(&root));
-                    } else {
-                        current = Arc::clone(&root);
-                    }
+                    current = ancestors
+                        .pop()
+                        .unwrap_or_else(|| Arc::clone(&root));
                     continue;
                 }
 
