@@ -1723,9 +1723,8 @@ impl PageTableManager {
         }
 
         // Create an OffsetPageTable for the new P4.
-        let p4_virt = VirtAddr::new(
-            self.physical_memory_offset.as_u64() + p4_frame.start_address().as_u64(),
-        );
+        let p4_virt =
+            VirtAddr::new(self.physical_memory_offset.as_u64() + p4_frame.start_address().as_u64());
         let p4_table: &mut PageTable = unsafe { &mut *(p4_virt.as_mut_ptr() as *mut PageTable) };
         let mut new_mapper: OffsetPageTable<'static> =
             unsafe { OffsetPageTable::new(p4_table, self.physical_memory_offset) };
@@ -1748,8 +1747,7 @@ impl PageTableManager {
         let current_p4_virt = VirtAddr::new(
             self.physical_memory_offset.as_u64() + current_p4_frame.start_address().as_u64(),
         );
-        let current_p4: &PageTable =
-            unsafe { &*(current_p4_virt.as_ptr() as *const PageTable) };
+        let current_p4: &PageTable = unsafe { &*(current_p4_virt.as_ptr() as *const PageTable) };
 
         for p4_idx in 0..512 {
             let p4_entry = &current_p4[p4_idx];
@@ -1759,19 +1757,13 @@ impl PageTableManager {
                     // User mapping — walk down and remap each page as COW.
                     // We walk the P3/P2/P1 tables directly to avoid scanning
                     // 512 GB worth of 4 KiB pages (134M iterations).
-                    self.clone_user_p4_entry(
-                        p4_idx,
-                        current_p4,
-                        &mut new_mapper,
-                        frame_allocator,
-                    )?;
+                    self.clone_user_p4_entry(p4_idx, current_p4, &mut new_mapper, frame_allocator)?;
                 } else {
                     // Kernel mapping — copy the P4 entry directly so the
                     // child shares the kernel address space. This is safe
                     // because kernel mappings are identical in all processes.
                     unsafe {
-                        let new_p4: &mut PageTable =
-                            &mut *(p4_virt.as_mut_ptr() as *mut PageTable);
+                        let new_p4: &mut PageTable = &mut *(p4_virt.as_mut_ptr() as *mut PageTable);
                         new_p4[p4_idx] = current_p4[p4_idx].clone();
                     }
                 }
@@ -1798,9 +1790,7 @@ impl PageTableManager {
 
         let p4_entry = &current_p4[p4_idx];
         let p3_phys = p4_entry.addr();
-        let p3_virt = VirtAddr::new(
-            self.physical_memory_offset.as_u64() + p3_phys.as_u64(),
-        );
+        let p3_virt = VirtAddr::new(self.physical_memory_offset.as_u64() + p3_phys.as_u64());
         let p3: &PageTable = unsafe { &*(p3_virt.as_ptr() as *const PageTable) };
 
         for p3_idx in 0..512 {
@@ -1812,9 +1802,7 @@ impl PageTableManager {
             // Check for 1 GB huge page
             if p3_entry.flags().contains(Flags::HUGE_PAGE) {
                 // 1 GB huge page — map as COW in the new table.
-                let virt_addr = VirtAddr::new(
-                    ((p4_idx as u64) << 39) | ((p3_idx as u64) << 30),
-                );
+                let virt_addr = VirtAddr::new(((p4_idx as u64) << 39) | ((p3_idx as u64) << 30));
                 let frame_phys = p3_entry.addr();
                 let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(frame_phys);
                 let page: Page<Size4KiB> = Page::containing_address(virt_addr);
@@ -1832,9 +1820,7 @@ impl PageTableManager {
             }
 
             let p2_phys = p3_entry.addr();
-            let p2_virt = VirtAddr::new(
-                self.physical_memory_offset.as_u64() + p2_phys.as_u64(),
-            );
+            let p2_virt = VirtAddr::new(self.physical_memory_offset.as_u64() + p2_phys.as_u64());
             let p2: &PageTable = unsafe { &*(p2_virt.as_ptr() as *const PageTable) };
 
             for p2_idx in 0..512 {
@@ -1846,13 +1832,10 @@ impl PageTableManager {
                 // Check for 2 MB huge page
                 if p2_entry.flags().contains(Flags::HUGE_PAGE) {
                     let virt_addr = VirtAddr::new(
-                        ((p4_idx as u64) << 39)
-                            | ((p3_idx as u64) << 30)
-                            | ((p2_idx as u64) << 21),
+                        ((p4_idx as u64) << 39) | ((p3_idx as u64) << 30) | ((p2_idx as u64) << 21),
                     );
                     let frame_phys = p2_entry.addr();
-                    let frame: PhysFrame<Size4KiB> =
-                        PhysFrame::containing_address(frame_phys);
+                    let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(frame_phys);
                     let page: Page<Size4KiB> = Page::containing_address(virt_addr);
 
                     let cow_flags = Flags::PRESENT | Flags::USER_ACCESSIBLE;
@@ -1867,9 +1850,8 @@ impl PageTableManager {
                 }
 
                 let p1_phys = p2_entry.addr();
-                let p1_virt = VirtAddr::new(
-                    self.physical_memory_offset.as_u64() + p1_phys.as_u64(),
-                );
+                let p1_virt =
+                    VirtAddr::new(self.physical_memory_offset.as_u64() + p1_phys.as_u64());
                 let p1: &PageTable = unsafe { &*(p1_virt.as_ptr() as *const PageTable) };
 
                 for p1_idx in 0..512 {
@@ -1885,8 +1867,7 @@ impl PageTableManager {
                             | ((p1_idx as u64) << 12),
                     );
                     let frame_phys = p1_entry.addr();
-                    let frame: PhysFrame<Size4KiB> =
-                        PhysFrame::containing_address(frame_phys);
+                    let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(frame_phys);
                     let page: Page<Size4KiB> = Page::containing_address(virt_addr);
 
                     // COW: strip the WRITABLE flag so any write triggers
@@ -2510,7 +2491,7 @@ impl MemoryManager {
     }
 
     /// Swap out a victim page to make room for new allocation
-    fn swap_out_victim_page(&self) -> Result<(), MemoryError> {
+    pub fn swap_out_victim_page(&self) -> Result<(), MemoryError> {
         let regions = self.regions.read();
         let mut candidate_pages = Vec::new();
 
