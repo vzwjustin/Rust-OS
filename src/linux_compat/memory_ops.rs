@@ -40,6 +40,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process::{self, ProcessControlBlock};
 use crate::vfs;
 
@@ -113,9 +114,12 @@ fn check_memlock_limit(pcb: &ProcessControlBlock, additional_pages: usize) -> Li
     if limit == u64::MAX {
         return Ok(());
     }
-    let total_pages = pcb.locked_pages.checked_add(additional_pages)
+    let total_pages = pcb
+        .locked_pages
+        .checked_add(additional_pages)
         .ok_or(LinuxError::ENOMEM)?;
-    let new_bytes = (total_pages as u64).checked_mul(4096)
+    let new_bytes = (total_pages as u64)
+        .checked_mul(4096)
         .ok_or(LinuxError::ENOMEM)?;
     if new_bytes > limit {
         Err(LinuxError::ENOMEM)
@@ -1171,22 +1175,18 @@ pub fn move_pages(
 }
 
 /// Helper to convert null-terminated C string to Rust string
-unsafe fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, LinuxError> {
+fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, LinuxError> {
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let mut len = 0;
-    while len < 4096 && *ptr.add(len) != 0 {
-        len += 1;
-    }
-
-    if len >= 4096 {
+    let value =
+        UserSpaceMemory::copy_string_from_user(ptr as u64, 4096).map_err(|_| LinuxError::EFAULT)?;
+    if value.len() >= 4096 {
         return Err(LinuxError::ENAMETOOLONG);
     }
 
-    let slice = core::slice::from_raw_parts(ptr, len);
-    alloc::string::String::from_utf8(slice.to_vec()).map_err(|_| LinuxError::EINVAL)
+    Ok(value)
 }
 
 fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
@@ -1213,7 +1213,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
 pub fn memfd_create(name: *const u8, _flags: u32) -> LinuxResult<Fd> {
     inc_ops();
 
-    let name_str = unsafe { c_str_to_string(name)? };
+    let name_str = c_str_to_string(name)?;
 
     // Generate a unique filename using an atomic counter
     static MEMFD_COUNTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);

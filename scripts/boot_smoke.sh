@@ -4,7 +4,7 @@
 set -euo pipefail
 
 BOOTIMAGE="${BOOTIMAGE_PATH:-target/x86_64-rustos/debug/bootimage-rustos.bin}"
-PATTERNS="${RUSTOS_BOOT_LOG_PATTERNS:-${RUSTOS_BOOT_LOG_PATTERN:-RustOS: Kernel entry point reached!|RustOS: Linux init OK|RustOS: 32-bit framebuffer desktop ready}}"
+PATTERNS="${RUSTOS_BOOT_LOG_PATTERNS:-${RUSTOS_BOOT_LOG_PATTERN:-linux_integration: vfs ok|linux_integration: memory ok|Frame }}"
 TIMEOUT="${RUSTOS_BOOT_TIMEOUT_SEC:-60}"
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
@@ -25,16 +25,23 @@ echo "Timeout: ${TIMEOUT}s"
 
 BOOTIMAGE="$BOOTIMAGE" PATTERNS="$PATTERNS" TIMEOUT="$TIMEOUT" python3 - <<'PY'
 import os
+import atexit
+import shutil
 import subprocess
 import sys
+import tempfile
 
 bootimage = os.environ["BOOTIMAGE"]
 patterns = [p for p in os.environ["PATTERNS"].split("|") if p]
 timeout = float(os.environ["TIMEOUT"])
+tmpdir = tempfile.TemporaryDirectory(prefix="rustos-boot-", dir="/tmp")
+atexit.register(tmpdir.cleanup)
+qemu_bootimage = os.path.join(tmpdir.name, "bootimage.bin")
+shutil.copyfile(bootimage, qemu_bootimage)
 
 cmd = [
     "qemu-system-x86_64",
-    "-drive", f"format=raw,file={bootimage},snapshot=on",
+    "-drive", f"format=raw,file={qemu_bootimage}",
     "-m", "512M",
     "-serial", "stdio",
     "-display", "none",
@@ -45,7 +52,9 @@ cmd = [
     "-no-shutdown",
 ]
 
-proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+env = os.environ.copy()
+env["TMPDIR"] = "/tmp"
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
 try:
     out, _ = proc.communicate(timeout=timeout)
 except subprocess.TimeoutExpired:

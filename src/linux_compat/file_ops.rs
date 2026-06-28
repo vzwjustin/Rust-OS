@@ -4,11 +4,13 @@
 //! stat, access, dup, link operations, and directory handling.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process::{self, FileDescriptor};
 
 /// AT_FDCWD — use process cwd for relative paths
@@ -17,6 +19,7 @@ use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError}
 
 /// FD_CLOEXEC flag stored in PCB fd flags
 const FD_CLOEXEC: u32 = 1;
+const MAX_RW_CHUNK: usize = 64 * 1024;
 
 fn stat_dev(vfs_stat: &vfs::Stat) -> u64 {
     match vfs_stat.inode_type {
@@ -86,10 +89,8 @@ fn set_fd_cloexec(fd: Fd) {
         if let Some(entry) = pcb.fd_table.get_mut(&(fd as u32)) {
             entry.flags |= FD_CLOEXEC;
         } else {
-            pcb.fd_table.insert(
-                fd as u32,
-                FileDescriptor::from_vfs_fd(fd, FD_CLOEXEC),
-            );
+            pcb.fd_table
+                .insert(fd as u32, FileDescriptor::from_vfs_fd(fd, FD_CLOEXEC));
         }
         pcb.file_descriptors = pcb.fd_table.clone();
     });
@@ -174,22 +175,18 @@ fn linux_flags_to_vfs(flags: i32) -> u32 {
 }
 
 /// Helper to convert null-terminated C string to Rust string
-unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
+fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let mut len = 0;
-    while len < 4096 && *ptr.add(len) != 0 {
-        len += 1;
-    }
-
-    if len >= 4096 {
+    let path =
+        UserSpaceMemory::copy_string_from_user(ptr as u64, 4096).map_err(|_| LinuxError::EFAULT)?;
+    if path.len() >= 4096 {
         return Err(LinuxError::ENAMETOOLONG);
     }
 
-    let slice = core::slice::from_raw_parts(ptr, len);
-    String::from_utf8(slice.to_vec()).map_err(|_| LinuxError::EINVAL)
+    Ok(path)
 }
 
 /// Seek whence constants (standard POSIX values)
@@ -203,7 +200,7 @@ mod seek {
 pub fn open(path: *const u8, flags: i32, mode: Mode) -> LinuxResult<Fd> {
     inc_ops();
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
     let vfs_flags = linux_flags_to_vfs(flags);
 
     match vfs::vfs_open(&path_str, vfs_flags, mode) {
@@ -241,16 +238,28 @@ pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
         return Err(LinuxError::EBADF);
     }
 
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, count) };
-
-    if let Some(result) = super::special_fd::try_read(fd, buffer) {
-        return result;
+    if count == 0 {
+        return Ok(0);
     }
 
-    match vfs::vfs_read(fd, buffer) {
-        Ok(n) => Ok(n as isize),
-        Err(e) => Err(vfs_error_to_linux(e)),
+    let len = count.min(MAX_RW_CHUNK);
+    let mut buffer = vec![0u8; len];
+
+    let bytes_read = if let Some(result) = super::special_fd::try_read(fd, &mut buffer) {
+        result?
+    } else {
+        match vfs::vfs_read(fd, &mut buffer) {
+            Ok(n) => n as isize,
+            Err(e) => return Err(vfs_error_to_linux(e)),
+        }
+    };
+
+    if bytes_read > 0 {
+        UserSpaceMemory::copy_to_user(buf as u64, &buffer[..bytes_read as usize])
+            .map_err(|_| LinuxError::EFAULT)?;
     }
+
+    Ok(bytes_read)
 }
 
 /// write - write to file descriptor
@@ -265,13 +274,19 @@ pub fn write(fd: Fd, buf: *const u8, count: usize) -> LinuxResult<isize> {
         return Err(LinuxError::EBADF);
     }
 
-    let buffer = unsafe { core::slice::from_raw_parts(buf, count) };
+    if count == 0 {
+        return Ok(0);
+    }
 
-    if let Some(result) = super::special_fd::try_write(fd, buffer) {
+    let len = count.min(MAX_RW_CHUNK);
+    let mut buffer = vec![0u8; len];
+    UserSpaceMemory::copy_from_user(buf as u64, &mut buffer).map_err(|_| LinuxError::EFAULT)?;
+
+    if let Some(result) = super::special_fd::try_write(fd, &buffer) {
         return result;
     }
 
-    match vfs::vfs_write(fd, buffer) {
+    match vfs::vfs_write(fd, &buffer) {
         Ok(n) => Ok(n as isize),
         Err(e) => Err(vfs_error_to_linux(e)),
     }
@@ -342,7 +357,7 @@ pub fn stat(path: *const u8, statbuf: *mut Stat) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     match vfs::vfs_stat(&path_str) {
         Ok(vfs_stat) => {
@@ -379,7 +394,7 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     let pid = process::current_pid();
     let (uid, gid, groups) = process::get_process_manager()
@@ -462,7 +477,7 @@ pub fn unlink(path: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     match vfs::vfs_unlink(&path_str) {
         Ok(()) => Ok(0),
@@ -478,8 +493,8 @@ pub fn link(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let old = unsafe { c_str_to_string(oldpath)? };
-    let new = unsafe { c_str_to_string(newpath)? };
+    let old = c_str_to_string(oldpath)?;
+    let new = c_str_to_string(newpath)?;
 
     match vfs::vfs_link(&old, &new) {
         Ok(_) => Ok(0),
@@ -495,8 +510,8 @@ pub fn symlink(target: *const u8, linkpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let target = unsafe { c_str_to_string(target)? };
-    let linkpath = unsafe { c_str_to_string(linkpath)? };
+    let target = c_str_to_string(target)?;
+    let linkpath = c_str_to_string(linkpath)?;
 
     match vfs::vfs_symlink(&target, &linkpath) {
         Ok(_) => Ok(0),
@@ -516,7 +531,7 @@ pub fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> LinuxResult<isi
         return Err(LinuxError::EINVAL);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
 
     match vfs::vfs_readlink(&path) {
         Ok(target) => {
@@ -539,8 +554,8 @@ pub fn rename(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let old = unsafe { c_str_to_string(oldpath)? };
-    let new = unsafe { c_str_to_string(newpath)? };
+    let old = c_str_to_string(oldpath)?;
+    let new = c_str_to_string(newpath)?;
 
     match vfs::vfs_rename(&old, &new) {
         Ok(_) => Ok(0),
@@ -566,7 +581,7 @@ pub fn chmod(path: *const u8, mode: Mode) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
     vfs::vfs_chmod(&path, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -604,7 +619,7 @@ pub fn chown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
     vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -629,7 +644,7 @@ pub fn lchown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
     vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -646,7 +661,7 @@ pub fn truncate(path: *const u8, length: Off) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     // Open file with write access, truncate via O_TRUNC if length is 0, then close
     // For non-zero lengths, we need to open and use ftruncate
@@ -789,7 +804,7 @@ pub fn mkdir(path: *const u8, mode: Mode) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     match vfs::vfs_mkdir(&path_str, mode) {
         Ok(()) => Ok(0),
@@ -805,7 +820,7 @@ pub fn rmdir(path: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     match vfs::vfs_rmdir(&path_str) {
         Ok(()) => Ok(0),
@@ -824,7 +839,7 @@ pub fn chdir(path: *const u8) -> LinuxResult<i32> {
     // VFS doesn't yet track per-process current working directory
     // This would require process-local state management
     // For now, verify the path exists and is a directory
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     match vfs::vfs_stat(&path_str) {
         Ok(stat) => {
@@ -887,7 +902,7 @@ pub fn readdir(path: *const u8) -> LinuxResult<Vec<String>> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path_str = unsafe { c_str_to_string(path)? };
+    let path_str = c_str_to_string(path)?;
 
     match vfs::vfs_readdir(&path_str) {
         Ok(entries) => {
@@ -935,7 +950,7 @@ fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<String> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path_str = unsafe { c_str_to_string(pathname)? };
+    let path_str = c_str_to_string(pathname)?;
     if path_str.starts_with('/') || dirfd == AT_FDCWD {
         return Ok(path_str);
     }

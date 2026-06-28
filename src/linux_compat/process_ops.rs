@@ -6,6 +6,7 @@
 //! Integrated with RustOS process manager, scheduler, and ELF loader.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,6 +17,7 @@ use super::{LinuxError, LinuxResult};
 pub use super::types::{Rusage, TimeVal};
 
 // Import process management infrastructure
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process::Pid as KernelPid;
 use crate::process::{self};
 use crate::process_manager;
@@ -136,7 +138,10 @@ fn pcb_children_rusage(pcb: &process::ProcessControlBlock) -> Rusage {
     }
 }
 
-fn wait_child_matches(pid: Pid, caller_pgid: u32) -> impl Fn(&process::ProcessControlBlock) -> bool {
+fn wait_child_matches(
+    pid: Pid,
+    caller_pgid: u32,
+) -> impl Fn(&process::ProcessControlBlock) -> bool {
     move |pcb: &process::ProcessControlBlock| -> bool {
         if pid == -1 {
             return true;
@@ -253,37 +258,40 @@ const MAX_EXEC_SIZE: usize = 16 * 1024 * 1024;
 /// Convert null-terminated C string from user space to Rust `String`.
 ///
 /// Same validation pattern as `file_ops::c_str_to_string`.
-unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
+fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let mut len = 0;
-    while len < MAX_USER_STRING && *ptr.add(len) != 0 {
-        len += 1;
-    }
-
-    if len >= MAX_USER_STRING {
+    let value = UserSpaceMemory::copy_string_from_user(ptr as u64, MAX_USER_STRING)
+        .map_err(|_| LinuxError::EFAULT)?;
+    if value.len() >= MAX_USER_STRING {
         return Err(LinuxError::ENAMETOOLONG);
     }
 
-    let slice = core::slice::from_raw_parts(ptr, len);
-    String::from_utf8(slice.to_vec()).map_err(|_| LinuxError::EINVAL)
+    Ok(value)
 }
 
 /// Read a NULL-terminated array of C string pointers from user space.
-unsafe fn read_string_array(arr_ptr: *const *const u8) -> Result<Vec<String>, LinuxError> {
+fn read_string_array(arr_ptr: *const *const u8) -> Result<Vec<String>, LinuxError> {
     if arr_ptr.is_null() {
         return Ok(Vec::new());
     }
 
     let mut strings = Vec::new();
     for i in 0..MAX_PTR_ARRAY {
-        let str_ptr = *arr_ptr.add(i);
-        if str_ptr.is_null() {
+        let mut ptr_bytes = [0u8; core::mem::size_of::<usize>()];
+        UserSpaceMemory::copy_from_user(
+            (arr_ptr as u64) + (i * core::mem::size_of::<usize>()) as u64,
+            &mut ptr_bytes,
+        )
+        .map_err(|_| LinuxError::EFAULT)?;
+
+        let str_addr = usize::from_ne_bytes(ptr_bytes);
+        if str_addr == 0 {
             break;
         }
-        strings.push(c_str_to_string(str_ptr)?);
+        strings.push(c_str_to_string(str_addr as *const u8)?);
     }
     Ok(strings)
 }
@@ -551,13 +559,13 @@ pub fn execve(
 
     use crate::process::elf_loader::Elf64Header;
 
-    let path = unsafe { c_str_to_string(filename)? };
+    let path = c_str_to_string(filename)?;
     if path.is_empty() {
         return Err(LinuxError::EINVAL);
     }
 
-    let argv_strings = unsafe { read_string_array(argv)? };
-    let envp_strings = unsafe { read_string_array(envp)? };
+    let argv_strings = read_string_array(argv)?;
+    let envp_strings = read_string_array(envp)?;
 
     let pid = process::current_pid();
 
@@ -963,11 +971,7 @@ pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
                 .ok_or(LinuxError::ESRCH)
         }
         PRIO_USER => {
-            let target_uid = if who == 0 {
-                getuid()
-            } else {
-                who as u32
-            };
+            let target_uid = if who == 0 { getuid() } else { who as u32 };
 
             process_mgr
                 .max_nice_among(|pcb| pcb.uid == target_uid)
@@ -1039,11 +1043,7 @@ pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
                 return Err(LinuxError::EACCES);
             }
 
-            let target_uid = if who == 0 {
-                getuid()
-            } else {
-                who as u32
-            };
+            let target_uid = if who == 0 { getuid() } else { who as u32 };
 
             process_mgr
                 .set_priority_among(|pcb| pcb.uid == target_uid, priority)
@@ -1095,13 +1095,14 @@ pub fn sched_setaffinity(pid: Pid, cpusetsize: usize, mask: *const u8) -> LinuxR
     // Verify process exists
     let _ = get_pcb(target_pid)?;
 
-    // Read CPU mask from user space
+    let mut mask_bytes = [0u8; 8];
+    let mask_len = core::cmp::min(cpusetsize, mask_bytes.len());
+    UserSpaceMemory::copy_from_user(mask as u64, &mut mask_bytes[..mask_len])
+        .map_err(|_| LinuxError::EFAULT)?;
+
     let mut cpu_mask: u64 = 0;
-    unsafe {
-        let bytes = core::slice::from_raw_parts(mask, core::cmp::min(cpusetsize, 8));
-        for (i, &byte) in bytes.iter().enumerate() {
-            cpu_mask |= (byte as u64) << (i * 8);
-        }
+    for (i, &byte) in mask_bytes[..mask_len].iter().enumerate() {
+        cpu_mask |= (byte as u64) << (i * 8);
     }
 
     // Validate mask has at least one CPU
@@ -1127,7 +1128,7 @@ pub fn sched_getaffinity(pid: Pid, cpusetsize: usize, mask: *mut u8) -> LinuxRes
         return Err(LinuxError::EFAULT);
     }
 
-    if cpusetsize == 0 {
+    if cpusetsize == 0 || cpusetsize > 128 {
         return Err(LinuxError::EINVAL);
     }
 
@@ -1141,17 +1142,13 @@ pub fn sched_getaffinity(pid: Pid, cpusetsize: usize, mask: *mut u8) -> LinuxRes
     let pcb = get_pcb(target_pid)?;
     let cpu_affinity = pcb.sched_info.cpu_affinity;
 
-    // Write affinity mask to user space
-    unsafe {
-        let bytes = core::slice::from_raw_parts_mut(mask, cpusetsize);
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            if i < 8 {
-                *byte = ((cpu_affinity >> (i * 8)) & 0xFF) as u8;
-            } else {
-                *byte = 0;
-            }
+    let mut mask_bytes = vec![0u8; cpusetsize];
+    for (i, byte) in mask_bytes.iter_mut().enumerate() {
+        if i < 8 {
+            *byte = ((cpu_affinity >> (i * 8)) & 0xFF) as u8;
         }
     }
+    UserSpaceMemory::copy_to_user(mask as u64, &mask_bytes).map_err(|_| LinuxError::EFAULT)?;
 
     Ok(core::cmp::min(cpusetsize, 8) as i32)
 }
@@ -1222,15 +1219,13 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
                 return Err(LinuxError::EFAULT);
             }
 
+            let name = UserSpaceMemory::copy_string_from_user(name_ptr as u64, 16)
+                .map_err(|_| LinuxError::EFAULT)?;
             let mut name_buf = [0u8; 16];
-            unsafe {
-                for (i, slot) in name_buf.iter_mut().enumerate() {
-                    let byte = *name_ptr.add(i);
-                    *slot = byte;
-                    if byte == 0 {
-                        break;
-                    }
-                }
+            let name_bytes = name.as_bytes();
+            let copy_len = core::cmp::min(name_bytes.len(), name_buf.len());
+            if copy_len > 0 {
+                name_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
             }
 
             let pid = process::current_pid();
@@ -1251,12 +1246,13 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
             }
 
             let pcb = current_pcb()?;
-            unsafe {
-                let dest = core::slice::from_raw_parts_mut(name_ptr, 16);
-                dest.fill(0);
-                let copy_len = core::cmp::min(dest.len(), pcb.name.len());
-                dest[..copy_len].copy_from_slice(&pcb.name[..copy_len]);
+            let mut name_buf = [0u8; 16];
+            let copy_len = core::cmp::min(name_buf.len(), pcb.name.len());
+            if copy_len > 0 {
+                name_buf[..copy_len].copy_from_slice(&pcb.name[..copy_len]);
             }
+            UserSpaceMemory::copy_to_user(name_ptr as u64, &name_buf)
+                .map_err(|_| LinuxError::EFAULT)?;
             Ok(0)
         }
         PR_SET_DUMPABLE => {
@@ -1328,7 +1324,12 @@ fn read_cap_data(datap: *const u8) -> Result<(u32, u32, u32), LinuxError> {
     }
 }
 
-fn write_cap_data(datap: *mut u8, effective: u32, permitted: u32, inheritable: u32) -> Result<(), LinuxError> {
+fn write_cap_data(
+    datap: *mut u8,
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+) -> Result<(), LinuxError> {
     if datap.is_null() {
         return Err(LinuxError::EFAULT);
     }
@@ -1446,7 +1447,7 @@ pub fn execveat(
 ) -> LinuxResult<i32> {
     inc_ops();
 
-    let path_str = unsafe { c_str_to_string(pathname)? };
+    let path_str = c_str_to_string(pathname)?;
     if path_str.is_empty() {
         return Err(LinuxError::EINVAL);
     }

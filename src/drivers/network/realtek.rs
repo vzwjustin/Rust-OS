@@ -910,8 +910,8 @@ impl RealtekDriver {
             }
 
             // Copy packet data
-            let mut packet_data = Vec::with_capacity(packet_len);
-            packet_data.set_len(packet_len - 4); // Exclude CRC
+            let mut packet_data = Vec::new();
+            packet_data.resize(packet_len - 4, 0); // Exclude CRC
             core::ptr::copy_nonoverlapping(
                 packet_ptr.add(4), // Skip header
                 packet_data.as_mut_ptr(),
@@ -963,8 +963,8 @@ impl RealtekDriver {
             let buffer_addr = self.read_reg32((desc_addr + 8) as u16) as u64;
             let packet_ptr = buffer_addr as *const u8;
 
-            let mut packet_data = Vec::with_capacity(packet_len);
-            packet_data.set_len(packet_len - 4); // Exclude CRC
+            let mut packet_data = Vec::new();
+            packet_data.resize(packet_len - 4, 0); // Exclude CRC
             core::ptr::copy_nonoverlapping(packet_ptr, packet_data.as_mut_ptr(), packet_len - 4);
 
             // Reset descriptor for next packet
