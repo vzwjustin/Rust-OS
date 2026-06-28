@@ -11,26 +11,19 @@ pub fn fork(parent_pid: Pid) -> Result<Pid, &'static str> {
 }
 
 /// Execute a new program in the process - replaces process image
-pub fn exec(
-    pid: Pid,
-    program: &[u8],
-    args: &[&str],
-    envp: &[&str],
-) -> Result<(), &'static str> {
+pub fn exec(pid: Pid, program: &[u8], args: &[&str], envp: &[&str]) -> Result<(), &'static str> {
     process::exec::exec_elf_binary(pid, program, args, envp)
 }
 
 /// Wait for any child process to exit - blocks until child exits
 pub fn wait(parent_pid: Pid) -> Result<(Pid, i32), &'static str> {
-    process::get_process_manager()
-        .reap_zombie_child(parent_pid, |_| true)
+    process::get_process_manager().reap_zombie_child(parent_pid, |_| true)
 }
 
 /// Wait for specific child process to exit
 pub fn waitpid(parent_pid: Pid, child_pid: Pid) -> Result<i32, &'static str> {
-    let (_, status) = process::get_process_manager().reap_zombie_child(parent_pid, |pcb| {
-        pcb.pid == child_pid
-    })?;
+    let (_, status) =
+        process::get_process_manager().reap_zombie_child(parent_pid, |pcb| pcb.pid == child_pid)?;
     Ok(status)
 }
 

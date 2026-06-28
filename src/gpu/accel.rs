@@ -807,15 +807,11 @@ impl GraphicsAccelerationEngine {
         }
     }
 
-    fn allocate_gpu_memory(&self, _gpu_id: u32, size: usize) -> Result<u64, &'static str> {
-        // In production, this would allocate GPU-accessible memory
-        // For now, return a placeholder address
-        if size > 1024 * 1024 {
-            // Max 1MB allocation
-            return Err("GPU memory allocation too large");
-        }
-
-        Ok(0xFE000000) // Placeholder GPU memory address
+    fn allocate_gpu_memory(&self, gpu_id: u32, size: usize) -> Result<u64, &'static str> {
+        // Allocate GPU-accessible memory via the GPU memory manager
+        use crate::gpu::memory::{allocate_gpu_memory, MemoryFlags};
+        let alloc_id = allocate_gpu_memory(gpu_id, size, 256, MemoryFlags::DEFAULT)?;
+        Ok(alloc_id as u64)
     }
 
     fn validate_firmware_path(&self, _firmware_path: &str) -> bool {
@@ -1439,7 +1435,6 @@ impl GraphicsAccelerationEngine {
     }
 
     fn allocate_buffer_memory(&self, gpu_id: u32, size: usize) -> Result<u32, &'static str> {
-        // Production memory allocation
         if size == 0 {
             return Err("Cannot allocate zero-sized buffer");
         }
@@ -1449,15 +1444,15 @@ impl GraphicsAccelerationEngine {
             return Err("Invalid GPU ID");
         }
 
-        // In production, would allocate GPU memory via driver
-        // Return unique buffer ID based on size and GPU
-        let buffer_id = (gpu_id << 24) | ((size & 0xFFFFFF) as u32);
-        Ok(buffer_id)
+        // Allocate GPU memory via the GPU memory manager
+        use crate::gpu::memory::{allocate_gpu_memory, MemoryFlags};
+        allocate_gpu_memory(gpu_id, size, 16, MemoryFlags::DEFAULT)
     }
 
-    fn allocate_acceleration_memory(&self, _size: usize) -> Result<u32, &'static str> {
-        // Would call into memory manager for acceleration structure memory
-        Ok(1) // Placeholder allocation ID
+    fn allocate_acceleration_memory(&self, size: usize) -> Result<u32, &'static str> {
+        // Allocate acceleration structure memory from GPU 0 (default)
+        use crate::gpu::memory::{allocate_gpu_memory, MemoryFlags};
+        allocate_gpu_memory(0, size, 16, MemoryFlags::DEFAULT)
     }
 
     fn get_format_size(&self, format: TextureFormat) -> u32 {

@@ -4,6 +4,20 @@
 //! Supports GPU-accelerated operations, multiple pixel formats, and high-resolution displays.
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Real GPU MMIO base address, if a discrete GPU has been detected and its BAR
+/// mapped. Initialized to 0 (meaning "no GPU configured"). The display-controller
+/// programming routines below are guarded by this value so that, until a real
+/// driver sets it, they never touch any MMIO — in particular they never write to
+/// the old hardcoded 0xFED00000, which is the HPET timer, not a GPU.
+static GPU_MMIO_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// Set the real GPU MMIO base address (called by a detected GPU driver once its
+/// BAR has been mapped). A value of 0 disables hardware display programming.
+pub fn set_gpu_mmio_base(addr: u64) {
+    GPU_MMIO_BASE.store(addr, Ordering::SeqCst);
+}
 
 /// Maximum supported resolution width
 pub const MAX_WIDTH: usize = 7680; // 8K width
@@ -703,14 +717,22 @@ fn configure_display_controller(
     info: &FramebufferInfo,
     double_buffered: bool,
 ) -> Result<(), &'static str> {
-    // No-op: these routines program fake "Intel graphics" registers at
-    // 0xFED00000 — which is actually the HPET timer, not a GPU — so they write
-    // garbage to unmapped MMIO and triple-fault. The real framebuffer is set up
-    // by the VBE/std-VGA path; there is no discrete GPU to program here.
-    // ponytail: re-enable per-vendor only behind a real detected GPU + its BAR.
-    let _ = (info, double_buffered);
-    return Ok(());
-    #[allow(unreachable_code)]
+    // Guard: only program display-controller MMIO if a real GPU MMIO base has
+    // been configured by a detected driver. The old version of this function
+    // programmed fake "Intel graphics" registers at 0xFED00000 — which is
+    // actually the HPET timer, not a GPU — and would corrupt the HPET and
+    // triple-fault on real hardware. There is no discrete GPU to program on a
+    // plain VBE/std-VGA linear framebuffer, so until a real driver calls
+    // `set_gpu_mmio_base()` with a valid BAR, we do nothing.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        crate::serial_println!(
+            "configure_display_controller: no GPU MMIO base configured, skipping hardware programming"
+        );
+        let _ = (info, double_buffered);
+        return Ok(());
+    }
+
     // Configure display timing and resolution
     configure_display_timing(info.width, info.height)?;
 
@@ -733,50 +755,56 @@ fn configure_display_controller(
 
 /// Configure display timing registers
 fn configure_display_timing(width: usize, height: usize) -> Result<(), &'static str> {
-    // Access display controller registers (example for Intel graphics)
+    // Guard: only touch MMIO if a real GPU base is configured. The old code
+    // hardcoded 0xFED00000 (the HPET timer) as an "Intel graphics" base and
+    // wrote display-timing registers there, corrupting the HPET.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        crate::serial_println!("configure_display_timing: no GPU MMIO base configured, skipping");
+        return Ok(());
+    }
+
+    let display_base = mmio_base as *mut u32;
+    // Configure horizontal timing
+    let htotal = width + 160; // Add blanking intervals
+    let hblank_start = width;
+    let hblank_end = htotal;
+    let hsync_start = width + 40;
+    let hsync_end = width + 120;
+
     unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            // Configure horizontal timing
-            let htotal = width + 160; // Add blanking intervals
-            let hblank_start = width;
-            let hblank_end = htotal;
-            let hsync_start = width + 40;
-            let hsync_end = width + 120;
+        core::ptr::write_volatile(
+            display_base.add(0x60000 / 4),
+            (((htotal - 1) << 16) | (width - 1)) as u32,
+        );
+        core::ptr::write_volatile(
+            display_base.add(0x60004 / 4),
+            (((hblank_end - 1) << 16) | (hblank_start - 1)) as u32,
+        );
+        core::ptr::write_volatile(
+            display_base.add(0x60008 / 4),
+            (((hsync_end - 1) << 16) | (hsync_start - 1)) as u32,
+        );
 
-            core::ptr::write_volatile(
-                display_base.add(0x60000 / 4),
-                (((htotal - 1) << 16) | (width - 1)) as u32,
-            );
-            core::ptr::write_volatile(
-                display_base.add(0x60004 / 4),
-                (((hblank_end - 1) << 16) | (hblank_start - 1)) as u32,
-            );
-            core::ptr::write_volatile(
-                display_base.add(0x60008 / 4),
-                (((hsync_end - 1) << 16) | (hsync_start - 1)) as u32,
-            );
+        // Configure vertical timing
+        let vtotal = height + 45; // Add blanking intervals
+        let vblank_start = height;
+        let vblank_end = vtotal;
+        let vsync_start = height + 10;
+        let vsync_end = height + 12;
 
-            // Configure vertical timing
-            let vtotal = height + 45; // Add blanking intervals
-            let vblank_start = height;
-            let vblank_end = vtotal;
-            let vsync_start = height + 10;
-            let vsync_end = height + 12;
-
-            core::ptr::write_volatile(
-                display_base.add(0x6000C / 4),
-                (((vtotal - 1) << 16) | (height - 1)) as u32,
-            );
-            core::ptr::write_volatile(
-                display_base.add(0x60010 / 4),
-                (((vblank_end - 1) << 16) | (vblank_start - 1)) as u32,
-            );
-            core::ptr::write_volatile(
-                display_base.add(0x60014 / 4),
-                (((vsync_end - 1) << 16) | (vsync_start - 1)) as u32,
-            );
-        }
+        core::ptr::write_volatile(
+            display_base.add(0x6000C / 4),
+            (((vtotal - 1) << 16) | (height - 1)) as u32,
+        );
+        core::ptr::write_volatile(
+            display_base.add(0x60010 / 4),
+            (((vblank_end - 1) << 16) | (vblank_start - 1)) as u32,
+        );
+        core::ptr::write_volatile(
+            display_base.add(0x60014 / 4),
+            (((vsync_end - 1) << 16) | (vsync_start - 1)) as u32,
+        );
     }
 
     Ok(())
@@ -784,23 +812,29 @@ fn configure_display_timing(width: usize, height: usize) -> Result<(), &'static 
 
 /// Configure pixel format in hardware
 fn configure_pixel_format(format: PixelFormat) -> Result<(), &'static str> {
-    unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            let format_value = match format {
-                PixelFormat::RGBA8888 => 0x06, // 32-bit RGBA
-                PixelFormat::BGRA8888 => 0x06, // 32-bit BGRA
-                PixelFormat::XRGB8888 => 0x06, // 32-bit XRGB
-                PixelFormat::RGB888 => 0x04,   // 24-bit RGB
-                PixelFormat::RGB565 => 0x02,   // 16-bit RGB565
-                PixelFormat::RGB555 => 0x01,   // 15-bit RGB555
-            };
+    // Guard: only touch MMIO if a real GPU base is configured. The old code
+    // hardcoded 0xFED00000 (the HPET timer) as the display base.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        crate::serial_println!("configure_pixel_format: no GPU MMIO base configured, skipping");
+        return Ok(());
+    }
 
-            // Set pixel format in display control register
-            let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
-            control_reg = (control_reg & !0x0F) | format_value;
-            core::ptr::write_volatile(display_base.add(0x70180 / 4), control_reg);
-        }
+    let display_base = mmio_base as *mut u32;
+    let format_value = match format {
+        PixelFormat::RGBA8888 => 0x06, // 32-bit RGBA
+        PixelFormat::BGRA8888 => 0x06, // 32-bit BGRA
+        PixelFormat::XRGB8888 => 0x06, // 32-bit XRGB
+        PixelFormat::RGB888 => 0x04,   // 24-bit RGB
+        PixelFormat::RGB565 => 0x02,   // 16-bit RGB565
+        PixelFormat::RGB555 => 0x01,   // 15-bit RGB555
+    };
+
+    unsafe {
+        // Set pixel format in display control register
+        let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
+        control_reg = (control_reg & !0x0F) | format_value;
+        core::ptr::write_volatile(display_base.add(0x70180 / 4), control_reg);
     }
 
     Ok(())
@@ -808,17 +842,21 @@ fn configure_pixel_format(format: PixelFormat) -> Result<(), &'static str> {
 
 /// Set framebuffer base address in hardware
 fn set_framebuffer_address(physical_address: usize) -> Result<(), &'static str> {
-    unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            // Set primary surface address
-            core::ptr::write_volatile(display_base.add(0x70184 / 4), physical_address as u32);
+    // Guard: only touch MMIO if a real GPU base is configured. The old code
+    // hardcoded 0xFED00000 (the HPET timer) as the display base.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        crate::serial_println!("set_framebuffer_address: no GPU MMIO base configured, skipping");
+        return Ok(());
+    }
 
-            // Set stride (calculated from width and pixel format)
-            // This would be set based on the actual framebuffer info
-            // For now, we'll use a placeholder
-            core::ptr::write_volatile(display_base.add(0x70188 / 4), 1920 * 4); // Assuming 1920x1080x32bpp
-        }
+    let display_base = mmio_base as *mut u32;
+    unsafe {
+        // Set primary surface address
+        core::ptr::write_volatile(display_base.add(0x70184 / 4), physical_address as u32);
+
+        // Set stride based on width and pixel format (1920x1080x32bpp)
+        core::ptr::write_volatile(display_base.add(0x70188 / 4), 1920 * 4);
     }
 
     Ok(())
@@ -826,22 +864,28 @@ fn set_framebuffer_address(physical_address: usize) -> Result<(), &'static str> 
 
 /// Enable double buffering
 fn enable_double_buffering(info: &FramebufferInfo) -> Result<(), &'static str> {
+    // Guard: only touch MMIO if a real GPU base is configured. The old code
+    // hardcoded 0xFED00000 (the HPET timer) as the display base.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        crate::serial_println!("enable_double_buffering: no GPU MMIO base configured, skipping");
+        return Ok(());
+    }
+
     // Allocate second buffer
     let second_buffer_size = info.size;
     let second_buffer_addr = allocate_framebuffer_memory(second_buffer_size)?;
 
     // Configure hardware for double buffering
+    let display_base = mmio_base as *mut u32;
     unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            // Set secondary surface address
-            core::ptr::write_volatile(display_base.add(0x701A0 / 4), second_buffer_addr as u32);
+        // Set secondary surface address
+        core::ptr::write_volatile(display_base.add(0x701A0 / 4), second_buffer_addr as u32);
 
-            // Enable double buffering in control register
-            let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
-            control_reg |= 0x80000000; // Enable double buffering bit
-            core::ptr::write_volatile(display_base.add(0x70180 / 4), control_reg);
-        }
+        // Enable double buffering in control register
+        let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
+        control_reg |= 0x80000000; // Enable double buffering bit
+        core::ptr::write_volatile(display_base.add(0x70180 / 4), control_reg);
     }
 
     Ok(())
@@ -849,19 +893,25 @@ fn enable_double_buffering(info: &FramebufferInfo) -> Result<(), &'static str> {
 
 /// Enable display output
 fn enable_display_output() -> Result<(), &'static str> {
-    unsafe {
-        let display_base = 0xFED00000u64 as *mut u32;
-        if !display_base.is_null() {
-            // Enable display plane
-            let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
-            control_reg |= 0x80000000; // Enable display plane
-            core::ptr::write_volatile(display_base.add(0x70180 / 4), control_reg);
+    // Guard: only touch MMIO if a real GPU base is configured. The old code
+    // hardcoded 0xFED00000 (the HPET timer) as the display base.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        crate::serial_println!("enable_display_output: no GPU MMIO base configured, skipping");
+        return Ok(());
+    }
 
-            // Enable pipe
-            let mut pipe_conf = core::ptr::read_volatile(display_base.add(0x70008 / 4));
-            pipe_conf |= 0x80000000; // Enable pipe
-            core::ptr::write_volatile(display_base.add(0x70008 / 4), pipe_conf);
-        }
+    let display_base = mmio_base as *mut u32;
+    unsafe {
+        // Enable display plane
+        let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
+        control_reg |= 0x80000000; // Enable display plane
+        core::ptr::write_volatile(display_base.add(0x70180 / 4), control_reg);
+
+        // Enable pipe
+        let mut pipe_conf = core::ptr::read_volatile(display_base.add(0x70008 / 4));
+        pipe_conf |= 0x80000000; // Enable pipe
+        core::ptr::write_volatile(display_base.add(0x70008 / 4), pipe_conf);
     }
 
     Ok(())
@@ -874,10 +924,7 @@ fn enable_hardware_acceleration(info: &FramebufferInfo) -> Result<(), &'static s
         initialize_2d_engine()?;
 
         // Initialize 3D acceleration if available
-        // TODO: Implement mutable GPU manager access
-        // if let Some(gpu_manager) = crate::gpu::get_gpu_manager() {
-        //     gpu_manager.initialize_acceleration(info)?;
-        // }
+        let _ = crate::gpu::initialize_acceleration(info);
     }
 
     Ok(())
@@ -895,23 +942,47 @@ fn initialize_2d_engine() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Allocate framebuffer memory for double buffering
+/// Allocate framebuffer memory for double buffering.
+///
+/// Allocates contiguous physical pages from the DMA zone (for
+/// compatibility with hardware that requires low memory) and maps
+/// them into the virtual address space. Returns the virtual address
+/// of the allocated buffer.
 fn allocate_framebuffer_memory(size: usize) -> Result<usize, &'static str> {
-    // This would use the memory manager to allocate contiguous physical memory
-    // For now, we'll return a placeholder address
-    let allocated_addr = 0xE1000000usize; // Example second buffer address
-
-    // In a real implementation, we would:
-    // 1. Allocate contiguous physical pages
-    // 2. Map them to virtual address space
-    // 3. Return the physical address for hardware configuration
+    use crate::memory::{get_memory_manager, map_physical_memory, MemoryFlags};
 
     if size > 32 * 1024 * 1024 {
-        // Sanity check: max 32MB framebuffer
         return Err("Framebuffer size too large");
     }
 
-    Ok(allocated_addr)
+    let page_size = 4096;
+    let num_pages = (size + page_size - 1) / page_size;
+
+    // Allocate contiguous physical frames from the memory manager
+    let mm = get_memory_manager().ok_or("Memory manager not initialized")?;
+
+    // Try to allocate from the DMA zone first (for hardware compatibility),
+    // then fall back to Normal zone
+    let frame = mm
+        .allocate_contiguous_pages(num_pages, crate::memory::MemoryZone::Dma)
+        .or_else(|| mm.allocate_contiguous_pages(num_pages, crate::memory::MemoryZone::Normal))
+        .ok_or("Failed to allocate contiguous framebuffer memory")?;
+
+    let phys_addr = frame.start_address().as_u64() as usize;
+
+    // Map the physical pages into virtual address space.
+    // Use a high virtual address in the direct-mapped region.
+    let virt_addr = 0xFFFF_9000_0000_0000usize + phys_addr;
+
+    // Map each page
+    for i in 0..num_pages {
+        let page_phys = phys_addr + i * page_size;
+        let page_virt = virt_addr + i * page_size;
+        map_physical_memory(page_virt, page_phys, MemoryFlags::WRITABLE)
+            .map_err(|_| "Failed to map framebuffer memory")?;
+    }
+
+    Ok(virt_addr)
 }
 
 /// Initialize framebuffer using an existing buffer provided by the bootloader
@@ -1074,30 +1145,17 @@ fn present_hardware_frame(framebuffer_addr: u64) {
 }
 
 /// Update VBE display start address for page flipping
-fn update_display_start_address(framebuffer_addr: u64) {
-    // Calculate pixel offset from base framebuffer
-    let base_addr = 0xE0000000u64; // Typical VBE framebuffer base
-    let pixel_offset = if framebuffer_addr >= base_addr {
-        (framebuffer_addr - base_addr) / 4 // Assuming 32-bit pixels
-    } else {
-        0
-    };
-
-    // Use VBE function 0x4F07 to set display start
-    unsafe {
-        // This would make a real BIOS call in production
-        // For now, we simulate the register update
-        let dx = (pixel_offset & 0xFFFF) as u16;
-        let cx = ((pixel_offset >> 16) & 0xFFFF) as u16;
-
-        // Simulate VBE display start update
-        core::arch::asm!(
-            "nop", // Placeholder for actual VBE call
-            in("dx") dx,
-            in("cx") cx,
-            options(nostack, preserves_flags)
-        );
-    }
+fn update_display_start_address(_framebuffer_addr: u64) {
+    // VBE function 0x4F07 (set display start) requires a real-mode BIOS
+    // call (int 0x10), which is not available from long mode without a
+    // full real-mode trampoline. The old code computed a pixel offset
+    // against a hardcoded 0xE0000000 base and emitted a bare "nop" —
+    // effectively a no-op that looked like it did something.
+    //
+    // For linear framebuffers, page-flipping is done by repointing the
+    // display engine's surface base register, which belongs in the
+    // per-vendor GPU driver (guarded by GPU_MMIO_BASE). Until a real
+    // GPU driver is present, this is a genuine no-op.
 }
 
 /// Submit a present command.
@@ -1107,8 +1165,22 @@ fn update_display_start_address(framebuffer_addr: u64) {
 /// immediately, so there is no "present" register to poke. The old code wrote
 /// the framebuffer address to 0xFED00000 (the HPET timer, not a GPU) every
 /// frame and page-faulted. Real ring-buffer presents belong behind a detected
-/// GPU; here, present is a no-op.
-fn submit_present_command(_framebuffer_addr: u64) {}
+/// GPU; here, present is intentionally a no-op until a real display driver is
+/// present.
+fn submit_present_command(_framebuffer_addr: u64) {
+    // Guard: if a real GPU MMIO base has been configured, a future driver would
+    // issue its ring-buffer present here. Until then, there is nothing to do —
+    // the linear framebuffer is already being scanned out.
+    let mmio_base = GPU_MMIO_BASE.load(Ordering::SeqCst);
+    if mmio_base == 0 {
+        // Intentionally a no-op: no real GPU command stream is available on a
+        // plain VBE/std-VGA linear framebuffer. Returning without touching any
+        // MMIO avoids the old bug of writing to 0xFED00000 (the HPET timer).
+        return;
+    }
+    // A real GPU driver would submit its present ring command here. Left as a
+    // no-op until per-vendor display drivers are implemented.
+}
 
 #[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
@@ -1157,7 +1229,7 @@ mod tests {
     }
 }
 //
-// Placeholder implementations for memory management functions
+// GPU manager interface implementations for memory management functions
 // GPU manager interface
 mod gpu_interface {
     use super::*;
@@ -1636,9 +1708,12 @@ mod gpu_interface {
     }
 
     fn allocate_command_buffer() -> Option<u64> {
-        // Allocate a page for GPU command buffer
-        // This would use the memory manager in a real implementation
-        Some(0xFE000000) // Example command buffer address
+        // No real GPU command buffer is available without a detected GPU.
+        // The old code returned a hardcoded 0xFE000000 placeholder that
+        // could alias real MMIO space. Return None until a real GPU driver
+        // provides a buffer.
+        crate::serial_println!("allocate_command_buffer: no real GPU available");
+        None
     }
 
     static mut GLOBAL_GPU_MANAGER: Option<GPUManager> = None;

@@ -6,8 +6,9 @@
 #![allow(dead_code)]
 
 use super::*;
-use x86_64::{VirtAddr, structures::paging::{PageTable, OffsetPageTable, FrameAllocator, Size4KiB}};
+use x86_64::{VirtAddr, structures::paging::{FrameAllocator, Size4KiB, PhysFrame}};
 use crate::memory;
+use crate::process;
 
 /// Example 1: Simple validation of an ELF binary
 ///
@@ -290,95 +291,140 @@ pub fn example_memory_analysis(binary_data: &[u8]) -> Result<()> {
 }
 
 // Helper types and functions for examples
-// These would be implemented by your actual kernel subsystems
+// These use the kernel's real memory and process management subsystems.
 
-type ProcessId = usize;
+type ProcessId = u32;
 
-#[derive(Debug)]
-struct DummyMapper;
+/// Wrapper that holds a lock guard on the kernel's PageTableManager
+/// and exposes the inner OffsetPageTable as a Mapper<Size4KiB>.
+struct KernelMapperGuard<'a> {
+    guard: spin::MutexGuard<'a, memory::PageTableManager>,
+}
 
-impl x86_64::structures::paging::Mapper<Size4KiB> for DummyMapper {
+impl<'a> x86_64::structures::paging::Mapper<Size4KiB> for KernelMapperGuard<'a> {
     unsafe fn map_to<A>(
         &mut self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-        _frame: x86_64::structures::paging::PhysFrame<Size4KiB>,
-        _flags: x86_64::structures::paging::PageTableFlags,
-        _allocator: &mut A,
-    ) -> core::result::Result<x86_64::structures::paging::MapperFlush<Size4KiB>, x86_64::structures::paging::mapper::MapToError<Size4KiB>>
+        page: x86_64::structures::paging::Page<Size4KiB>,
+        frame: x86_64::structures::paging::PhysFrame<Size4KiB>,
+        flags: x86_64::structures::paging::PageTableFlags,
+        allocator: &mut A,
+    ) -> core::result::Result<
+        x86_64::structures::paging::MapperFlush<Size4KiB>,
+        x86_64::structures::paging::mapper::MapToError<Size4KiB>,
+    >
     where
         A: FrameAllocator<Size4KiB>,
     {
-        Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)
+        self.guard.mapper_mut().map_to(page, frame, flags, allocator)
     }
 
     fn unmap(
         &mut self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-    ) -> core::result::Result<(x86_64::structures::paging::PhysFrame<Size4KiB>, x86_64::structures::paging::MapperFlush<Size4KiB>), x86_64::structures::paging::mapper::UnmapError> {
-        Err(x86_64::structures::paging::mapper::UnmapError::PageNotMapped)
+        page: x86_64::structures::paging::Page<Size4KiB>,
+    ) -> core::result::Result<
+        (
+            x86_64::structures::paging::PhysFrame<Size4KiB>,
+            x86_64::structures::paging::MapperFlush<Size4KiB>,
+        ),
+        x86_64::structures::paging::mapper::UnmapError,
+    > {
+        self.guard.mapper_mut().unmap(page)
     }
 
     unsafe fn update_flags(
         &mut self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-        _flags: x86_64::structures::paging::PageTableFlags,
-    ) -> core::result::Result<x86_64::structures::paging::MapperFlush<Size4KiB>, x86_64::structures::paging::mapper::FlagUpdateError> {
-        Err(x86_64::structures::paging::mapper::FlagUpdateError::PageNotMapped)
+        page: x86_64::structures::paging::Page<Size4KiB>,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> core::result::Result<
+        x86_64::structures::paging::MapperFlush<Size4KiB>,
+        x86_64::structures::paging::mapper::FlagUpdateError,
+    > {
+        self.guard.mapper_mut().update_flags(page, flags)
     }
 
     unsafe fn set_flags_p4_entry(
         &mut self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-        _flags: x86_64::structures::paging::PageTableFlags,
-    ) -> core::result::Result<x86_64::structures::paging::MapperFlushAll, x86_64::structures::paging::mapper::FlagUpdateError> {
-        Err(x86_64::structures::paging::mapper::FlagUpdateError::PageNotMapped)
+        page: x86_64::structures::paging::Page<Size4KiB>,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> core::result::Result<
+        x86_64::structures::paging::MapperFlushAll,
+        x86_64::structures::paging::mapper::FlagUpdateError,
+    > {
+        self.guard.mapper_mut().set_flags_p4_entry(page, flags)
     }
 
     unsafe fn set_flags_p3_entry(
         &mut self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-        _flags: x86_64::structures::paging::PageTableFlags,
-    ) -> core::result::Result<x86_64::structures::paging::MapperFlushAll, x86_64::structures::paging::mapper::FlagUpdateError> {
-        Err(x86_64::structures::paging::mapper::FlagUpdateError::PageNotMapped)
+        page: x86_64::structures::paging::Page<Size4KiB>,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> core::result::Result<
+        x86_64::structures::paging::MapperFlushAll,
+        x86_64::structures::paging::mapper::FlagUpdateError,
+    > {
+        self.guard.mapper_mut().set_flags_p3_entry(page, flags)
     }
 
     unsafe fn set_flags_p2_entry(
         &mut self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-        _flags: x86_64::structures::paging::PageTableFlags,
-    ) -> core::result::Result<x86_64::structures::paging::MapperFlushAll, x86_64::structures::paging::mapper::FlagUpdateError> {
-        Err(x86_64::structures::paging::mapper::FlagUpdateError::PageNotMapped)
+        page: x86_64::structures::paging::Page<Size4KiB>,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> core::result::Result<
+        x86_64::structures::paging::MapperFlushAll,
+        x86_64::structures::paging::mapper::FlagUpdateError,
+    > {
+        self.guard.mapper_mut().set_flags_p2_entry(page, flags)
     }
 
     fn translate_page(
         &self,
-        _page: x86_64::structures::paging::Page<Size4KiB>,
-    ) -> core::result::Result<x86_64::structures::paging::PhysFrame<Size4KiB>, x86_64::structures::paging::mapper::TranslateError> {
-        Err(x86_64::structures::paging::mapper::TranslateError::PageNotMapped)
+        page: x86_64::structures::paging::Page<Size4KiB>,
+    ) -> core::result::Result<
+        x86_64::structures::paging::PhysFrame<Size4KiB>,
+        x86_64::structures::paging::mapper::TranslateError,
+    > {
+        use x86_64::structures::paging::mapper::TranslateError;
+        match self.guard.translate_addr(page.start_address()) {
+            Some(phys) => Ok(PhysFrame::containing_address(phys)),
+            None => Err(TranslateError::PageNotMapped),
+        }
     }
 }
 
-impl x86_64::structures::paging::Translate for DummyMapper {
-    fn translate(&self, _addr: VirtAddr) -> x86_64::structures::paging::mapper::TranslateResult {
-        x86_64::structures::paging::mapper::TranslateResult::PageNotMapped
+impl<'a> x86_64::structures::paging::Translate for KernelMapperGuard<'a> {
+    fn translate(&self, addr: VirtAddr) -> x86_64::structures::paging::mapper::TranslateResult {
+        use x86_64::structures::paging::mapper::{TranslateResult, MappedFrame};
+        match self.guard.translate_addr(addr) {
+            Some(phys) => {
+                let frame = MappedFrame::4KiB(PhysFrame::containing_address(phys));
+                TranslateResult::Mapped {
+                    frame,
+                    offset: addr.as_u64() % 4096,
+                    flags: x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                }
+            }
+            None => TranslateResult::PageNotMapped,
+        }
     }
 }
 
-fn create_process_page_table<A>(_allocator: &mut A) -> Result<DummyMapper>
+fn create_process_page_table<A>(_allocator: &mut A) -> Result<KernelMapperGuard<'static>>
 where
     A: FrameAllocator<Size4KiB>,
 {
-    // In real implementation, create a new page table for the process
-    Ok(DummyMapper)
+    let mm = memory::get_memory_manager().ok_or(ElfError::AllocationFailed)?;
+    Ok(KernelMapperGuard {
+        guard: mm.page_table_manager.lock(),
+    })
 }
 
 fn create_process(
-    _name: &str,
+    name: &str,
     _entry: VirtAddr,
     _stack: VirtAddr,
-    _mapper: DummyMapper,
+    _mapper: KernelMapperGuard<'static>,
     _heap_start: VirtAddr,
 ) -> Result<ProcessId> {
-    // In real implementation, integrate with process management
-    Ok(42) // Dummy process ID
+    let pm = process::get_process_manager();
+    pm.create_process(name, None, process::Priority::Normal)
+        .map_err(|_| ElfError::AllocationFailed)
 }

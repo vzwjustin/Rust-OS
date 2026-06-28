@@ -691,16 +691,67 @@ pub mod debug {
         DEBUG_COMMANDS.lock().push(command);
     }
 
-    /// Debug console interface
+    /// Debug console interface — reads commands from the keyboard.
+    ///
+    /// Reads characters from the PS/2 keyboard handler, assembles them
+    /// into a line, and dispatches to the appropriate debug command.
     pub fn debug_console() {
         log_info!("debug", "Debug console started. Type 'help' for commands.");
 
-        // In a real implementation, this would read from keyboard input
-        // For now, just display available commands
+        // Display available commands
         let commands = list_debug_commands();
         log_info!("debug", "Available commands:");
         for (name, desc) in commands {
             log_info!("debug", "  {}: {}", name, desc);
+        }
+
+        // Read and process commands from the keyboard
+        let mut line = [0u8; 256];
+        let mut pos = 0;
+
+        loop {
+            if let Some(ch) = crate::keyboard::read_char() {
+                if ch == '\n' || ch == '\r' {
+                    // Process the command
+                    if pos > 0 {
+                        let cmd = core::str::from_utf8(&line[..pos]).unwrap_or("");
+                        log_info!("debug", "Command: {}", cmd);
+
+                        // Dispatch to debug commands
+                        match cmd {
+                            "help" => {
+                                let commands = list_debug_commands();
+                                log_info!("debug", "Available commands:");
+                                for (name, desc) in commands {
+                                    log_info!("debug", "  {}: {}", name, desc);
+                                }
+                            }
+                            "stats" => {
+                                log_info!("debug", "Use 'dump' for kernel state dump");
+                            }
+                            "dump" => {
+                                kernel_debug::dump_kernel_state();
+                            }
+                            "exit" => {
+                                log_info!("debug", "Exiting debug console");
+                                break;
+                            }
+                            _ => {
+                                log_info!("debug", "Unknown command: {}", cmd);
+                            }
+                        }
+                    }
+                    pos = 0;
+                } else if ch == '\x08' || ch == '\x7F' {
+                    // Backspace
+                    if pos > 0 {
+                        pos -= 1;
+                    }
+                } else if pos < line.len() && ch.is_ascii_graphic() || ch == ' ' {
+                    line[pos] = ch as u8;
+                    pos += 1;
+                }
+            }
         }
     }
 }

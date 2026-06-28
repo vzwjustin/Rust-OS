@@ -81,19 +81,14 @@ pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsE
     // Load ELF image (no load bias for static executables)
     let image = elf_load(binary_data, None).map_err(|_| InitramfsError::ExtractionFailed)?;
 
-    // For now, we'll do a simplified loading without full page table setup
-    // In a complete implementation, we would:
-    // 1. Create a new page table for the process
-    // 2. Map all segments with proper permissions
-    // 3. Set up initial stack with argc/argv/envp
-    // 4. Switch to user mode and jump to entry point
-
     // Get all program headers for segment data extraction
     use crate::elf_loader::parser::get_loadable_segments;
     let program_headers =
         get_loadable_segments(binary_data).map_err(|_| InitramfsError::InvalidFormat)?;
 
-    // Copy segments into memory (simplified version)
+    // Load each PT_LOAD segment: allocate memory at the segment's virtual
+    // address, copy the file data, and zero the BSS area. Memory is mapped
+    // with permissions derived from the segment flags.
     for (segment, ph) in image.segments.iter().zip(program_headers.iter()) {
         if segment.segment_type != crate::elf_loader::SegmentType::Load {
             continue;
@@ -110,10 +105,7 @@ pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsE
         let segment_data = &binary_data[offset..offset + file_size];
 
         // Validate the destination range [vaddr, vaddr + mem_size) lies entirely
-        // within the user address space before performing any raw write. vaddr comes
-        // straight from the (attacker-controlled) ELF, so without this a crafted
-        // p_vaddr would be an arbitrary kernel-memory write. mem_size covers both the
-        // file_size copy and the BSS write_bytes below (mem_size >= file_size).
+        // within the user address space before performing any raw write.
         let vaddr = segment.vaddr.as_u64();
         let mem_end = vaddr
             .checked_add(segment.mem_size as u64)
@@ -124,7 +116,31 @@ pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsE
             return Err(InitramfsError::ExtractionFailed);
         }
 
-        // Copy to destination address
+        // Determine memory protection from ELF segment flags.
+        let prot = crate::memory::MemoryProtection {
+            readable: segment.flags.readable,
+            writable: segment.flags.writable,
+            executable: segment.flags.executable,
+            user_accessible: true,
+            cache_disabled: false,
+            write_through: false,
+            copy_on_write: false,
+            guard_page: false,
+        };
+
+        // Allocate and map memory at the segment's virtual address.
+        // allocate_memory_at maps physical frames into the page table at
+        // the specified address, so the subsequent copy writes to real
+        // mapped memory rather than raw physical addresses.
+        crate::memory::allocate_memory_at(
+            segment.vaddr,
+            segment.mem_size,
+            crate::memory::MemoryRegionType::UserCode,
+            prot,
+        )
+        .map_err(|_| InitramfsError::ExtractionFailed)?;
+
+        // Copy file data into the mapped region
         unsafe {
             let dest = segment.vaddr.as_u64() as *mut u8;
             let src = segment_data.as_ptr();
@@ -137,6 +153,29 @@ pub fn load_and_execute_elf(binary_data: &[u8]) -> Result<(u64, u64), InitramfsE
                 core::ptr::write_bytes(bss_start, 0, bss_size);
             }
         }
+    }
+
+    // Allocate and map the user stack.
+    let stack_size: usize = 16 * 1024; // 16 KiB stack
+    let stack_top = image.stack_address.as_u64();
+    let stack_bottom = stack_top.saturating_sub(stack_size as u64);
+    if stack_bottom >= crate::memory::USER_SPACE_START as u64 {
+        let stack_prot = crate::memory::MemoryProtection {
+            readable: true,
+            writable: true,
+            executable: false,
+            user_accessible: true,
+            cache_disabled: false,
+            write_through: false,
+            copy_on_write: false,
+            guard_page: false,
+        };
+        let _ = crate::memory::allocate_memory_at(
+            x86_64::VirtAddr::new(stack_bottom),
+            stack_size,
+            crate::memory::MemoryRegionType::UserStack,
+            stack_prot,
+        );
     }
 
     // Set up initial user stack
@@ -296,16 +335,35 @@ pub unsafe fn try_exec_init() -> ! {
 
 /// Load initramfs at kernel boot
 pub fn init_initramfs() -> Result<(), InitramfsError> {
-    // Skip initramfs extraction for now to avoid decompression issues
-    // TODO: Fix gzip decompression for large files
     if INITRAMFS_DATA.is_empty() {
         return Err(InitramfsError::NoInitramfs);
     }
 
-    // Return success without actually extracting
-    // The system will use minimal filesystem instead
-    crate::serial_println!("initramfs: Skipping extraction (3.3MB compressed)");
-    Ok(())
+    // Decompress (if needed) and extract the CPIO archive into the VFS.
+    // decompress_gzip streams the payload through miniz_oxide in 32 KiB
+    // chunks so multi-megabyte archives do not require a monolithic
+    // intermediate buffer.
+    crate::serial_println!("initramfs: Extracting {} bytes", INITRAMFS_DATA.len());
+    match extract_initramfs() {
+        Ok(info) => {
+            crate::serial_println!(
+                "initramfs: Extracted {:?} ({} bytes source)",
+                info.format,
+                info.size
+            );
+            Ok(())
+        }
+        Err(InitramfsError::DecompressionFailed) => {
+            // Decompression failed — fall back to the minimal filesystem
+            // rather than halting boot. The caller can retry later.
+            crate::serial_println!("initramfs: Decompression failed, using minimal filesystem");
+            Ok(())
+        }
+        Err(e) => {
+            crate::serial_println!("initramfs: Extraction failed: {:?}", e);
+            Err(e)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -864,23 +922,12 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
             }
 
             InodeType::Symlink => {
-                // Symbolic links store the target path in file_data
-                // For now, we create a regular file with the symlink target as content
-                // A full implementation would need VFS symlink support
-                let fd = vfs
-                    .open(
-                        &path,
-                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                        entry.permissions(),
-                    )
+                // Symbolic links: file_data contains the target path as UTF-8.
+                // Use the VFS symlink() function to create a real symlink.
+                let target = core::str::from_utf8(file_data)
                     .map_err(|_| InitramfsError::ExtractionFailed)?;
-
-                if !file_data.is_empty() {
-                    vfs.write(fd, file_data)
-                        .map_err(|_| InitramfsError::ExtractionFailed)?;
-                }
-
-                vfs.close(fd)
+                let target = target.trim_end_matches('\0');
+                vfs.symlink(target, &path)
                     .map_err(|_| InitramfsError::ExtractionFailed)?;
             }
 

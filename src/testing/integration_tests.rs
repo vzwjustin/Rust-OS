@@ -337,50 +337,46 @@ fn test_file_io_syscalls() -> TestResult {
     let mut success_count = 0;
     let total_tests = 3;
 
-    // Test open syscall
-    let open_context = SyscallContext {
-        pid: 1,
-        syscall_num: SyscallNumber::Open,
-        args: [0x1000, 0, 0, 0, 0, 0], // Fake file path
-        user_sp: 0x7fff_0000,
-        user_ip: 0x4000_0000,
-        privilege_level: 3,
-        cwd: None,
-    };
+    // Create a test file in the VFS first
+    let vfs = crate::vfs::get_vfs();
+    let test_path = "/tmp/integration_test_file";
+    // Open with O_CREAT|O_WRONLY|O_TRUNC to create the file
+    let _ = vfs.open(test_path, crate::vfs::OpenFlags::new(0x501), 0o644);
 
-    if crate::syscall::dispatch_syscall(&open_context).is_ok() {
+    // Write test data to the file via VFS
+    if let Ok(inode) = vfs.lookup(test_path) {
+        let _ = inode.write_at(0, b"integration test data");
+    }
+
+    // Test open: use a kernel-space path string (null-terminated)
+    let path_bytes = alloc::format!("{}\0", test_path);
+    let open_result = crate::linux_compat::file_ops::open(
+        path_bytes.as_ptr(),
+        0, // O_RDONLY
+        0o644,
+    );
+    if open_result.is_ok() {
         success_count += 1;
     }
 
-    // Test write syscall to stdout
-    let write_context = SyscallContext {
-        pid: 1,
-        syscall_num: SyscallNumber::Write,
-        args: [1, 0x2000, 100, 0, 0, 0], // stdout, buffer, count
-        user_sp: 0x7fff_0000,
-        user_ip: 0x4000_0000,
-        privilege_level: 3,
-        cwd: None,
-    };
-
-    if crate::syscall::dispatch_syscall(&write_context).is_ok() {
+    // Test write to stdout (fd 1)
+    let write_data = b"integration test\n\0";
+    let write_result =
+        crate::linux_compat::file_ops::write(1, write_data.as_ptr(), write_data.len());
+    if write_result.is_ok() {
         success_count += 1;
     }
 
-    // Test close syscall
-    let close_context = SyscallContext {
-        pid: 1,
-        syscall_num: SyscallNumber::Close,
-        args: [3, 0, 0, 0, 0, 0], // file descriptor 3
-        user_sp: 0x7fff_0000,
-        user_ip: 0x4000_0000,
-        privilege_level: 3,
-        cwd: None,
-    };
-
-    if crate::syscall::dispatch_syscall(&close_context).is_ok() {
-        success_count += 1;
+    // Test close on the opened fd
+    if let Ok(fd) = open_result {
+        let close_result = crate::linux_compat::file_ops::close(fd);
+        if close_result.is_ok() {
+            success_count += 1;
+        }
     }
+
+    // Clean up
+    let _ = vfs.unlink(test_path);
 
     if success_count == total_tests {
         TestResult::Pass

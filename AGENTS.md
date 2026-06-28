@@ -42,6 +42,8 @@
 
 ## Agent-Specific Notes
 - If using automated tools, align with `CLAUDE.md` for build/test expectations and architecture context.
+- **Code reading**: When reading files for reasoning about stubs or code changes, use 30-40 lines of context above and below the target area. Wider context windows keep the agent grounded and make RTK's compressed output more useful.
+- **No stubs allowed (ENFORCED)**: Do NOT write stub implementations. Every function must be fully built and wired end-to-end — real logic, real data flow, real integration with the rest of the kernel. Placeholder returns, hardcoded dummy values, "not yet implemented" comments, and half-wired functions are prohibited. If a full implementation is not possible due to a missing subsystem, say so explicitly rather than leaving a stub.
 
 
 <!-- headroom:rtk-instructions -->

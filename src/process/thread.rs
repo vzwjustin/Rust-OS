@@ -889,21 +889,46 @@ pub fn sleep_ms(duration_ms: u64) -> Result<(), &'static str> {
 
 /// Yield current thread
 pub fn yield_thread() {
-    // In a real implementation, this would trigger a reschedule
-    // by calling the scheduler directly
+    // Trigger a reschedule so other runnable threads/processes can run.
+    // The scheduler picks the next task on the next timer/preemption point.
+    crate::scheduler::yield_cpu();
 }
 
 /// Join on a thread (wait for it to complete)
+///
+/// Blocks the calling thread by yielding the CPU in a spin-wait loop
+/// until the target thread has terminated. Once terminated, returns
+/// the thread's exit status.
 pub fn join_thread(tid: Tid) -> Result<i32, &'static str> {
-    // In a real implementation, this would block the current thread
-    // until the target thread completes
-    if let Some(tcb) = THREAD_MANAGER.get_thread(tid) {
-        if let Some(exit_status) = tcb.exit_status {
-            Ok(exit_status)
-        } else {
-            Err("Thread not yet terminated")
+    // First check if the thread exists
+    match THREAD_MANAGER.get_thread(tid) {
+        None => return Err("Thread not found"),
+        Some(tcb) => {
+            if let Some(exit_status) = tcb.exit_status {
+                return Ok(exit_status);
+            }
         }
-    } else {
-        Err("Thread not found")
+    }
+
+    // Thread exists but hasn't terminated yet. Spin-wait with yield
+    // until it completes. This is a simple busy-wait that yields the
+    // CPU to other threads rather than truly blocking. A full
+    // implementation would use a wait queue, but that requires
+    // scheduler integration that isn't available yet.
+    loop {
+        yield_thread();
+
+        match THREAD_MANAGER.get_thread(tid) {
+            None => {
+                // Thread was cleaned up while we were waiting; treat
+                // as terminated with unknown exit status.
+                return Err("Thread terminated and was cleaned up");
+            }
+            Some(tcb) => {
+                if let Some(exit_status) = tcb.exit_status {
+                    return Ok(exit_status);
+                }
+            }
+        }
     }
 }

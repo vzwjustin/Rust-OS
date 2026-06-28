@@ -63,72 +63,61 @@ impl UdpHeader {
 
     /// Calculate UDP checksum
     /// RFC 768 (IPv4) and RFC 2460 Section 8.1 (IPv6)
+    ///
+    /// Computes the ones-complement sum over the IP pseudo-header (source
+    /// address, destination address, protocol, UDP length) concatenated
+    /// with the UDP header (checksum field zeroed) and the UDP payload.
+    /// The arithmetic is delegated to [`crate::net::internet_checksum`].
+    /// Per RFC 768, a computed checksum of 0x0000 is transmitted as 0xFFFF
+    /// (a zero checksum means "no checksum" for IPv4 and is forbidden for
+    /// IPv6, so 0xFFFF is used in both cases).
     pub fn calculate_checksum(
         &self,
         src_ip: &NetworkAddress,
         dst_ip: &NetworkAddress,
         payload: &[u8],
     ) -> u16 {
-        let mut sum = 0u32;
+        // Upper-layer (UDP) length, carried in the pseudo-header.
+        let udp_length = self.length;
 
-        // Pseudo-header (differs between IPv4 and IPv6)
+        // Build the checksum input: pseudo-header + UDP header (checksum=0) + payload.
+        let mut data = Vec::with_capacity(40 + UDP_HEADER_SIZE + payload.len());
+
         match (src_ip, dst_ip) {
             (NetworkAddress::IPv4(src), NetworkAddress::IPv4(dst)) => {
-                // IPv4 pseudo-header
-                sum += ((src[0] as u32) << 8) | (src[1] as u32);
-                sum += ((src[2] as u32) << 8) | (src[3] as u32);
-                sum += ((dst[0] as u32) << 8) | (dst[1] as u32);
-                sum += ((dst[2] as u32) << 8) | (dst[3] as u32);
-                sum += 17; // Protocol (UDP)
-                sum += self.length as u32;
+                // IPv4 pseudo-header (12 bytes): src(4) + dst(4) + zero(1) + proto(1) + length(2)
+                data.extend_from_slice(src);
+                data.extend_from_slice(dst);
+                data.push(0x00);
+                data.push(17); // Protocol (UDP)
+                data.extend_from_slice(&udp_length.to_be_bytes());
             }
             (NetworkAddress::IPv6(src), NetworkAddress::IPv6(dst)) => {
-                // IPv6 pseudo-header (RFC 2460 Section 8.1)
-                // Source address (16 bytes)
-                for chunk in src.chunks(2) {
-                    sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-                }
-                // Destination address (16 bytes)
-                for chunk in dst.chunks(2) {
-                    sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-                }
-                // Upper-layer packet length (32 bits)
-                let udp_len = self.length as u32;
-                sum += udp_len >> 16;
-                sum += udp_len & 0xFFFF;
-                // Next header (UDP = 17, padded to 32 bits)
-                sum += 17;
+                // IPv6 pseudo-header (40 bytes): src(16) + dst(16) + length(4) + next-header(4)
+                data.extend_from_slice(src);
+                data.extend_from_slice(dst);
+                data.extend_from_slice(&(udp_length as u32).to_be_bytes());
+                // Next header: 24 zero bits + 8-bit protocol (UDP = 17).
+                data.extend_from_slice(&[0x00, 0x00, 0x00, 17]);
             }
             _ => return 0, // Mixed address families not supported
         }
 
-        // UDP header
-        sum += self.source_port as u32;
-        sum += self.dest_port as u32;
-        sum += self.length as u32;
-        // Skip checksum field
+        // UDP header with the checksum field zeroed during computation.
+        data.extend_from_slice(&self.source_port.to_be_bytes());
+        data.extend_from_slice(&self.dest_port.to_be_bytes());
+        data.extend_from_slice(&udp_length.to_be_bytes());
+        data.extend_from_slice(&[0x00, 0x00]); // checksum field
 
-        // Payload
-        for chunk in payload.chunks(2) {
-            if chunk.len() == 2 {
-                sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-            } else {
-                sum += (chunk[0] as u32) << 8;
-            }
-        }
+        // UDP payload.
+        data.extend_from_slice(payload);
 
-        // Fold 32-bit sum to 16 bits
-        while (sum >> 16) != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
+        let result = super::internet_checksum(&data);
 
-        let result = !sum as u16;
-        // UDP checksum of 0 means no checksum (only for IPv4, mandatory for IPv6)
+        // UDP checksum of 0 means no checksum (only for IPv4, mandatory for IPv6).
+        // Per RFC 768, transmit 0xFFFF instead of 0x0000 in both cases.
         if result == 0 {
-            match (src_ip, dst_ip) {
-                (NetworkAddress::IPv6(_), NetworkAddress::IPv6(_)) => 0xFFFF, // IPv6: checksum is mandatory
-                _ => 0xFFFF, // IPv4: 0xFFFF if calculated checksum is 0
-            }
+            0xFFFF
         } else {
             result
         }
@@ -1102,24 +1091,13 @@ fn send_icmp_port_unreachable(
     super::ip::send_ipv4_packet(src_ip, dst_ip, 1, &icmp_packet)
 }
 
-/// Calculate ICMP checksum
+/// Calculate ICMP checksum (RFC 1071).
+///
+/// `data` must contain the full ICMP message with the checksum field
+/// already zeroed; the ones-complement sum is delegated to the shared
+/// [`crate::net::internet_checksum`] primitive.
 fn calculate_icmp_checksum(data: &[u8]) -> u16 {
-    let mut sum = 0u32;
-
-    for chunk in data.chunks(2) {
-        if chunk.len() == 2 {
-            sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-        } else {
-            sum += (chunk[0] as u32) << 8;
-        }
-    }
-
-    // Fold 32-bit sum to 16 bits
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !sum as u16
+    super::internet_checksum(data)
 }
 
 #[cfg(all(test, feature = "disabled-tests"))]

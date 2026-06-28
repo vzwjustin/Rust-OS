@@ -5,10 +5,13 @@
 
 use crate::package::adapters::{ApkAdapter, DebAdapter, NativeAdapter, PackageAdapter, RpmAdapter};
 use crate::package::database::{PackageCache, PackageDatabase};
-use crate::package::{PackageError, PackageManagerType, PackageOperation, PackageResult};
+use crate::package::{
+    PackageError, PackageManagerType, PackageOperation, PackageResult, PackageStatus,
+};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Main package manager
 pub struct PackageManager {
@@ -172,11 +175,55 @@ impl PackageManager {
     }
 
     /// Upgrade packages
+    ///
+    /// With no network/repository backend available in-kernel, this performs
+    /// the local half of an upgrade: it verifies the target is installed,
+    /// records it as pending configuration in the database, and reports the
+    /// current version so a userspace tool can fetch and apply the new build.
+    /// An empty `package_name` upgrades every installed package.
     fn upgrade(&mut self, package_name: &str) -> PackageResult<String> {
-        Err(PackageError::NotImplemented(format!(
-            "Package upgrade not yet implemented for {}",
-            package_name
-        )))
+        if package_name.is_empty() {
+            let packages = self.database.list_packages();
+            if packages.is_empty() {
+                return Ok("No installed packages to upgrade".to_string());
+            }
+
+            // Collect name/version pairs up front so we don't hold an
+            // immutable borrow of the database across the mutable update.
+            let targets: Vec<(String, String)> = packages
+                .iter()
+                .map(|pkg| (pkg.metadata.name.clone(), pkg.metadata.version.clone()))
+                .collect();
+
+            let mut output = String::new();
+            output.push_str(&format!(
+                "Marking {} package(s) for upgrade:\n",
+                targets.len()
+            ));
+            for (name, version) in &targets {
+                self.database
+                    .update_status(name, PackageStatus::ConfigPending)?;
+                output.push_str(&format!("  {} {} -> pending\n", name, version));
+            }
+            output.push_str(
+                "Upgrade candidates recorded; apply new builds via the repository adapter.",
+            );
+            return Ok(output);
+        }
+
+        let package = self
+            .database
+            .get_package(package_name)
+            .ok_or_else(|| PackageError::NotFound(format!("Package {} not found", package_name)))?;
+
+        let current_version = package.metadata.version.clone();
+        self.database
+            .update_status(package_name, PackageStatus::ConfigPending)?;
+
+        Ok(format!(
+            "Package {} marked for upgrade (current version {}, pending repository fetch)",
+            package_name, current_version
+        ))
     }
 
     /// Get the adapter for current package manager type

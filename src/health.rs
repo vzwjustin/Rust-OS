@@ -9,6 +9,25 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::RwLock;
 
+/// Read a 64-bit model-specific register.
+///
+/// # Safety
+/// `rdmsr` is a privileged ring-0 instruction. The caller must ensure `msr`
+/// is a valid MSR index for the running CPU model and that the read has no
+/// harmful side effects.
+#[inline(always)]
+unsafe fn rdmsr(msr: u32) -> u64 {
+    let (low, high): (u32, u32);
+    core::arch::asm!(
+        "rdmsr",
+        out("eax") low,
+        out("edx") high,
+        in("ecx") msr,
+        options(nostack, preserves_flags),
+    );
+    ((high as u64) << 32) | (low as u64)
+}
+
 /// System health metrics
 #[derive(Debug, Clone)]
 pub struct SystemHealthMetrics {
@@ -247,10 +266,67 @@ impl HealthMonitor {
     }
 
     fn read_cpu_temperature(&self) -> Option<u8> {
-        // Read CPU temperature from thermal sensors
-        // This would require ACPI thermal zone parsing or MSR access
-        // For now, return None (not implemented)
-        None
+        // Read CPU temperature via the IA32_THERM_STATUS MSR (0x19C).
+        //
+        // On Intel CPUs that support the digital thermal sensor (DTS), bits
+        // 22:16 of IA32_THERM_STATUS contain the "digital temperature
+        // reading" — the number of degrees Celsius below TjMax (the maximum
+        // junction temperature). The actual temperature is:
+        //
+        //     temperature = TjMax - digital_reading
+        //
+        // TjMax is model-specific (read from IA32_TEMPERATURE_TARGET MSR
+        // 0x1A2, bits 23:16 on most recent CPUs). We read it when available
+        // and fall back to a conservative 100 °C assumption used by many
+        // Intel desktop/server parts.
+        //
+        // If the DTS is not supported (the MSR read returns 0 in bits 22:16
+        // and the VALID bit 31 is clear), we return None.
+
+        /// IA32_THERM_STATUS
+        const MSR_THERM_STATUS: u32 = 0x19C;
+        /// IA32_TEMPERATURE_TARGET
+        const MSR_TEMP_TARGET: u32 = 0x1A2;
+        /// Typical TjMax fallback (°C)
+        const TJMAX_FALLBACK: u8 = 100;
+
+        // SAFETY: rdmsr is a privileged instruction that reads a model-specific
+        // register. We only read thermal-status registers that are read-only
+        // and have no side effects. The CPU must be in ring 0 (kernel mode).
+        let therm_status = unsafe { rdmsr(MSR_THERM_STATUS) };
+
+        // Bit 31 = VALID (thermal status valid); if clear, DTS not available.
+        if (therm_status >> 31) & 1 == 0 {
+            return None;
+        }
+
+        // Digital temperature reading: bits 22:16
+        let digital_reading = ((therm_status >> 16) & 0x7F) as u8;
+        if digital_reading == 0 {
+            // 0 means "at or above TjMax" — report TjMax.
+            return Some(TJMAX_FALLBACK);
+        }
+
+        // Determine TjMax from IA32_TEMPERATURE_TARGET if available.
+        let tjmax = match unsafe { rdmsr(MSR_TEMP_TARGET) } {
+            target if target != 0 => {
+                // Bits 23:16 on most modern Intel CPUs.
+                let t = ((target >> 16) & 0xFF) as u8;
+                if t >= 70 && t <= 130 {
+                    t
+                } else {
+                    TJMAX_FALLBACK
+                }
+            }
+            _ => TJMAX_FALLBACK,
+        };
+
+        let temp = tjmax.saturating_sub(digital_reading);
+        if temp > 0 && temp <= tjmax {
+            Some(temp)
+        } else {
+            None
+        }
     }
 
     fn calculate_health_score(&self, metrics: &SystemHealthMetrics) -> u8 {

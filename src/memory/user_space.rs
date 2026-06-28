@@ -101,10 +101,21 @@ const MAX_COPY_SIZE: usize = 64 * 1024 * 1024; // 64MB
 /// Page fault handling context for user space memory operations
 struct PageFaultContext {
     /// Previous page fault handler state
-    previous_handler: Option<fn(VirtAddr, u64) -> Result<(), SyscallError>>,
+    previous_handler:
+        Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>>,
     /// Recovery context for the current operation
     recovery_context: PageFaultRecoveryContext,
 }
+
+/// The recovery context for the in-flight user-space copy operation, if any.
+///
+/// The page fault trampoline is a bare function pointer with no closure
+/// capture, so it cannot directly see the `PageFaultContext` that installed
+/// it. Instead, `PageFaultContext::new` publishes the active range here and
+/// `Drop` clears it, allowing the trampoline to decide whether a fault is
+/// within the expected range (recoverable) or a genuine fault.
+static CURRENT_RECOVERY_CONTEXT: spin::Mutex<Option<PageFaultRecoveryContext>> =
+    spin::Mutex::new(None);
 
 /// Recovery context for page fault handling during user space operations
 #[derive(Debug, Clone)]
@@ -139,11 +150,17 @@ impl PageFaultContext {
             bytes_processed: 0,
         };
 
-        // Set up page fault handling for the current operation
-        // In a real implementation, this would install a temporary handler
-        // that can recover from page faults during user space operations
+        // Install a temporary page fault handler that can recover from
+        // faults during user space copy operations. The previous handler
+        // is saved so it can be restored when this context is dropped.
+        let previous_handler = crate::interrupts::install_page_fault_handler(page_fault_trampoline);
+
+        // Publish the active recovery range so the trampoline (which is a
+        // plain function pointer) can check whether a fault falls inside it.
+        *CURRENT_RECOVERY_CONTEXT.lock() = Some(recovery_context.clone());
+
         Self {
-            previous_handler: None, // Note: Handler chaining requires interrupt manager integration
+            previous_handler,
             recovery_context,
         }
     }
@@ -188,15 +205,40 @@ impl PageFaultContext {
 
 impl Drop for PageFaultContext {
     fn drop(&mut self) {
-        // Restore previous exception handler state
-        // This ensures that page fault handling is properly cleaned up
-        // even if the operation fails or panics
-        if let Some(_previous_handler) = self.previous_handler {
-            // Note: Handler restoration requires interrupt manager integration.
-            // Future implementation will restore the IDT entry or handler chain
-            // to maintain proper interrupt handling hierarchy.
+        // Clear the published recovery range so a later fault isn't mistaken
+        // for one inside this (now-ended) operation.
+        *CURRENT_RECOVERY_CONTEXT.lock() = None;
+
+        // Restore the previous page fault handler
+        crate::interrupts::restore_page_fault_handler(self.previous_handler);
+    }
+}
+
+/// Page fault trampoline for user space memory operations.
+///
+/// This function is installed as the page fault handler during
+/// copy_to_user/copy_from_user operations. It returns Ok if the
+/// fault can be recovered (e.g., demand paging), or Err to let
+/// the normal page fault handler deal with it.
+fn page_fault_trampoline(
+    addr: VirtAddr,
+    _error_code: x86_64::structures::idt::PageFaultErrorCode,
+) -> Result<(), ()> {
+    // A page fault occurred during a user-space copy operation. Check whether
+    // the faulting address falls inside the currently active recovery range
+    // (published by `PageFaultContext::new`). If it does, the fault is part of
+    // the in-flight copy and we allow the instruction to be retried after the
+    // caller's own fault handling (e.g. demand paging / COW) runs — returning
+    // Ok(()) tells the top-level page fault handler to resume. If the address
+    // is outside the expected range, it is a genuine fault and we return Err
+    // so the normal page fault handler processes it.
+    let fault_addr = addr.as_u64();
+    if let Some(ctx) = CURRENT_RECOVERY_CONTEXT.lock().as_ref() {
+        if fault_addr >= ctx.start_addr && fault_addr < ctx.end_addr {
+            return Ok(());
         }
     }
+    Err(())
 }
 
 /// User space memory validation and copying operations

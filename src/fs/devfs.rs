@@ -289,7 +289,7 @@ impl FileSystem for DevFs {
         Ok(device.metadata.inode)
     }
 
-    fn read(&self, inode: InodeNumber, _offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
+    fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
         // Find device by inode
         let devices = self.devices.read();
         let device = devices
@@ -338,16 +338,42 @@ impl FileSystem for DevFs {
                 buffer.fill(0);
                 Ok(buffer.len())
             }
-            DeviceType::Memory | DeviceType::KernelMemory => {
-                // Memory devices require special handling
-                // For now, return permission denied
-                Err(FsError::PermissionDenied)
+            DeviceType::Memory => {
+                // /dev/mem: read physical memory at the given offset.
+                // We use the direct physical-memory mapping established by
+                // the memory manager to safely access physical addresses.
+                if offset.checked_add(buffer.len() as u64).is_none() {
+                    return Err(FsError::InvalidArgument);
+                }
+                let phys_offset = crate::memory::get_physical_memory_offset();
+                let src = (phys_offset + offset) as *const u8;
+                // SAFETY: We read from the direct physical-memory mapping.
+                // The caller is responsible for ensuring the offset is a
+                // valid physical address. We trust the memory manager's
+                // mapping to cover the entire physical address space.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src, buffer.as_mut_ptr(), buffer.len());
+                }
+                Ok(buffer.len())
+            }
+            DeviceType::KernelMemory => {
+                // /dev/kmem: read kernel virtual memory at the given offset.
+                // This provides direct access to the kernel's virtual address
+                // space, which is useful for debugging and crash analysis.
+                let src = offset as *const u8;
+                // SAFETY: The caller is responsible for ensuring the offset
+                // is a valid kernel virtual address. This is the same trust
+                // model as Linux /dev/kmem.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src, buffer.as_mut_ptr(), buffer.len());
+                }
+                Ok(buffer.len())
             }
             _ => Err(FsError::NotSupported),
         }
     }
 
-    fn write(&self, inode: InodeNumber, _offset: u64, buffer: &[u8]) -> FsResult<usize> {
+    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
         // Find device by inode
         let devices = self.devices.read();
         let device = devices
@@ -385,9 +411,28 @@ impl FileSystem for DevFs {
                 // Random devices don't accept writes (or use them to seed)
                 Ok(buffer.len())
             }
-            DeviceType::Memory | DeviceType::KernelMemory => {
-                // Memory devices require special handling
-                Err(FsError::PermissionDenied)
+            DeviceType::Memory => {
+                // /dev/mem: write to physical memory at the given offset.
+                if offset.checked_add(buffer.len() as u64).is_none() {
+                    return Err(FsError::InvalidArgument);
+                }
+                let phys_offset = crate::memory::get_physical_memory_offset();
+                let dst = (phys_offset + offset) as *mut u8;
+                // SAFETY: Same trust model as the read path — the caller
+                // ensures the offset is a valid physical address.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(buffer.as_ptr(), dst, buffer.len());
+                }
+                Ok(buffer.len())
+            }
+            DeviceType::KernelMemory => {
+                // /dev/kmem: write to kernel virtual memory at the given offset.
+                let dst = offset as *mut u8;
+                // SAFETY: Same trust model as the read path.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(buffer.as_ptr(), dst, buffer.len());
+                }
+                Ok(buffer.len())
             }
             _ => Err(FsError::NotSupported),
         }

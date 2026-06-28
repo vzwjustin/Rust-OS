@@ -5,6 +5,8 @@
 
 extern crate alloc;
 
+use core::sync::atomic::Ordering;
+
 pub mod advanced_io;
 pub mod file_ops;
 pub mod fs_ops;
@@ -200,6 +202,15 @@ pub fn init_linux_compat() {
     resource_ops::init_resource_operations();
     sysinfo_ops::init_sysinfo_operations();
     special_fd::init_special_fd();
+    LINUX_COMPAT_READY.store(true, Ordering::Release);
+}
+
+static LINUX_COMPAT_READY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Check if the Linux compatibility layer has been initialized.
+pub fn is_linux_compat_ready() -> bool {
+    LINUX_COMPAT_READY.load(Ordering::Acquire)
 }
 
 /// Get Linux compatibility layer statistics

@@ -4,7 +4,9 @@
 
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{FrameAllocator, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB},
+    structures::paging::{
+        FrameAllocator, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB, Translate,
+    },
     PhysAddr, VirtAddr,
 };
 
@@ -174,13 +176,17 @@ pub struct PageTable {
 impl PageTable {
     /// Create a new page table
     pub fn new() -> VmResult<Self> {
-        // In a real implementation, this would allocate from the physical frame allocator
-        // For now, we'll use a simple allocator starting at a known address
         let start_phys = PhysAddr::new(0x1000_0000);
         let end_phys = PhysAddr::new(0x2000_0000);
 
         let mut allocator = SimpleFrameAllocator::new(start_phys, end_phys);
         let root_frame = allocator.allocate_frame().ok_or(VmError::OutOfMemory)?;
+
+        // Zero the new P4 table so unused entries are not-present
+        let p4_virt = VirtAddr::new(0xFFFF_8000_0000_0000) + root_frame.start_address().as_u64();
+        unsafe {
+            core::ptr::write_bytes(p4_virt.as_u64() as *mut u8, 0, 4096);
+        }
 
         Ok(Self {
             root_phys: root_frame.start_address(),
@@ -206,54 +212,112 @@ impl PageTable {
         self.root_phys
     }
 
+    /// Create an OffsetPageTable reference for this page table.
+    ///
+    /// # Safety
+    /// The caller must ensure that the physical_memory_offset correctly
+    /// maps all physical memory and that no other code is concurrently
+    /// modifying the page table.
+    unsafe fn offset_page_table(&self) -> x86_64::structures::paging::OffsetPageTable<'_> {
+        let p4_virt = self.physical_memory_offset + self.root_phys.as_u64();
+        x86_64::structures::paging::OffsetPageTable::new(
+            &mut *(p4_virt.as_u64() as *mut x86_64::structures::paging::PageTable),
+            self.physical_memory_offset,
+        )
+    }
+
     /// Map a virtual address to a physical address
     pub fn map(&mut self, virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) -> VmResult<()> {
-        let _page = Page::<Size4KiB>::containing_address(virt);
-        let _frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
-        let _x64_flags = flags.to_x64_flags();
+        use x86_64::structures::paging::Mapper;
 
-        // In a real implementation, this would use the x86_64 Mapper trait
-        // For now, we simulate the mapping
+        let page = Page::<Size4KiB>::containing_address(virt);
+        let frame = PhysFrame::<Size4KiB>::containing_address(phys);
+        let x64_flags = flags.to_x64_flags();
+
+        let mut allocator = self.frame_allocator.lock();
+        // SAFETY: offset_page_table requires that physical_memory_offset
+        // maps all physical memory, which is set up by the bootloader.
+        unsafe {
+            let mut pt = self.offset_page_table();
+            pt.map_to(page, frame, x64_flags, &mut *allocator)
+                .map_err(|_| VmError::InvalidOperation)?;
+        }
         Ok(())
     }
 
     /// Unmap a virtual address
     pub fn unmap(&mut self, virt: VirtAddr) -> VmResult<()> {
-        let _page = Page::<Size4KiB>::containing_address(virt);
+        use x86_64::structures::paging::Mapper;
 
-        // In a real implementation, this would use the x86_64 Mapper trait
-        // For now, we simulate the unmapping
+        let page = Page::<Size4KiB>::containing_address(virt);
+
+        unsafe {
+            let mut pt = self.offset_page_table();
+            pt.unmap(page).map_err(|_| VmError::InvalidOperation)?;
+        }
         Ok(())
     }
 
     /// Translate virtual address to physical address
-    pub fn translate(&self, _virt: VirtAddr) -> Option<PhysAddr> {
-        // In a real implementation, this would walk the page table
-        // For now, we return a simulated translation
-        None
+    pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        use x86_64::structures::paging::Translate;
+        unsafe {
+            let pt = self.offset_page_table();
+            pt.translate_addr(virt)
+        }
     }
 
     /// Update flags for a page
     pub fn update_flags(&mut self, virt: VirtAddr, flags: PageTableFlags) -> VmResult<()> {
-        let _page = Page::<Size4KiB>::containing_address(virt);
-        let _x64_flags = flags.to_x64_flags();
+        use x86_64::structures::paging::{Mapper, PageTableFlags as X64F};
 
-        // In a real implementation, this would update the page table entry
+        let page = Page::<Size4KiB>::containing_address(virt);
+        let x64_flags = flags.to_x64_flags();
+
+        unsafe {
+            let mut pt = self.offset_page_table();
+            // SAFETY: updating flags on an existing mapping. The frame
+            // remains the same; only the permission bits change.
+            pt.update_flags(page, x64_flags)
+                .map_err(|_| VmError::InvalidOperation)?;
+        }
+
+        // Suppress unused warning for X64F import when not needed directly
+        let _ = X64F::empty();
         Ok(())
     }
 
-    /// Clone the page table
+    /// Clone the page table — copies all present mappings from the source
+    /// P4 table into a newly allocated P4 table.
     pub fn clone_table(&self) -> VmResult<Self> {
-        // Allocate a new page table root
         let start_phys = PhysAddr::new(0x1000_0000);
         let end_phys = PhysAddr::new(0x2000_0000);
 
         let mut allocator = SimpleFrameAllocator::new(start_phys, end_phys);
         let root_frame = allocator.allocate_frame().ok_or(VmError::OutOfMemory)?;
 
-        // In a real implementation, this would copy all mappings
+        let new_root_phys = root_frame.start_address();
+
+        // Zero the new P4 table
+        let new_p4_virt = self.physical_memory_offset + new_root_phys.as_u64();
+        unsafe {
+            core::ptr::write_bytes(new_p4_virt.as_u64() as *mut u8, 0, 4096);
+        }
+
+        // Copy all 512 P4 entries from the source to the new table.
+        // This is a shallow copy — both tables point to the same lower-
+        // level tables. For fork, the caller should use COW instead.
+        let src_p4_virt = self.physical_memory_offset + self.root_phys.as_u64();
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src_p4_virt.as_u64() as *const u64,
+                new_p4_virt.as_u64() as *mut u64,
+                512,
+            );
+        }
+
         Ok(Self {
-            root_phys: root_frame.start_address(),
+            root_phys: new_root_phys,
             physical_memory_offset: self.physical_memory_offset,
             frame_allocator: Mutex::new(allocator),
         })
@@ -294,11 +358,17 @@ impl PageTableManager {
         current.as_ref().map(|t| t.root_phys())
     }
 
-    /// Switch to a different page table
-    pub fn switch_table(&self, _root_phys: PhysAddr) {
-        // In a real implementation, this would load CR3
-        {
-            // x86_64::instructions::tlb::flush_all();
+    /// Switch to a different page table by loading CR3
+    pub fn switch_table(&self, root_phys: PhysAddr) {
+        use x86_64::registers::control::Cr3;
+        // SAFETY: Loading CR3 with a valid P4 table physical address
+        // switches the active address space. The caller must ensure
+        // root_phys points to a valid 4 KiB-aligned P4 table.
+        unsafe {
+            Cr3::write(
+                PhysFrame::containing_address(root_phys),
+                x86_64::registers::control::Cr3Flags::empty(),
+            );
         }
     }
 

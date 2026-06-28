@@ -543,10 +543,14 @@ pub fn send_ipv4_packet(
         match super::arp::lookup_arp(&dst_ip) {
             Some(mac) => mac,
             None => {
-                // MAC not in ARP cache - send ARP request and use broadcast as fallback
-                // In production, packet would be queued pending ARP resolution
+                // MAC not in ARP cache — send an ARP request so the
+                // resolution can complete asynchronously, then return
+                // an error. The caller should retry after the ARP reply
+                // arrives and populates the cache. Sending the packet to
+                // broadcast would deliver it to every host on the segment,
+                // which is incorrect for unicast traffic.
                 let _ = super::arp::send_arp_request(dst_ip, interface.name.clone());
-                NetworkAddress::Mac([0xFF; 6])
+                return Err(NetworkError::NetworkUnreachable);
             }
         }
     };
@@ -582,66 +586,35 @@ pub fn send_ipv4_packet(
     stack.send_packet(&interface.name, packet)
 }
 
-/// Calculate IP header checksum
+/// Calculate IP header checksum (RFC 1071).
+///
+/// The caller must ensure the checksum field in `data` is zeroed before
+/// invoking this; the ones-complement sum is delegated to the shared
+/// [`crate::net::internet_checksum`] primitive.
 fn calculate_ip_checksum(data: &[u8]) -> u16 {
-    let mut sum = 0u32;
-
-    for chunk in data.chunks(2) {
-        if chunk.len() == 2 {
-            sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-        } else {
-            sum += (chunk[0] as u32) << 8;
-        }
-    }
-
-    // Fold 32-bit sum to 16 bits
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !sum as u16
+    super::internet_checksum(data)
 }
 
 /// Calculate ICMPv6 checksum with IPv6 pseudo-header
 /// RFC 4443 Section 2.3, RFC 2460 Section 8.1
+///
+/// Builds the IPv6 pseudo-header (src + dst + 32-bit upper-layer length +
+/// 32-bit next-header) concatenated with the ICMPv6 packet and delegates
+/// the ones-complement sum to [`crate::net::internet_checksum`]. The
+/// checksum field inside `packet` must already be zeroed by the caller.
 fn calculate_icmpv6_checksum(src: &[u8; 16], dst: &[u8; 16], packet: &[u8]) -> u16 {
-    let mut sum = 0u32;
-
-    // IPv6 pseudo-header checksum
-    // Source address (16 bytes)
-    for chunk in src.chunks(2) {
-        sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-    }
-
-    // Destination address (16 bytes)
-    for chunk in dst.chunks(2) {
-        sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-    }
-
-    // Upper-layer packet length (32 bits)
     let packet_len = packet.len() as u32;
-    sum += packet_len >> 16;
-    sum += packet_len & 0xFFFF;
 
-    // Next header (ICMPv6 = 58, padded to 32 bits)
-    sum += 58;
+    // 16 (src) + 16 (dst) + 4 (length) + 4 (next header) + packet
+    let mut data = Vec::with_capacity(40 + packet.len());
+    data.extend_from_slice(src);
+    data.extend_from_slice(dst);
+    data.extend_from_slice(&packet_len.to_be_bytes());
+    // Next header: 24 zero bits followed by the 8-bit protocol value (58).
+    data.extend_from_slice(&[0x00, 0x00, 0x00, 58]);
+    data.extend_from_slice(packet);
 
-    // ICMPv6 packet data
-    for chunk in packet.chunks(2) {
-        if chunk.len() == 2 {
-            sum += ((chunk[0] as u32) << 8) | (chunk[1] as u32);
-        } else {
-            sum += (chunk[0] as u32) << 8;
-        }
-    }
-
-    // Fold 32-bit sum to 16 bits
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    // One's complement
-    !sum as u16
+    super::internet_checksum(&data)
 }
 
 /// Send IPv6 packet with specified next header and payload
@@ -696,7 +669,6 @@ pub fn send_ipv6_packet(
 
     // Resolve destination MAC address for IPv6
     // For IPv6, we use NDP (Neighbor Discovery Protocol) instead of ARP
-    // For now, use broadcast/multicast MAC for IPv6
     let dest_mac = if dst_ip.is_broadcast() || dst_ip.is_multicast() {
         // IPv6 multicast MAC: 33:33:xx:xx:xx:xx where xx:xx:xx:xx are lower 32 bits of IPv6 address
         if let NetworkAddress::IPv6(addr) = dst_ip {
@@ -705,9 +677,18 @@ pub fn send_ipv6_packet(
             NetworkAddress::Mac([0xFF; 6]) // Fallback to broadcast
         }
     } else {
-        // Try neighbor discovery table lookup (similar to ARP for IPv4)
-        // For now, use broadcast as fallback
-        NetworkAddress::Mac([0xFF; 6])
+        // Try neighbor discovery cache lookup (similar to ARP for IPv4).
+        // If a reachable entry exists, use its MAC; otherwise fall back to
+        // broadcast so the packet at least reaches the local segment.
+        if let Some(entry) = super::icmp::ICMP_MANAGER.lookup_neighbor(&dst_ip) {
+            if let Some(mac) = entry.mac_address {
+                mac
+            } else {
+                NetworkAddress::Mac([0xFF; 6])
+            }
+        } else {
+            NetworkAddress::Mac([0xFF; 6])
+        }
     };
 
     // Get source MAC from interface

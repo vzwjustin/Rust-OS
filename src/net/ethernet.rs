@@ -141,10 +141,30 @@ pub fn process_frame(network_stack: &NetworkStack, mut packet: PacketBuffer) -> 
         EtherType::IPv6 => super::ip::process_ipv6_packet(network_stack, packet),
         EtherType::ARP => process_arp_packet(network_stack, packet),
         EtherType::VLAN => {
-            // Note: VLAN tagging (IEEE 802.1Q) is not yet implemented.
-            // Future enhancement will parse VLAN tags and route to appropriate virtual interface.
-            // Packets are currently dropped to prevent incorrect processing.
-            Ok(())
+            // IEEE 802.1Q VLAN-tagged frame. After the outer Ethernet header
+            // has been consumed, the next 4 bytes are the VLAN tag:
+            //   - TCI (2 bytes): PCP (3 bits) | DEI (1 bit) | VID (12 bits)
+            //   - Inner EtherType (2 bytes): the actual protocol of the payload
+            //
+            // We strip the VLAN tag and re-dispatch the remaining payload to
+            // the handler for the inner EtherType. This lets VLAN-tagged IPv4,
+            // IPv6, and ARP frames flow through the existing code paths.
+            if packet.remaining() < 4 {
+                return Err(NetworkError::InvalidPacket);
+            }
+
+            let tag = packet.read(4).ok_or(NetworkError::InvalidPacket)?;
+            let _tci = u16::from_be_bytes([tag[0], tag[1]]);
+            let inner_ether_type = u16::from_be_bytes([tag[2], tag[3]]);
+
+            match EtherType::from(inner_ether_type) {
+                EtherType::IPv4 => super::ip::process_ipv4_packet(network_stack, packet),
+                EtherType::IPv6 => super::ip::process_ipv6_packet(network_stack, packet),
+                EtherType::ARP => process_arp_packet(network_stack, packet),
+                // Nested VLAN (QinQ) or unknown inner type: drop to avoid
+                // misinterpreting the payload.
+                EtherType::VLAN => Ok(()),
+            }
         }
     }
 }

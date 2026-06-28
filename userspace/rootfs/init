@@ -63,5 +63,10 @@ echo "To get a GUI: apk add xorg-server xf86-video-fbdev jwm"
 echo ""
 
 # Start interactive shell
+if [ -x /usr/bin/rustos-gnome-session ]; then
+    echo "Running RustOS GNOME userspace probe..."
+    /usr/bin/rustos-gnome-session --probe || true
+fi
+
 echo "Starting shell..."
 exec /bin/sh

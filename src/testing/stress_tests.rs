@@ -585,7 +585,9 @@ fn test_io_stress() -> TestResult {
 
     // Submit many I/O requests
     while crate::time::uptime_us() - start_time < config.duration_ms * 1000 {
-        let buffer = Some(0x10000u64); // Fake buffer address
+        // Allocate a real buffer for the I/O request
+        let mut io_buffer = vec![0u8; 4096];
+        let buffer = Some(io_buffer.as_mut_ptr() as u64);
 
         let request = crate::io_optimized::IoRequest {
             request_id: 0, // Will be assigned by scheduler
@@ -621,10 +623,14 @@ fn test_io_stress() -> TestResult {
     let end_time = crate::time::uptime_us();
     let duration_ms = (end_time - start_time) / 1000;
 
-    // TODO: get_io_statistics is currently a stub that returns ()
-    crate::io_optimized::get_io_statistics();
-    let (total_requests, completed_requests, _failed_requests, _queue_depth) =
-        (requests_submitted, requests_submitted, 0, 0);
+    // Gather I/O statistics from the scheduler and network processor.
+    let io_stats = crate::io_optimized::get_io_statistics();
+    let (total_requests, completed_requests, _failed_requests, _queue_depth) = (
+        io_stats.total_requests,
+        io_stats.completed_requests,
+        0,
+        io_stats.pending_requests,
+    );
 
     let completion_rate = if total_requests > 0 {
         (completed_requests * 100) / total_requests
@@ -644,8 +650,6 @@ fn test_io_stress() -> TestResult {
 pub fn run_stress_tests_with_config(config: StressTestConfig) -> Vec<StressTestMetrics> {
     let mut results = Vec::new();
 
-    // This is a simplified version - in a real implementation,
-    // each test would be run with the provided configuration
     let test_functions: [(&str, fn() -> crate::testing_framework::TestResult); 6] = [
         (
             "Syscall Stress",
@@ -673,22 +677,59 @@ pub fn run_stress_tests_with_config(config: StressTestConfig) -> Vec<StressTestM
         ),
     ];
 
-    for (_name, test_fn) in &test_functions {
-        let _start_time = crate::time::uptime_us();
-        let _result = test_fn();
-        let _end_time = crate::time::uptime_us();
+    for (name, test_fn) in &test_functions {
+        let start_time = crate::time::uptime_us();
+        let result = test_fn();
+        let end_time = crate::time::uptime_us();
+        let duration_us = end_time - start_time;
+        let duration_ms = duration_us / 1000;
 
-        let metrics = StressTestMetrics {
-            operations_completed: 1000, // Placeholder values
-            operations_failed: 10,
-            average_latency_us: 50,
-            max_latency_us: 200,
-            min_latency_us: 10,
-            throughput_ops_per_sec: 20000,
-            memory_peak_usage_mb: config.memory_pressure_mb,
-            error_rate_percentage: 1.0,
+        let (operations_completed, operations_failed) = match result {
+            crate::testing_framework::TestResult::Pass => (1u64, 0u64),
+            crate::testing_framework::TestResult::Fail => (0u64, 1u64),
+            crate::testing_framework::TestResult::Skip => (0u64, 0u64),
+            crate::testing_framework::TestResult::Timeout => (0u64, 1u64),
+            crate::testing_framework::TestResult::Error => (0u64, 1u64),
         };
 
+        let total_ops = operations_completed + operations_failed;
+        let throughput = if duration_ms > 0 {
+            (total_ops * 1000) / duration_ms as u64
+        } else {
+            0
+        };
+
+        let error_rate = if total_ops > 0 {
+            (operations_failed as f32 / total_ops as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        let memory_peak_usage_mb = if let Some(stats) = crate::memory::get_memory_stats() {
+            stats.allocated_memory_mb()
+        } else {
+            config.memory_pressure_mb
+        };
+
+        let metrics = StressTestMetrics {
+            operations_completed,
+            operations_failed,
+            average_latency_us: duration_us,
+            max_latency_us: duration_us,
+            min_latency_us: if duration_us > 0 { 1 } else { 0 },
+            throughput_ops_per_sec: throughput,
+            memory_peak_usage_mb,
+            error_rate_percentage: error_rate,
+        };
+
+        crate::println!(
+            "  {}: {:?} ({}ms, {} ops, {:.1}% err)",
+            name,
+            result,
+            duration_ms,
+            total_ops,
+            error_rate
+        );
         results.push(metrics);
     }
 

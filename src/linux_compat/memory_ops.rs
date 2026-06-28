@@ -46,8 +46,11 @@ use crate::vfs;
 
 // Import memory management components
 use crate::memory_manager::{
-    api::{get_memory_stats, vm_brk, vm_mmap, vm_mmap_file, vm_mprotect, vm_munmap, vm_sbrk},
-    MmapFlags, ProtectionFlags, VmError,
+    api::{
+        get_memory_stats, vm_brk, vm_file_backed_regions_in_range, vm_mmap, vm_mmap_file,
+        vm_mprotect, vm_munmap, vm_sbrk,
+    },
+    MemoryRegion, MmapFlags, ProtectionFlags, VmError,
 };
 
 // ============================================================================
@@ -531,29 +534,76 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let _aligned_length = (length + 4095) & !4095;
+    let aligned_length = (length + 4095) & !4095;
 
     // Synchronize mapped pages with backing file
     // MS_SYNC: Synchronous write - wait for write to complete
     // MS_ASYNC: Asynchronous write - schedule write but don't wait
     // MS_INVALIDATE: Invalidate cached copies
 
-    if flags & ms::MS_SYNC != 0 {
-        // Synchronous synchronization
-        // In a real implementation:
-        // 1. Find all dirty pages in the range
-        // 2. Write them back to the file
-        // 3. Wait for writes to complete
-        // 4. Clear dirty bits
+    // For file-backed mappings, walk every overlapping region and write its
+    // (potentially dirty) pages back to the backing file via VFS. Anonymous
+    // mappings have no backing store, so they are a legitimate no-op here.
+    let regions = match vm_file_backed_regions_in_range(addr_val, length) {
+        Ok(rs) => rs,
+        Err(_) => return Err(LinuxError::ENOMEM),
+    };
 
-        // For file-backed mappings, would call VFS write operations
-        // For anonymous mappings, this is a no-op
+    if !regions.is_empty() {
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        let mut page_buf = [0u8; 4096];
+
+        for region in &regions {
+            // Only shared, writable file mappings need writeback. Private
+            // file mappings use COW and their modifications never reach the
+            // file, so skip them to match POSIX msync semantics.
+            if !region.shared || !region.protection.is_writable() {
+                continue;
+            }
+
+            let fd = match region.file_descriptor {
+                Some(fd) => fd as i32,
+                None => continue,
+            };
+
+            // Clamp the region to the caller's [addr, addr+length) range.
+            let reg_start = region.start.as_u64() as usize;
+            let reg_end = region.end.as_u64() as usize;
+            let span_start = core::cmp::max(reg_start, addr_val) & !0xFFF;
+            let span_end = core::cmp::min(reg_end, addr_val + aligned_length);
+
+            // File offset corresponding to span_start within this region.
+            let file_off_base = region.file_offset + (span_start.saturating_sub(reg_start));
+
+            let mut va = span_start;
+            let mut foff = file_off_base;
+            while va < span_end {
+                let page_len = core::cmp::min(4096, span_end - va);
+                if let Some(phys) = crate::memory::translate_addr(x86_64::VirtAddr::new(va as u64))
+                {
+                    unsafe {
+                        let src = (phys_offset + phys.as_u64()) as *const u8;
+                        core::ptr::copy_nonoverlapping(src, page_buf.as_mut_ptr(), page_len);
+                    }
+                    // Write back synchronously; vfs_pwrite blocks until done.
+                    let _ = crate::vfs::vfs_pwrite(fd, &page_buf[..page_len], foff as u64);
+                }
+                va += 4096;
+                foff += 4096;
+            }
+        }
+    }
+
+    if flags & ms::MS_SYNC != 0 {
+        // Synchronous synchronization: the per-page vfs_pwrite calls above
+        // already completed (they block until the write finishes), so there
+        // is nothing more to wait for here.
     }
 
     if flags & ms::MS_ASYNC != 0 {
-        // Asynchronous synchronization
-        // Schedule writes but don't wait
-        // Kernel will flush pages in background
+        // Asynchronous synchronization: without a deferred-write page cache,
+        // we fall back to performing the writes synchronously above. A future
+        // page-cache layer could schedule these writes and return immediately.
     }
 
     if flags & ms::MS_INVALIDATE != 0 {
@@ -707,19 +757,24 @@ pub fn mincore(addr: *mut u8, length: usize, vec: *mut u8) -> LinuxResult<i32> {
     // Calculate number of pages
     let pages = (length + 0xFFF) >> 12;
 
-    // Check page residency
-    // In RustOS without swap, all mapped pages are resident
-    // We need to check if pages are actually mapped
+    // Check page residency by walking the page table via the memory
+    // manager's translate_addr. A page is resident (bit 0 = 1) if it
+    // has a valid physical mapping; otherwise it's not resident (0).
     unsafe {
         for i in 0..pages {
-            let _page_addr = addr_val + (i << 12);
+            let page_addr = addr_val + (i << 12);
+            let virt = x86_64::VirtAddr::new(page_addr as u64);
 
-            // Try to determine if page is mapped
-            // In a real implementation, would check page tables
-            // For now, assume mapped pages are resident (bit 0 = 1)
-            // Bit 0: page is resident in memory
-            // Other bits: reserved
-            *vec.add(i) = 1;
+            // Check if the page is mapped by translating the virtual
+            // address to a physical address. If translation succeeds,
+            // the page is resident in memory.
+            let resident = if let Some(_phys) = crate::memory::translate_addr(virt) {
+                1u8
+            } else {
+                0u8
+            };
+
+            *vec.add(i) = resident;
         }
     }
 
@@ -797,8 +852,12 @@ pub fn mremap(
         )
         .map_err(vm_error_to_linux)?;
 
-        // Copy old contents (would need actual memory copy implementation)
-        // In real implementation: memcpy from old to new
+        // Copy old contents to new location
+        unsafe {
+            let src = old_addr_val as *const u8;
+            let dst = new_addr_val as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, aligned_old_size);
+        }
 
         // Unmap old region
         vm_munmap(old_addr_val, aligned_old_size).map_err(vm_error_to_linux)?;
@@ -807,7 +866,32 @@ pub fn mremap(
     }
 
     if (flags & MREMAP_MAYMOVE) != 0 {
-        // Try to expand in place first, or allocate new region
+        // Try to expand in place first by mapping the additional
+        // pages right after the current mapping.
+        let expand_size = aligned_new_size - aligned_old_size;
+        let expand_addr = old_addr_val + aligned_old_size;
+
+        // Attempt to map the expansion region in place
+        match vm_mmap(
+            expand_addr,
+            expand_size,
+            ProtectionFlags::READ_WRITE,
+            MmapFlags {
+                fixed: true,
+                shared: false,
+                private: true,
+                anonymous: true,
+            },
+        ) {
+            Ok(_) => {
+                // In-place expansion succeeded
+                return Ok(old_addr);
+            }
+            Err(_) => {
+                // In-place expansion failed — fall through to move
+            }
+        }
+
         // Allocate new region with new size
         let result = vm_mmap(
             0,
@@ -817,8 +901,12 @@ pub fn mremap(
         )
         .map_err(vm_error_to_linux)?;
 
-        // Copy old contents
-        // In real implementation: memcpy from old to new
+        // Copy old contents to new location
+        unsafe {
+            let src = old_addr_val as *const u8;
+            let dst = result as usize as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, aligned_old_size);
+        }
 
         // Unmap old region
         vm_munmap(old_addr_val, aligned_old_size).map_err(vm_error_to_linux)?;
@@ -827,9 +915,23 @@ pub fn mremap(
     }
 
     // Try to expand in place (no MAYMOVE flag)
-    // Check if there's space after current mapping
-    // For now, return error if can't expand in place
-    Err(LinuxError::ENOMEM)
+    let expand_size = aligned_new_size - aligned_old_size;
+    let expand_addr = old_addr_val + aligned_old_size;
+
+    match vm_mmap(
+        expand_addr,
+        expand_size,
+        ProtectionFlags::READ_WRITE,
+        MmapFlags {
+            fixed: true,
+            shared: false,
+            private: true,
+            anonymous: true,
+        },
+    ) {
+        Ok(_) => Ok(old_addr),
+        Err(_) => Err(LinuxError::ENOMEM),
+    }
 }
 
 /// mmap2 - map files or devices into memory (with page offset)
@@ -1206,6 +1308,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
         crate::vfs::VfsError::CrossDevice => LinuxError::EXDEV,
         crate::vfs::VfsError::ReadOnly => LinuxError::EROFS,
         crate::vfs::VfsError::NotSupported => LinuxError::ENOSYS,
+        crate::vfs::VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
     }
 }
 

@@ -65,15 +65,14 @@ impl ProcessManager {
 
     /// Wait for any child process to exit
     pub fn wait(&self, parent_pid: Pid) -> Result<(Pid, i32), &'static str> {
-        self.kernel()
-            .reap_zombie_child(parent_pid, |_| true)
+        self.kernel().reap_zombie_child(parent_pid, |_| true)
     }
 
     /// Wait for specific child process to exit
     pub fn waitpid(&self, parent_pid: Pid, child_pid: Pid) -> Result<i32, &'static str> {
-        let (_, status) = self.kernel().reap_zombie_child(parent_pid, |pcb| {
-            pcb.pid == child_pid
-        })?;
+        let (_, status) = self
+            .kernel()
+            .reap_zombie_child(parent_pid, |pcb| pcb.pid == child_pid)?;
         Ok(status)
     }
 
@@ -134,7 +133,9 @@ impl ProcessManager {
         let mut zombies = Vec::new();
         for pid in 0..=parent_pid.saturating_add(1024) {
             if let Some(pcb) = kernel.get_process(pid) {
-                if pcb.parent_pid == Some(parent_pid) && matches!(pcb.state, process::ProcessState::Zombie) {
+                if pcb.parent_pid == Some(parent_pid)
+                    && matches!(pcb.state, process::ProcessState::Zombie)
+                {
                     zombies.push(pid);
                 }
             }
@@ -168,10 +169,7 @@ impl ProcessManager {
 
     /// Close file descriptor
     pub fn close_fd(&self, pid: Pid, fd: u32) -> Result<(), &'static str> {
-        match self
-            .kernel()
-            .with_process_mut(pid, |pcb| pcb.close_fd(fd))
-        {
+        match self.kernel().with_process_mut(pid, |pcb| pcb.close_fd(fd)) {
             Some(Ok(())) => Ok(()),
             Some(Err(e)) => Err(e),
             None => Err("Process not found"),
@@ -254,9 +252,7 @@ fn map_pm_fd_type(fd_type: FileDescriptorType) -> process::FileDescriptorType {
                 &path[..path.iter().position(|&b| b == 0).unwrap_or(path.len())],
             )
             .unwrap_or("");
-            process::FileDescriptorType::VfsHandle {
-                vfs_fd: -1,
-            }
+            process::FileDescriptorType::VfsHandle { vfs_fd: -1 }
         }
         FileDescriptorType::Socket { socket_id } => {
             process::FileDescriptorType::Socket { socket_id }

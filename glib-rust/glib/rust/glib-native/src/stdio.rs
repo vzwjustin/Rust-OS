@@ -127,6 +127,13 @@ pub trait StdioPlatform: Sync {
 
     /// Synchronize a file (`g_fsync`).
     fn fsync(&self, fd: i32) -> i32;
+
+    /// List directory entries (`readdir`).
+    ///
+    /// Returns the names of files and subdirectories in `path` (excluding
+    /// "." and "..").  Returns an empty vec if the path is not a directory
+    /// or cannot be read.
+    fn list_dir(&self, path: &str) -> Vec<String>;
 }
 
 /// A no-op platform implementation.
@@ -177,6 +184,10 @@ impl StdioPlatform for NoStdioPlatform {
     }
     fn fsync(&self, _fd: i32) -> i32 {
         -1
+    }
+
+    fn list_dir(&self, _path: &str) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -283,6 +294,28 @@ pub fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
     }
     let _ = platform.close(fd);
     Some(buf)
+}
+
+/// List directory entries.
+///
+/// Uses `std::fs::read_dir` when running unit tests on the host; otherwise
+/// delegates to the registered [`StdioPlatform`].
+pub fn list_dir(path: &str) -> Vec<String> {
+    #[cfg(test)]
+    {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let mut names = Vec::new();
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name != "." && name != ".." {
+                    names.push(name);
+                }
+            }
+            return names;
+        }
+    }
+
+    STDIO_PLATFORM.read().list_dir(path)
 }
 
 #[cfg(test)]

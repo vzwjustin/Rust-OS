@@ -524,22 +524,66 @@ fn yield_cpu_tail() {
 
     // Schedule the next process
     if let Ok(Some(next_pid)) = process_manager.schedule() {
-        // In a full implementation, this would trigger a context switch
-        // For now, we update the current process tracking
-        process_manager.set_current_process(next_pid);
+        let current_pid = process_manager.current_process();
 
-        // Note: Actual context switching would require:
-        // 1. Saving current process state (registers, stack, etc.)
-        // 2. Loading next process state
-        // 3. Switching page tables (CR3 register)
-        // 4. Updating kernel stacks
-        // 5. Jumping to next process execution point
+        // Only perform a context switch if we're actually switching to a
+        // different process. Switching to ourselves is a no-op.
+        if current_pid == next_pid {
+            return;
+        }
 
-        // This simplified version just updates tracking
-        crate::serial_println!("Yielded CPU to process {}", next_pid);
-    } else {
-        // No other process to run, continue with current
-        crate::serial_println!("No other process to schedule, continuing current");
+        // Get the current and next process contexts. We clone the PCBs
+        // because switch_context doesn't return until the current
+        // process is scheduled back in, and we can't hold locks across
+        // the switch.
+        let current_pcb = process_manager.get_process(current_pid);
+        let next_pcb = process_manager.get_process(next_pid);
+
+        if let (Some(current), Some(next)) = (current_pcb, next_pcb) {
+            // Build ProcessContext from PCB data
+            let mut current_ctx = super::context::ProcessContext {
+                cpu: current.context.clone(),
+                fpu: super::context::FpuState::default(),
+                kernel_stack: 0,
+                user_stack: 0,
+                page_table: current.memory.page_directory,
+            };
+
+            let next_ctx = super::context::ProcessContext {
+                cpu: next.context.clone(),
+                fpu: super::context::FpuState::default(),
+                kernel_stack: 0,
+                user_stack: 0,
+                page_table: next.memory.page_directory,
+            };
+
+            // Update current process tracking before the switch
+            process_manager.set_current_process(next_pid);
+
+            // Perform the context switch. This does not return until the
+            // current process is scheduled back in.
+            // SAFETY: switch_context saves current registers into
+            // current_ctx and loads next_ctx's registers. The page
+            // table is switched via CR3 if different.
+            unsafe {
+                if let Err(e) = super::context::get_context_switcher().switch_context(
+                    &mut current_ctx,
+                    &next_ctx,
+                    next_pid,
+                ) {
+                    crate::serial_println!("Context switch failed: {}", e);
+                }
+            }
+
+            // When we return here, we've been scheduled back in.
+            // Save the restored context back to our PCB.
+            let _ = process_manager.with_process_mut(current_pid, |pcb| {
+                pcb.context = current_ctx.cpu;
+            });
+        } else {
+            // Fallback: just update tracking if we can't get PCBs
+            process_manager.set_current_process(next_pid);
+        }
     }
 }
 

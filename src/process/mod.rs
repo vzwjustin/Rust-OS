@@ -274,6 +274,14 @@ pub struct ProcessControlBlock {
     pub locked_pages: usize,
     /// Per-process resource limits
     pub rlimits: ProcessRlimits,
+    /// File creation mask (umask)
+    pub umask: u32,
+    /// Root directory path for this process (chroot)
+    pub root_dir: alloc::string::String,
+    /// ITIMER_REAL alarm deadline in uptime ticks (0 = no alarm armed)
+    pub alarm_deadline: u64,
+    /// ITIMER_REAL interval in ticks (0 = one-shot)
+    pub alarm_interval: u64,
 }
 
 /// File descriptor information
@@ -524,6 +532,10 @@ impl ProcessControlBlock {
             initial_break: 0,
             locked_pages: 0,
             rlimits: ProcessRlimits::default(),
+            umask: 0o022,
+            root_dir: alloc::string::String::from("/"),
+            alarm_deadline: 0,
+            alarm_interval: 0,
         };
 
         // Set process name
@@ -911,6 +923,28 @@ impl ProcessManager {
             .values()
             .filter(|pcb| predicate(pcb))
             .cloned()
+            .collect()
+    }
+
+    /// Collect (pid, next_deadline) pairs for processes whose ITIMER_REAL
+    /// alarm has expired as of `now_ms`. The caller is responsible for
+    /// re-arming or clearing the deadline via `with_process_mut`.
+    pub fn collect_expired_alarms(&self, now_ms: u64) -> Vec<(Pid, u64)> {
+        let processes = self.processes.read();
+        processes
+            .iter()
+            .filter_map(|(&pid, pcb)| {
+                if pcb.alarm_deadline != 0 && now_ms >= pcb.alarm_deadline {
+                    let next = if pcb.alarm_interval != 0 {
+                        now_ms + pcb.alarm_interval
+                    } else {
+                        0
+                    };
+                    Some((pid, next))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 

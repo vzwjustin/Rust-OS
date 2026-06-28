@@ -310,24 +310,30 @@ impl ComprehensiveTestRunner {
     fn detect_performance_regressions(&self) -> Vec<String> {
         let mut regressions = Vec::new();
 
-        // Get current performance metrics
+        // Get current performance metrics from the benchmarking subsystem
         let current_metrics = benchmarking::get_system_performance_summary();
 
-        // Compare with baseline (if available)
-        // This would typically load baseline metrics from storage
-        // For now, we'll use hardcoded thresholds
-
-        if let Some(memory_stats) = current_metrics.get("memory") {
-            if memory_stats.mean > 1024.0 * 1024.0 * 512.0 {
-                // 512MB threshold
-                regressions.push("Memory usage exceeds baseline by >20%".to_string());
+        // Compare current metrics against real system memory stats
+        if let Some(memory_stats) = crate::memory::get_memory_stats() {
+            let usage_percent = memory_stats.memory_usage_percent();
+            if usage_percent > 80.0 {
+                regressions.push(alloc::format!(
+                    "Memory usage high: {:.1}% ({}MB / {}MB)",
+                    usage_percent,
+                    memory_stats.allocated_memory_mb(),
+                    memory_stats.total_memory_mb()
+                ));
             }
         }
 
+        // Check syscall latency from benchmarking
         if let Some(syscall_stats) = current_metrics.get("syscalls") {
+            // Flag if mean syscall latency exceeds 10ms (10000us)
             if syscall_stats.mean > 10000.0 {
-                // 10k syscalls threshold
-                regressions.push("System call latency increased by >15%".to_string());
+                regressions.push(alloc::format!(
+                    "System call latency high: {:.1}us mean",
+                    syscall_stats.mean
+                ));
             }
         }
 

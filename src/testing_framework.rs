@@ -725,14 +725,24 @@ pub mod mocks {
             self.allocations.fetch_add(1, Ordering::Relaxed);
             self.total_allocated
                 .fetch_add(size as u64, Ordering::Relaxed);
-            // Return a fake pointer for testing
-            0x1000 as *mut u8
+            // Allocate real memory so the pointer is valid for read/write
+            let layout = alloc::alloc::Layout::from_size_align(size, 8).unwrap();
+            let ptr = unsafe { alloc::alloc::alloc(layout) };
+            if ptr.is_null() {
+                self.allocation_failures.fetch_add(1, Ordering::Relaxed);
+            }
+            ptr
         }
 
-        pub fn deallocate(&self, _ptr: *mut u8, size: usize) {
+        pub fn deallocate(&self, ptr: *mut u8, size: usize) {
             self.deallocations.fetch_add(1, Ordering::Relaxed);
             self.total_allocated
                 .fetch_sub(size as u64, Ordering::Relaxed);
+            // Free the real memory
+            if !ptr.is_null() && size > 0 {
+                let layout = alloc::alloc::Layout::from_size_align(size, 8).unwrap();
+                unsafe { alloc::alloc::dealloc(ptr, layout) };
+            }
         }
 
         pub fn simulate_allocation_failure(&self) {

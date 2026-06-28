@@ -192,6 +192,7 @@ pub fn shutdown() {
     GENERIC_ICONS.lock().clear();
     GLOBS.lock().clear();
     CALLBACKS.lock().clear();
+    MIME_DIRS.lock().clear();
 }
 
 /// Registers a reload callback (mirrors `xdg_mime_register_reload_callback`).
@@ -208,13 +209,79 @@ pub fn remove_callback(callback_id: i32) {
     CALLBACKS.lock().retain(|(id, _)| *id != callback_id);
 }
 
+/// MIME search directories (mirrors `xdg_dirs` in xdgmime.c).
+static MIME_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Sets the search directories (mirrors `xdg_mime_set_dirs`).
-/// In our no_std port, this is a no-op.
-pub fn set_dirs(_dirs: &[&str]) {}
+///
+/// Stores the provided directory list and triggers reload callbacks
+/// so that registered consumers can re-initialize their caches.
+pub fn set_dirs(dirs: &[&str]) {
+    let mut mime_dirs = MIME_DIRS.lock();
+    mime_dirs.clear();
+    for dir in dirs {
+        mime_dirs.push(dir.to_string());
+    }
+    drop(mime_dirs);
+
+    let callbacks = CALLBACKS.lock();
+    for (_, callback) in callbacks.iter() {
+        callback();
+    }
+}
+
+/// Returns the currently configured MIME search directories.
+pub fn get_dirs() -> Vec<String> {
+    MIME_DIRS.lock().clone()
+}
 
 /// Dumps the internal state (mirrors `xdg_mime_dump`).
-/// In our no_std port, this is a no-op.
-pub fn dump() {}
+///
+/// Outputs the current globs, aliases, parents, icons, and search
+/// directories via `gwarn!` for debugging purposes.
+pub fn dump() {
+    let dirs = MIME_DIRS.lock();
+    gwarn!("xdgmime dump: {} search directories", dirs.len());
+    for dir in dirs.iter() {
+        gwarn!("  dir: {}", dir);
+    }
+
+    let globs = GLOBS.lock();
+    gwarn!("xdgmime dump: {} glob patterns", globs.len());
+    for entry in globs.iter() {
+        gwarn!(
+            "  glob: {} -> {} (weight={}, cs={})",
+            entry.pattern,
+            entry.mime_type,
+            entry.weight,
+            entry.case_sensitive
+        );
+    }
+
+    let aliases = ALIASES.lock();
+    gwarn!("xdgmime dump: {} aliases", aliases.len());
+    for (alias, canonical) in aliases.iter() {
+        gwarn!("  alias: {} -> {}", alias, canonical);
+    }
+
+    let parents = PARENTS.lock();
+    gwarn!("xdgmime dump: {} parent mappings", parents.len());
+    for (mime, parent_list) in parents.iter() {
+        gwarn!("  parent: {} -> {:?}", mime, parent_list);
+    }
+
+    let icons = ICONS.lock();
+    gwarn!("xdgmime dump: {} icon mappings", icons.len());
+    for (mime, icon) in icons.iter() {
+        gwarn!("  icon: {} -> {}", mime, icon);
+    }
+
+    let generic_icons = GENERIC_ICONS.lock();
+    gwarn!("xdgmime dump: {} generic icon mappings", generic_icons.len());
+    for (mime, icon) in generic_icons.iter() {
+        gwarn!("  generic_icon: {} -> {}", mime, icon);
+    }
+}
 
 // ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -449,5 +516,42 @@ mod tests {
         assert!(matches_glob("file.txt", "*.txt"));
         assert!(matches_glob("Makefile", "Makefile"));
         assert!(!matches_glob("file.txt", "*.c"));
+    }
+
+    #[test]
+    fn test_set_dirs_and_get_dirs() {
+        shutdown();
+        set_dirs(&["/usr/share/mime", "/home/user/.local/share/mime"]);
+        let dirs = get_dirs();
+        assert_eq!(dirs.len(), 2);
+        assert!(dirs.contains(&"/usr/share/mime".to_string()));
+        assert!(dirs.contains(&"/home/user/.local/share/mime".to_string()));
+        shutdown();
+    }
+
+    #[test]
+    fn test_set_dirs_triggers_callback() {
+        shutdown();
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static CALLED: AtomicBool = AtomicBool::new(false);
+        CALLED.store(false, Ordering::SeqCst);
+        let id = register_reload_callback(|| {
+            CALLED.store(true, Ordering::SeqCst);
+        });
+        set_dirs(&["/test/mime"]);
+        assert!(CALLED.load(Ordering::SeqCst));
+        remove_callback(id);
+        shutdown();
+    }
+
+    #[test]
+    fn test_set_dirs_clears_previous() {
+        shutdown();
+        set_dirs(&["/first", "/second"]);
+        assert_eq!(get_dirs().len(), 2);
+        set_dirs(&["/third"]);
+        assert_eq!(get_dirs().len(), 1);
+        assert_eq!(get_dirs()[0], "/third");
+        shutdown();
     }
 }

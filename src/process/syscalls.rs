@@ -239,11 +239,22 @@ impl SyscallDispatcher {
                     // Copy signal handlers from parent to child
                     child_process.signal_handlers = parent_process.signal_handlers.clone();
 
-                    // In a real fork implementation, we would:
-                    // - Return 0 to child process
-                    // - Return child_pid to parent process
-                    // This differentiation happens during context switching
-                    // For now, we return child_pid (parent perspective)
+                    // Set the child's return value (rax) to 0 so that when
+                    // the child process is first scheduled and returns from
+                    // the syscall, it sees fork() returning 0. The parent
+                    // gets child_pid as the return value (below).
+                    child_process.context.rax = 0;
+
+                    // Write the updated child PCB back
+                    let _ = process_manager.with_process_mut(child_pid, |pcb| {
+                        pcb.parent_pid = Some(current_pid);
+                        pcb.file_descriptors = child_process.file_descriptors.clone();
+                        pcb.file_offsets = child_process.file_offsets.clone();
+                        pcb.signal_handlers = child_process.signal_handlers.clone();
+                        pcb.context.rax = 0;
+                    });
+
+                    // Parent sees child_pid as the return value
                     SyscallResult::Success(child_pid as u64)
                 } else {
                     // Child process creation failed

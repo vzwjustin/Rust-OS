@@ -66,8 +66,8 @@ lazy_static! {
         idt.overflow.set_handler_fn(overflow_handler);
         idt.bound_range_exceeded.set_handler_fn(bound_range_exceeded_handler);
         idt.invalid_tss.set_handler_fn(invalid_tss_handler);
-        // Machine check exception handler not yet implemented
-        // SIMD floating point exception handler not yet implemented
+        idt.machine_check.set_handler_fn(machine_check_handler);
+        idt.simd_floating_point.set_handler_fn(simd_floating_point_handler);
         idt.virtualization.set_handler_fn(virtualization_handler);
         idt.alignment_check.set_handler_fn(alignment_check_handler);
 
@@ -117,6 +117,36 @@ static EXCEPTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPURIOUS_COUNT: AtomicU64 = AtomicU64::new(0);
 static MISSED_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+
+/// Optional user-installed page fault handler.
+///
+/// When set, the main page fault handler calls this before attempting
+/// its own recovery. If the handler returns `Ok(())`, the fault is
+/// considered handled and execution resumes. If it returns `Err`, the
+/// normal fault handling proceeds.
+static USER_PAGE_FAULT_HANDLER: spin::Mutex<
+    Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>>,
+> = spin::Mutex::new(None);
+
+/// Install a user page fault handler. Returns the previous handler.
+pub fn install_page_fault_handler(
+    handler: fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>,
+) -> Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>> {
+    let mut slot = USER_PAGE_FAULT_HANDLER.lock();
+    let old = *slot;
+    *slot = Some(handler);
+    old
+}
+
+/// Restore a previous page fault handler (or clear if None).
+pub fn restore_page_fault_handler(
+    prev: Option<
+        fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>,
+    >,
+) {
+    let mut slot = USER_PAGE_FAULT_HANDLER.lock();
+    *slot = prev;
+}
 
 /// Initialize the interrupt system
 pub fn init() {
@@ -252,31 +282,35 @@ fn notify_irq_eoi(index: InterruptIndex) {
 
 /// Configure standard IRQs using APIC
 fn configure_standard_irqs_apic() -> Result<(), &'static str> {
-    // Get current CPU ID for interrupt routing
-    let cpu_id = 0; // For now, route all interrupts to CPU 0
+    // Route standard IRQs to the current CPU (the BSP during early boot).
+    // This is correct because only the BSP is running when this function
+    // is called during interrupt controller initialization.
+    let cpu_id = crate::smp::current_cpu() as u8;
 
     // Configure timer (IRQ 0) - critical for system operation
-    if let Err(e) = crate::apic::configure_irq(0, InterruptIndex::Timer.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(0, InterruptIndex::Timer.as_u8(), cpu_id as u8) {
         crate::serial_println!("Warning: Failed to configure timer IRQ: {}", e);
         // Timer is critical, but we can continue with PIC fallback
     }
 
     // Configure keyboard (IRQ 1)
-    if let Err(e) = crate::apic::configure_irq(1, InterruptIndex::Keyboard.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(1, InterruptIndex::Keyboard.as_u8(), cpu_id as u8) {
         crate::serial_println!("Warning: Failed to configure keyboard IRQ: {}", e);
     }
 
     // Configure mouse (IRQ 12)
-    if let Err(e) = crate::apic::configure_irq(12, InterruptIndex::Mouse.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(12, InterruptIndex::Mouse.as_u8(), cpu_id as u8) {
         crate::serial_println!("Warning: Failed to configure mouse IRQ: {}", e);
     }
 
     // Configure serial ports
-    if let Err(e) = crate::apic::configure_irq(4, InterruptIndex::SerialPort1.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(4, InterruptIndex::SerialPort1.as_u8(), cpu_id as u8)
+    {
         crate::serial_println!("Warning: Failed to configure serial port 1 IRQ: {}", e);
     }
 
-    if let Err(e) = crate::apic::configure_irq(3, InterruptIndex::SerialPort2.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(3, InterruptIndex::SerialPort2.as_u8(), cpu_id as u8)
+    {
         crate::serial_println!("Warning: Failed to configure serial port 2 IRQ: {}", e);
     }
 
@@ -393,6 +427,17 @@ extern "x86-interrupt" fn page_fault_handler(
 
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Check for a user-installed page fault handler first
+    {
+        let handler_slot = USER_PAGE_FAULT_HANDLER.lock();
+        if let Some(handler) = *handler_slot {
+            match handler(fault_address, error_code) {
+                Ok(()) => return, // Fault handled by user handler
+                Err(()) => {}     // Fall through to normal handling
+            }
+        }
+    }
 
     // In production, attempt page fault recovery
     if let Some(recovery_result) = attempt_page_fault_recovery(fault_address, error_code) {
@@ -723,6 +768,127 @@ extern "x86-interrupt" fn alignment_check_handler(
     }
 }
 
+extern "x86-interrupt" fn machine_check_handler(_stack_frame: InterruptStackFrame) -> ! {
+    use crate::error::{
+        ErrorContext, ErrorSeverity, HardwareError, KernelError, RecoveryAction, ERROR_MANAGER,
+    };
+
+    crate::serial_println!("CRITICAL: Machine check exception (#MC)");
+    EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let error_context = ErrorContext::new(
+        KernelError::Hardware(HardwareError::HardwareFault),
+        ErrorSeverity::Critical,
+        "machine_check_handler",
+        "Machine check exception - hardware error detected".to_string(),
+    )
+    .with_recovery(RecoveryAction::Shutdown);
+
+    if let Some(mut manager) = ERROR_MANAGER.try_lock() {
+        let _ = manager.handle_error(error_context);
+    }
+
+    // Machine check exceptions are typically fatal. Halt the system.
+    crate::serial_println!("PANIC: Machine check exception - halting");
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptStackFrame) {
+    use crate::error::{
+        ErrorContext, ErrorSeverity, KernelError, ProcessError, RecoveryAction, ERROR_MANAGER,
+    };
+
+    crate::serial_println!("CRITICAL: SIMD floating point exception (#XF)");
+    EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // A #XF can fire for two distinct reasons:
+    //   1. The process has not yet been granted SIMD/FPU access (CR0.EM set,
+    //      CR0.MP clear, or CR4.OSFXSR unset). In that case the exception is
+    //      really a "first use" trap: enable FPU/SSE for the faulting context
+    //      and resume rather than killing the process.
+    //   2. SIMD is already enabled and the MXCSR reports a genuine numerical
+    //      exception (IE/DE/ZE/OE/UE/PE). That is a real fault and the
+    //      process is terminated.
+    //
+    // We detect case 1 by inspecting CR0 (EM/MP) and CR4 (OSFXSR). If any of
+    // those are in the "FPU disabled" state, fix them up and return, which
+    // resumes the faulting instruction.
+    let mut fpu_was_disabled = false;
+    unsafe {
+        // CR0: bit 1 = MP (monitor coprocessor), bit 2 = EM (emulation).
+        // We want MP=1 and EM=0 for native FPU/SSE access.
+        let mut cr0: u64;
+        core::arch::asm!(
+            "mov {}, cr0",
+            out(reg) cr0,
+            options(nostack, preserves_flags),
+        );
+        if (cr0 & 0x4) != 0 || (cr0 & 0x2) == 0 {
+            fpu_was_disabled = true;
+            cr0 &= !0x4; // clear EM
+            cr0 |= 0x2; // set MP
+            core::arch::asm!(
+                "mov cr0, {}",
+                in(reg) cr0,
+                options(nostack, preserves_flags),
+            );
+        }
+
+        // CR4: bit 9 = OSFXSR (enable SSE/FXSAVE), bit 10 = OSXMMEXCPT
+        // (enable #XF reporting for SIMD exceptions). Both must be set for
+        // userspace SIMD to work correctly.
+        let mut cr4: u64;
+        core::arch::asm!(
+            "mov {}, cr4",
+            out(reg) cr4,
+            options(nostack, preserves_flags),
+        );
+        if (cr4 & 0x600) != 0x600 {
+            fpu_was_disabled = true;
+            cr4 |= 0x600; // set OSFXSR | OSXMMEXCPT
+            core::arch::asm!(
+                "mov cr4, {}",
+                in(reg) cr4,
+                options(nostack, preserves_flags),
+            );
+        }
+
+        // Clear the Task-Switched (TS) flag so the FPU is usable without
+        // raising a Device-Not-Available fault on the next SSE instruction.
+        core::arch::asm!("clts", options(nostack, preserves_flags));
+    }
+
+    if fpu_was_disabled {
+        crate::serial_println!(
+            "simd_floating_point_handler: FPU/SSE was disabled; enabled it and resuming"
+        );
+        // Returning from an x86-interrupt handler resumes the faulting
+        // instruction, which will now execute with SIMD enabled.
+        return;
+    }
+
+    // SIMD was already enabled, so this is a genuine numerical exception.
+    // The MXCSR register contains the cause: IE (bit 0), DE (bit 1),
+    // ZE (bit 2), OE (bit 3), UE (bit 4), PE (bit 5).
+    let error_context = ErrorContext::new(
+        KernelError::Process(ProcessError::InvalidState),
+        ErrorSeverity::Error,
+        "simd_floating_point_handler",
+        "SIMD floating point exception - numerical error".to_string(),
+    )
+    .with_recovery(RecoveryAction::None);
+
+    if let Some(mut manager) = ERROR_MANAGER.try_lock() {
+        let _ = manager.handle_error(error_context);
+    } else {
+        crate::serial_println!("CRITICAL: SIMD FP exception - error manager unavailable");
+    }
+
+    terminate_current_process("SIMD floating point exception");
+}
+
 // ========== HARDWARE INTERRUPT HANDLERS ==========
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -832,8 +998,9 @@ fn attempt_page_fault_recovery(
 
         // Check if address is in user space and within reasonable bounds
         if addr >= 0x1000 && addr < 0x7fff_ffff_ffff {
-            // For now, cannot recover - demand paging not fully implemented
-            // In a full implementation, we would allocate and map a page here
+            // Return NeedsSwap to trigger the swap-in / demand-paging path.
+            // attempt_swap_in_page checks whether the page is in swap storage
+            // (swap-in) or needs a fresh zeroed page (demand allocation).
             return Some(PageFaultRecovery::NeedsSwap);
         }
     }
@@ -842,7 +1009,7 @@ fn attempt_page_fault_recovery(
     None
 }
 
-/// Attempt to swap in a page from disk
+/// Attempt to swap in a page from disk, or demand-allocate a new page
 fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static str> {
     use crate::memory::get_memory_manager;
     use x86_64::structures::paging::{Page, Size4KiB};
@@ -855,25 +1022,53 @@ fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static 
     // Get the page that caused the fault
     let _page: Page<Size4KiB> = Page::containing_address(fault_address);
 
-    // Step 1: Use the existing memory manager's swap-in functionality
-    // The memory manager already has a handle_swap_in method we can use
+    // Check if the page is in swap storage. If so, swap it back in.
+    if memory_manager.is_page_swapped(fault_address) {
+        // Find the region containing this address
+        let region = memory_manager
+            .find_region(fault_address)
+            .ok_or("No memory region found for fault address")?;
 
-    // Find the region containing this address
+        // Use the existing swap-in handler
+        memory_manager
+            .handle_swap_in(fault_address, &region)
+            .map_err(|e| match e {
+                crate::memory::MemoryError::OutOfMemory => "Out of memory during swap-in",
+                crate::memory::MemoryError::MappingFailed => "Failed to map swapped page",
+                crate::memory::MemoryError::InvalidAddress => "Invalid address for swap-in",
+                _ => "Memory manager swap-in failed",
+            })?;
+
+        crate::serial_println!("Successfully swapped in page at {:?}", fault_address);
+        return Ok(());
+    }
+
+    // The page is not in swap — this is a demand paging fault (e.g.,
+    // stack or heap growth into a region that was reserved but not
+    // yet backed by physical memory). Allocate a zeroed page and map
+    // it at the fault address.
+    crate::serial_println!("Demand paging: allocating new page at {:?}", fault_address);
+
+    // Find the region containing this address to get the protection flags.
     let region = memory_manager
         .find_region(fault_address)
-        .ok_or("No memory region found for fault address")?;
+        .ok_or("No memory region found for demand page")?;
 
-    // Use the existing swap-in handler
-    memory_manager
-        .handle_swap_in(fault_address, &region)
-        .map_err(|e| match e {
-            crate::memory::MemoryError::OutOfMemory => "Out of memory during swap-in",
-            crate::memory::MemoryError::MappingFailed => "Failed to map swapped page",
-            crate::memory::MemoryError::InvalidAddress => "Invalid address for swap-in",
-            _ => "Memory manager swap-in failed",
-        })?;
+    // Allocate memory at the fault address. This maps a new zeroed
+    // page at the specified virtual address with the region's protection.
+    crate::memory::allocate_memory_at(
+        fault_address,
+        4096,
+        crate::memory::MemoryRegionType::UserData,
+        region.protection,
+    )
+    .map_err(|e| match e {
+        crate::memory::MemoryError::OutOfMemory => "Out of memory during demand paging",
+        crate::memory::MemoryError::MappingFailed => "Failed to map demand page",
+        _ => "Demand paging allocation failed",
+    })?;
 
-    crate::serial_println!("Successfully swapped in page at {:?}", fault_address);
+    crate::serial_println!("Successfully demand-allocated page at {:?}", fault_address);
     Ok(())
 }
 

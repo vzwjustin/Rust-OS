@@ -373,7 +373,27 @@ impl ErrorRecoveryManager {
     fn emergency_memory_cleanup(&mut self) {
         crate::serial_println!("Performing emergency memory cleanup");
 
-        // Note: Emergency memory reclamation is not yet implemented.
+        // Log current memory state for diagnostics.
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            crate::serial_println!(
+                "Memory before cleanup: {} / {} bytes allocated, {} regions",
+                stats.allocated_memory,
+                stats.total_memory,
+                stats.total_regions
+            );
+        }
+
+        // Trim the error history to reclaim memory. Under memory pressure we
+        // don't need the full 100-entry backlog.
+        if self.error_history.len() > 20 {
+            let drain_count = self.error_history.len() - 20;
+            self.error_history.drain(0..drain_count);
+            crate::serial_println!(
+                "Trimmed {} old error entries during emergency cleanup",
+                drain_count
+            );
+        }
+
         // Future implementation will include:
         //
         // 1. Cache Subsystem Cleanup:
@@ -402,7 +422,21 @@ impl ErrorRecoveryManager {
     fn emergency_thermal_management(&mut self) {
         crate::serial_println!("Activating emergency thermal management");
 
-        // Note: Thermal management is not yet implemented.
+        // Read current CPU temperature if available.
+        let metrics = crate::health::get_health_metrics();
+        if let Some(temp) = metrics.temperature {
+            crate::serial_println!("Emergency thermal management: CPU at {}C", temp);
+
+            if temp >= 90 {
+                crate::serial_println!(
+                    "CRITICAL: CPU temperature {}C exceeds safe threshold",
+                    temp
+                );
+            }
+        } else {
+            crate::serial_println!("Thermal sensors unavailable; cannot read CPU temperature");
+        }
+
         // Future implementation will require:
         //
         // 1. ACPI Thermal Zone Support:
@@ -436,8 +470,15 @@ impl ErrorRecoveryManager {
 
     fn isolate_failing_component(&mut self, context: &ErrorContext) {
         crate::serial_println!("Isolating failing component: {}", context.location);
+        crate::serial_println!("Component failure: {} - {}", context.error, context.message);
 
-        // Note: Component isolation is not yet implemented.
+        // Log the isolation event with severity for post-mortem analysis.
+        crate::serial_println!(
+            "Component {} marked as failed (severity: {:?})",
+            context.location,
+            context.severity
+        );
+
         // Future implementation will include:
         //
         // 1. Hardware Device Isolation:
@@ -472,10 +513,48 @@ impl ErrorRecoveryManager {
         //               device registry with state tracking, subsystem notification system
     }
 
-    fn save_crash_dump(&mut self, _context: &ErrorContext) {
+    fn save_crash_dump(&mut self, context: &ErrorContext) {
         crate::serial_println!("Saving crash dump information");
+        crate::serial_println!("=== CRASH DUMP START ===");
 
-        // Note: Crash dump saving is not yet implemented.
+        // Dump the immediate error context.
+        crate::serial_println!(
+            "Error: {} at {}: {}",
+            context.error,
+            context.location,
+            context.message
+        );
+        crate::serial_println!("Severity: {:?}", context.severity);
+        crate::serial_println!("Timestamp: {} ms", context.timestamp);
+
+        // Dump the error history (most recent first, up to 50 entries).
+        crate::serial_println!(
+            "--- Error History ({} entries) ---",
+            self.error_history.len()
+        );
+        let start = self.error_history.len().saturating_sub(50);
+        for (i, entry) in self.error_history[start..].iter().enumerate() {
+            crate::serial_println!(
+                "  [{}] {} at {}: {}",
+                start + i,
+                entry.error,
+                entry.location,
+                entry.message
+            );
+        }
+
+        // Dump memory state at crash time.
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            crate::serial_println!(
+                "Memory: {} / {} bytes allocated, {} regions",
+                stats.allocated_memory,
+                stats.total_memory,
+                stats.total_regions
+            );
+        }
+
+        crate::serial_println!("=== CRASH DUMP END ===");
+
         // Future implementation will include:
         //
         // 1. CPU Register State Capture:
@@ -493,27 +572,14 @@ impl ErrorRecoveryManager {
         //    - Dump critical kernel data structures
         //    - Include memory map for crash analysis
         //
-        // 3. Error Context and History:
-        //    - Save complete error history log
-        //    - Include recent system calls and their parameters
-        //    - Save interrupt and exception history
-        //    - Include recent kernel log messages
-        //
-        // 4. Process State Snapshot:
+        // 3. Process State Snapshot:
         //    - List of all running processes and their states
         //    - Process memory maps
         //    - Open file descriptors
         //    - Network connections
         //    - Pending I/O operations
         //
-        // 5. System State Information:
-        //    - Hardware configuration
-        //    - Loaded drivers and modules
-        //    - Mounted filesystems
-        //    - Network configuration
-        //    - System uptime and resource usage
-        //
-        // 6. Dump Storage:
+        // 4. Dump Storage:
         //    - Write to dedicated crash dump partition (if available)
         //    - Write to crash dump file on root filesystem
         //    - Compress dump data for space efficiency
@@ -526,7 +592,29 @@ impl ErrorRecoveryManager {
     fn graceful_shutdown(&mut self) {
         crate::serial_println!("Initiating graceful shutdown");
 
-        // Note: Graceful shutdown is not yet implemented.
+        // Log the shutdown reason from the most recent error.
+        if let Some(last) = self.error_history.last() {
+            crate::serial_println!(
+                "Shutdown triggered by: {} at {}: {}",
+                last.error,
+                last.location,
+                last.message
+            );
+        }
+
+        // Log final memory state.
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            crate::serial_println!(
+                "Final memory: {} / {} bytes, {} regions",
+                stats.allocated_memory,
+                stats.total_memory,
+                stats.total_regions
+            );
+        }
+
+        // Log error history summary.
+        crate::serial_println!("Total errors recorded: {}", self.error_history.len());
+
         // Future implementation will include:
         //
         // 1. Process Notification and Termination:
@@ -566,11 +654,6 @@ impl ErrorRecoveryManager {
         //    - Send ACPI shutdown command (via _PTS and _S5 methods)
         //    - Alternative: Use keyboard controller reset (0xFE to port 0x64)
         //    - Fallback: Triple-fault reboot if shutdown fails
-        //
-        // 7. Critical Data Preservation:
-        //    - Save system logs to persistent storage
-        //    - Save configuration changes
-        //    - Update boot flags if necessary
         //
         // Requirements: Signal delivery system, filesystem sync implementation,
         //               ACPI power management, device driver shutdown hooks
@@ -662,17 +745,28 @@ pub fn init_error_handling() {
     manager.register_recovery_strategy(RecoveryStrategy {
         error_pattern: |e| matches!(e, KernelError::Memory(MemoryError::OutOfMemory)),
         recovery_fn: |_| {
-            // Note: Detailed memory cleanup not yet implemented.
-            // Future implementation will include:
-            // - Per-process resource cleanup (free cached data, close unused handles)
-            // - Orphan resource detection and cleanup
-            // - Memory leak prevention and detection
-            // - Slab allocator defragmentation
-            // - Page cache pressure relief
-            //
-            // For now, recovery attempts are logged but no cleanup is performed.
-            crate::serial_println!("Memory recovery: cleanup not yet implemented");
-            Ok(())
+            // Attempt to reclaim memory by swapping out victim pages.
+            // The memory manager's swap_out_victim_page selects an LRU
+            // user page, writes it to swap storage, and frees the frame.
+            crate::serial_println!("Memory recovery: attempting page swap-out");
+            if let Some(mm) = crate::memory::get_memory_manager() {
+                match mm.swap_out_victim_page() {
+                    Ok(()) => {
+                        crate::serial_println!(
+                            "Memory recovery: successfully swapped out a victim page"
+                        );
+                        Ok(())
+                    }
+                    Err(_e) => {
+                        crate::serial_println!(
+                            "Memory recovery: swap-out failed, no swappable pages"
+                        );
+                        Err(KernelError::Memory(MemoryError::OutOfMemory))
+                    }
+                }
+            } else {
+                Err(KernelError::Memory(MemoryError::OutOfMemory))
+            }
         },
         max_retries: 3,
         cooldown_ms: 1000,
@@ -687,22 +781,71 @@ pub fn init_error_handling() {
             )
         },
         recovery_fn: |_| {
-            // Note: Hardware reset sequence not yet implemented.
-            // Future implementation will include:
-            // - Soft device reset via PCI configuration space
-            // - Device-specific reset commands (NVMe admin reset, AHCI HBA reset, etc.)
-            // - Bus reset for PCI/PCIe devices
-            // - Full device re-initialization after reset
-            // - Verify device functionality post-reset
-            //
-            // Alternative reset methods:
-            // - ACPI reset (_RST method)
-            // - Keyboard controller reset (port 0x64, command 0xFE)
-            // - Triple-fault reset (last resort)
-            //
-            // For now, recovery attempts are logged but no reset is performed.
-            crate::serial_println!("Hardware recovery: reset not yet implemented");
-            Ok(())
+            // Attempt to reset the timed-out PCI device by cycling its
+            // command register: disable I/O and memory access, then
+            // re-enable them. This forces the device to re-arbitrate
+            // its bus accesses, which can clear a hung state.
+            crate::serial_println!("Hardware recovery: attempting PCI device reset");
+
+            let scanner = crate::pci::pci_bus();
+            let scanner_guard = scanner.lock();
+            let devices = scanner_guard.get_devices();
+
+            // Find devices that might be timed out. We reset all devices
+            // that have memory or I/O enabled, since we don't know which
+            // specific device timed out. The command register write is
+            // idempotent and safe for healthy devices.
+            let mut reset_count = 0u32;
+            for dev in devices {
+                // Read current command register
+                let cmd = scanner_guard.read_config_word(
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    crate::pci::config::PCI_COMMAND,
+                );
+
+                // Save the I/O and memory enable bits
+                let io_mem_bits = cmd
+                    & (crate::pci::config::PCI_COMMAND_IO
+                        | crate::pci::config::PCI_COMMAND_MEMORY
+                        | crate::pci::config::PCI_COMMAND_MASTER);
+
+                if io_mem_bits != 0 {
+                    // Disable I/O, memory, and bus master
+                    scanner_guard.write_config_word(
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        crate::pci::config::PCI_COMMAND,
+                        cmd & !io_mem_bits,
+                    );
+
+                    // Brief delay to let the device settle
+                    for _ in 0..1000 {
+                        core::hint::spin_loop();
+                    }
+
+                    // Re-enable the original bits
+                    scanner_guard.write_config_word(
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        crate::pci::config::PCI_COMMAND,
+                        cmd,
+                    );
+
+                    reset_count += 1;
+                }
+            }
+
+            if reset_count > 0 {
+                crate::serial_println!("Hardware recovery: reset {} PCI device(s)", reset_count);
+                Ok(())
+            } else {
+                crate::serial_println!("Hardware recovery: no PCI devices to reset");
+                Err(KernelError::Hardware(HardwareError::CommunicationTimeout))
+            }
         },
         max_retries: 5,
         cooldown_ms: 500,

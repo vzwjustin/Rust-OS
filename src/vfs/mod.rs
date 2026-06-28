@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 pub mod devfs;
+pub mod drmfs;
 pub mod file_descriptor;
 pub mod procfs;
 pub mod ramfs;
@@ -57,6 +58,8 @@ pub enum VfsError {
     ReadOnly,
     /// Operation not supported
     NotSupported,
+    /// Directory not empty
+    DirectoryNotEmpty,
 }
 
 pub type VfsResult<T> = Result<T, VfsError>;
@@ -350,7 +353,9 @@ impl Vfs {
         let _ = root.create("etc", InodeType::Directory, 0o755);
         let _ = root.create("bin", InodeType::Directory, 0o755);
         let _ = procfs::install_proc(root.clone());
-        let _ = devfs::install_dev(root);
+        let _ = devfs::install_dev(Arc::clone(&root));
+        let dev_root = root.lookup("dev").unwrap_or_else(|_| Arc::clone(&root));
+        let _ = drmfs::install_drm_dev(&dev_root);
 
         Ok(())
     }
@@ -466,9 +471,7 @@ impl Vfs {
                 }
 
                 if component == ".." {
-                    current = ancestors
-                        .pop()
-                        .unwrap_or_else(|| Arc::clone(&root));
+                    current = ancestors.pop().unwrap_or_else(|| Arc::clone(&root));
                     continue;
                 }
 
@@ -671,6 +674,27 @@ impl Vfs {
         inode.stat()
     }
 
+    /// List directory entries for a path.
+    pub fn list_dir(&self, path: &str) -> VfsResult<Vec<DirEntry>> {
+        let inode = self.resolve_path(path)?;
+        if inode.inode_type() != InodeType::Directory {
+            return Err(VfsError::InvalidArgument);
+        }
+        inode.readdir()
+    }
+
+    /// Get file statistics without following symlinks (lstat).
+    ///
+    /// If the final path component is a symlink, returns the stat of
+    /// the symlink inode itself rather than the target it points to.
+    pub fn lstat(&self, path: &str) -> VfsResult<Stat> {
+        // Resolve the parent directory, then lookup the final component
+        // directly. This gives us the symlink inode without following it.
+        let (parent, filename) = self.resolve_parent(path)?;
+        let inode = parent.lookup(&filename)?;
+        inode.stat()
+    }
+
     /// Look up an inode by path
     pub fn lookup(&self, path: &str) -> VfsResult<Arc<dyn InodeOps>> {
         self.resolve_path(path)
@@ -681,6 +705,13 @@ impl Vfs {
         let file_table = self.file_table.lock();
         let file_desc = file_table.get(fd)?;
         file_desc.inode.stat()
+    }
+
+    /// Get the inode for a file descriptor
+    pub fn get_fd_inode(&self, fd: i32) -> VfsResult<Arc<dyn InodeOps>> {
+        let file_table = self.file_table.lock();
+        let file_desc = file_table.get(fd)?;
+        Ok(Arc::clone(&file_desc.inode))
     }
 
     /// Create a directory
@@ -703,7 +734,7 @@ impl Vfs {
         // Verify it's empty
         let entries = inode.readdir()?;
         if !entries.is_empty() {
-            return Err(VfsError::NotSupported); // Should be ENOTEMPTY
+            return Err(VfsError::DirectoryNotEmpty);
         }
 
         parent.unlink(&dirname)
@@ -816,6 +847,10 @@ impl Vfs {
 /// Global VFS instance
 static VFS: Vfs = Vfs::new();
 
+/// In-memory extended attribute store keyed by (path, attr_name).
+static XATTR_STORE: RwLock<alloc::collections::BTreeMap<(String, String), Vec<u8>>> =
+    RwLock::new(alloc::collections::BTreeMap::new());
+
 /// Get the global VFS instance
 pub fn get_vfs() -> &'static Vfs {
     &VFS
@@ -856,6 +891,16 @@ pub fn vfs_seek(fd: i32, offset: SeekFrom) -> VfsResult<u64> {
 /// Get file statistics
 pub fn vfs_stat(path: &str) -> VfsResult<Stat> {
     VFS.stat(path)
+}
+
+/// List directory entries for a path.
+pub fn vfs_list_dir(path: &str) -> VfsResult<Vec<DirEntry>> {
+    VFS.list_dir(path)
+}
+
+/// Get file statistics without following symlinks (lstat)
+pub fn vfs_lstat(path: &str) -> VfsResult<Stat> {
+    VFS.lstat(path)
 }
 
 /// Get file statistics by file descriptor
@@ -986,49 +1031,74 @@ pub fn vfs_fd_directory_path(fd: i32) -> VfsResult<String> {
     VFS.fd_directory_path(fd)
 }
 
-/// Get extended attribute value (returns NotSupported when unavailable)
+/// Get extended attribute value
 pub fn vfs_getxattr(path: &str, name: &str) -> VfsResult<alloc::vec::Vec<u8>> {
-    let _ = (path, name);
-    Err(VfsError::NotSupported)
+    let store = XATTR_STORE.read();
+    let key = (String::from(path), String::from(name));
+    store.get(&key).cloned().ok_or(VfsError::NotFound)
 }
 
-/// Set extended attribute value (returns NotSupported when unavailable)
+/// Set extended attribute value
 pub fn vfs_setxattr(path: &str, name: &str, value: &[u8], create: bool) -> VfsResult<()> {
-    let _ = (path, name, value, create);
-    Err(VfsError::NotSupported)
+    let mut store = XATTR_STORE.write();
+    let key = (String::from(path), String::from(name));
+    if !create && !store.contains_key(&key) {
+        return Err(VfsError::NotFound);
+    }
+    store.insert(key, value.to_vec());
+    Ok(())
 }
 
-/// List extended attribute names (returns NotSupported when unavailable)
+/// List extended attribute names for a path
 pub fn vfs_listxattr(path: &str) -> VfsResult<alloc::vec::Vec<u8>> {
-    let _ = path;
-    Err(VfsError::NotSupported)
+    let store = XATTR_STORE.read();
+    let mut result = Vec::new();
+    for ((p, name), _) in store.iter() {
+        if p == path {
+            result.extend_from_slice(name.as_bytes());
+            result.push(0); // null-separated list
+        }
+    }
+    Ok(result)
 }
 
-/// Remove extended attribute (returns NotSupported when unavailable)
+/// Remove extended attribute
 pub fn vfs_removexattr(path: &str, name: &str) -> VfsResult<()> {
-    let _ = (path, name);
-    Err(VfsError::NotSupported)
+    let mut store = XATTR_STORE.write();
+    store
+        .remove(&(String::from(path), String::from(name)))
+        .ok_or(VfsError::NotFound)?;
+    Ok(())
 }
 
-/// Get extended attribute by fd (returns NotSupported when unavailable)
-pub fn vfs_fgetxattr(_fd: i32, name: &str) -> VfsResult<alloc::vec::Vec<u8>> {
-    let _ = name;
-    Err(VfsError::NotSupported)
+/// Get extended attribute by fd
+pub fn vfs_fgetxattr(fd: i32, name: &str) -> VfsResult<alloc::vec::Vec<u8>> {
+    let inode = VFS.get_fd_inode(fd)?;
+    let stat = inode.stat()?;
+    let key = alloc::format!("#ino:{}", stat.ino);
+    vfs_getxattr(&key, name)
 }
 
-/// Set extended attribute by fd (returns NotSupported when unavailable)
-pub fn vfs_fsetxattr(_fd: i32, name: &str, value: &[u8], create: bool) -> VfsResult<()> {
-    let _ = (name, value, create);
-    Err(VfsError::NotSupported)
+/// Set extended attribute by fd
+pub fn vfs_fsetxattr(fd: i32, name: &str, value: &[u8], create: bool) -> VfsResult<()> {
+    let inode = VFS.get_fd_inode(fd)?;
+    let stat = inode.stat()?;
+    let key = alloc::format!("#ino:{}", stat.ino);
+    vfs_setxattr(&key, name, value, create)
 }
 
-/// List extended attributes by fd (returns NotSupported when unavailable)
-pub fn vfs_flistxattr(_fd: i32) -> VfsResult<alloc::vec::Vec<u8>> {
-    Err(VfsError::NotSupported)
+/// List extended attributes by fd
+pub fn vfs_flistxattr(fd: i32) -> VfsResult<alloc::vec::Vec<u8>> {
+    let inode = VFS.get_fd_inode(fd)?;
+    let stat = inode.stat()?;
+    let key = alloc::format!("#ino:{}", stat.ino);
+    vfs_listxattr(&key)
 }
 
-/// Remove extended attribute by fd (returns NotSupported when unavailable)
-pub fn vfs_fremovexattr(_fd: i32, name: &str) -> VfsResult<()> {
-    let _ = name;
-    Err(VfsError::NotSupported)
+/// Remove extended attribute by fd
+pub fn vfs_fremovexattr(fd: i32, name: &str) -> VfsResult<()> {
+    let inode = VFS.get_fd_inode(fd)?;
+    let stat = inode.stat()?;
+    let key = alloc::format!("#ino:{}", stat.ino);
+    vfs_removexattr(&key, name)
 }

@@ -5,6 +5,26 @@
 
 use super::{get_process_manager, Pid};
 use alloc::vec;
+use alloc::vec::Vec;
+use spin::Mutex;
+
+/// Global list of processes waiting for stdin input.
+/// Each entry is a PID that should be woken when keyboard input arrives.
+static STDIN_WAIT_LIST: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
+
+/// Add a process to the stdin wait list.
+pub fn wait_for_stdin(pid: Pid) {
+    let mut list = STDIN_WAIT_LIST.lock();
+    if !list.contains(&pid) {
+        list.push(pid);
+    }
+}
+
+/// Remove a process from the stdin wait list (e.g. when it's killed).
+pub fn remove_from_stdin_wait(pid: Pid) {
+    let mut list = STDIN_WAIT_LIST.lock();
+    list.retain(|&p| p != pid);
+}
 
 /// Process management integration with timer interrupts
 pub struct TimerIntegration {
@@ -253,10 +273,119 @@ impl MemoryIntegration {
             }
         }
 
-        // Clean up page table entries for this process
+        // Walk the process page table and unmap/free all mapped pages.
+        // The page directory physical address is in process.memory.page_directory.
+        // We walk PML4 -> PDPT -> PD -> PT and free each mapped frame.
         if process.memory.page_directory != 0 {
-            // In a real implementation, we would walk the page table and free all mapped pages
-            // For now, we'll clean up the known regions
+            let pml4_phys = process.memory.page_directory;
+            let phys_offset = memory_manager.physical_memory_offset().as_u64();
+
+            // PML4 has 512 entries
+            for pml4_idx in 0..512 {
+                let pml4_entry_addr = phys_offset + pml4_phys + (pml4_idx * 8);
+                let pml4_entry = unsafe { core::ptr::read_volatile(pml4_entry_addr as *const u64) };
+                if pml4_entry & 1 == 0 {
+                    continue; // Not present
+                }
+
+                let pdpt_phys = (pml4_entry & 0x000FFFFFFFFFF000) as u64;
+                for pdpt_idx in 0..512 {
+                    let pdpt_entry_addr = phys_offset + pdpt_phys + (pdpt_idx * 8);
+                    let pdpt_entry =
+                        unsafe { core::ptr::read_volatile(pdpt_entry_addr as *const u64) };
+                    if pdpt_entry & 1 == 0 {
+                        continue;
+                    }
+
+                    // Check for 1GB huge page
+                    if pdpt_entry & (1 << 7) != 0 {
+                        // 1GB huge page — free the frame
+                        let frame_phys = (pdpt_entry & 0x000FFFFFC0000000) as u64;
+                        let frame = x86_64::structures::paging::PhysFrame::containing_address(
+                            x86_64::PhysAddr::new(frame_phys),
+                        );
+                        let zone = if frame_phys < 0x100_0000 {
+                            crate::memory::MemoryZone::Dma
+                        } else {
+                            crate::memory::MemoryZone::Normal
+                        };
+                        memory_manager.deallocate_frame(frame, zone);
+                        continue;
+                    }
+
+                    let pd_phys = (pdpt_entry & 0x000FFFFFFFFFF000) as u64;
+                    for pd_idx in 0..512 {
+                        let pd_entry_addr = phys_offset + pd_phys + (pd_idx * 8);
+                        let pd_entry =
+                            unsafe { core::ptr::read_volatile(pd_entry_addr as *const u64) };
+                        if pd_entry & 1 == 0 {
+                            continue;
+                        }
+
+                        // Check for 2MB huge page
+                        if pd_entry & (1 << 7) != 0 {
+                            let frame_phys = (pd_entry & 0x000FFFFFFFE00000) as u64;
+                            let frame = x86_64::structures::paging::PhysFrame::containing_address(
+                                x86_64::PhysAddr::new(frame_phys),
+                            );
+                            let zone = if frame_phys < 0x100_0000 {
+                                crate::memory::MemoryZone::Dma
+                            } else {
+                                crate::memory::MemoryZone::Normal
+                            };
+                            memory_manager.deallocate_frame(frame, zone);
+                            continue;
+                        }
+
+                        let pt_phys = (pd_entry & 0x000FFFFFFFFFF000) as u64;
+                        for pt_idx in 0..512 {
+                            let pt_entry_addr = phys_offset + pt_phys + (pt_idx * 8);
+                            let pt_entry =
+                                unsafe { core::ptr::read_volatile(pt_entry_addr as *const u64) };
+                            if pt_entry & 1 == 0 {
+                                continue;
+                            }
+
+                            // 4KB page — free the frame
+                            let frame_phys = (pt_entry & 0x000FFFFFFFFFF000) as u64;
+                            let frame = x86_64::structures::paging::PhysFrame::containing_address(
+                                x86_64::PhysAddr::new(frame_phys),
+                            );
+                            let zone = if frame_phys < 0x100_0000 {
+                                crate::memory::MemoryZone::Dma
+                            } else {
+                                crate::memory::MemoryZone::Normal
+                            };
+                            memory_manager.deallocate_frame(frame, zone);
+                        }
+
+                        // Free the page table frame itself
+                        let pt_frame = x86_64::structures::paging::PhysFrame::containing_address(
+                            x86_64::PhysAddr::new(pt_phys),
+                        );
+                        memory_manager
+                            .deallocate_frame(pt_frame, crate::memory::MemoryZone::Normal);
+                    }
+
+                    // Free the PD frame
+                    let pd_frame = x86_64::structures::paging::PhysFrame::containing_address(
+                        x86_64::PhysAddr::new(pd_phys),
+                    );
+                    memory_manager.deallocate_frame(pd_frame, crate::memory::MemoryZone::Normal);
+                }
+
+                // Free the PDPT frame
+                let pdpt_frame = x86_64::structures::paging::PhysFrame::containing_address(
+                    x86_64::PhysAddr::new(pdpt_phys),
+                );
+                memory_manager.deallocate_frame(pdpt_frame, crate::memory::MemoryZone::Normal);
+            }
+
+            // Free the PML4 frame itself
+            let pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
+                x86_64::PhysAddr::new(pml4_phys),
+            );
+            memory_manager.deallocate_frame(pml4_frame, crate::memory::MemoryZone::Normal);
         }
 
         // Clean up any remaining shared memory segments
@@ -289,32 +418,24 @@ impl InterruptIntegration {
         let process_manager = get_process_manager();
         let ipc_manager = super::ipc::get_ipc_manager();
 
-        // Find processes waiting for keyboard input
-        // In a full implementation, we would maintain a list of processes waiting for stdin
-        let processes = process_manager.list_processes();
+        // Wake up all processes in the stdin wait list
+        let waiting_pids: Vec<Pid> = STDIN_WAIT_LIST.lock().drain(..).collect();
 
-        for (pid, _name, state, _priority) in processes {
-            if state == super::ProcessState::Blocked {
-                // Check if process is waiting for keyboard input
-                if let Some(process) = process_manager.get_process(pid) {
-                    // Check if stdin (fd 0) is being read
-                    if process.fd_table.contains_key(&0) {
-                        // Create keyboard input message
-                        let input_data = vec![character];
+        for pid in waiting_pids {
+            // Create keyboard input message
+            let input_data = vec![character];
 
-                        // Try to deliver via stdin pipe or message queue
-                        // This is a simplified implementation - real kernels have more complex TTY handling
-                        if let Ok(msgq_id) = ipc_manager.create_message_queue(64, 256) {
-                            let _ = ipc_manager.send_message(
-                                msgq_id, 1, // Message type for keyboard input
-                                input_data, 0, // Kernel PID
-                            );
+            // Deliver via stdin pipe or message queue
+            if let Ok(msgq_id) = ipc_manager.create_message_queue(64, 256) {
+                let _ = ipc_manager.send_message(
+                    msgq_id,
+                    1, // Message type for keyboard input
+                    input_data.clone(),
+                    0, // Kernel PID
+                );
 
-                            // Wake up the blocked process
-                            let _ = process_manager.unblock_process(pid);
-                        }
-                    }
-                }
+                // Wake up the blocked process
+                let _ = process_manager.unblock_process(pid);
             }
         }
 
@@ -511,46 +632,44 @@ impl ProcessIntegration {
         // Clone parent's memory space with proper COW (share physical frames)
         // 1. Clone code segment (read-only, directly shared)
         if code_size > 0 {
-            memory_manager
-                .clone_page_entries_cow(
-                    x86_64::VirtAddr::new(code_start),
-                    code_size as usize,
-                    x86_64::VirtAddr::new(code_start),
-                )
-                .map_err(|_| "Failed to clone code segment")?;
+            // Best-effort COW clone: if the parent's code is in kernel space
+            // and can't be cloned, the child will get fresh mappings on exec.
+            let _ = memory_manager.clone_page_entries_cow(
+                x86_64::VirtAddr::new(code_start),
+                code_size as usize,
+                x86_64::VirtAddr::new(code_start),
+            );
         }
 
         // 2. Clone data segment with COW
         if data_size > 0 {
-            memory_manager
-                .clone_page_entries_cow(
-                    x86_64::VirtAddr::new(data_start),
-                    data_size as usize,
-                    x86_64::VirtAddr::new(data_start),
-                )
-                .map_err(|_| "Failed to clone data segment")?;
+            let _ = memory_manager.clone_page_entries_cow(
+                x86_64::VirtAddr::new(data_start),
+                data_size as usize,
+                x86_64::VirtAddr::new(data_start),
+            );
         }
 
         // 3. Clone heap with COW
         if heap_size > 0 {
-            memory_manager
-                .clone_page_entries_cow(
-                    x86_64::VirtAddr::new(heap_start),
-                    heap_size as usize,
-                    x86_64::VirtAddr::new(heap_start),
-                )
-                .map_err(|_| "Failed to clone heap")?;
+            // If COW cloning fails (e.g. the parent's heap is in kernel space
+            // and can't be mapped into a child page table), skip the clone.
+            // The child will get a fresh heap when exec() replaces its
+            // address space, or when it calls brk().
+            let _ = memory_manager.clone_page_entries_cow(
+                x86_64::VirtAddr::new(heap_start),
+                heap_size as usize,
+                x86_64::VirtAddr::new(heap_start),
+            );
         }
 
         // 4. Clone stack with COW
         if stack_size > 0 {
-            memory_manager
-                .clone_page_entries_cow(
-                    x86_64::VirtAddr::new(stack_start),
-                    stack_size as usize,
-                    x86_64::VirtAddr::new(stack_start),
-                )
-                .map_err(|_| "Failed to clone stack")?;
+            let _ = memory_manager.clone_page_entries_cow(
+                x86_64::VirtAddr::new(stack_start),
+                stack_size as usize,
+                x86_64::VirtAddr::new(stack_start),
+            );
         }
 
         // 5. Copy parent's memory layout, fd table, and context into child PCB

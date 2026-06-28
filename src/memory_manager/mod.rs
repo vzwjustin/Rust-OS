@@ -8,10 +8,11 @@ pub mod memory_region;
 pub mod page_table;
 pub mod virtual_memory;
 
-pub use memory_region::ProtectionFlags;
+pub use memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
 pub use page_table::{PageTable, PageTableFlags};
 pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
 
+use alloc::vec::Vec;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -210,6 +211,26 @@ pub mod api {
         let manager = manager_guard.as_ref().ok_or(VmError::NotInitialized)?;
 
         Ok(manager.stats())
+    }
+
+    /// Return file-backed regions overlapping `[start, start+length)`.
+    ///
+    /// Each entry carries the backing file descriptor and file offset so that
+    /// callers (e.g. `msync`) can write dirty pages back to the file via VFS.
+    pub fn vm_file_backed_regions_in_range(
+        start: usize,
+        length: usize,
+    ) -> VmResult<Vec<MemoryRegion>> {
+        let manager_guard = VIRTUAL_MEMORY_MANAGER.lock();
+        let manager = manager_guard.as_ref().ok_or(VmError::NotInitialized)?;
+
+        let start_va = VirtAddr::new(start as u64);
+        let end_va = VirtAddr::new(start.saturating_add(length) as u64);
+        Ok(manager
+            .file_backed_regions_in_range(start_va, end_va)
+            .into_iter()
+            .cloned()
+            .collect())
     }
 }
 

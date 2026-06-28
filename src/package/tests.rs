@@ -4,9 +4,7 @@
 
 use crate::package::adapters::{DebAdapter, PackageAdapter};
 use crate::package::database::PackageDatabase;
-use crate::package::{
-    PackageManager, PackageManagerType, PackageMetadata, PackageStatus,
-};
+use crate::package::{PackageManager, PackageManagerType, PackageMetadata, PackageStatus};
 use crate::println;
 use alloc::format;
 use alloc::string::ToString;

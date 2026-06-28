@@ -180,12 +180,44 @@ pub struct SharedMemory {
     attached: Arc<Mutex<Vec<(Pid, VirtAddr)>>>,
 }
 
+/// Counter for generating unique shared-memory virtual addresses.
+/// Each attach gets a distinct address in the shared-memory region
+/// (0x4000_0000_0000 + offset), so multiple attaches don't collide.
+static SHM_VADDR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Base virtual address for shared memory mappings.
+const SHM_VADDR_BASE: u64 = 0x4000_0000_0000;
+
 impl SharedMemory {
     /// Create a new shared memory segment
+    ///
+    /// Allocates physical memory via the kernel memory manager. If the
+    /// memory manager isn't available yet (early boot), falls back to
+    /// a fixed physical address so the segment can still be created.
     pub fn new(id: IpcId, size: usize) -> Result<Self, &'static str> {
-        // In production, this would allocate physical memory
-        // For now, use a placeholder address
-        let phys_addr = PhysAddr::new(0x1000_0000);
+        // Try to allocate real memory from the memory manager.
+        let phys_addr = match crate::memory::allocate_memory(
+            size,
+            crate::memory::MemoryRegionType::SharedMemory,
+            crate::memory::MemoryProtection::USER_DATA,
+        ) {
+            Ok(vaddr) => {
+                // allocate_memory returns a virtual address; translate to
+                // physical if possible, otherwise use the virtual address
+                // as the backing store reference.
+                if let Some(mm) = crate::memory::get_memory_manager() {
+                    mm.translate_addr(vaddr)
+                        .unwrap_or(PhysAddr::new(vaddr.as_u64()))
+                } else {
+                    PhysAddr::new(vaddr.as_u64())
+                }
+            }
+            Err(_) => {
+                // Memory manager not available; use a fixed region.
+                // This is a fallback for early boot or testing.
+                PhysAddr::new(0x1000_0000)
+            }
+        };
 
         Ok(Self {
             id,
@@ -196,10 +228,38 @@ impl SharedMemory {
     }
 
     /// Attach to shared memory
+    ///
+    /// Allocates and maps a virtual memory region at a unique address
+    /// in the shared-memory area. The physical frames backing this
+    /// region are the same ones allocated in `new`, so all processes
+    /// that attach to the same segment share the same physical memory.
+    /// In a per-process address space model, this would map the
+    /// segment's physical frames into the attaching process's page
+    /// table; in the current single-address-space kernel, we map
+    /// directly into the kernel's address space at a unique virtual
+    /// address.
     pub fn attach(&self, pid: Pid) -> Result<VirtAddr, &'static str> {
-        // In production, this would map the frames into the process's address space
-        let vaddr = VirtAddr::new(0x4000_0000_0000); // Example address
+        let offset = SHM_VADDR_COUNTER.fetch_add(self.size, Ordering::SeqCst) as u64;
+        let vaddr = VirtAddr::new(SHM_VADDR_BASE + offset);
 
+        // Map physical memory at the generated virtual address so the
+        // segment is actually accessible. We use the physical memory
+        // offset to compute the virtual address of the backing frames.
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        if phys_offset > 0 {
+            // The physical frames are already mapped via the direct
+            // physical-memory mapping. We record the virtual address
+            // that points to the segment's physical memory.
+            let mapped_vaddr = VirtAddr::new(phys_offset + self.phys_addr.as_u64());
+
+            let mut attached = self.attached.lock();
+            attached.push((pid, mapped_vaddr));
+
+            return Ok(mapped_vaddr);
+        }
+
+        // Fallback: return the generated address (no mapping). This
+        // happens only if the memory manager hasn't been initialized.
         let mut attached = self.attached.lock();
         attached.push((pid, vaddr));
 
@@ -234,7 +294,13 @@ impl Semaphore {
     }
 
     /// Wait (P operation)
+    ///
+    /// Tries to decrement the semaphore. If the value is zero, blocks the
+    /// calling process via the scheduler and adds it to the waiting list.
+    /// The process will be unblocked by `signal` and will retry the
+    /// decrement when it runs again.
     pub fn wait(&self, pid: Pid) -> Result<(), &'static str> {
+        // Fast path: try to acquire without blocking.
         loop {
             let current = self.value.load(Ordering::Acquire);
             if current > 0 {
@@ -243,18 +309,44 @@ impl Semaphore {
                     .compare_exchange(current, current - 1, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
                 {
+                    // Successfully acquired — remove from waiting list if present.
+                    self.waiting.lock().retain(|&p| p != pid);
                     return Ok(());
                 }
-            } else {
-                // Add to waiting list
-                self.waiting.lock().push(pid);
-                // In production, this would block the process
-                return Err("Would block");
+                // CAS failed (race); retry the fast path.
+                continue;
             }
+
+            // Value is zero — need to block.
+            // Add to waiting list if not already there.
+            {
+                let mut waiting = self.waiting.lock();
+                if waiting.contains(&pid) {
+                    // Already waiting — just yield and retry.
+                    drop(waiting);
+                    crate::process::thread::yield_thread();
+                    continue;
+                }
+                waiting.push(pid);
+            }
+
+            // Block the process via the scheduler. This removes it from
+            // all ready queues and sets its state to Blocked. When signal()
+            // calls unblock_process, the process will be re-enqueued and
+            // will retry the decrement on its next time slice.
+            let _ = crate::scheduler::block_process(pid);
+
+            // After being unblocked, loop back and try to acquire again.
+            // If the semaphore was signalled by someone else in the meantime,
+            // we might need to block again — but that's correct behavior.
         }
     }
 
     /// Signal (V operation)
+    ///
+    /// Increments the semaphore value. If there are waiting processes,
+    /// pops one from the waiting list and unblocks it via the scheduler
+    /// so it can retry the wait.
     pub fn signal(&self) -> Result<(), &'static str> {
         // ponytail: CAS loop so two concurrent signals can't both pass the max
         // check and then both fetch_add, pushing value past max_value. We only
@@ -273,10 +365,11 @@ impl Semaphore {
             }
         }
 
-        // Wake up a waiting process
+        // Wake up a waiting process: pop from the waiting list and
+        // unblock it via the scheduler so it gets re-enqueued on a
+        // CPU ready queue and can retry the wait.
         if let Some(pid) = self.waiting.lock().pop() {
-            // In production, this would wake the process
-            let _ = pid;
+            let _ = crate::scheduler::unblock_process(pid);
         }
 
         Ok(())
@@ -346,12 +439,75 @@ pub fn remove_ipc(id: IpcId) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Send keyboard event to interested processes
+/// Registry of message-queue IDs that have subscribed to keyboard events.
+/// Each entry is an IPC message-queue id created via `create_message_queue`.
+static KEYBOARD_SUBSCRIBERS: Mutex<Vec<IpcId>> = Mutex::new(Vec::new());
+
+/// Subscribe a message queue to receive keyboard events.
+///
+/// `queue_id` must be the id of a message queue created with
+/// `create_message_queue`; events are delivered as `Message`s with
+/// `msg_type = MSG_TYPE_KEYBOARD`, the sender set to kernel pid 0, and the
+/// 4-byte little-endian scancode in `data`.
+pub const MSG_TYPE_KEYBOARD: u32 = 0x6b65_7920; // "key " in ASCII
+
+pub fn subscribe_keyboard_events(queue_id: IpcId) -> Result<(), &'static str> {
+    let mut subs = KEYBOARD_SUBSCRIBERS.lock();
+    if subs.iter().any(|&id| id == queue_id) {
+        return Err("Already subscribed");
+    }
+    subs.push(queue_id);
+    Ok(())
+}
+
+/// Unsubscribe a message queue from keyboard events.
+pub fn unsubscribe_keyboard_events(queue_id: IpcId) -> Result<(), &'static str> {
+    let mut subs = KEYBOARD_SUBSCRIBERS.lock();
+    let before = subs.len();
+    subs.retain(|&id| id != queue_id);
+    if subs.len() == before {
+        return Err("Not subscribed");
+    }
+    Ok(())
+}
+
+/// Send keyboard event to interested processes.
+///
+/// The scancode is forwarded to every subscribed message queue as a
+/// `Message` with `MSG_TYPE_KEYBOARD`. Subscribers that have been removed
+/// (e.g. their queue was destroyed) are silently pruned.
 pub fn send_keyboard_event(scancode: u32) {
-    // In a real implementation, this would send the keyboard event
-    // to processes that have registered for keyboard input
-    // For now, we'll provide a stub implementation for compilation
-    let _ = scancode; // Prevent unused parameter warning
+    let subs = KEYBOARD_SUBSCRIBERS.lock().clone();
+    if subs.is_empty() {
+        return;
+    }
+
+    let data = scancode.to_le_bytes().to_vec();
+    let msg = Message {
+        sender: 0, // kernel
+        msg_type: MSG_TYPE_KEYBOARD,
+        data,
+        priority: 0,
+    };
+
+    let mut dead = Vec::new();
+    let objects = IPC_OBJECTS.read();
+    for &id in &subs {
+        let delivered = if let Some(IpcObject::MessageQueue(mq)) = objects.get(&id) {
+            mq.send(msg.clone()).is_ok()
+        } else {
+            false
+        };
+        if !delivered {
+            dead.push(id);
+        }
+    }
+    drop(objects);
+
+    if !dead.is_empty() {
+        let mut subs = KEYBOARD_SUBSCRIBERS.lock();
+        subs.retain(|id| !dead.contains(id));
+    }
 }
 
 /// Test IPC functionality for integration tests

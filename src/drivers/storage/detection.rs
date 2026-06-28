@@ -281,7 +281,8 @@ impl StorageDetector {
 
         let capacity_sectors = crate::drivers::virtio::blk::capacity_sectors().unwrap_or(0);
 
-        let driver: Box<dyn StorageDriver> = Box::new(VirtioBlkStorageAdapter { capacity_sectors });
+        let driver: Box<dyn StorageDriver> =
+            Box::new(VirtioBlkStorageAdapter::new(capacity_sectors));
 
         let model = format!("VirtIO Block Disk");
         let serial = format!(
@@ -401,6 +402,26 @@ impl Clone for DetectionResults {
 #[derive(Debug)]
 struct VirtioBlkStorageAdapter {
     capacity_sectors: u64,
+    reads_total: core::sync::atomic::AtomicU64,
+    writes_total: core::sync::atomic::AtomicU64,
+    bytes_read: core::sync::atomic::AtomicU64,
+    bytes_written: core::sync::atomic::AtomicU64,
+    read_errors: core::sync::atomic::AtomicU64,
+    write_errors: core::sync::atomic::AtomicU64,
+}
+
+impl VirtioBlkStorageAdapter {
+    fn new(capacity_sectors: u64) -> Self {
+        Self {
+            capacity_sectors,
+            reads_total: core::sync::atomic::AtomicU64::new(0),
+            writes_total: core::sync::atomic::AtomicU64::new(0),
+            bytes_read: core::sync::atomic::AtomicU64::new(0),
+            bytes_written: core::sync::atomic::AtomicU64::new(0),
+            read_errors: core::sync::atomic::AtomicU64::new(0),
+            write_errors: core::sync::atomic::AtomicU64::new(0),
+        }
+    }
 }
 
 impl StorageDriver for VirtioBlkStorageAdapter {
@@ -436,6 +457,8 @@ impl StorageDriver for VirtioBlkStorageAdapter {
     }
 
     fn init(&mut self) -> Result<(), StorageError> {
+        // VirtIO block device is already initialized by the virtio subsystem
+        // during PCI enumeration. Nothing additional to do here.
         Ok(())
     }
 
@@ -444,13 +467,37 @@ impl StorageDriver for VirtioBlkStorageAdapter {
         start_sector: u64,
         buffer: &mut [u8],
     ) -> Result<usize, StorageError> {
-        crate::drivers::virtio::blk::read_sectors(start_sector, buffer)
-            .map_err(|_| StorageError::HardwareError)
+        match crate::drivers::virtio::blk::read_sectors(start_sector, buffer) {
+            Ok(n) => {
+                self.reads_total
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.bytes_read
+                    .fetch_add(n as u64, core::sync::atomic::Ordering::Relaxed);
+                Ok(n)
+            }
+            Err(_) => {
+                self.read_errors
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                Err(StorageError::HardwareError)
+            }
+        }
     }
 
     fn write_sectors(&mut self, start_sector: u64, buffer: &[u8]) -> Result<usize, StorageError> {
-        crate::drivers::virtio::blk::write_sectors(start_sector, buffer)
-            .map_err(|_| StorageError::HardwareError)
+        match crate::drivers::virtio::blk::write_sectors(start_sector, buffer) {
+            Ok(n) => {
+                self.writes_total
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.bytes_written
+                    .fetch_add(n as u64, core::sync::atomic::Ordering::Relaxed);
+                Ok(n)
+            }
+            Err(_) => {
+                self.write_errors
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                Err(StorageError::HardwareError)
+            }
+        }
     }
 
     fn flush(&mut self) -> Result<(), StorageError> {
@@ -458,19 +505,39 @@ impl StorageDriver for VirtioBlkStorageAdapter {
     }
 
     fn get_stats(&self) -> super::StorageStats {
-        super::StorageStats::default()
+        super::StorageStats {
+            reads_total: self.reads_total.load(core::sync::atomic::Ordering::Relaxed),
+            writes_total: self
+                .writes_total
+                .load(core::sync::atomic::Ordering::Relaxed),
+            bytes_read: self.bytes_read.load(core::sync::atomic::Ordering::Relaxed),
+            bytes_written: self
+                .bytes_written
+                .load(core::sync::atomic::Ordering::Relaxed),
+            read_errors: self.read_errors.load(core::sync::atomic::Ordering::Relaxed),
+            write_errors: self
+                .write_errors
+                .load(core::sync::atomic::Ordering::Relaxed),
+            avg_read_latency_us: 0,
+            avg_write_latency_us: 0,
+            uptime_seconds: crate::time::system_time(),
+        }
     }
 
     fn reset(&mut self) -> Result<(), StorageError> {
-        Ok(())
+        // VirtIO block reset requires re-initializing the virtqueue.
+        // This is not supported at runtime without a full device re-init.
+        Err(StorageError::NotSupported)
     }
 
     fn standby(&mut self) -> Result<(), StorageError> {
-        Ok(())
+        // VirtIO block does not support power management commands.
+        Err(StorageError::NotSupported)
     }
 
     fn wake(&mut self) -> Result<(), StorageError> {
-        Ok(())
+        // VirtIO block does not support power management commands.
+        Err(StorageError::NotSupported)
     }
 
     fn vendor_command(&mut self, _command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {

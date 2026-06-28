@@ -509,6 +509,40 @@ pub fn pause() -> LinuxResult<i32> {
     }
 }
 
+/// rt_sigtimedwait - wait for a signal with timeout
+///
+/// Waits for one of the signals in `set` to become pending. If a
+/// signal is already pending, returns immediately. If no signal is
+/// pending and `timeout` is non-null, waits up to the specified
+/// timeout. On success, returns the signal number; on timeout returns
+/// EAGAIN.
+pub fn rt_sigtimedwait(set: u64, timeout_ns: Option<u64>) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let blocked = signal_mask_for(pid);
+
+    let deadline = timeout_ns.map(|ns| crate::time::uptime_ns() + ns);
+
+    loop {
+        let pending = pending_signal_set(pid);
+        if let Some(sig) = first_deliverable_signal(set, blocked, pending) {
+            // Consume the signal
+            consume_pending_signal(pid, sig);
+            return Ok(sig);
+        }
+
+        // Check timeout
+        if let Some(dl) = deadline {
+            if crate::time::uptime_ns() >= dl {
+                return Err(LinuxError::EAGAIN);
+            }
+        }
+
+        crate::time::sleep_us(1_000);
+    }
+}
+
 /// Signal set manipulation helpers
 
 /// sigemptyset - initialize empty signal set

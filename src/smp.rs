@@ -43,8 +43,11 @@ static ONLINE_CPUS: AtomicU32 = AtomicU32::new(1); // BSP is always online
 /// SMP initialized flag
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Local APIC base address
+/// Local APIC base address (physical)
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// Physical-to-virtual memory offset for MMIO access. Set during init.
+static PHYS_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 use core::sync::atomic::AtomicU64;
 
@@ -190,13 +193,28 @@ pub fn eoi() {
     }
 }
 
+/// Set the physical memory offset used for MMIO mapping.
+///
+/// Should be called once during early boot after the memory manager
+/// establishes the direct physical-memory mapping.
+pub fn set_physical_memory_offset(offset: u64) {
+    PHYS_MEMORY_OFFSET.store(offset, Ordering::Release);
+}
+
 /// Get Local APIC base address
 fn get_apic_base() -> Option<VirtAddr> {
     let phys = LOCAL_APIC_BASE.load(Ordering::Acquire);
     if phys != 0 {
-        // In production, this should be properly mapped by memory manager
-        // For now, return identity-mapped address
-        Some(VirtAddr::new(phys))
+        let offset = PHYS_MEMORY_OFFSET.load(Ordering::Acquire);
+        if offset != 0 {
+            // Use the direct physical-memory mapping established by the
+            // memory manager for MMIO access.
+            Some(VirtAddr::new(phys + offset))
+        } else {
+            // Fall back to identity mapping if the offset hasn't been set
+            // yet (early boot before memory manager init).
+            Some(VirtAddr::new(phys))
+        }
     } else {
         None
     }
@@ -519,12 +537,27 @@ unsafe fn wait_for_ipi_delivery(base: VirtAddr) -> Result<(), &'static str> {
     Err("IPI delivery timeout")
 }
 
-/// Simple microsecond delay using busy-waiting.
-/// In production, this should use a calibrated timer (PIT, HPET, or APIC timer).
+/// Microsecond delay using RDTSC for accurate timing.
+///
+/// Uses the Time Stamp Counter and its calibrated frequency to busy-wait
+/// for the specified number of microseconds. Falls back to an imprecise
+/// spin loop if the TSC frequency hasn't been calibrated yet.
 fn delay_microseconds(us: u64) {
-    // Approximate delay using spin loops
-    // This is very imprecise but works for startup sequences
-    // A proper implementation would use RDTSC or a calibrated timer
+    // Try to use RDTSC for an accurate delay.
+    if let Some(freq_hz) = crate::time::get_tsc_frequency() {
+        let target_cycles = us.saturating_mul(freq_hz / 1_000_000);
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+        loop {
+            let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.saturating_sub(start);
+            if elapsed >= target_cycles {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        return;
+    }
+
+    // Fallback: imprecise spin loop (used before TSC calibration).
     for _ in 0..(us * 100) {
         core::hint::spin_loop();
     }

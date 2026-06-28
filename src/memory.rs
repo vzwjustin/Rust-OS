@@ -1453,6 +1453,14 @@ impl PageTableManager {
         self.mapper.translate_addr(addr)
     }
 
+    /// Get a mutable reference to the inner offset page table mapper.
+    ///
+    /// This allows callers that need `&mut impl Mapper<Size4KiB>` (such as
+    /// the ELF loader) to use the kernel's real page table manager.
+    pub fn mapper_mut(&mut self) -> &mut OffsetPageTable<'static> {
+        &mut self.mapper
+    }
+
     /// Map a single page with specific flags
     pub fn map_page(
         &mut self,
@@ -1695,20 +1703,211 @@ impl PageTableManager {
     }
 
     /// Clone page table for fork operation (with copy-on-write)
+    ///
+    /// Creates a new P4 page table that shares all physical frames with the
+    /// parent, but marks all writable user pages as read-only (COW). When
+    /// either parent or child writes to a COW page, the page fault handler
+    /// allocates a new frame, copies the data, and restores write access.
+    ///
+    /// Kernel-only pages (entries with the USER_ACCESSIBLE flag clear) are
+    /// copied directly since they point to the same kernel mappings and
+    /// never need COW.
     pub fn clone_for_fork(
         &mut self,
-        _frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> Result<OffsetPageTable<'static>, &'static str> {
-        // This would create a new page table with copy-on-write mappings
-        // For now, return error as this is complex to implement properly
-        Err("Fork page table cloning not implemented")
+        use x86_64::structures::paging::PageTableFlags as Flags;
+
+        // Allocate a new P4 frame for the child's top-level page table.
+        let p4_frame = frame_allocator
+            .allocate_frame()
+            .ok_or("Out of memory for child P4 table")?;
+
+        // Zero the new P4 frame so unused entries are empty.
+        unsafe {
+            let p4_ptr: *mut u8 =
+                (self.physical_memory_offset + p4_frame.start_address().as_u64()).as_mut_ptr();
+            core::ptr::write_bytes(p4_ptr, 0, 4096);
+        }
+
+        // Create an OffsetPageTable for the new P4.
+        let p4_virt =
+            VirtAddr::new(self.physical_memory_offset.as_u64() + p4_frame.start_address().as_u64());
+        let p4_table: &mut PageTable = unsafe { &mut *(p4_virt.as_mut_ptr() as *mut PageTable) };
+        let mut new_mapper: OffsetPageTable<'static> =
+            unsafe { OffsetPageTable::new(p4_table, self.physical_memory_offset) };
+
+        // Walk the current P4 table entries [0..511] (skip entry 511 =
+        // recursive/stack mapping if present, and skip kernel-only entries
+        // by copying them directly).
+        //
+        // We iterate over P4 entries. For each present P4 entry:
+        //  - If it's a user entry (USER_ACCESSIBLE set), we need to walk
+        //    down to P1 level and remap each leaf page as COW.
+        //  - If it's a kernel entry, we can copy the P4 entry directly
+        //    (kernel mappings are shared across all processes).
+        //
+        // For simplicity and correctness, we walk the full 4-level tree
+        // for user pages and use map_to with the COW flags.
+
+        // Get the current P4 table to walk.
+        let (current_p4_frame, _) = Cr3::read();
+        let current_p4_virt = VirtAddr::new(
+            self.physical_memory_offset.as_u64() + current_p4_frame.start_address().as_u64(),
+        );
+        let current_p4: &PageTable = unsafe { &*(current_p4_virt.as_ptr() as *const PageTable) };
+
+        for p4_idx in 0..512 {
+            let p4_entry = &current_p4[p4_idx];
+            if !p4_entry.is_unused() {
+                let flags = p4_entry.flags();
+                if flags.contains(Flags::USER_ACCESSIBLE) {
+                    // User mapping — walk down and remap each page as COW.
+                    // We walk the P3/P2/P1 tables directly to avoid scanning
+                    // 512 GB worth of 4 KiB pages (134M iterations).
+                    self.clone_user_p4_entry(p4_idx, current_p4, &mut new_mapper, frame_allocator)?;
+                } else {
+                    // Kernel mapping — copy the P4 entry directly so the
+                    // child shares the kernel address space. This is safe
+                    // because kernel mappings are identical in all processes.
+                    unsafe {
+                        let new_p4: &mut PageTable = &mut *(p4_virt.as_mut_ptr() as *mut PageTable);
+                        new_p4[p4_idx] = current_p4[p4_idx].clone();
+                    }
+                }
+            }
+        }
+
+        Ok(new_mapper)
+    }
+
+    /// Walk a user P4 entry and clone all its pages as copy-on-write.
+    ///
+    /// This descends through P3 → P2 → P1 tables, allocating new
+    /// intermediate tables for the child as needed, and maps each
+    /// leaf page as read-only (COW) pointing to the same physical
+    /// frame as the parent.
+    fn clone_user_p4_entry(
+        &self,
+        p4_idx: usize,
+        current_p4: &PageTable,
+        new_mapper: &mut OffsetPageTable<'static>,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    ) -> Result<(), &'static str> {
+        use x86_64::structures::paging::{Page, PageTableFlags as Flags};
+
+        let p4_entry = &current_p4[p4_idx];
+        let p3_phys = p4_entry.addr();
+        let p3_virt = VirtAddr::new(self.physical_memory_offset.as_u64() + p3_phys.as_u64());
+        let p3: &PageTable = unsafe { &*(p3_virt.as_ptr() as *const PageTable) };
+
+        for p3_idx in 0..512 {
+            let p3_entry = &p3[p3_idx];
+            if p3_entry.is_unused() {
+                continue;
+            }
+
+            // Check for 1 GB huge page
+            if p3_entry.flags().contains(Flags::HUGE_PAGE) {
+                // 1 GB huge page — map as COW in the new table.
+                let virt_addr = VirtAddr::new(((p4_idx as u64) << 39) | ((p3_idx as u64) << 30));
+                let frame_phys = p3_entry.addr();
+                let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(frame_phys);
+                let page: Page<Size4KiB> = Page::containing_address(virt_addr);
+
+                // COW: map as read-only even if original was writable.
+                let cow_flags = Flags::PRESENT | Flags::USER_ACCESSIBLE;
+
+                unsafe {
+                    new_mapper
+                        .map_to(page, frame, cow_flags, frame_allocator)
+                        .map_err(|_| "Failed to map COW huge page")?
+                        .flush();
+                }
+                continue;
+            }
+
+            let p2_phys = p3_entry.addr();
+            let p2_virt = VirtAddr::new(self.physical_memory_offset.as_u64() + p2_phys.as_u64());
+            let p2: &PageTable = unsafe { &*(p2_virt.as_ptr() as *const PageTable) };
+
+            for p2_idx in 0..512 {
+                let p2_entry = &p2[p2_idx];
+                if p2_entry.is_unused() {
+                    continue;
+                }
+
+                // Check for 2 MB huge page
+                if p2_entry.flags().contains(Flags::HUGE_PAGE) {
+                    let virt_addr = VirtAddr::new(
+                        ((p4_idx as u64) << 39) | ((p3_idx as u64) << 30) | ((p2_idx as u64) << 21),
+                    );
+                    let frame_phys = p2_entry.addr();
+                    let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(frame_phys);
+                    let page: Page<Size4KiB> = Page::containing_address(virt_addr);
+
+                    let cow_flags = Flags::PRESENT | Flags::USER_ACCESSIBLE;
+
+                    unsafe {
+                        new_mapper
+                            .map_to(page, frame, cow_flags, frame_allocator)
+                            .map_err(|_| "Failed to map COW 2MB page")?
+                            .flush();
+                    }
+                    continue;
+                }
+
+                let p1_phys = p2_entry.addr();
+                let p1_virt =
+                    VirtAddr::new(self.physical_memory_offset.as_u64() + p1_phys.as_u64());
+                let p1: &PageTable = unsafe { &*(p1_virt.as_ptr() as *const PageTable) };
+
+                for p1_idx in 0..512 {
+                    let p1_entry = &p1[p1_idx];
+                    if p1_entry.is_unused() {
+                        continue;
+                    }
+
+                    let virt_addr = VirtAddr::new(
+                        ((p4_idx as u64) << 39)
+                            | ((p3_idx as u64) << 30)
+                            | ((p2_idx as u64) << 21)
+                            | ((p1_idx as u64) << 12),
+                    );
+                    let frame_phys = p1_entry.addr();
+                    let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(frame_phys);
+                    let page: Page<Size4KiB> = Page::containing_address(virt_addr);
+
+                    // COW: strip the WRITABLE flag so any write triggers
+                    // a page fault, which the handler resolves by copying.
+                    let original_flags = p1_entry.flags();
+                    let cow_flags = if original_flags.contains(Flags::WRITABLE) {
+                        // Remove WRITABLE to force COW on write.
+                        (original_flags - Flags::WRITABLE) | Flags::PRESENT
+                    } else {
+                        original_flags
+                    };
+
+                    unsafe {
+                        new_mapper
+                            .map_to(page, frame, cow_flags, frame_allocator)
+                            .map_err(|_| "Failed to map COW page")?
+                            .flush();
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
 /// Main memory management system
 pub struct MemoryManager {
-    frame_allocator: Mutex<PhysicalFrameAllocator>,
-    page_table_manager: Mutex<PageTableManager>,
+    /// Frame allocator for physical memory
+    pub frame_allocator: Mutex<PhysicalFrameAllocator>,
+    /// Page table manager
+    pub page_table_manager: Mutex<PageTableManager>,
     /// Offset of the direct physical-memory mapping. Required to form valid
     /// pointers to physical frames (mirrors PageTableManager's own field).
     physical_memory_offset: VirtAddr,
@@ -1724,11 +1923,11 @@ pub struct MemoryManager {
 /// Security features configuration
 #[derive(Debug, Clone)]
 pub struct SecurityFeatures {
-    aslr_enabled: bool,
-    stack_canaries_enabled: bool,
-    nx_bit_enabled: bool,
-    smep_enabled: bool,
-    smap_enabled: bool,
+    pub aslr_enabled: bool,
+    pub stack_canaries_enabled: bool,
+    pub nx_bit_enabled: bool,
+    pub smep_enabled: bool,
+    pub smap_enabled: bool,
 }
 
 impl Default for SecurityFeatures {
@@ -1769,6 +1968,33 @@ impl MemoryManager {
             swap_manager: Mutex::new(swap_manager),
             frame_refcounts: RwLock::new(BTreeMap::new()),
         }
+    }
+
+    /// Get the physical memory offset used for direct physical-memory mapping.
+    pub fn physical_memory_offset(&self) -> VirtAddr {
+        self.physical_memory_offset
+    }
+
+    /// Allocate a physically contiguous block from the requested memory zone.
+    pub fn allocate_contiguous_pages(
+        &self,
+        num_pages: usize,
+        zone: MemoryZone,
+    ) -> Option<PhysFrame> {
+        if num_pages == 0 {
+            return None;
+        }
+
+        let mut order = 0;
+        let mut pages = 1usize;
+        while pages < num_pages {
+            pages = pages.checked_shl(1)?;
+            order += 1;
+        }
+
+        self.frame_allocator
+            .lock()
+            .allocate_frames_in_zone(zone, order)
     }
 
     /// Map a virtual memory region to physical frames
@@ -2297,7 +2523,7 @@ impl MemoryManager {
     }
 
     /// Swap out a victim page to make room for new allocation
-    fn swap_out_victim_page(&self) -> Result<(), MemoryError> {
+    pub fn swap_out_victim_page(&self) -> Result<(), MemoryError> {
         let regions = self.regions.read();
         let mut candidate_pages = Vec::new();
 
@@ -2651,14 +2877,53 @@ impl MemoryManager {
     }
 
     /// Initialize swap space with a storage device
+    ///
+    /// Configures the swap manager to use the given storage device and
+    /// resizes the swap slot table to accommodate the requested size.
+    /// Each swap slot holds one 4 KiB page, so `size_mb` MB provides
+    /// `size_mb * 256` slots.
     pub fn init_swap_space(&self, device_id: u32, size_mb: u32) -> Result<(), &'static str> {
         let mut swap_manager = self.swap_manager.lock();
         swap_manager.set_swap_device(device_id);
 
-        // In a real implementation, this would create a swap file or partition
+        // Calculate the number of 4 KiB pages that fit in the requested
+        // swap size. Each MB = 256 pages.
+        let requested_slots = size_mb.saturating_mul(256);
+
+        // Resize the free-slot bitmap if the new size is larger.
+        if requested_slots > swap_manager.total_slots {
+            let new_bitmap_size = ((requested_slots + 63) / 64) as usize;
+            let old_bitmap_size = swap_manager.free_slots.len();
+
+            // Extend the bitmap with all-free words for the new slots.
+            if new_bitmap_size > old_bitmap_size {
+                swap_manager.free_slots.resize(new_bitmap_size, u64::MAX);
+            }
+
+            // Fix up the boundary word: if the old slot count wasn't a
+            // multiple of 64, the trailing bits in the last old word were
+            // marked as used (0). Now that we've extended, those bits
+            // should be free (1) for the new slots.
+            let old_total = swap_manager.total_slots as usize;
+            let old_word = old_total / 64;
+            let old_bit = old_total % 64;
+            if old_bit != 0 && old_word < swap_manager.free_slots.len() {
+                // Set bits from old_bit..64 to 1 (free).
+                let mask = if old_bit < 64 {
+                    !((1u64 << old_bit) - 1)
+                } else {
+                    0
+                };
+                swap_manager.free_slots[old_word] |= mask;
+            }
+
+            swap_manager.total_slots = requested_slots;
+        }
+
         crate::serial_println!(
-            "Initialized {}MB swap space on device {}",
+            "Initialized {}MB swap space ({} slots) on device {}",
             size_mb,
+            swap_manager.total_slots,
             device_id
         );
         Ok(())
@@ -2722,7 +2987,6 @@ pub enum MemoryError {
     PrivilegeViolation,
     ExecuteViolation,
     GuardPageViolation,
-    LazyAllocationNotImplemented,
     ProtectionFailed,
     InvalidOrder,
     BuddyAllocationFailed,
@@ -2744,9 +3008,6 @@ impl fmt::Display for MemoryError {
             MemoryError::PrivilegeViolation => write!(f, "Privilege violation"),
             MemoryError::ExecuteViolation => write!(f, "Execute access violation"),
             MemoryError::GuardPageViolation => write!(f, "Guard page access violation"),
-            MemoryError::LazyAllocationNotImplemented => {
-                write!(f, "Lazy allocation not implemented")
-            }
             MemoryError::ProtectionFailed => write!(f, "Failed to change memory protection"),
             MemoryError::InvalidOrder => write!(f, "Invalid buddy allocator order"),
             MemoryError::BuddyAllocationFailed => write!(f, "Buddy allocation failed"),
@@ -2905,6 +3166,15 @@ pub fn get_memory_manager() -> Option<&'static MemoryManager> {
             .as_ref()
             .map(|mm| core::mem::transmute(mm))
     }
+}
+
+/// Get the physical memory offset for direct physical-memory mapping.
+///
+/// Returns 0 if the memory manager has not been initialized yet.
+pub fn get_physical_memory_offset() -> u64 {
+    get_memory_manager()
+        .map(|mm| mm.physical_memory_offset().as_u64())
+        .unwrap_or(0)
 }
 
 /// High-level memory allocation interface
@@ -3156,11 +3426,15 @@ pub fn adjust_heap(new_size: usize) -> Result<usize, &'static str> {
     // Align to page boundaries
     let aligned_size = align_up(new_size, PAGE_SIZE);
 
-    // Get current heap size
+    // Get current heap size from the actual allocator, not the constant
     if let Some(memory_manager) = get_memory_manager() {
-        // Get current memory statistics
         let stats = memory_manager.get_memory_report();
-        let current_heap_size = KERNEL_HEAP_SIZE;
+
+        // Get the actual current heap size from the allocator
+        let current_heap_size = {
+            let allocator = crate::ALLOCATOR.lock();
+            allocator.size()
+        };
 
         // Check if we're expanding or shrinking
         if aligned_size > current_heap_size {
@@ -3171,44 +3445,50 @@ pub fn adjust_heap(new_size: usize) -> Result<usize, &'static str> {
                 return Err("Insufficient free memory for heap expansion");
             }
 
-            // In a real implementation, we would:
-            // 1. Allocate additional physical frames
-            // 2. Map them to extend the heap virtual address space
-            // 3. Update the heap allocator's boundaries
-            // 4. Update global heap size tracking
+            // Extend the linked_list_allocator. The virtual address space
+            // past the current heap top is already mapped via the physical
+            // memory offset set up by the bootloader, so we only need to
+            // tell the allocator about the new region.
+            //
+            // SAFETY: The memory past the current heap top must be valid
+            // and mapped. This is true because the bootloader maps the
+            // entire physical memory region containing the heap via the
+            // physical_memory_offset, and we checked that enough free
+            // physical memory exists.
+            unsafe {
+                crate::ALLOCATOR.lock().extend(expansion_size);
+            }
 
-            // For now, we simulate successful expansion
+            // Update the tracked heap physical size
+            let new_phys_size = crate::memory_basic::HEAP_PHYS_SIZE
+                .load(core::sync::atomic::Ordering::SeqCst)
+                + expansion_size as u64;
+            crate::memory_basic::HEAP_PHYS_SIZE
+                .store(new_phys_size, core::sync::atomic::Ordering::SeqCst);
+
             crate::serial_println!(
-                "Heap expansion requested: {} -> {} bytes",
+                "Heap expanded: {} -> {} bytes (+{})",
                 current_heap_size,
-                aligned_size
+                aligned_size,
+                expansion_size
             );
 
-            // Return the new size (in real implementation, update would happen here)
             Ok(aligned_size)
         } else if aligned_size < current_heap_size {
             // Shrinking heap - ensure it's safe to do so
-            let _shrink_size = current_heap_size - aligned_size;
+            let shrink_size = current_heap_size - aligned_size;
 
             // Check if shrinking would compromise system stability
             if stats.allocated_memory > aligned_size {
                 return Err("Cannot shrink heap below current allocation level");
             }
 
-            // In a real implementation, we would:
-            // 1. Verify no allocations exist in the region to be freed
-            // 2. Unmap the virtual address space
-            // 3. Return physical frames to the allocator
-            // 4. Update the heap allocator's boundaries
-
-            crate::serial_println!(
-                "Heap shrinking requested: {} -> {} bytes",
-                current_heap_size,
-                aligned_size
-            );
-
-            // Return the new size (in real implementation, update would happen here)
-            Ok(aligned_size)
+            // linked_list_allocator 0.9 does not provide a shrink method.
+            // We cannot safely return memory to the physical allocator
+            // without risking corruption of the free list. Log and reject
+            // the shrink request rather than silently pretending success.
+            let _ = shrink_size; // acknowledged but cannot act
+            Err("Heap shrinking not supported by current allocator")
         } else {
             // Size unchanged
             Ok(current_heap_size)
@@ -3606,7 +3886,7 @@ pub fn unmap_page(addr: usize) -> Result<(), &'static str> {
 pub fn check_memory_access(
     addr: usize,
     size: usize,
-    _write: bool,
+    write: bool,
     privilege_level: u8,
 ) -> Result<bool, &'static str> {
     // Basic validation
@@ -3625,25 +3905,34 @@ pub fn check_memory_access(
         }
     }
 
-    // TODO: Check page table entries to verify actual permissions
-    // For now, we'll do basic range checking
-
     // Check if the memory manager is initialized
     if let Some(memory_manager) = get_memory_manager() {
         let page_table_manager = memory_manager.page_table_manager.lock();
 
-        // Check if the pages are mapped
-        for offset in (0..size).step_by(4096) {
-            let check_addr = addr + offset;
+        // Check if the pages are mapped and have the required permissions
+        let mut check_addr = addr & !0xfff;
+        let last_addr = (addr + size - 1) & !0xfff;
+
+        while check_addr <= last_addr {
             let virt_addr = VirtAddr::new(check_addr as u64);
             let page: Page<Size4KiB> = Page::containing_address(virt_addr);
 
-            // Check if page is mapped
-            if page_table_manager.mapper.translate_page(page).is_err() {
+            // Check if page is mapped and retrieve its flags
+            let flags = match page_table_manager.get_flags(page) {
+                Some(f) => f,
+                None => return Ok(false),
+            };
+
+            // Verify write permission if this is a write access
+            if write && !flags.contains(PageTableFlags::WRITABLE) {
                 return Ok(false);
             }
 
-            // TODO: Check page table flags for write permissions if write == true
+            // Verify user-accessible permission for user-mode access
+            if privilege_level == 3 && !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return Ok(false);
+            }
+            check_addr += 4096;
         }
 
         Ok(true)

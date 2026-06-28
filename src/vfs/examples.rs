@@ -298,7 +298,11 @@ pub fn example_parent_traversal() -> VfsResult<()> {
     vfs_close(fd)?;
 
     // Resolve through parent and verify the same file is reachable
-    let fd = vfs_open("/tmp/parent/child/../child/marker.txt", OpenFlags::RDONLY, 0)?;
+    let fd = vfs_open(
+        "/tmp/parent/child/../child/marker.txt",
+        OpenFlags::RDONLY,
+        0,
+    )?;
     let mut buffer = [0u8; 16];
     let nbytes = vfs_read(fd, &mut buffer)?;
     vfs_close(fd)?;

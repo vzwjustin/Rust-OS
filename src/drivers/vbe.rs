@@ -607,15 +607,50 @@ impl VbeDriver {
     /// Simulate BIOS interrupt call
     fn bios_call(
         &self,
-        _function: VbeFunction,
-        _ebx: u32,
+        function: VbeFunction,
+        ebx: u32,
         _ecx: u32,
         _edx: u32,
-        _edi: u32,
+        edi: u32,
     ) -> VbeStatus {
-        // In a real implementation, this would perform an actual BIOS interrupt
-        // For simulation purposes, we'll always return success
-        VbeStatus::Success
+        // BIOS interrupts (int 0x10) are not callable from 64-bit long mode.
+        // A real implementation would need to:
+        //   1. Save CPU state and switch to real mode (or 16-bit protected
+        //      mode with a compatible IDT/GDT)
+        //   2. Set up a real-mode stack and the VBE buffer in low memory
+        //   3. Execute int 0x10 with AX=0x4F00/0x4F01/0x4F02 etc.
+        //   4. Switch back to long mode and restore state
+        //
+        // This is extremely complex and fragile in a 64-bit kernel. In
+        // practice, VBE information is collected by the bootloader before
+        // it enters long mode and passed to the kernel via boot info
+        // structures. The kernel should use that pre-collected data
+        // instead of making BIOS calls itself.
+        //
+        // For now, we simulate success for GetControllerInfo and SetMode
+        // since the caller has already filled in the info block with
+        // simulated data. For other functions, we return unsupported.
+        match function {
+            VbeFunction::GetControllerInfo => {
+                // The caller (get_controller_info) has already filled the
+                // VbeInfoBlock with simulated data. Return success.
+                VbeStatus::Success
+            }
+            VbeFunction::GetModeInfo => {
+                // Mode info is filled by create_mode_info in the caller.
+                VbeStatus::Success
+            }
+            VbeFunction::SetMode => {
+                // Mode setting would require writing to VGA registers
+                // and/or the framebuffer aperture. The actual mode
+                // switch is done by the bootloader. Accept the mode
+                // number from EBX.
+                let _mode_number = ebx & 0x3FFF;
+                let _use_linear = (ebx & 0x4000) != 0;
+                VbeStatus::Success
+            }
+            _ => VbeStatus::NotSupported,
+        }
     }
 }
 

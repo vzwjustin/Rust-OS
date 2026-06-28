@@ -546,7 +546,16 @@ pub fn get_i915_info() -> super::OpensourceDriver {
         driver_type: super::DriverType::I915,
         name: "Intel i915".to_string(),
         version: "1.6.0".to_string(),
-        supported_devices: vec![], // Would be populated from main database
+        supported_devices: vec![
+            // Intel integrated GPUs (vendor 0x8086)
+            (0x8086, 0x0166), // IvyBridge GT2
+            (0x8086, 0x0416), // Haswell GT2
+            (0x8086, 0x1616), // Broadwell GT2 (HD Graphics 5500)
+            (0x8086, 0x1916), // Skylake GT2 (HD Graphics 520)
+            (0x8086, 0x5916), // KabyLake GT2 (HD Graphics 620)
+            (0x8086, 0x5A85), // Apollolake (HD Graphics 500)
+            (0x8086, 0x3E9B), // CoffeeLake GT2 (UHD Graphics 630)
+        ],
         capabilities: super::DriverCapabilities::MODERN,
         mesa_driver: Some("iris".to_string()),
         kernel_module: "i915".to_string(),

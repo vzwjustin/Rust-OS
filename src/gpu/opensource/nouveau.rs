@@ -395,7 +395,20 @@ pub fn get_nouveau_info() -> super::OpensourceDriver {
         driver_type: super::DriverType::Nouveau,
         name: "Nouveau".to_string(),
         version: "1.0.17".to_string(),
-        supported_devices: vec![], // Would be populated from main database
+        supported_devices: vec![
+            // NVIDIA GPUs (vendor 0x10DE)
+            (0x10DE, 0x0640), // G96C [GeForce 9500 GT]
+            (0x10DE, 0x06C4), // G84 [GeForce 8400 GS]
+            (0x10DE, 0x0E22), // GF104 [GeForce GTX 460]
+            (0x10DE, 0x1180), // GK104 [GeForce GTX 680]
+            (0x10DE, 0x1287), // GK208B [GeForce GT 730]
+            (0x10DE, 0x13C2), // GM204 [GeForce GTX 970]
+            (0x10DE, 0x1B81), // GP104 [GeForce GTX 1070]
+            (0x10DE, 0x1E04), // TU102 [GeForce RTX 2080 Ti]
+            (0x10DE, 0x2204), // GA102 [GeForce RTX 3090]
+            (0x10DE, 0x2484), // GA104 [GeForce RTX 3070]
+            (0x10DE, 0x2782), // AD102 [GeForce RTX 4090]
+        ],
         capabilities: super::DriverCapabilities::MODERN,
         mesa_driver: Some("nouveau".to_string()),
         kernel_module: "nouveau".to_string(),

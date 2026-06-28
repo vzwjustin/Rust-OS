@@ -473,7 +473,13 @@ pub fn get_amdgpu_info() -> super::OpensourceDriver {
         driver_type: super::DriverType::AMDGPU,
         name: "AMDGPU".to_string(),
         version: "23.20".to_string(),
-        supported_devices: vec![], // Would be populated from main database
+        supported_devices: vec![
+            // AMD GPUs (vendor 0x1002)
+            (0x1002, 0x67DF), // Ellesmere (Radeon RX 470/480/570/580/590)
+            (0x1002, 0x6FDF), // Polaris 20 XL (Radeon RX 580 2048SP)
+            (0x1002, 0x731F), // Navi 10 (Radeon RX 5600/5700 XT)
+            (0x1002, 0x73BF), // Navi 21 (Radeon RX 6800/6900 XT)
+        ],
         capabilities: super::DriverCapabilities::ADVANCED,
         mesa_driver: Some("radeonsi".to_string()),
         kernel_module: "amdgpu".to_string(),
