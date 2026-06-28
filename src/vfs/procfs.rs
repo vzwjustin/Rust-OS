@@ -55,5 +55,109 @@ pub fn install_proc(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     let self_dir = proc.lookup("self")?;
     write_file(&self_dir, "exe", "/bin/init")?;
 
+    install_rustos(&proc)?;
+
+    Ok(())
+}
+
+fn gnome_status_content() -> String {
+    let readiness = crate::gnome::probe();
+    let mut out = String::new();
+
+    out.push_str("component=gnome\n");
+    out.push_str(&format!(
+        "overlay={}\n",
+        if crate::gnome_overlay::is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "dbus={}\n",
+        if crate::dbus::is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "wayland={}\n",
+        if crate::wayland::is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "mutter={}\n",
+        if crate::mutter::is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "foundation_ready={}\n",
+        if readiness.foundation_ready() {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+    out.push_str(&format!(
+        "shell_ready={}\n",
+        if readiness.gnome_shell_ready() {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+
+    if crate::dbus::is_ready() {
+        let bus = crate::dbus::bus();
+        out.push_str(&format!(
+            "name_has_owner_org_freedesktop_DBus={}\n",
+            if bus.name_has_owner(crate::dbus::BUS_NAME) {
+                "yes"
+            } else {
+                "no"
+            }
+        ));
+        out.push_str(&format!(
+            "name_has_owner_org_gnome_Shell={}\n",
+            if bus.name_has_owner(crate::dbus::GNOME_SHELL_NAME) {
+                "yes"
+            } else {
+                "no"
+            }
+        ));
+        out.push_str(&format!(
+            "name_has_owner_org_rustos_GnomeReadiness={}\n",
+            if bus.name_has_owner(crate::dbus::GNOME_READINESS_NAME) {
+                "yes"
+            } else {
+                "no"
+            }
+        ));
+    }
+
+    out
+}
+
+fn install_rustos(proc: &Arc<dyn InodeOps>) -> VfsResult<()> {
+    proc.create("rustos", InodeType::Directory, 0o555)?;
+    let rustos = proc.lookup("rustos")?;
+    write_file(&rustos, "gnome", &gnome_status_content())?;
+    Ok(())
+}
+
+/// Refresh `/proc/rustos/gnome` after subsystem init.
+pub fn update_gnome_status() -> VfsResult<()> {
+    let root = crate::vfs::get_vfs().lookup("/")?;
+    let proc = root.lookup("proc")?;
+    let rustos = proc.lookup("rustos")?;
+    let file = rustos.lookup("gnome")?;
+    file.write_at(0, gnome_status_content().as_bytes())?;
     Ok(())
 }

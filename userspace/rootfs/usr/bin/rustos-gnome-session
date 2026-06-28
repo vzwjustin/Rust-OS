@@ -1,16 +1,15 @@
 #!/bin/sh
 # RustOS GNOME session bootstrap.
 #
-# This launcher is intentionally diagnostic-first. It prepares the runtime
-# directories GNOME expects, probes the OS facilities that must exist before
-# gnome-shell can run, and reports the first blockers instead of looping on a
-# doomed shell launch.
+# Prepares runtime directories, probes kernel-provided D-Bus/Wayland services,
+# and reports blockers before attempting gnome-shell launch.
 
 set -u
 
 STATUS_FILE=${RUSTOS_GNOME_STATUS_FILE:-/run/rustos-gnome-session.status}
 RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/0}
 SESSION_BUS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$RUNTIME_DIR/bus}
+GNOME_PROC=${RUSTOS_GNOME_PROC:-/proc/rustos/gnome}
 
 export XDG_RUNTIME_DIR=$RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=$SESSION_BUS
@@ -50,35 +49,12 @@ require_path() {
     return 1
 }
 
-
-start_wayland_compositor() {
-    wayland_socket="$RUNTIME_DIR/$WAYLAND_DISPLAY"
-
-    if [ -S "$wayland_socket" ] || [ -e "$wayland_socket" ]; then
-        status "ready: Wayland display socket ($wayland_socket)"
+read_proc_key() {
+    if [ ! -r "$GNOME_PROC" ]; then
+        echo unknown
         return 0
     fi
-
-    if have_command rustos-mutter; then
-        rustos-mutter --probe >/dev/null 2>&1 && {
-            status "ready: kernel Wayland compositor ($wayland_socket)"
-            return 0
-        }
-    fi
-
-    if have_command mutter; then
-        mutter --wayland --wayland-display="$WAYLAND_DISPLAY" >/dev/null 2>&1 &
-        sleep 1
-        if [ -S "$wayland_socket" ] || [ -e "$wayland_socket" ]; then
-            status "ready: Mutter started ($wayland_socket)"
-            return 0
-        fi
-        status "blocked: mutter failed to create $wayland_socket"
-        return 1
-    fi
-
-    status "blocked: Wayland compositor missing (mutter or rustos-mutter)"
-    return 1
+    grep -E "^$1=" "$GNOME_PROC" 2>/dev/null | head -n1 | cut -d= -f2-
 }
 
 start_session_bus() {
@@ -94,27 +70,52 @@ start_session_bus() {
             ;;
     esac
 
-    if [ -S "$bus_path" ]; then
+    if [ -S "$bus_path" ] || [ -e "$bus_path" ]; then
         status "ready: D-Bus session bus ($bus_path)"
         return 0
     fi
 
-    if [ -e "$bus_path" ]; then
-        status "ready: D-Bus session bus path present ($bus_path)"
-        return 0
-    fi
+    status "blocked: D-Bus session bus missing ($bus_path)"
+    return 1
+}
 
-    if have_command dbus-daemon; then
-        dbus-daemon --session --fork --address="$DBUS_SESSION_BUS_ADDRESS" >/dev/null 2>&1 || true
-        if [ -S "$bus_path" ]; then
-            status "ready: D-Bus session bus started ($bus_path)"
+start_wayland_compositor() {
+    if have_command rustos-wayland-probe; then
+        if rustos-wayland-probe; then
+            status "ready: Wayland compositor probe"
             return 0
         fi
-        status "blocked: dbus-daemon exists but did not create $bus_path"
+        status "blocked: Wayland compositor probe failed"
         return 1
     fi
 
-    status "blocked: dbus-daemon missing"
+    wayland_socket="$RUNTIME_DIR/$WAYLAND_DISPLAY"
+    if [ -S "$wayland_socket" ] || [ -e "$wayland_socket" ]; then
+        status "ready: Wayland display socket ($wayland_socket)"
+        return 0
+    fi
+
+    status "blocked: Wayland compositor missing"
+    return 1
+}
+
+probe_dbus_names() {
+    if have_command rustos-dbus-probe; then
+        if rustos-dbus-probe; then
+            status "ready: D-Bus GNOME session names"
+            return 0
+        fi
+        status "blocked: D-Bus GNOME session names probe failed"
+        return 1
+    fi
+
+    dbus_state=$(read_proc_key dbus)
+    if [ "$dbus_state" = ready ]; then
+        status "ready: D-Bus session bus (proc)"
+        return 0
+    fi
+
+    status "blocked: D-Bus session bus ($dbus_state)"
     return 1
 }
 
@@ -132,8 +133,15 @@ probe_foundation() {
         ok=1
     fi
 
-    start_session_bus || ok=1
+    if [ -r "$GNOME_PROC" ]; then
+        status "ready: kernel GNOME status ($GNOME_PROC)"
+    else
+        status "blocked: kernel GNOME status missing ($GNOME_PROC)"
+        ok=1
+    fi
 
+    start_session_bus || ok=1
+    probe_dbus_names || ok=1
     start_wayland_compositor || ok=1
 
     if [ -e /dev/dri/card0 ] || [ -e /dev/dri/renderD128 ]; then
@@ -165,6 +173,14 @@ probe_foundation() {
         status "ready: mutter compositor launcher"
     else
         status "blocked: mutter compositor launcher missing"
+        ok=1
+    fi
+
+    shell_ready=$(read_proc_key shell_ready)
+    if [ "$shell_ready" = yes ]; then
+        status "ready: kernel reports GNOME shell prerequisites"
+    else
+        status "blocked: kernel reports GNOME shell prerequisites incomplete ($shell_ready)"
         ok=1
     fi
 

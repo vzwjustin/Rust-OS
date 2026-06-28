@@ -598,6 +598,7 @@ pub struct ClientConnection {
     pub seats: BTreeMap<ObjectId, SeatRole>,
     pub pointers: BTreeMap<ObjectId, ObjectId>,
     pub keyboards: BTreeMap<ObjectId, ObjectId>,
+    pub keyboard_keymap_pipes: BTreeMap<ObjectId, u32>,
     pub next_object_id: AtomicU32,
     pub display_serial: AtomicU32,
     pub input_serial: AtomicU32,
@@ -624,6 +625,7 @@ impl ClientConnection {
             seats: BTreeMap::new(),
             pointers: BTreeMap::new(),
             keyboards: BTreeMap::new(),
+            keyboard_keymap_pipes: BTreeMap::new(),
             next_object_id: AtomicU32::new(2), // Start after wl_display
             display_serial: AtomicU32::new(1),
             input_serial: AtomicU32::new(1),

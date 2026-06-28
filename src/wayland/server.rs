@@ -166,7 +166,7 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
     }
 }
 
-fn dispatch_message(_pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
+fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
     let mut comp = compositor_mut();
 
     if message.header.object_id == DISPLAY_OBJECT_ID {
@@ -233,7 +233,7 @@ fn dispatch_message(_pipe_id: u32, client_id: u32, message: &Message) -> Option<
         }
         interfaces::WL_SEAT => {
             let client = comp.get_client_mut(client_id)?;
-            handle_seat_request(client, message)
+            handle_seat_request(pipe_id, client, message)
         }
         _ => None,
     }
@@ -577,7 +577,11 @@ fn handle_buffer_destroy(client: &mut ClientConnection, buffer_id: ObjectId) {
     client.destroy_object(buffer_id);
 }
 
-fn handle_seat_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+fn handle_seat_request(
+    pipe_id: u32,
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
     let seat_id = message.header.object_id;
     match message.header.opcode {
         0 => {
@@ -585,19 +589,32 @@ fn handle_seat_request(client: &mut ClientConnection, message: &Message) -> Opti
                 Some(Arg::NewId(id)) => *id,
                 _ => return None,
             };
-            Some(super::input::seat_get_pointer(client, seat_id, pointer_id))
+            let events = super::input::seat_get_pointer(client, seat_id, pointer_id);
+            if events.is_empty() {
+                None
+            } else {
+                Some(events)
+            }
         }
         1 => {
             let keyboard_id = match message.args.first() {
                 Some(Arg::NewId(id)) => *id,
                 _ => return None,
             };
-            Some(super::input::seat_get_keyboard(client, seat_id, keyboard_id))
+            let events = super::input::seat_get_keyboard(client, seat_id, keyboard_id)?;
+            if let Some(keymap_pipe) =
+                super::input::take_keyboard_keymap_pipe(client, keyboard_id)
+            {
+                crate::linux_compat::socket_ops::queue_wayland_pipe_out_of_band_fds(
+                    pipe_id,
+                    &[keymap_pipe],
+                );
+            }
+            Some(events)
         }
         2 | 3 => None,
         _ => None,
     }
-    .filter(|events| !events.is_empty())
 }
 
 fn arg_i32(args: &[Arg], index: usize) -> i32 {

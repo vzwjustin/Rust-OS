@@ -70,7 +70,7 @@ fn root_inode() -> alloc::sync::Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root")
 }
 
-fn register_special(kind: FdKind, flags: u32) -> LinuxResult<i32> {
+pub fn register_special(kind: FdKind, flags: u32) -> LinuxResult<i32> {
     let inode = root_inode();
     vfs::vfs_open_special(inode, flags, kind).map_err(|_| LinuxError::EMFILE)
 }

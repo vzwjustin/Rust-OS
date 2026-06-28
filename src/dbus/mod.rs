@@ -1029,6 +1029,8 @@ pub struct Connection {
     pub unique_name: String,
     pub registered_names: Vec<String>,
     pub serial_counter: AtomicU32,
+    /// IPC pipe carrying wire traffic for this connection.
+    pub pipe_id: Option<u32>,
 }
 
 impl Connection {
@@ -1038,6 +1040,7 @@ impl Connection {
             unique_name: format!(":{}", id),
             registered_names: Vec::new(),
             serial_counter: AtomicU32::new(1),
+            pipe_id: None,
         }
     }
 
@@ -1117,6 +1120,7 @@ impl MessageBus {
             unique_name: BUS_NAME.to_string(),
             registered_names: vec![BUS_NAME.to_string()],
             serial_counter: AtomicU32::new(1),
+            pipe_id: None,
         };
         self.connections.insert(0, bus_conn);
         self.name_registry.insert(BUS_NAME.to_string(), 0);
@@ -1234,6 +1238,31 @@ impl MessageBus {
         self.initialized
     }
 
+    /// Get a connection by unique name.
+    pub fn connection_by_unique_name(&self, name: &str) -> Option<&Connection> {
+        if !name.starts_with(':') {
+            return None;
+        }
+        let id = name[1..].parse().ok()?;
+        self.connections.get(&id)
+    }
+
+    /// Attach the session socket pipe that carries traffic for a connection.
+    pub fn set_connection_pipe(&mut self, conn_id: ConnectionId, pipe_id: u32) {
+        if let Some(conn) = self.connections.get_mut(&conn_id) {
+            conn.pipe_id = Some(pipe_id);
+        }
+    }
+
+    /// Return all live session pipes except an optional excluded connection.
+    pub fn session_pipes(&self, exclude_conn: Option<ConnectionId>) -> Vec<u32> {
+        self.connections
+            .values()
+            .filter(|conn| conn.pipe_id.is_some() && Some(conn.id) != exclude_conn)
+            .filter_map(|conn| conn.pipe_id)
+            .collect()
+    }
+
     /// List all registered well-known names.
     pub fn list_names(&self) -> Vec<String> {
         self.name_registry.keys().cloned().collect()
@@ -1269,12 +1298,85 @@ impl MessageBus {
 
 // ── Global Bus Instance ─────────────────────────────────────────────────
 
+fn connection_id_from_sender(sender: &str) -> ConnectionId {
+    if sender.starts_with(':') {
+        return sender[1..].parse().unwrap_or(0);
+    }
+    BUS.read()
+        .name_registry
+        .get(sender)
+        .copied()
+        .unwrap_or(0)
+}
+
+fn parse_string_arg(body: &[Value]) -> Option<&str> {
+    match body.first()? {
+        Value::String(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 static BUS: RwLock<MessageBus> = RwLock::new(MessageBus::new());
+
+/// Pipes connected to the session bus before the client completes Hello.
+static UNCLAIMED_SESSION_PIPES: spin::Mutex<Vec<u32>> = spin::Mutex::new(Vec::new());
+
+/// Register a newly connected session-bus socket pipe.
+pub fn register_session_pipe(pipe_id: u32) {
+    UNCLAIMED_SESSION_PIPES.lock().push(pipe_id);
+}
+
+fn claim_session_pipe(unique_name: &str) -> Option<u32> {
+    let conn_id = connection_id_from_sender(unique_name);
+    if conn_id == 0 {
+        return None;
+    }
+
+    let mut pending = UNCLAIMED_SESSION_PIPES.lock();
+    let pipe_id = pending.pop()?;
+    BUS.write().set_connection_pipe(conn_id, pipe_id);
+    Some(pipe_id)
+}
+
+fn deliver_signal(msg: &Message) {
+    let bytes = marshal_message(msg);
+    let ipc = crate::process::ipc::get_ipc_manager();
+    for pipe_id in BUS.read().session_pipes(None) {
+        let _ = ipc.pipe_write(pipe_id, &bytes);
+    }
+}
+
+fn deliver_signal_to_connection(conn_id: ConnectionId, msg: &Message) {
+    let bytes = marshal_message(msg);
+    let ipc = crate::process::ipc::get_ipc_manager();
+    if let Some(pipe_id) = BUS
+        .read()
+        .get_connection(conn_id)
+        .and_then(|conn| conn.pipe_id)
+    {
+        let _ = ipc.pipe_write(pipe_id, &bytes);
+    }
+}
+
+fn register_kernel_session_services(bus: &mut MessageBus) -> Result<(), &'static str> {
+    let shell_name = bus.connect()?;
+    let shell_id = connection_id_from_sender(&shell_name);
+    bus.request_name(shell_id, GNOME_SHELL_NAME)?;
+
+    let ready_name = bus.connect()?;
+    let ready_id = connection_id_from_sender(&ready_name);
+    bus.request_name(ready_id, GNOME_READINESS_NAME)?;
+    Ok(())
+}
 
 /// Initialize the D-Bus message bus.
 pub fn init() -> Result<(), &'static str> {
     let mut bus = BUS.write();
     bus.init();
+    register_kernel_session_services(&mut bus)?;
+    unsafe {
+        crate::early_serial_write_str("RustOS: D-Bus GNOME session names registered\r\n");
+    }
     unsafe {
         crate::early_serial_write_str("RustOS: D-Bus message bus initialized\r\n");
     }
@@ -1312,13 +1414,17 @@ pub mod bus_methods {
         })
     }
 
-    /// Emit a NameOwnerChanged signal for a name acquisition.
-    pub fn name_acquired_signal(serial: u32, name: &str, owner: &str) -> Message {
+    /// Emit a NameAcquired signal for a connection.
+    pub fn name_acquired_signal(serial: u32, name: &str) -> Message {
         let mut msg = Message::new_signal(serial, BUS_PATH, BUS_NAME, "NameAcquired");
-        msg.body = vec![
-            Value::String(name.to_string()),
-            Value::String(owner.to_string()),
-        ];
+        msg.body = vec![Value::String(name.to_string())];
+        msg
+    }
+
+    /// Emit a NameLost signal for a connection.
+    pub fn name_lost_signal(serial: u32, name: &str) -> Message {
+        let mut msg = Message::new_signal(serial, BUS_PATH, BUS_NAME, "NameLost");
+        msg.body = vec![Value::String(name.to_string())];
         msg
     }
 
@@ -1762,29 +1868,11 @@ fn dispatch_properties(
 
 // ── Wire Request Dispatch ───────────────────────────────────────────────
 
-fn connection_id_from_sender(sender: &str) -> ConnectionId {
-    if sender.starts_with(':') {
-        return sender[1..].parse().unwrap_or(0);
-    }
-    BUS.read()
-        .name_registry
-        .get(sender)
-        .copied()
-        .unwrap_or(0)
-}
-
-fn parse_string_arg(body: &[Value]) -> Option<&str> {
-    match body.first()? {
-        Value::String(name) => Some(name.as_str()),
-        _ => None,
-    }
-}
-
 /// Process a D-Bus wire-format request and return a serialized reply.
 ///
 /// Used by the GNOME overlay's pre-bound session bus socket. Returns `None`
 /// when the buffer does not contain a complete or recognized message.
-pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
+pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<Vec<u8>> {
     let mut unmarshaler = Unmarshaler::new(data).ok()?;
     let header = unmarshaler.parse_header().ok()?;
 
@@ -1817,6 +1905,13 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
         (BUS_NAME, "Hello") => {
             let mut bus = BUS.write();
             let name = bus.connect().ok()?;
+            if let Some(pipe_id) = source_pipe_id {
+                let conn_id = connection_id_from_sender(&name);
+                bus.set_connection_pipe(conn_id, pipe_id);
+                UNCLAIMED_SESSION_PIPES.lock().retain(|pending| *pending != pipe_id);
+            } else {
+                let _ = claim_session_pipe(&name);
+            }
             let mut reply = Message::new_method_return(
                 bus.next_bus_serial(),
                 serial,
@@ -1855,10 +1950,32 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
             let requested_name = parse_string_arg(&body)?;
             let conn_id = connection_id_from_sender(sender);
 
-            let status = match BUS.write().request_name(conn_id, requested_name) {
-                Ok(()) => 1u32, // DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER
-                Err(_) => 3u32, // DBUS_REQUEST_NAME_REPLY_EXISTS
+            let (status, owner_name) = {
+                let mut bus = BUS.write();
+                match bus.request_name(conn_id, requested_name) {
+                    Ok(()) => (
+                        1u32,
+                        bus.get_connection(conn_id)
+                            .map(|conn| conn.unique_name.clone())
+                            .unwrap_or_else(|| sender.to_string()),
+                    ),
+                    Err(_) => (3u32, String::new()),
+                }
             };
+
+            if status == 1 {
+                let serial_base = BUS.read().next_bus_serial();
+                deliver_signal(&bus_methods::name_owner_changed_signal(
+                    serial_base,
+                    requested_name,
+                    "",
+                    &owner_name,
+                ));
+                deliver_signal_to_connection(
+                    conn_id,
+                    &bus_methods::name_acquired_signal(serial_base + 1, requested_name),
+                );
+            }
 
             let mut reply = Message::new_method_return(
                 BUS.read().next_bus_serial(),
@@ -1882,15 +1999,33 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
             let requested_name = parse_string_arg(&body)?;
             let conn_id = connection_id_from_sender(sender);
 
-            let status = {
+            let (status, old_owner) = {
                 let mut bus = BUS.write();
-                match bus.release_name(conn_id, requested_name) {
+                let old_owner = bus
+                    .get_name_owner(requested_name)
+                    .unwrap_or_else(String::new);
+                let status = match bus.release_name(conn_id, requested_name) {
                     Ok(()) => 1u32, // DBUS_RELEASE_NAME_REPLY_RELEASED
                     Err("Name not owned by this connection") => 3u32, // NOT_OWNER
                     Err("Name not found") => 2u32,                    // NON_EXISTENT
                     Err(_) => 2u32,
-                }
+                };
+                (status, old_owner)
             };
+
+            if status == 1 {
+                let serial_base = BUS.read().next_bus_serial();
+                deliver_signal(&bus_methods::name_owner_changed_signal(
+                    serial_base,
+                    requested_name,
+                    &old_owner,
+                    "",
+                ));
+                deliver_signal_to_connection(
+                    conn_id,
+                    &bus_methods::name_lost_signal(serial_base + 1, requested_name),
+                );
+            }
 
             let mut reply = Message::new_method_return(
                 BUS.read().next_bus_serial(),
@@ -2056,7 +2191,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
         "Hello",
     );
     let hello_bytes = marshal_message(&hello);
-    let reply = process_wire_request(&hello_bytes).ok_or("Hello dispatch produced no reply")?;
+    let reply = process_wire_request(&hello_bytes, None).ok_or("Hello dispatch produced no reply")?;
     if reply.is_empty() {
         return Err("Hello reply was empty");
     }
@@ -2082,7 +2217,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
     );
     get_all_msg.body = vec![Value::String(BUS_NAME.to_string())];
     let get_all_bytes = marshal_message(&get_all_msg);
-    let get_all_reply = process_wire_request(&get_all_bytes)
+    let get_all_reply = process_wire_request(&get_all_bytes, None)
         .ok_or("Properties.GetAll dispatch produced no reply")?;
     if get_all_reply.is_empty() {
         return Err("Properties.GetAll reply was empty");
@@ -2096,7 +2231,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
         "Introspect",
     );
     let introspect_bytes = marshal_message(&introspect);
-    let introspect_reply = process_wire_request(&introspect_bytes)
+    let introspect_reply = process_wire_request(&introspect_bytes, None)
         .ok_or("Introspect dispatch produced no reply")?;
     if introspect_reply.is_empty() {
         return Err("Introspect reply was empty");
@@ -2115,7 +2250,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
         Value::Signature("s".to_string()),
     );
     name_has_owner_msg.body = vec![Value::String(BUS_NAME.to_string())];
-    let name_has_owner_reply = process_wire_request(&marshal_message(&name_has_owner_msg))
+    let name_has_owner_reply = process_wire_request(&marshal_message(&name_has_owner_msg), None)
         .ok_or("NameHasOwner dispatch produced no reply")?;
     if name_has_owner_reply.is_empty() {
         return Err("NameHasOwner reply was empty");

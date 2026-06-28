@@ -62,10 +62,20 @@ echo "To install packages: apk add <package>"
 echo "To get a GUI: apk add xorg-server xf86-video-fbdev jwm"
 echo ""
 
-# Start interactive shell
+# Start interactive shell after GNOME stack probes
 if [ -x /usr/bin/rustos-gnome-session ]; then
     echo "Running RustOS GNOME userspace probe..."
     /usr/bin/rustos-gnome-session --probe || true
+fi
+
+if [ -x /usr/bin/rustos-dbus-probe ]; then
+    echo "Running RustOS D-Bus probe..."
+    /usr/bin/rustos-dbus-probe || true
+fi
+
+if [ -x /usr/bin/rustos-wayland-probe ]; then
+    echo "Running RustOS Wayland probe..."
+    /usr/bin/rustos-wayland-probe || true
 fi
 
 echo "Starting shell..."

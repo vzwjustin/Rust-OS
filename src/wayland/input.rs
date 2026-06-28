@@ -16,6 +16,41 @@ const SEAT_CAP_TOUCH: u32 = 4;
 /// wl_keyboard.keymap_format XKB_V1
 const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 
+/// Minimal US-layout keymap for Mutter/gnome-shell keyboard setup.
+const MINIMAL_XKB_KEYMAP: &[u8] = b"xkb_keymap {
+  xkb_keycodes \"minimum\" {
+    <ESC> = 9;
+    <AE01> = 10;
+    <AE02> = 11;
+    <AE03> = 12;
+    <SPCE> = 65;
+  };
+  xkb_types \"minimum\" {
+    type \"ALPHANUMERIC\" {
+      modifiers= none;
+      map[none]= Level1;
+      level_name[Level1]= \"Any\";
+    };
+  };
+  xkb_compatibility \"minimum\" { };
+  xkb_symbols \"minimum\" {
+    key <ESC> { [ Escape ] };
+    key <AE01> { [ 1 ] };
+    key <AE02> { [ 2 ] };
+    key <AE03> { [ 3 ] };
+    key <SPCE> { [ space ] };
+  };
+};
+";
+
+fn create_keymap_pipe() -> Result<u32, &'static str> {
+    let ipc = crate::process::ipc::get_ipc_manager();
+    let (pipe_id, _) = ipc.create_pipe().map_err(|_| "keymap pipe allocation failed")?;
+    ipc.pipe_write(pipe_id, MINIMAL_XKB_KEYMAP)
+        .map_err(|_| "keymap pipe write failed")?;
+    Ok(pipe_id)
+}
+
 /// Events emitted when a client binds `wl_seat`.
 pub fn seat_bind_events(seat_id: ObjectId) -> Vec<u8> {
     let caps = SEAT_CAP_POINTER | SEAT_CAP_KEYBOARD | SEAT_CAP_TOUCH;
@@ -67,7 +102,7 @@ pub fn seat_get_keyboard(
     client: &mut ClientConnection,
     seat_id: ObjectId,
     keyboard_id: ObjectId,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     client.objects.insert(
         keyboard_id,
         super::ProtocolObject {
@@ -81,13 +116,23 @@ pub fn seat_get_keyboard(
         seat.keyboard_id = Some(keyboard_id);
     }
 
+    let keymap_pipe = create_keymap_pipe().ok()?;
+    client
+        .keyboard_keymap_pipes
+        .insert(keyboard_id, keymap_pipe);
+    let keymap_size = MINIMAL_XKB_KEYMAP.len() as u32;
+
     let serial = client.next_input_serial();
     let mut out = Vec::new();
     out.extend_from_slice(
         &Message::new(
             keyboard_id,
             0,
-            vec![Arg::UInt(KEYMAP_FORMAT_XKB_V1), Arg::Fd(0), Arg::UInt(0)],
+            vec![
+                Arg::UInt(KEYMAP_FORMAT_XKB_V1),
+                Arg::Fd(0),
+                Arg::UInt(keymap_size),
+            ],
         )
         .encode(),
     );
@@ -99,7 +144,12 @@ pub fn seat_get_keyboard(
         )
         .encode(),
     );
-    out
+    Some(out)
+}
+
+/// Return the keymap pipe queued for a keyboard object, if any.
+pub fn take_keyboard_keymap_pipe(client: &mut ClientConnection, keyboard_id: ObjectId) -> Option<u32> {
+    client.keyboard_keymap_pipes.remove(&keyboard_id)
 }
 
 /// Pointer/keyboard follow-up events after a surface commit.

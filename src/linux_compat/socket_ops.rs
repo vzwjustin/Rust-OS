@@ -48,6 +48,7 @@ struct UnixSocketEnd {
     is_listener: bool,
     path: Option<String>,
     role: UnixSocketRole,
+    pending_out_of_band_fds: Arc<Mutex<Vec<u32>>>,
 }
 
 /// Listener state for a bound Unix domain socket path.
@@ -132,6 +133,8 @@ fn allocate_connection_pipe() -> Result<u32, LinuxError> {
 fn register_connector(sockfd: Fd, pipe_id: u32, path: &str, role: UnixSocketRole) {
     if role == UnixSocketRole::WaylandDisplay {
         let _ = crate::wayland::server::attach_connection(pipe_id);
+    } else if role == UnixSocketRole::DbusSession {
+        crate::dbus::register_session_pipe(pipe_id);
     }
 
     UNIX_SOCKET_FDS.write().insert(
@@ -141,12 +144,90 @@ fn register_connector(sockfd: Fd, pipe_id: u32, path: &str, role: UnixSocketRole
             is_listener: false,
             path: Some(String::from(path)),
             role,
+            pending_out_of_band_fds: Arc::new(Mutex::new(Vec::new())),
         },
     );
 }
 
+fn queue_out_of_band_fds(sockfd: Fd, fds: &[u32]) {
+    if fds.is_empty() {
+        return;
+    }
+    if let Some(end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
+        end.pending_out_of_band_fds.lock().extend_from_slice(fds);
+    }
+}
+
+/// Queue file descriptors to deliver on the next recvmsg for a Wayland socket fd.
+pub fn queue_wayland_out_of_band_fds(sockfd: Fd, fds: &[u32]) {
+    queue_out_of_band_fds(sockfd, fds);
+}
+
+/// Queue out-of-band FDs for every userspace fd bound to a Wayland pipe.
+pub fn queue_wayland_pipe_out_of_band_fds(pipe_id: u32, fds: &[u32]) {
+    if fds.is_empty() {
+        return;
+    }
+    for (sockfd, end) in UNIX_SOCKET_FDS.read().iter() {
+        if end.pipe_id == pipe_id && end.role == UnixSocketRole::WaylandDisplay {
+            queue_out_of_band_fds(*sockfd, fds);
+        }
+    }
+}
+
+fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
+    let end = match UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
+        Some(end) => end,
+        None => return Ok(()),
+    };
+
+    let mut pending = end.pending_out_of_band_fds.lock();
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    // msghdr layout: name(8), namelen(4), pad(4), iov(8), iovlen(8), control(8), controllen(8), flags(4)
+    let mut header = [0u8; 48];
+    UserSpaceMemory::copy_from_user(msg as u64, &mut header).map_err(|_| LinuxError::EFAULT)?;
+    let msg_control = usize::from_ne_bytes(header[32..40].try_into().unwrap()) as *mut u8;
+    let msg_controllen = usize::from_ne_bytes(header[40..48].try_into().unwrap());
+    if msg_control.is_null() || msg_controllen == 0 {
+        return Ok(());
+    }
+
+    let mut delivered = Vec::new();
+    for pipe_id in pending.drain(..) {
+        let fd = super::special_fd::register_special(
+            crate::vfs::FdKind::PipeRead(pipe_id),
+            crate::vfs::OpenFlags::RDONLY,
+        )?;
+        delivered.push(fd);
+    }
+
+    // SCM_RIGHTS: cmsghdr { len, level=SOL_SOCKET(1), type=SCM_RIGHTS(1) } + aligned fd array
+    let payload_len = delivered.len() * core::mem::size_of::<i32>();
+    let cmsg_space = 16 + payload_len; // CMSG_SPACE approximation on Linux/x86_64
+    if msg_controllen < cmsg_space {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let mut control = vec![0u8; cmsg_space];
+    let cmsg_len = 12 + payload_len;
+    control[0..4].copy_from_slice(&(cmsg_len as u32).to_le_bytes());
+    control[4..8].copy_from_slice(&1u32.to_le_bytes()); // SOL_SOCKET
+    control[8..12].copy_from_slice(&1u32.to_le_bytes()); // SCM_RIGHTS
+    for (idx, fd) in delivered.iter().enumerate() {
+        let offset = 16 + idx * core::mem::size_of::<i32>();
+        control[offset..offset + 4].copy_from_slice(&fd.to_le_bytes());
+    }
+
+    UserSpaceMemory::copy_to_user(msg_control as u64, &control[..cmsg_space.min(msg_controllen)])
+        .map_err(|_| LinuxError::EFAULT)?;
+    Ok(())
+}
+
 fn maybe_dispatch_dbus_request(data: &[u8], pipe_id: u32) {
-    if let Some(reply) = crate::dbus::process_wire_request(data) {
+    if let Some(reply) = crate::dbus::process_wire_request(data, Some(pipe_id)) {
         let ipc = get_ipc_manager();
         let _ = ipc.pipe_write(pipe_id, &reply);
     }
@@ -587,6 +668,43 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
 
     if msg.is_null() {
         return Err(LinuxError::EFAULT);
+    }
+
+    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
+        let _ = flags;
+        let (_, _, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
+        if msg_iov.is_null() && msg_iovlen > 0 {
+            return Err(LinuxError::EFAULT);
+        }
+
+        let mut total_read = 0usize;
+        for i in 0..msg_iovlen {
+            let iov = copy_iovec_from_user(msg_iov, i)?;
+            if iov.iov_base.is_null() && iov.iov_len > 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            if iov.iov_len == 0 {
+                continue;
+            }
+
+            let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
+            let mut buffer = vec![0u8; copy_len];
+            let ipc = get_ipc_manager();
+            match ipc.pipe_read(unix_end.pipe_id, &mut buffer) {
+                Ok(n) => {
+                    UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
+                        .map_err(|_| LinuxError::EFAULT)?;
+                    total_read += n;
+                }
+                Err(_) => break,
+            }
+        }
+
+        if unix_end.role == UnixSocketRole::WaylandDisplay {
+            let _ = deliver_out_of_band_fds(sockfd, msg);
+        }
+
+        return Ok(total_read as isize);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
@@ -1140,6 +1258,7 @@ pub fn bind(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i32>
                 is_listener: true,
                 path: Some(path_str.clone()),
                 role: UnixSocketRole::Generic,
+                pending_out_of_band_fds: Arc::new(Mutex::new(Vec::new())),
             },
         );
         UNIX_LISTENER_FDS.write().insert(sockfd, path_str);

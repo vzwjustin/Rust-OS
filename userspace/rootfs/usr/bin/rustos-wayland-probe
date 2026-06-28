@@ -1,0 +1,57 @@
+#!/bin/sh
+# Probe the in-kernel Wayland compositor socket and Mutter foundation.
+
+set -u
+
+RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/0}
+WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+SOCKET="$RUNTIME_DIR/$WAYLAND_DISPLAY"
+PROC=${RUSTOS_GNOME_PROC:-/proc/rustos/gnome}
+
+log() {
+    echo "rustos-wayland-probe: $*"
+}
+
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+ok=0
+
+if [ -r "$PROC" ]; then
+    wayland_state=$(grep -E '^wayland=' "$PROC" | head -n1 | cut -d= -f2-)
+    mutter_state=$(grep -E '^mutter=' "$PROC" | head -n1 | cut -d= -f2-)
+else
+    wayland_state=unknown
+    mutter_state=unknown
+fi
+
+if [ -S "$SOCKET" ] || [ -e "$SOCKET" ]; then
+    log "ready: Wayland display socket ($SOCKET)"
+else
+    log "blocked: Wayland display socket missing ($SOCKET)"
+    ok=1
+fi
+
+if [ "$wayland_state" = ready ]; then
+    log "ready: kernel Wayland compositor"
+else
+    log "blocked: kernel Wayland compositor ($wayland_state)"
+    ok=1
+fi
+
+if [ "$mutter_state" = ready ]; then
+    log "ready: Mutter foundation"
+else
+    log "blocked: Mutter foundation ($mutter_state)"
+    ok=1
+fi
+
+if have_command rustos-mutter && rustos-mutter --probe >/dev/null 2>&1; then
+    log "ready: rustos-mutter launcher"
+else
+    log "blocked: rustos-mutter launcher"
+    ok=1
+fi
+
+exit "$ok"

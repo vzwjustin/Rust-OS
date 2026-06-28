@@ -984,6 +984,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Log GNOME readiness after all foundation subsystems are initialized
         gnome::log_boot_readiness();
+        let _ = crate::vfs::procfs::update_gnome_status();
 
         // ========================================================================
         // PHASE 9: Graphics Initialization (already done early — mark complete)
