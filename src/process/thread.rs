@@ -889,8 +889,9 @@ pub fn sleep_ms(duration_ms: u64) -> Result<(), &'static str> {
 
 /// Yield current thread
 pub fn yield_thread() {
-    // In a real implementation, this would trigger a reschedule
-    // by calling the scheduler directly
+    // Trigger a reschedule so other runnable threads/processes can run.
+    // The scheduler picks the next task on the next timer/preemption point.
+    crate::scheduler::yield_cpu();
 }
 
 /// Join on a thread (wait for it to complete)

@@ -346,12 +346,75 @@ pub fn remove_ipc(id: IpcId) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Send keyboard event to interested processes
+/// Registry of message-queue IDs that have subscribed to keyboard events.
+/// Each entry is an IPC message-queue id created via `create_message_queue`.
+static KEYBOARD_SUBSCRIBERS: Mutex<Vec<IpcId>> = Mutex::new(Vec::new());
+
+/// Subscribe a message queue to receive keyboard events.
+///
+/// `queue_id` must be the id of a message queue created with
+/// `create_message_queue`; events are delivered as `Message`s with
+/// `msg_type = MSG_TYPE_KEYBOARD`, the sender set to kernel pid 0, and the
+/// 4-byte little-endian scancode in `data`.
+pub const MSG_TYPE_KEYBOARD: u32 = 0x6b65_7920; // "key " in ASCII
+
+pub fn subscribe_keyboard_events(queue_id: IpcId) -> Result<(), &'static str> {
+    let mut subs = KEYBOARD_SUBSCRIBERS.lock();
+    if subs.iter().any(|&id| id == queue_id) {
+        return Err("Already subscribed");
+    }
+    subs.push(queue_id);
+    Ok(())
+}
+
+/// Unsubscribe a message queue from keyboard events.
+pub fn unsubscribe_keyboard_events(queue_id: IpcId) -> Result<(), &'static str> {
+    let mut subs = KEYBOARD_SUBSCRIBERS.lock();
+    let before = subs.len();
+    subs.retain(|&id| id != queue_id);
+    if subs.len() == before {
+        return Err("Not subscribed");
+    }
+    Ok(())
+}
+
+/// Send keyboard event to interested processes.
+///
+/// The scancode is forwarded to every subscribed message queue as a
+/// `Message` with `MSG_TYPE_KEYBOARD`. Subscribers that have been removed
+/// (e.g. their queue was destroyed) are silently pruned.
 pub fn send_keyboard_event(scancode: u32) {
-    // In a real implementation, this would send the keyboard event
-    // to processes that have registered for keyboard input
-    // For now, we'll provide a stub implementation for compilation
-    let _ = scancode; // Prevent unused parameter warning
+    let subs = KEYBOARD_SUBSCRIBERS.lock().clone();
+    if subs.is_empty() {
+        return;
+    }
+
+    let data = scancode.to_le_bytes().to_vec();
+    let msg = Message {
+        sender: 0, // kernel
+        msg_type: MSG_TYPE_KEYBOARD,
+        data,
+        priority: 0,
+    };
+
+    let mut dead = Vec::new();
+    let objects = IPC_OBJECTS.read();
+    for &id in &subs {
+        let delivered = if let Some(IpcObject::MessageQueue(mq)) = objects.get(&id) {
+            mq.send(msg.clone()).is_ok()
+        } else {
+            false
+        };
+        if !delivered {
+            dead.push(id);
+        }
+    }
+    drop(objects);
+
+    if !dead.is_empty() {
+        let mut subs = KEYBOARD_SUBSCRIBERS.lock();
+        subs.retain(|id| !dead.contains(id));
+    }
 }
 
 /// Test IPC functionality for integration tests
