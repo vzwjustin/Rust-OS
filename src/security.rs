@@ -406,19 +406,33 @@ enum AuditEvent<'a> {
 fn audit_event(event: AuditEvent) {
     AUDIT_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // In production, this would write to audit log
     match event {
         AuditEvent::PermissionDenied { pid, action } => {
-            // Log permission denied
-            let _ = (pid, action); // Avoid unused warning
+            crate::log_warn!(
+                "security",
+                "AUDIT[{}]: Permission denied for pid {} action '{}'",
+                AUDIT_COUNTER.load(Ordering::Relaxed),
+                pid,
+                action
+            );
         }
         AuditEvent::AccessGranted { pid, resource } => {
-            // Log access granted
-            let _ = (pid, resource);
+            crate::log_info!(
+                "security",
+                "AUDIT[{}]: Access granted for pid {} resource '{}'",
+                AUDIT_COUNTER.load(Ordering::Relaxed),
+                pid,
+                resource
+            );
         }
         AuditEvent::SecurityViolation { pid, details } => {
-            // Log security violation
-            let _ = (pid, details);
+            crate::log_warn!(
+                "security",
+                "AUDIT[{}]: Security violation by pid {}: {}",
+                AUDIT_COUNTER.load(Ordering::Relaxed),
+                pid,
+                details
+            );
         }
     }
 }
