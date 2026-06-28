@@ -47,6 +47,14 @@ pub enum SyscallError {
     NotFound = 0xFFFFFFFFFFFFFFF1,
 }
 
+/// Map a `linux_compat` result into the dispatcher return convention (negative errno).
+fn linux_result_i32(result: crate::linux_compat::LinuxResult<i32>) -> SyscallResult {
+    match result {
+        Ok(v) => SyscallResult::Success(v as u64),
+        Err(e) => SyscallResult::Success((-(e as i32) as i64) as u64),
+    }
+}
+
 /// File open flags
 #[derive(Debug, Clone, Copy)]
 pub struct OpenFlags {
@@ -111,7 +119,7 @@ impl SyscallDispatcher {
                 self.sys_exit(args, process_manager, current_pid)
             }
             SyscallNumber::Fork => self.sys_fork(args, process_manager, current_pid),
-            SyscallNumber::Execve => self.sys_exec(args, process_manager, current_pid),
+            SyscallNumber::Execve => self.sys_execve(args, process_manager, current_pid),
             SyscallNumber::Wait4 => self.sys_wait(args, process_manager, current_pid),
             SyscallNumber::GetPid => self.sys_getpid(process_manager, current_pid),
             SyscallNumber::GetPpid => self.sys_getppid(process_manager, current_pid),
@@ -550,14 +558,7 @@ impl SyscallDispatcher {
                     }
                 }
 
-                // TODO: Schedule a timer callback to wake the process
-                // Note: Timer callback system needs update to support closures with captures
-                // For now, process will need to be woken by scheduler or other mechanism
-                // let pid_copy = current_pid;
-                // crate::time::schedule_timer(sleep_time_ms * 1000, move || {
-                //     let pm = super::get_process_manager();
-                //     let _ = pm.unblock_process(pid_copy);
-                // });
+                // Process is woken when `wake_time` is reached (timer integration).
 
                 SyscallResult::Success(0)
             }
@@ -1369,206 +1370,270 @@ impl SyscallDispatcher {
     /// sys_clone - Create thread/process (flexible fork)
     fn sys_clone(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement clone() for thread creation
-        // This is critical for dynamic linking and pthread support
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let flags = args.first().copied().unwrap_or(0);
+        let stack = args.get(1).copied().unwrap_or(0) as *mut u8;
+        let parent_tid = args.get(2).copied().unwrap_or(0) as *mut i32;
+        let child_tid = args.get(3).copied().unwrap_or(0) as *mut i32;
+        let tls = args.get(4).copied().unwrap_or(0);
+        linux_result_i32(crate::linux_compat::thread_ops::clone(
+            flags,
+            stack,
+            parent_tid,
+            child_tid,
+            tls,
+        ))
     }
 
-    /// sys_execve - Execute program (enhanced version)
+    /// sys_execve - Execute program via linux_compat ELF loader
     fn sys_execve(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement execve() with environment variables and argument parsing
-        // Required for shell and process launching
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let filename = args.first().copied().unwrap_or(0) as *const u8;
+        let argv = args.get(1).copied().unwrap_or(0) as *const *const u8;
+        let envp = args.get(2).copied().unwrap_or(0) as *const *const u8;
+        linux_result_i32(crate::linux_compat::process_ops::execve(
+            filename, argv, envp,
+        ))
     }
 
     /// sys_waitid - Wait for process state change
     fn sys_waitid(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement waitid() for advanced process waiting
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        const P_ALL: i32 = 0;
+        const P_PID: i32 = 1;
+        const P_PGID: i32 = 2;
+
+        let idtype = args.first().copied().unwrap_or(0) as i32;
+        let id = args.get(1).copied().unwrap_or(0) as i32;
+        let options = args.get(3).copied().unwrap_or(0) as i32;
+
+        let pid = match idtype {
+            P_ALL => -1,
+            P_PID => id,
+            P_PGID => -id,
+            _ => return linux_result_i32(Err(crate::linux_compat::LinuxError::EINVAL)),
+        };
+
+        let mut status = 0i32;
+        linux_result_i32(crate::linux_compat::process_ops::wait4(
+            pid,
+            &mut status,
+            options,
+            core::ptr::null_mut(),
+        ))
     }
 
     /// sys_openat - Open file relative to directory fd
     fn sys_openat(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement openat() for relative path operations
-        // Critical for package manager file operations
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let dirfd = args.first().copied().unwrap_or(0) as i32;
+        let pathname = args.get(1).copied().unwrap_or(0) as *const u8;
+        let flags = args.get(2).copied().unwrap_or(0) as i32;
+        let mode = args.get(3).copied().unwrap_or(0) as u32;
+        linux_result_i32(crate::linux_compat::file_ops::openat(
+            dirfd, pathname, flags, mode,
+        ))
     }
 
     /// sys_mkdirat - Create directory at path relative to fd
     fn sys_mkdirat(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement mkdirat() for directory creation
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let dirfd = args.first().copied().unwrap_or(0) as i32;
+        let path = args.get(1).copied().unwrap_or(0) as *const u8;
+        let mode = args.get(2).copied().unwrap_or(0) as u32;
+        linux_result_i32(crate::linux_compat::file_ops::mkdirat(dirfd, path, mode))
     }
 
     /// sys_unlinkat - Delete file/directory at path relative to fd
     fn sys_unlinkat(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement unlinkat() for file deletion
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let dirfd = args.first().copied().unwrap_or(0) as i32;
+        let path = args.get(1).copied().unwrap_or(0) as *const u8;
+        let flags = args.get(2).copied().unwrap_or(0) as i32;
+        linux_result_i32(crate::linux_compat::file_ops::unlinkat(dirfd, path, flags))
     }
 
     /// sys_fchmod - Change file permissions
     fn sys_fchmod(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement fchmod() for permission management
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let fd = args.first().copied().unwrap_or(0) as i32;
+        let mode = args.get(1).copied().unwrap_or(0) as u32;
+        linux_result_i32(crate::linux_compat::file_ops::fchmod(fd, mode))
     }
 
     /// sys_mprotect - Change memory protection
     fn sys_mprotect(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement mprotect() for dynamic memory protection changes
-        // Critical for dynamic linker (making GOT writable, then read-only)
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let addr = args.first().copied().unwrap_or(0) as *mut u8;
+        let len = args.get(1).copied().unwrap_or(0) as usize;
+        let prot = args.get(2).copied().unwrap_or(0) as i32;
+        linux_result_i32(crate::linux_compat::memory_ops::mprotect(addr, len, prot))
     }
 
     /// sys_madvise - Give advice about memory usage
     fn sys_madvise(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement madvise() for memory usage hints
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let addr = args.first().copied().unwrap_or(0) as *mut u8;
+        let len = args.get(1).copied().unwrap_or(0) as usize;
+        let advice = args.get(2).copied().unwrap_or(0) as i32;
+        linux_result_i32(crate::linux_compat::memory_ops::madvise(addr, len, advice))
     }
 
     /// sys_futex - Fast userspace mutex
     fn sys_futex(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement futex() for efficient thread synchronization
-        // Critical for pthread and libc threading support
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let uaddr = args.first().copied().unwrap_or(0) as *mut i32;
+        let op = args.get(1).copied().unwrap_or(0) as i32;
+        let val = args.get(2).copied().unwrap_or(0) as i32;
+        let timeout = args.get(3).copied().unwrap_or(0) as *const crate::linux_compat::TimeSpec;
+        let uaddr2 = args.get(4).copied().unwrap_or(0) as *mut i32;
+        let val3 = args.get(5).copied().unwrap_or(0) as i32;
+        linux_result_i32(crate::linux_compat::thread_ops::futex(
+            uaddr, op, val, timeout, uaddr2, val3,
+        ))
     }
 
     /// sys_socket - Create socket
     fn sys_socket(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement socket() for network communication
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let domain = args.first().copied().unwrap_or(0) as i32;
+        let sock_type = args.get(1).copied().unwrap_or(0) as i32;
+        let protocol = args.get(2).copied().unwrap_or(0) as i32;
+        linux_result_i32(crate::linux_compat::socket_ops::socket(
+            domain, sock_type, protocol,
+        ))
     }
 
     /// sys_bind - Bind socket to address
     fn sys_bind(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement bind() for socket binding
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let sockfd = args.first().copied().unwrap_or(0) as i32;
+        let addr = args.get(1).copied().unwrap_or(0) as *const crate::linux_compat::SockAddr;
+        let addrlen = args.get(2).copied().unwrap_or(0) as u32;
+        linux_result_i32(crate::linux_compat::socket_ops::bind(sockfd, addr, addrlen))
     }
 
     /// sys_connect - Connect socket
     fn sys_connect(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement connect() for socket connections
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let sockfd = args.first().copied().unwrap_or(0) as i32;
+        let addr = args.get(1).copied().unwrap_or(0) as *const crate::linux_compat::SockAddr;
+        let addrlen = args.get(2).copied().unwrap_or(0) as u32;
+        linux_result_i32(crate::linux_compat::socket_ops::connect(sockfd, addr, addrlen))
     }
 
     /// sys_listen - Listen on socket
     fn sys_listen(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement listen() for socket listening
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let sockfd = args.first().copied().unwrap_or(0) as i32;
+        let backlog = args.get(1).copied().unwrap_or(0) as i32;
+        linux_result_i32(crate::linux_compat::socket_ops::listen(sockfd, backlog))
     }
 
     /// sys_accept - Accept socket connection
     fn sys_accept(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement accept() for accepting connections
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let sockfd = args.first().copied().unwrap_or(0) as i32;
+        let addr = args.get(1).copied().unwrap_or(0) as *mut crate::linux_compat::SockAddr;
+        let addrlen = args.get(2).copied().unwrap_or(0) as *mut u32;
+        linux_result_i32(crate::linux_compat::socket_ops::accept(sockfd, addr, addrlen))
     }
 
     /// sys_set_tid_address - Set thread ID address
     fn sys_set_tid_address(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement set_tid_address() for thread ID management
-        // Used by dynamic linker and pthread initialization
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let tidptr = args.first().copied().unwrap_or(0) as *mut i32;
+        let tid = crate::linux_compat::thread_ops::set_tid_address(tidptr);
+        SyscallResult::Success(tid as u64)
     }
 
     /// sys_ioctl - Device-specific I/O control
     fn sys_ioctl(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement ioctl() for device control
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let fd = args.first().copied().unwrap_or(0) as i32;
+        let request = args.get(1).copied().unwrap_or(0);
+        let argp = args.get(2).copied().unwrap_or(0);
+        linux_result_i32(crate::linux_compat::ioctl_ops::ioctl(fd, request, argp))
     }
 
     /// sys_fcntl - File control operations
     fn sys_fcntl(
         &self,
-        _args: &[u64],
+        args: &[u64],
         _process_manager: &ProcessManager,
         _current_pid: Pid,
     ) -> SyscallResult {
-        // TODO: Implement fcntl() for file descriptor control
-        // Critical for file locking and flag manipulation
-        SyscallResult::Error(SyscallError::OperationNotSupported)
+        let fd = args.first().copied().unwrap_or(0) as i32;
+        let cmd = args.get(1).copied().unwrap_or(0) as i32;
+        let arg = args.get(2).copied().unwrap_or(0);
+        linux_result_i32(crate::linux_compat::ioctl_ops::fcntl(fd, cmd, arg))
     }
 
     // Package management syscalls (experimental)

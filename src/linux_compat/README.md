@@ -264,15 +264,17 @@ pub fn get_compat_stats() -> CompatStats {
 - Comprehensive test suites for each module
 - Full compilation with no warnings/errors
 
-### TODO (Integration Required)
-- Wire to actual VFS for file operations
-- Connect to network stack for socket operations
-- Implement kernel IPC manager for IPC operations
-- Integrate with process manager for process/thread operations
-- Connect to real hardware timer for time operations
-- Implement kernel memory manager integration
-- Add real TTY/PTY subsystem
-- Connect to real filesystem drivers
+### Integration status
+
+The compatibility layer is wired into the kernel through:
+
+- **`syscall_handler.rs`** — INT 0x80 dispatch for user programs (primary path)
+- **`process/syscalls.rs`** — Process manager syscall dispatcher delegates to `linux_compat`
+- **`process/mod.rs` PCB** — Credentials, rlimits, signals, memory policy, file descriptors
+- **`vfs/`** — File, mount, inotify, and xattr operations backing `file_ops` / `fs_ops`
+
+Remaining platform work (hardware drivers, full network stack, swap, namespaces) returns
+`ENOSYS`/`ENODEV` where appropriate rather than leaving stub TODOs in syscall handlers.
 
 ## Usage Example
 
