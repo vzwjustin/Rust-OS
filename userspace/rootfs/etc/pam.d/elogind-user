@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# This file is part of systemd.
+#
+# Used by systemd --user instances.
+
+#if 0 /// elogind has no homed
+# #endif // 0
+account sufficient pam_unix.so no_pass_expiry
+account required pam_permit.so
+
+session required pam_loginuid.so
+session optional pam_keyinit.so force revoke
+#if 0 /// elogind has no homed
+# #endif // 0
+session optional pam_elogind.so

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Shell.PortalHelper
+Exec=/usr/libexec/gnome-shell-portal-helper

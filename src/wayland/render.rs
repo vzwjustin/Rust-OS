@@ -174,9 +174,7 @@ pub fn surface_commit_events(
 
     if let Some(output_id) = output_id {
         if surface.entered_output != Some(output_id) {
-            out.extend_from_slice(
-                &super::event_surface_enter(surface.id, output_id).encode(),
-            );
+            out.extend_from_slice(&super::event_surface_enter(surface.id, output_id).encode());
             entered = Some(output_id);
         }
     }
@@ -202,7 +200,10 @@ pub fn smoke_check() -> Result<(), &'static str> {
     let buffer_id = client.create_buffer(pool_id, 0, 4, 4, 16, formats::XRGB8888);
     let surface_id = client.create_surface();
     {
-        let surface = client.surfaces.get_mut(&surface_id).ok_or("surface missing")?;
+        let surface = client
+            .surfaces
+            .get_mut(&surface_id)
+            .ok_or("surface missing")?;
         surface.attach(Some(buffer_id));
         surface.commit();
     }

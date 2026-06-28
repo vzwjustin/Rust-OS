@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build userspace/initramfs.cpio.gz from userspace/rootfs.
+# Build userspace/initramfs.cpio from userspace/rootfs.
 
 set -euo pipefail
 
 ROOTFS="${1:-userspace/rootfs}"
-OUTPUT="${2:-userspace/initramfs.cpio.gz}"
+OUTPUT="${2:-userspace/initramfs.cpio}"
 
 if ! command -v cpio >/dev/null 2>&1; then
     echo "Error: cpio not found. Install cpio (e.g. apt-get install cpio)." >&2
@@ -17,9 +17,16 @@ if [ ! -d "$ROOTFS" ]; then
 fi
 
 mkdir -p "$(dirname "$OUTPUT")"
-(
-    cd "$ROOTFS"
-    find . -print0 | cpio --null --create --verbose --format=newc
-) | gzip -9 > "$OUTPUT"
+if [ "${OUTPUT%.gz}" != "$OUTPUT" ]; then
+    (
+        cd "$ROOTFS"
+        find . -print0 | cpio --null --create --verbose --format=newc
+    ) | gzip -9 > "$OUTPUT"
+else
+    (
+        cd "$ROOTFS"
+        find . -print0 | cpio --null --create --verbose --format=newc
+    ) > "$OUTPUT"
+fi
 
 echo "Built initramfs: $OUTPUT ($(wc -c < "$OUTPUT") bytes)"

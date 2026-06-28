@@ -1,0 +1,26 @@
+[Desktop Entry]
+Name[ca]=Selecciona l'emoji
+Name[cs]=Výběr emoji:
+Name[da]=Valg af emoji
+Name[de]=Emojiauswahl
+Name[el]=Επιλογή Emoji
+Name[es]=Selección de emoji
+Name[fi]=Hymiö valinta
+Name[fr]=Choix d’émoticônes
+Name[hu]=Emodzsi választás
+Name[ja]=絵文字の選択
+Name[ko]=이모지 선택
+Name[nl]=Emoji keuze
+Name[pa]=ਇਮੋਜ਼ੀ ਚੋਣ
+Name[pl]=Wybór emoji
+Name[pt_BR]=Escolha do emoji
+Name[sv]=Emoji-val
+Name[tr]=Emoji Seçimi
+Name[uk]=Вибір емодзі
+Name[zh_CN]=Emoji 选择
+Name[zh_TW]=繪文字選擇
+Name=Emoji Choice
+Icon=ibus
+Exec=ibus emoji
+Type=Application
+NoDisplay=true

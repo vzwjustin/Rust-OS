@@ -142,9 +142,9 @@ mod usermode_test;
 mod glib;
 mod glib_platform;
 mod glib_spawn;
-mod mutter;
 mod gnome;
 mod gnome_overlay;
+mod mutter;
 // Include GNOME foundation subsystems
 mod dbus;
 mod user_sched;
@@ -440,7 +440,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         Ok(()) => unsafe {
             early_serial_write_str("RustOS: GLib native smoke check passed\r\n");
             gnome::mark_glib_gio_ready();
-            gnome::log_boot_readiness();
         },
         Err(reason) => unsafe {
             early_serial_write_str("RustOS: GLib native smoke check FAILED: ");
@@ -844,6 +843,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
                 match glib::smoke_check_gnome_readiness() {
                     Ok(()) => {
+                        gnome::mark_glib_gio_ready();
                         early_serial_write_str("RustOS: GNOME readiness smoke check passed\r\n")
                     }
                     Err(reason) => {
@@ -852,7 +852,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         early_serial_write_str("\r\n");
                     }
                 }
-                gnome::log_boot_readiness();
             },
             Err(e) => unsafe {
                 early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
@@ -982,6 +981,18 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
+        // Initialize Mutter foundation (Wayland handshake verification)
+        match mutter::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Mutter foundation ready\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Mutter init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
         // Log GNOME readiness after all foundation subsystems are initialized
         gnome::log_boot_readiness();
         let _ = crate::vfs::procfs::update_gnome_status();
@@ -1098,7 +1109,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
 
         // ========================================================================
-        // Userspace init (PID 1) when rootfs provides /bin/init or /init
+        // Userspace init — spawn GNOME session bootstrap alongside kernel compositor
         // ========================================================================
         let boot_config = boot_ui::boot_config();
         if boot_config.prefer_userspace_init
@@ -1106,16 +1117,22 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             && initramfs::userspace_init_available()
         {
             unsafe {
-                early_serial_write_str("RustOS: userspace init found, launching PID 1\r\n");
+                early_serial_write_str(
+                    "RustOS: userspace init found, spawning GNOME session bootstrap\r\n",
+                );
             }
-            crate::serial_println!("Boot: transferring control to userspace init");
-            unsafe {
-                initramfs::boot_userspace_init();
+            match initramfs::spawn_userspace_init() {
+                Ok(pid) => {
+                    crate::serial_println!("Boot: userspace init PID {} queued", pid);
+                }
+                Err(e) => {
+                    crate::serial_println!("Boot: userspace init spawn failed: {:?}", e);
+                }
             }
         } else if boot_config.verbose {
             unsafe {
                 early_serial_write_str(
-                    "RustOS: no userspace init (or disabled), using kernel desktop\r\n",
+                    "RustOS: no userspace init (or disabled), using kernel desktop only\r\n",
                 );
             }
         }
@@ -1690,6 +1707,27 @@ fn modern_desktop_main_loop() -> ! {
             }
         }
 
+        // Forward kernel input events to connected Wayland clients
+        wayland::poll_input();
+
+        // Launch the in-kernel Mutter client once the compositor is ready
+        if update_counter == 1 {
+            log_debug!(
+                "mutter",
+                "readiness: overlay={} wayland={} handshake={} should_launch={}",
+                crate::gnome_overlay::is_ready(),
+                wayland::is_ready(),
+                wayland::server::is_handshake_ready(),
+                mutter::should_launch()
+            );
+        }
+        if mutter::should_launch() {
+            log_debug!("mutter", "launching in-kernel Mutter client");
+            if let Err(e) = mutter::launch_client() {
+                log_debug!("mutter", "client launch failed: {}", e);
+            }
+        }
+
         // ====================================================================
         // Desktop Update Phase
         // ====================================================================
@@ -1724,6 +1762,9 @@ fn modern_desktop_main_loop() -> ! {
             // the area under the old cursor, erasing the trail.
             desktop::render_desktop();
 
+            // Composite Wayland client surfaces on top of the desktop
+            wayland::render_clients();
+
             // Get current mouse position from input manager
             let (mouse_x, mouse_y) = get_cursor_position();
             let button_state = drivers::input_manager::get_button_states();
@@ -1754,9 +1795,8 @@ fn modern_desktop_main_loop() -> ! {
 
         // Periodic system maintenance
         if update_counter.is_multiple_of(1_000_000) {
-            // Update system time display (if applicable)
-            // Check system health
-            // Process deferred operations
+            let _ = crate::vfs::procfs::update_gnome_status();
+            dbus::emit_readiness_changed_if_needed();
         }
 
         update_counter = update_counter.wrapping_add(1);

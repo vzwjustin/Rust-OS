@@ -1051,7 +1051,7 @@ impl Connection {
 
 // ── Signal Subscription ─────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalMatch {
     pub connection_id: ConnectionId,
     pub sender: Option<String>,
@@ -1083,6 +1083,44 @@ impl SignalMatch {
             }
         }
         true
+    }
+}
+
+/// Parse a D-Bus match rule string into a SignalMatch.
+/// Format: comma-separated key='value' pairs, e.g.
+///   "type='signal',interface='org.gnome.Shell',member='PropertiesChanged'"
+pub fn parse_match_rule(rule: &str, conn_id: ConnectionId) -> SignalMatch {
+    let mut sender = None;
+    let mut interface = None;
+    let mut member = None;
+    let mut path = None;
+
+    for part in rule.split(',') {
+        let part = part.trim();
+        if let Some(eq_pos) = part.find('=') {
+            let key = part[..eq_pos].trim();
+            let val = part[eq_pos + 1..].trim();
+            // Strip surrounding single quotes
+            let val = val
+                .strip_prefix('\'')
+                .and_then(|v| v.strip_suffix('\''))
+                .unwrap_or(val);
+            match key {
+                "sender" => sender = Some(val.to_string()),
+                "interface" => interface = Some(val.to_string()),
+                "member" => member = Some(val.to_string()),
+                "path" => path = Some(val.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    SignalMatch {
+        connection_id: conn_id,
+        sender,
+        interface,
+        member,
+        path,
     }
 }
 
@@ -1151,6 +1189,23 @@ impl MessageBus {
         if name.is_empty() || name.starts_with(':') {
             return Err("Invalid well-known name");
         }
+
+        // Yield kernel GNOME stubs when real session components connect.
+        if name == GNOME_SHELL_NAME || name == GNOME_READINESS_NAME {
+            let kernel_conn = if name == GNOME_SHELL_NAME {
+                KERNEL_SHELL_CONN.load(core::sync::atomic::Ordering::Acquire)
+            } else {
+                KERNEL_READY_CONN.load(core::sync::atomic::Ordering::Acquire)
+            };
+            if kernel_conn != 0 && conn_id != kernel_conn {
+                if let Some(&owner) = self.name_registry.get(name) {
+                    if owner == kernel_conn {
+                        self.force_release_name(name);
+                    }
+                }
+            }
+        }
+
         if let Some(&owner) = self.name_registry.get(name) {
             if owner != conn_id {
                 return Err("Name already owned by another connection");
@@ -1162,6 +1217,15 @@ impl MessageBus {
         }
         self.name_registry.insert(name.to_string(), conn_id);
         Ok(())
+    }
+
+    /// Release a well-known name regardless of which connection owns it (kernel handoff).
+    fn force_release_name(&mut self, name: &str) {
+        if let Some(owner) = self.name_registry.remove(name) {
+            if let Some(conn) = self.connections.get_mut(&owner) {
+                conn.registered_names.retain(|n| n != name);
+            }
+        }
     }
 
     /// Release a well-known name.
@@ -1182,7 +1246,14 @@ impl MessageBus {
 
     /// Add a signal match rule.
     pub fn add_match(&mut self, match_rule: SignalMatch) {
-        self.signal_matches.push(match_rule);
+        if !self.signal_matches.contains(&match_rule) {
+            self.signal_matches.push(match_rule);
+        }
+    }
+
+    /// Remove one matching signal rule.
+    pub fn remove_match_rule(&mut self, match_rule: &SignalMatch) {
+        self.signal_matches.retain(|m| m != match_rule);
     }
 
     /// Remove signal match rules for a connection.
@@ -1226,6 +1297,14 @@ impl MessageBus {
     /// Look up a connection by ID.
     pub fn get_connection(&self, id: ConnectionId) -> Option<&Connection> {
         self.connections.get(&id)
+    }
+
+    /// Return unique connection name attached to a session pipe.
+    pub fn unique_name_for_pipe(&self, pipe_id: u32) -> Option<String> {
+        self.connections
+            .values()
+            .find(|conn| conn.pipe_id == Some(pipe_id))
+            .map(|conn| conn.unique_name.clone())
     }
 
     /// Get the next serial number for the bus itself.
@@ -1290,9 +1369,11 @@ impl MessageBus {
             }
             return None;
         }
-        self.name_registry
-            .get(name)
-            .and_then(|&id| self.connections.get(&id).map(|conn| conn.unique_name.clone()))
+        self.name_registry.get(name).and_then(|&id| {
+            self.connections
+                .get(&id)
+                .map(|conn| conn.unique_name.clone())
+        })
     }
 }
 
@@ -1302,11 +1383,7 @@ fn connection_id_from_sender(sender: &str) -> ConnectionId {
     if sender.starts_with(':') {
         return sender[1..].parse().unwrap_or(0);
     }
-    BUS.read()
-        .name_registry
-        .get(sender)
-        .copied()
-        .unwrap_or(0)
+    BUS.read().name_registry.get(sender).copied().unwrap_or(0)
 }
 
 fn parse_string_arg(body: &[Value]) -> Option<&str> {
@@ -1316,7 +1393,60 @@ fn parse_string_arg(body: &[Value]) -> Option<&str> {
     }
 }
 
+fn unquote_match_value(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        if (bytes[0] == b'\'' && bytes[trimmed.len() - 1] == b'\'')
+            || (bytes[0] == b'"' && bytes[trimmed.len() - 1] == b'"')
+        {
+            return &trimmed[1..trimmed.len() - 1];
+        }
+    }
+    trimmed
+}
+
+fn parse_signal_match(conn_id: ConnectionId, rule: &str) -> Result<SignalMatch, &'static str> {
+    let mut match_rule = SignalMatch {
+        connection_id: conn_id,
+        sender: None,
+        interface: None,
+        member: None,
+        path: None,
+    };
+
+    for part in rule.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        let Some((key, value)) = part.split_once('=') else {
+            return Err("org.freedesktop.DBus.Error.MatchRuleInvalid");
+        };
+        let value = unquote_match_value(value);
+        match key.trim() {
+            "type" => {
+                if value != "signal" {
+                    return Err("org.freedesktop.DBus.Error.MatchRuleNotSupported");
+                }
+            }
+            "sender" => match_rule.sender = Some(value.to_string()),
+            "interface" => match_rule.interface = Some(value.to_string()),
+            "member" => match_rule.member = Some(value.to_string()),
+            "path" => match_rule.path = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(match_rule)
+}
+
 static BUS: RwLock<MessageBus> = RwLock::new(MessageBus::new());
+
+/// Kernel stub connections that hold GNOME session names until userspace claims them.
+static KERNEL_SHELL_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static KERNEL_READY_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Pipes connected to the session bus before the client completes Hello.
 static UNCLAIMED_SESSION_PIPES: spin::Mutex<Vec<u32>> = spin::Mutex::new(Vec::new());
@@ -1341,8 +1471,11 @@ fn claim_session_pipe(unique_name: &str) -> Option<u32> {
 fn deliver_signal(msg: &Message) {
     let bytes = marshal_message(msg);
     let ipc = crate::process::ipc::get_ipc_manager();
-    for pipe_id in BUS.read().session_pipes(None) {
-        let _ = ipc.pipe_write(pipe_id, &bytes);
+    let bus = BUS.read();
+    for conn_id in bus.route(msg) {
+        if let Some(pipe_id) = bus.get_connection(conn_id).and_then(|c| c.pipe_id) {
+            let _ = ipc.pipe_write(pipe_id, &bytes);
+        }
     }
 }
 
@@ -1362,10 +1495,34 @@ fn register_kernel_session_services(bus: &mut MessageBus) -> Result<(), &'static
     let shell_name = bus.connect()?;
     let shell_id = connection_id_from_sender(&shell_name);
     bus.request_name(shell_id, GNOME_SHELL_NAME)?;
+    KERNEL_SHELL_CONN.store(shell_id, core::sync::atomic::Ordering::Release);
 
     let ready_name = bus.connect()?;
     let ready_id = connection_id_from_sender(&ready_name);
     bus.request_name(ready_id, GNOME_READINESS_NAME)?;
+    KERNEL_READY_CONN.store(ready_id, core::sync::atomic::Ordering::Release);
+    let match_rule = parse_signal_match(
+        1,
+        "type='signal',sender='org.rustos.GnomeReadiness',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/rustos/GnomeReadiness'",
+    )
+    .map_err(|_| "Failed parse signal match")?;
+    let signal = Message::new_signal(
+        99,
+        GNOME_READINESS_PATH,
+        PROPERTIES_IFACE,
+        "PropertiesChanged",
+    );
+    let signal = Message {
+        header: signal.header.with_field(
+            HeaderField::Sender,
+            Value::String(GNOME_READINESS_NAME.to_string()),
+        ),
+        body: signal.body,
+    };
+    if !match_rule.matches(&signal) {
+        return Err("Signal match did not match readiness signal");
+    }
+
     Ok(())
 }
 
@@ -1417,6 +1574,9 @@ pub mod bus_methods {
     /// Emit a NameAcquired signal for a connection.
     pub fn name_acquired_signal(serial: u32, name: &str) -> Message {
         let mut msg = Message::new_signal(serial, BUS_PATH, BUS_NAME, "NameAcquired");
+        msg.header = msg
+            .header
+            .with_field(HeaderField::Sender, Value::String(BUS_NAME.to_string()));
         msg.body = vec![Value::String(name.to_string())];
         msg
     }
@@ -1424,6 +1584,9 @@ pub mod bus_methods {
     /// Emit a NameLost signal for a connection.
     pub fn name_lost_signal(serial: u32, name: &str) -> Message {
         let mut msg = Message::new_signal(serial, BUS_PATH, BUS_NAME, "NameLost");
+        msg.header = msg
+            .header
+            .with_field(HeaderField::Sender, Value::String(BUS_NAME.to_string()));
         msg.body = vec![Value::String(name.to_string())];
         msg
     }
@@ -1436,6 +1599,9 @@ pub mod bus_methods {
         new_owner: &str,
     ) -> Message {
         let mut msg = Message::new_signal(serial, BUS_PATH, BUS_NAME, "NameOwnerChanged");
+        msg.header = msg
+            .header
+            .with_field(HeaderField::Sender, Value::String(BUS_NAME.to_string()));
         msg.body = vec![
             Value::String(name.to_string()),
             Value::String(old_owner.to_string()),
@@ -1456,8 +1622,6 @@ pub mod bus_methods {
             .map(|c| c.unique_name.clone())
     }
 }
-
-
 
 const BUS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
 "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
@@ -1552,6 +1716,25 @@ const GNOME_SHELL_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedeskto
     </method>
   </interface>
   <interface name="org.gnome.Shell">
+    <method name="Eval">
+      <arg name="script" type="s" direction="in"/>
+      <arg name="success" type="b" direction="out"/>
+      <arg name="result" type="s" direction="out"/>
+    </method>
+    <method name="GetMode">
+      <arg name="mode" type="s" direction="out"/>
+    </method>
+    <method name="FocusSearch"/>
+    <method name="ShowApplications"/>
+    <method name="HideOverview"/>
+    <method name="ToggleOverview"/>
+    <method name="ShowOSD">
+      <arg name="params" type="a{sv}" direction="in"/>
+    </method>
+    <method name="ShowMonitorLabels">
+      <arg name="params" type="a{sv}" direction="in"/>
+    </method>
+    <method name="HideMonitorLabels"/>
     <property name="ShellVersion" type="s" access="read"/>
     <property name="Mode" type="s" access="read"/>
     <property name="GnomeShellReady" type="b" access="read"/>
@@ -1583,6 +1766,10 @@ const GNOME_READINESS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freede
     </method>
   </interface>
   <interface name="org.rustos.GnomeReadiness">
+    <method name="GetReadiness">
+      <arg name="foundation_ready" type="b" direction="out"/>
+      <arg name="shell_ready" type="b" direction="out"/>
+    </method>
     <property name="FoundationReady" type="b" access="read"/>
     <property name="ShellReady" type="b" access="read"/>
   </interface>
@@ -1685,52 +1872,36 @@ fn session_property_get_all(path: &str, iface: &str) -> Vec<Value> {
     }
 }
 
-fn dispatch_introspectable(
-    member: &str,
-    serial: u32,
-    sender: &str,
-    path: &str,
-) -> Option<Vec<u8>> {
+fn dispatch_introspectable(member: &str, serial: u32, sender: &str, path: &str) -> Option<Vec<u8>> {
     match member {
         "Introspect" => {
             let xml = introspect_xml(path);
-            let mut reply = Message::new_method_return(
-                BUS.read().next_bus_serial(),
-                serial,
-                sender,
-            );
-            reply.header = reply.header.with_field(
-                HeaderField::Signature,
-                Value::Signature("s".to_string()),
-            );
+            let mut reply =
+                Message::new_method_return(BUS.read().next_bus_serial(), serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
             reply.body = vec![Value::String(xml.to_string())];
             Some(marshal_message(&reply))
         }
         "Ping" => {
-            let reply = Message::new_method_return(
-                BUS.read().next_bus_serial(),
-                serial,
-                sender,
-            );
+            let reply = Message::new_method_return(BUS.read().next_bus_serial(), serial, sender);
             Some(marshal_message(&reply))
         }
         "GetMachineId" => {
-            let mut reply = Message::new_method_return(
-                BUS.read().next_bus_serial(),
-                serial,
-                sender,
-            );
-            reply.header = reply.header.with_field(
-                HeaderField::Signature,
-                Value::Signature("s".to_string()),
-            );
-            reply.body = vec![Value::String("rustos00000000000000000000000000".to_string())];
+            let mut reply =
+                Message::new_method_return(BUS.read().next_bus_serial(), serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
+            reply.body = vec![Value::String(
+                "rustos00000000000000000000000000".to_string(),
+            )];
             Some(marshal_message(&reply))
         }
         _ => None,
     }
 }
-
 
 fn dbus_features() -> Value {
     Value::Array(
@@ -1809,15 +1980,11 @@ fn dispatch_properties(
 
             match property_get(path, iface, prop) {
                 Ok(value) => {
-                    let mut reply = Message::new_method_return(
-                        BUS.read().next_bus_serial(),
-                        serial,
-                        sender,
-                    );
-                    reply.header = reply.header.with_field(
-                        HeaderField::Signature,
-                        Value::Signature("v".to_string()),
-                    );
+                    let mut reply =
+                        Message::new_method_return(BUS.read().next_bus_serial(), serial, sender);
+                    reply.header = reply
+                        .header
+                        .with_field(HeaderField::Signature, Value::Signature("v".to_string()));
                     reply.body = vec![Value::Variant(Box::new(Variant {
                         signature: value.signature(),
                         value,
@@ -1840,11 +2007,8 @@ fn dispatch_properties(
                 _ => return None,
             };
             let entries = property_get_all(path, iface);
-            let mut reply = Message::new_method_return(
-                BUS.read().next_bus_serial(),
-                serial,
-                sender,
-            );
+            let mut reply =
+                Message::new_method_return(BUS.read().next_bus_serial(), serial, sender);
             reply.header = reply.header.with_field(
                 HeaderField::Signature,
                 Value::Signature("a{sv}".to_string()),
@@ -1854,17 +2018,309 @@ fn dispatch_properties(
         }
         "Set" => {
             let _ = unmarshaler.parse_body(signature).ok()?;
-            let reply = Message::new_method_return(
-                BUS.read().next_bus_serial(),
-                serial,
-                sender,
-            );
+            let reply = Message::new_method_return(BUS.read().next_bus_serial(), serial, sender);
             Some(marshal_message(&reply))
         }
         _ => None,
     }
 }
 
+fn gnome_osd_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Variant(variant) => gnome_osd_value_text(&variant.value),
+        Value::String(s) | Value::ObjectPath(s) => Some(s.clone()),
+        Value::Int32(v) => Some(v.to_string()),
+        Value::UInt32(v) => Some(v.to_string()),
+        Value::Int64(v) => Some(v.to_string()),
+        Value::UInt64(v) => Some(v.to_string()),
+        Value::Double(v) => Some(format!("{}%", (*v * 100.0) as u32)),
+        _ => None,
+    }
+}
+
+fn gnome_osd_text_from_body(signature: &str, unmarshaler: &mut Unmarshaler<'_>) -> String {
+    let mut label = String::new();
+    let mut icon = String::new();
+    let mut level = String::new();
+
+    if !signature.is_empty() {
+        if let Ok(body) = unmarshaler.parse_body(signature) {
+            if let Some(Value::Array(_, entries)) = body.first() {
+                for entry in entries {
+                    let Value::DictEntry(key, value) = entry else {
+                        continue;
+                    };
+                    let Value::String(key) = key.as_ref() else {
+                        continue;
+                    };
+                    if let Some(text) = gnome_osd_value_text(value.as_ref()) {
+                        match key.as_str() {
+                            "label" => label = text,
+                            "icon" | "icon-name" => icon = text,
+                            "level" => level = text,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !label.is_empty() && !level.is_empty() {
+        format!("{} {}", label, level)
+    } else if !label.is_empty() {
+        label
+    } else if !icon.is_empty() && !level.is_empty() {
+        format!("{} {}", icon, level)
+    } else if !icon.is_empty() {
+        icon
+    } else if !level.is_empty() {
+        format!("Level {}", level)
+    } else {
+        "OSD".to_string()
+    }
+}
+
+// ── Session Service Dispatch ────────────────────────────────────────────
+
+/// Dispatch method calls directed at kernel-owned GNOME service objects.
+///
+/// The kernel registers `org.gnome.Shell` and `org.rustos.GnomeReadiness` as
+/// bus names during `init()`.  When a client sends a method call to one of
+/// those names (rather than to the bus daemon itself), this function handles
+/// implemented methods and returns explicit errors for unsupported shell actions.
+fn dispatch_session_service(
+    destination: &str,
+    iface: &str,
+    member: &str,
+    serial: u32,
+    sender: &str,
+    path: &str,
+    signature: &str,
+    unmarshaler: &mut Unmarshaler<'_>,
+) -> Option<Vec<u8>> {
+    let bus_serial = BUS.read().next_bus_serial();
+
+    match (destination, iface, member) {
+        // org.gnome.Shell methods
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "Eval") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("bs".to_string()));
+            reply.body = vec![Value::Bool(false), Value::String(String::new())];
+            Some(marshal_message(&reply))
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "FocusSearch") => {
+            if crate::desktop::gnome_focus_search() {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "ShowApplications") => {
+            if crate::desktop::gnome_show_applications() {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "HideOverview") => {
+            if crate::desktop::gnome_hide_overview() {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "ToggleOverview") => {
+            if crate::desktop::gnome_toggle_overview() {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "ShowOSD") => {
+            let text = gnome_osd_text_from_body(signature, unmarshaler);
+            if crate::desktop::gnome_show_osd(&text) {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "ShowMonitorLabels") => {
+            if crate::desktop::gnome_show_monitor_labels() {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "HideMonitorLabels") => {
+            if crate::desktop::gnome_hide_monitor_labels() {
+                let reply = Message::new_method_return(bus_serial, serial, sender);
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus_serial,
+                    serial,
+                    sender,
+                    "org.rustos.Error.NotReady",
+                    "Desktop window manager is not initialized",
+                )))
+            }
+        }
+        (GNOME_SHELL_NAME, "org.gnome.Shell", "GetMode") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
+            reply.body = vec![Value::String("wayland".to_string())];
+            Some(marshal_message(&reply))
+        }
+
+        // org.rustos.GnomeReadiness methods
+        (GNOME_READINESS_NAME, "org.rustos.GnomeReadiness", "GetReadiness") => {
+            let readiness = crate::gnome::probe();
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("bb".to_string()));
+            reply.body = vec![
+                Value::Bool(readiness.foundation_ready()),
+                Value::Bool(readiness.gnome_shell_ready()),
+            ];
+            Some(marshal_message(&reply))
+        }
+
+        // Fallback: return a descriptive error for unhandled methods
+        _ => Some(marshal_message(&Message::new_error(
+            bus_serial,
+            serial,
+            sender,
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            &format!("No method {} on interface {} at {}", member, iface, path),
+        ))),
+    }
+}
+
+// ── PropertiesChanged Signal Emission ───────────────────────────────────
+
+static LAST_FOUNDATION_READY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static LAST_SHELL_READY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Check whether GNOME readiness state has changed since the last call and
+/// emit `org.freedesktop.DBus.Properties.PropertiesChanged` signals to all
+/// connected session bus clients when it has.
+pub fn emit_readiness_changed_if_needed() {
+    let readiness = crate::gnome::probe();
+    let foundation = readiness.foundation_ready();
+    let shell = readiness.gnome_shell_ready();
+
+    let prev_foundation =
+        LAST_FOUNDATION_READY.swap(foundation, core::sync::atomic::Ordering::AcqRel);
+    let prev_shell = LAST_SHELL_READY.swap(shell, core::sync::atomic::Ordering::AcqRel);
+
+    if foundation != prev_foundation {
+        emit_properties_changed(
+            GNOME_READINESS_PATH,
+            "org.rustos.GnomeReadiness",
+            "FoundationReady",
+            Value::Bool(foundation),
+        );
+    }
+
+    if shell != prev_shell {
+        emit_properties_changed(
+            GNOME_READINESS_PATH,
+            "org.rustos.GnomeReadiness",
+            "ShellReady",
+            Value::Bool(shell),
+        );
+        emit_properties_changed(
+            GNOME_SHELL_PATH,
+            "org.gnome.Shell",
+            "GnomeShellReady",
+            Value::Bool(shell),
+        );
+    }
+}
+
+fn emit_properties_changed(path: &str, iface: &str, prop_name: &str, prop_value: Value) {
+    let serial = BUS.read().next_bus_serial();
+    let mut signal = Message::new_signal(serial, path, PROPERTIES_IFACE, "PropertiesChanged");
+    signal.header = signal.header.with_field(
+        HeaderField::Signature,
+        Value::Signature("sa{sv}as".to_string()),
+    );
+    let signal_sender = match path {
+        GNOME_SHELL_PATH => GNOME_SHELL_NAME,
+        GNOME_READINESS_PATH => GNOME_READINESS_NAME,
+        _ => BUS_NAME,
+    };
+    signal.header = signal.header.with_field(
+        HeaderField::Sender,
+        Value::String(signal_sender.to_string()),
+    );
+
+    let changed_props = vec![Value::DictEntry(
+        Box::new(Value::String(prop_name.to_string())),
+        Box::new(Value::Variant(Box::new(Variant {
+            signature: prop_value.signature(),
+            value: prop_value,
+        }))),
+    )];
+
+    signal.body = vec![
+        Value::String(iface.to_string()),
+        Value::Array("{sv}".to_string(), changed_props),
+        Value::Array("s".to_string(), Vec::new()),
+    ];
+
+    deliver_signal(&signal);
+}
 
 // ── Wire Request Dispatch ───────────────────────────────────────────────
 
@@ -1886,7 +2342,12 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
     let destination = header.destination().unwrap_or(BUS_NAME);
 
     let path = header.path().unwrap_or(BUS_PATH);
-    let sender = header.sender().unwrap_or(":1");
+    let sender_name = header
+        .sender()
+        .map(ToString::to_string)
+        .or_else(|| source_pipe_id.and_then(|pipe_id| BUS.read().unique_name_for_pipe(pipe_id)))
+        .unwrap_or_else(|| ":1".to_string());
+    let sender = sender_name.as_str();
 
     if iface == INTROSPECTABLE_IFACE || iface == "org.freedesktop.DBus.Peer" {
         return dispatch_introspectable(member, serial, sender, path);
@@ -1895,6 +2356,20 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
     if iface == PROPERTIES_IFACE {
         let signature = header.signature().unwrap_or("");
         return dispatch_properties(member, serial, sender, path, signature, &mut unmarshaler);
+    }
+
+    if destination == GNOME_SHELL_NAME || destination == GNOME_READINESS_NAME {
+        let signature = header.signature().unwrap_or("");
+        return dispatch_session_service(
+            destination,
+            iface,
+            member,
+            serial,
+            sender,
+            path,
+            signature,
+            &mut unmarshaler,
+        );
     }
 
     if destination != BUS_NAME {
@@ -1908,15 +2383,13 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
             if let Some(pipe_id) = source_pipe_id {
                 let conn_id = connection_id_from_sender(&name);
                 bus.set_connection_pipe(conn_id, pipe_id);
-                UNCLAIMED_SESSION_PIPES.lock().retain(|pending| *pending != pipe_id);
+                UNCLAIMED_SESSION_PIPES
+                    .lock()
+                    .retain(|pending| *pending != pipe_id);
             } else {
                 let _ = claim_session_pipe(&name);
             }
-            let mut reply = Message::new_method_return(
-                bus.next_bus_serial(),
-                serial,
-                &name,
-            );
+            let mut reply = Message::new_method_return(bus.next_bus_serial(), serial, &name);
             reply.header = reply
                 .header
                 .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
@@ -2005,7 +2478,7 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
                     .get_name_owner(requested_name)
                     .unwrap_or_else(String::new);
                 let status = match bus.release_name(conn_id, requested_name) {
-                    Ok(()) => 1u32, // DBUS_RELEASE_NAME_REPLY_RELEASED
+                    Ok(()) => 1u32,                                   // DBUS_RELEASE_NAME_REPLY_RELEASED
                     Err("Name not owned by this connection") => 3u32, // NOT_OWNER
                     Err("Name not found") => 2u32,                    // NON_EXISTENT
                     Err(_) => 2u32,
@@ -2076,10 +2549,9 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
                     serial,
                     header.sender().unwrap_or(":1"),
                 );
-                reply.header = reply.header.with_field(
-                    HeaderField::Signature,
-                    Value::Signature("s".to_string()),
-                );
+                reply.header = reply
+                    .header
+                    .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
                 reply.body = vec![Value::String(owner)];
                 Some(marshal_message(&reply))
             } else {
@@ -2112,11 +2584,79 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
             reply.body = vec![Value::String(unique)];
             Some(marshal_message(&reply))
         }
-        (BUS_NAME, "AddMatch") | (BUS_NAME, "RemoveMatch") => {
-            let mut reply = Message::new_method_return(
+        (BUS_NAME, "AddMatch") => {
+            let signature = header.signature().unwrap_or("");
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+            let rule_str = parse_string_arg(&body)?;
+            let conn_id = connection_id_from_sender(sender);
+            if conn_id == 0 {
+                return Some(marshal_message(&Message::new_error(
+                    BUS.read().next_bus_serial(),
+                    serial,
+                    header.sender().unwrap_or(sender),
+                    "org.freedesktop.DBus.Error.Disconnected",
+                    "Connection has not completed Hello",
+                )));
+            }
+            let match_rule = match parse_signal_match(conn_id, rule_str) {
+                Ok(match_rule) => match_rule,
+                Err(error_name) => {
+                    return Some(marshal_message(&Message::new_error(
+                        BUS.read().next_bus_serial(),
+                        serial,
+                        header.sender().unwrap_or(sender),
+                        error_name,
+                        "Invalid match rule",
+                    )));
+                }
+            };
+            BUS.write().add_match(match_rule);
+            let reply = Message::new_method_return(
                 BUS.read().next_bus_serial(),
                 serial,
-                header.sender().unwrap_or(":1"),
+                header.sender().unwrap_or(sender),
+            );
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "RemoveMatch") => {
+            let signature = header.signature().unwrap_or("");
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+            let rule_str = parse_string_arg(&body)?;
+            let conn_id = connection_id_from_sender(sender);
+            if conn_id == 0 {
+                return Some(marshal_message(&Message::new_error(
+                    BUS.read().next_bus_serial(),
+                    serial,
+                    header.sender().unwrap_or(sender),
+                    "org.freedesktop.DBus.Error.Disconnected",
+                    "Connection has not completed Hello",
+                )));
+            }
+            let match_rule = match parse_signal_match(conn_id, rule_str) {
+                Ok(match_rule) => match_rule,
+                Err(error_name) => {
+                    return Some(marshal_message(&Message::new_error(
+                        BUS.read().next_bus_serial(),
+                        serial,
+                        header.sender().unwrap_or(sender),
+                        error_name,
+                        "Invalid match rule",
+                    )));
+                }
+            };
+            BUS.write().remove_match_rule(&match_rule);
+            let reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(sender),
             );
             Some(marshal_message(&reply))
         }
@@ -2176,6 +2716,9 @@ pub fn smoke_check() -> Result<(), &'static str> {
 
     // Test bus initialization
     init()?;
+    if !GNOME_SHELL_INTROSPECT_XML.contains("HideMonitorLabels") {
+        return Err("GNOME Shell introspection missing HideMonitorLabels");
+    }
     let mut bus = MessageBus::new();
     bus.init();
     if !bus.is_initialized() {
@@ -2183,15 +2726,10 @@ pub fn smoke_check() -> Result<(), &'static str> {
     }
 
     // Test in-kernel wire dispatch for Hello
-    let hello = Message::new_method_call(
-        42,
-        BUS_NAME,
-        BUS_PATH,
-        BUS_NAME,
-        "Hello",
-    );
+    let hello = Message::new_method_call(42, BUS_NAME, BUS_PATH, BUS_NAME, "Hello");
     let hello_bytes = marshal_message(&hello);
-    let reply = process_wire_request(&hello_bytes, None).ok_or("Hello dispatch produced no reply")?;
+    let reply =
+        process_wire_request(&hello_bytes, None).ok_or("Hello dispatch produced no reply")?;
     if reply.is_empty() {
         return Err("Hello reply was empty");
     }
@@ -2203,18 +2741,11 @@ pub fn smoke_check() -> Result<(), &'static str> {
         return Err("Hello reply was not a method return");
     }
 
-    let get_all = Message::new_method_call(
-        43,
-        BUS_NAME,
-        BUS_PATH,
-        PROPERTIES_IFACE,
-        "GetAll",
-    );
+    let get_all = Message::new_method_call(43, BUS_NAME, BUS_PATH, PROPERTIES_IFACE, "GetAll");
     let mut get_all_msg = get_all;
-    get_all_msg.header = get_all_msg.header.with_field(
-        HeaderField::Signature,
-        Value::Signature("s".to_string()),
-    );
+    get_all_msg.header = get_all_msg
+        .header
+        .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
     get_all_msg.body = vec![Value::String(BUS_NAME.to_string())];
     let get_all_bytes = marshal_message(&get_all_msg);
     let get_all_reply = process_wire_request(&get_all_bytes, None)
@@ -2223,13 +2754,8 @@ pub fn smoke_check() -> Result<(), &'static str> {
         return Err("Properties.GetAll reply was empty");
     }
 
-    let introspect = Message::new_method_call(
-        44,
-        BUS_NAME,
-        BUS_PATH,
-        INTROSPECTABLE_IFACE,
-        "Introspect",
-    );
+    let introspect =
+        Message::new_method_call(44, BUS_NAME, BUS_PATH, INTROSPECTABLE_IFACE, "Introspect");
     let introspect_bytes = marshal_message(&introspect);
     let introspect_reply = process_wire_request(&introspect_bytes, None)
         .ok_or("Introspect dispatch produced no reply")?;
@@ -2237,18 +2763,11 @@ pub fn smoke_check() -> Result<(), &'static str> {
         return Err("Introspect reply was empty");
     }
 
-    let name_has_owner = Message::new_method_call(
-        45,
-        BUS_NAME,
-        BUS_PATH,
-        BUS_NAME,
-        "NameHasOwner",
-    );
+    let name_has_owner = Message::new_method_call(45, BUS_NAME, BUS_PATH, BUS_NAME, "NameHasOwner");
     let mut name_has_owner_msg = name_has_owner;
-    name_has_owner_msg.header = name_has_owner_msg.header.with_field(
-        HeaderField::Signature,
-        Value::Signature("s".to_string()),
-    );
+    name_has_owner_msg.header = name_has_owner_msg
+        .header
+        .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
     name_has_owner_msg.body = vec![Value::String(BUS_NAME.to_string())];
     let name_has_owner_reply = process_wire_request(&marshal_message(&name_has_owner_msg), None)
         .ok_or("NameHasOwner dispatch produced no reply")?;

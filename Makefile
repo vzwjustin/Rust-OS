@@ -19,7 +19,8 @@ BOOTIMAGE_DEBUG = $(BOOTIMAGE_DEBUG_BIOS)  # Default to BIOS for compatibility
 BOOTIMAGE_RELEASE = $(BOOTIMAGE_RELEASE_BIOS)
 
 # QEMU configuration with bootloader_api support
-QEMU_ARGS = -m 512M -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -cpu qemu64,+apic -machine pc,accel=tcg
+QEMU_MEMORY ?= 512M
+QEMU_ARGS = -m $(QEMU_MEMORY) -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -cpu qemu64,+apic -machine pc,accel=tcg
 QEMU_X86 = qemu-system-x86_64
 QEMU_ARM = qemu-system-aarch64
 
@@ -32,7 +33,7 @@ PURPLE = \033[0;35m
 CYAN = \033[0;36m
 NC = \033[0m # No Color
 
-.PHONY: help all build build-release clean test run run-release install-deps check bootimage bootimage-release boot-smoke test-glib-native check-glib-native build-glib-static
+.PHONY: help all build build-release clean test run run-release install-deps check bootimage bootimage-release boot-smoke test-glib-native check-glib-native build-glib-static mutter build-mutter gnome-shell build-gnome-shell initramfs desktop-rootfs
 
 # Default target
 all: build
@@ -55,6 +56,10 @@ help:
 	@echo "  $(GREEN)test-glib-native$(NC) - Run glib-native host unit tests"
 	@echo "  $(GREEN)check-glib-native$(NC) - Check glib-native on host (no kernel target)"
 	@echo "  $(GREEN)build-glib-static$(NC) - Build glib-native C static library (host)"
+	@echo "  $(GREEN)build-mutter$(NC)     - Build upstream GNOME Mutter into userspace/rootfs"
+	@echo "  $(GREEN)gnome-shell$(NC)      - Install Alpine gnome-shell into userspace/rootfs"
+	@echo "  $(GREEN)initramfs$(NC)        - Rebuild userspace/initramfs.cpio from userspace/rootfs"
+	@echo "  $(GREEN)desktop-rootfs$(NC)   - Install gnome-shell + mutter and rebuild initramfs"
 	@echo "  $(GREEN)check$(NC)           - Compile and link debug kernel (catches link errors)"
 	@echo "  $(GREEN)clean$(NC)           - Clean build artifacts"
 	@echo "  $(GREEN)install-deps$(NC)    - Install build dependencies"
@@ -88,12 +93,12 @@ check:
 	@$(BUILD_SCRIPT)
 
 # Build debug kernel
-build:
+build: initramfs
 	@echo "$(BLUE)[INFO]$(NC) Building RustOS kernel (debug)..."
 	@$(BUILD_SCRIPT)
 
 # Build release kernel
-build-release:
+build-release: initramfs
 	@echo "$(BLUE)[INFO]$(NC) Building RustOS kernel (release)..."
 	@$(BUILD_SCRIPT) --release
 
@@ -117,6 +122,17 @@ bootimage-release: build-release
 	@echo "$(BLUE)[INFO]$(NC) Creating bootable image (release)..."
 	@$(BUILD_SCRIPT) --release --bootimage
 
+build-mutter:
+	@$(MAKE) mutter
+
+gnome-shell build-gnome-shell:
+	@echo "$(BLUE)[INFO]$(NC) Installing gnome-shell into userspace/rootfs..."
+	@chmod +x ./scripts/build-gnome-shell.sh
+	@./scripts/build-gnome-shell.sh
+
+desktop-rootfs: gnome-shell
+	@$(MAKE) mutter || echo "$(YELLOW)[WARN]$(NC) Source Mutter build skipped; using Alpine mutter from gnome-shell install"
+
 # Headless boot smoke test
 boot-smoke: bootimage
 	@echo "$(BLUE)[INFO]$(NC) Running boot smoke test..."
@@ -127,6 +143,17 @@ boot-smoke: bootimage
 run: bootimage
 	@echo "$(BLUE)[INFO]$(NC) Running RustOS in QEMU (debug)..."
 	@$(BUILD_SCRIPT) --qemu
+
+# Build Mutter as a userspace binary and install into rootfs
+mutter:
+	@echo "$(BLUE)[INFO]$(NC) Building Mutter userspace binary..."
+	@./scripts/build-mutter.sh
+
+# Rebuild initramfs with current rootfs contents
+initramfs:
+	@echo "$(BLUE)[INFO]$(NC) Rebuilding initramfs from rootfs..."
+	@./scripts/build_initramfs.sh userspace/rootfs userspace/initramfs.cpio
+	@echo "$(GREEN)[DONE]$(NC) initramfs rebuilt"
 
 # Run release kernel in QEMU
 run-release: bootimage-release

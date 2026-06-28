@@ -221,8 +221,11 @@ fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
         control[offset..offset + 4].copy_from_slice(&fd.to_le_bytes());
     }
 
-    UserSpaceMemory::copy_to_user(msg_control as u64, &control[..cmsg_space.min(msg_controllen)])
-        .map_err(|_| LinuxError::EFAULT)?;
+    UserSpaceMemory::copy_to_user(
+        msg_control as u64,
+        &control[..cmsg_space.min(msg_controllen)],
+    )
+    .map_err(|_| LinuxError::EFAULT)?;
     Ok(())
 }
 

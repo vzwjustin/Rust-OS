@@ -45,7 +45,9 @@ const MINIMAL_XKB_KEYMAP: &[u8] = b"xkb_keymap {
 
 fn create_keymap_pipe() -> Result<u32, &'static str> {
     let ipc = crate::process::ipc::get_ipc_manager();
-    let (pipe_id, _) = ipc.create_pipe().map_err(|_| "keymap pipe allocation failed")?;
+    let (pipe_id, _) = ipc
+        .create_pipe()
+        .map_err(|_| "keymap pipe allocation failed")?;
     ipc.pipe_write(pipe_id, MINIMAL_XKB_KEYMAP)
         .map_err(|_| "keymap pipe write failed")?;
     Ok(pipe_id)
@@ -140,7 +142,13 @@ pub fn seat_get_keyboard(
         &Message::new(
             keyboard_id,
             4,
-            vec![Arg::UInt(serial), Arg::UInt(0), Arg::UInt(0), Arg::UInt(0), Arg::UInt(0)],
+            vec![
+                Arg::UInt(serial),
+                Arg::UInt(0),
+                Arg::UInt(0),
+                Arg::UInt(0),
+                Arg::UInt(0),
+            ],
         )
         .encode(),
     );
@@ -148,7 +156,10 @@ pub fn seat_get_keyboard(
 }
 
 /// Return the keymap pipe queued for a keyboard object, if any.
-pub fn take_keyboard_keymap_pipe(client: &mut ClientConnection, keyboard_id: ObjectId) -> Option<u32> {
+pub fn take_keyboard_keymap_pipe(
+    client: &mut ClientConnection,
+    keyboard_id: ObjectId,
+) -> Option<u32> {
     client.keyboard_keymap_pipes.remove(&keyboard_id)
 }
 
@@ -191,9 +202,7 @@ pub fn surface_post_commit_events(client: &mut ClientConnection, surface_id: Obj
         }
 
         let frame_serial = client.next_input_serial();
-        out.extend_from_slice(
-            &Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode(),
-        );
+        out.extend_from_slice(&Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode());
     }
 
     out
@@ -257,9 +266,7 @@ pub fn inject_pointer_motion(
             .encode(),
         );
         let frame_serial = client.next_input_serial();
-        out.extend_from_slice(
-            &Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode(),
-        );
+        out.extend_from_slice(&Message::new(pointer_id, 5, vec![Arg::UInt(frame_serial)]).encode());
     }
 
     out
@@ -282,7 +289,12 @@ pub fn inject_keyboard_key(client: &mut ClientConnection, key: u32, pressed: boo
             &Message::new(
                 keyboard_id,
                 2,
-                vec![Arg::UInt(serial), Arg::UInt(time), Arg::UInt(key), Arg::UInt(state)],
+                vec![
+                    Arg::UInt(serial),
+                    Arg::UInt(time),
+                    Arg::UInt(key),
+                    Arg::UInt(state),
+                ],
             )
             .encode(),
         );

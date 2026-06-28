@@ -8,6 +8,7 @@ extern crate alloc;
 use core::sync::atomic::Ordering;
 
 pub mod advanced_io;
+pub mod desktop;
 pub mod file_ops;
 pub mod fs_ops;
 pub mod ioctl_ops;
@@ -202,6 +203,7 @@ pub fn init_linux_compat() {
     resource_ops::init_resource_operations();
     sysinfo_ops::init_sysinfo_operations();
     special_fd::init_special_fd();
+    desktop::init_desktop_session();
     LINUX_COMPAT_READY.store(true, Ordering::Release);
 }
 

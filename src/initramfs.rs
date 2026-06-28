@@ -8,9 +8,10 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-/// Embedded initramfs data (included at compile time)
-/// Alpine Linux 3.19 minirootfs with busybox (3.1 MB compressed)
-pub static INITRAMFS_DATA: &[u8] = include_bytes!("../userspace/initramfs.cpio.gz");
+/// Embedded initramfs data (included at compile time).
+/// Alpine Linux rootfs as uncompressed CPIO newc so boot does not depend on
+/// the kernel gzip path before userspace is mounted.
+pub static INITRAMFS_DATA: &[u8] = include_bytes!("../userspace/initramfs.cpio");
 
 /// Initramfs header and metadata
 pub struct InitramfsInfo {
@@ -33,17 +34,14 @@ pub fn extract_initramfs() -> Result<InitramfsInfo, InitramfsError> {
         return Err(InitramfsError::NoInitramfs);
     }
 
-    // 1. Detect format (check for gzip magic)
-    let data = if is_gzipped(INITRAMFS_DATA) {
-        // Decompress gzip data
-        decompress_gzip(INITRAMFS_DATA)?
+    // 1. Detect format and extract. Uncompressed CPIO is parsed in place so
+    // large desktop rootfs archives do not need a second heap-sized copy.
+    if is_gzipped(INITRAMFS_DATA) {
+        let data = decompress_gzip(INITRAMFS_DATA)?;
+        extract_cpio(&data)?;
     } else {
-        // Use data as-is
-        INITRAMFS_DATA.to_vec()
-    };
-
-    // 2. Parse CPIO format and extract to VFS
-    extract_cpio(&data)?;
+        extract_cpio(INITRAMFS_DATA)?;
+    }
 
     Ok(InitramfsInfo {
         size: INITRAMFS_DATA.len(),
@@ -298,28 +296,79 @@ pub fn userspace_init_available() -> bool {
     find_userspace_init().is_some()
 }
 
+/// Spawn `/bin/init` or `/init` via `linux_compat::desktop` while the kernel
+/// compositor loop keeps running.
+pub fn spawn_userspace_init() -> Result<u32, InitramfsError> {
+    let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
+    crate::linux_compat::desktop::spawn_session_init(path).map_err(|_| InitramfsError::InitNotFound)
+}
+
 /// Try to exec `/bin/init` or `/init` and enter user mode.
 ///
 /// # Safety
 /// Never returns on success.
 pub unsafe fn boot_userspace_init() -> ! {
-    use crate::linux_compat::process_ops;
-
-    if let Some(path) = find_userspace_init() {
-        crate::serial_println!("init: launching {} as PID 1", path);
-        let path_c = match path {
-            "/bin/init" => c"/bin/init",
-            _ => c"/init",
-        };
-        let path_ptr = path_c.as_ptr() as *const u8;
-        let argv: [*const u8; 2] = [path_ptr, core::ptr::null()];
-        let envp: [*const u8; 1] = [core::ptr::null()];
-        if process_ops::execve_and_enter_user_mode(path_ptr, argv.as_ptr(), envp.as_ptr()).is_ok() {
-            unreachable!("switch_to_user_mode returns !");
+    match spawn_userspace_init() {
+        Ok(pid) => {
+            crate::serial_println!(
+                "init: PID {} queued; kernel desktop loop will service it",
+                pid
+            );
         }
-        crate::serial_println!("init: exec {} failed", path);
-    } else {
-        crate::serial_println!("init: no /bin/init or /init on rootfs");
+        Err(_) => {
+            use crate::linux_compat::process_ops;
+
+            if let Some(path) = find_userspace_init() {
+                crate::serial_println!("init: spawn failed, attempting direct exec of {}", path);
+                let init_c = match path {
+                    "/bin/init" => c"/bin/init",
+                    _ => c"/init",
+                };
+                let (exec_c, argv): (&'static core::ffi::CStr, [*const u8; 3]) = if path == "/init"
+                {
+                    let sh_c = c"/bin/sh";
+                    (
+                        sh_c,
+                        [
+                            sh_c.as_ptr() as *const u8,
+                            init_c.as_ptr() as *const u8,
+                            core::ptr::null(),
+                        ],
+                    )
+                } else {
+                    (
+                        init_c,
+                        [
+                            init_c.as_ptr() as *const u8,
+                            core::ptr::null(),
+                            core::ptr::null(),
+                        ],
+                    )
+                };
+                let envp: [*const u8; 7] = [
+                    c"HOME=/root".as_ptr() as *const u8,
+                    c"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".as_ptr()
+                        as *const u8,
+                    c"XDG_RUNTIME_DIR=/run/user/0".as_ptr() as *const u8,
+                    c"XDG_CURRENT_DESKTOP=ubuntu:GNOME".as_ptr() as *const u8,
+                    c"XDG_SESSION_TYPE=wayland".as_ptr() as *const u8,
+                    c"WAYLAND_DISPLAY=wayland-0".as_ptr() as *const u8,
+                    core::ptr::null(),
+                ];
+                if process_ops::execve_and_enter_user_mode(
+                    exec_c.as_ptr() as *const u8,
+                    argv.as_ptr(),
+                    envp.as_ptr(),
+                )
+                .is_ok()
+                {
+                    unreachable!("switch_to_user_mode returns !");
+                }
+                crate::serial_println!("init: exec {} failed", path);
+            } else {
+                crate::serial_println!("init: no /bin/init or /init on rootfs");
+            }
+        }
     }
 
     loop {
@@ -875,10 +924,11 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
         }
 
         // Normalize path (ensure it starts with /)
-        let path = if entry.name.starts_with('/') {
-            entry.name.clone()
+        let entry_name = entry.name.strip_prefix("./").unwrap_or(entry.name.as_str());
+        let path = if entry_name.starts_with('/') {
+            entry_name.to_string()
         } else {
-            format!("/{}", entry.name)
+            format!("/{}", entry_name)
         };
 
         // Ensure parent directories exist
@@ -893,10 +943,13 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
                         // Directory already exists, skip
                     }
                     Err(crate::vfs::VfsError::NotFound) => {
-                        vfs.mkdir(&path, entry.permissions())
-                            .map_err(|_| InitramfsError::ExtractionFailed)?;
+                        vfs.mkdir(&path, entry.permissions()).map_err(|_| {
+                            crate::serial_println!("initramfs: mkdir failed: {}", path);
+                            InitramfsError::ExtractionFailed
+                        })?;
                     }
                     Err(_) => {
+                        crate::serial_println!("initramfs: lookup failed: {}", path);
                         return Err(InitramfsError::ExtractionFailed);
                     }
                 }
@@ -910,54 +963,68 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
                         OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
                         entry.permissions(),
                     )
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
+                    .map_err(|_| {
+                        crate::serial_println!("initramfs: open failed: {}", path);
+                        InitramfsError::ExtractionFailed
+                    })?;
 
                 if !file_data.is_empty() {
-                    vfs.write(fd, file_data)
-                        .map_err(|_| InitramfsError::ExtractionFailed)?;
+                    vfs.write(fd, file_data).map_err(|_| {
+                        crate::serial_println!("initramfs: write failed: {}", path);
+                        InitramfsError::ExtractionFailed
+                    })?;
                 }
 
-                vfs.close(fd)
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
+                vfs.close(fd).map_err(|_| {
+                    crate::serial_println!("initramfs: close failed: {}", path);
+                    InitramfsError::ExtractionFailed
+                })?;
             }
 
             InodeType::Symlink => {
                 // Symbolic links: file_data contains the target path as UTF-8.
                 // Use the VFS symlink() function to create a real symlink.
-                let target = core::str::from_utf8(file_data)
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
+                let target = core::str::from_utf8(file_data).map_err(|_| {
+                    crate::serial_println!("initramfs: bad symlink target: {}", path);
+                    InitramfsError::ExtractionFailed
+                })?;
                 let target = target.trim_end_matches('\0');
-                vfs.symlink(target, &path)
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
+                vfs.symlink(target, &path).map_err(|_| {
+                    crate::serial_println!("initramfs: symlink failed: {} -> {}", path, target);
+                    InitramfsError::ExtractionFailed
+                })?;
             }
 
             InodeType::CharDevice | InodeType::BlockDevice => {
-                // Device nodes - create a marker file for now
-                // Full implementation would require VFS device node support
-                let fd = vfs
-                    .open(
-                        &path,
-                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                        entry.permissions(),
-                    )
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
-
-                vfs.close(fd)
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
+                // Device nodes become marker files until VFS device nodes are native.
+                match vfs.open(
+                    &path,
+                    OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
+                    entry.permissions(),
+                ) {
+                    Ok(fd) => {
+                        let _ = vfs.close(fd);
+                    }
+                    Err(_) => {
+                        crate::serial_println!("initramfs: skipped device node: {}", path);
+                    }
+                }
             }
 
             InodeType::Fifo | InodeType::Socket => {
-                // FIFOs and sockets - create marker files for now
-                let fd = vfs
-                    .open(
-                        &path,
-                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                        entry.permissions(),
-                    )
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
-
-                vfs.close(fd)
-                    .map_err(|_| InitramfsError::ExtractionFailed)?;
+                // FIFOs and sockets become marker files until VFS supports them.
+                match vfs.open(
+                    &path,
+                    OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
+                    entry.permissions(),
+                ) {
+                    Ok(fd) => {
+                        let _ = vfs.close(fd);
+                    }
+                    Err(_) => {
+                        crate::serial_println!("initramfs: skipped fifo/socket: {}", path);
+                    }
+                }
             }
         }
 
