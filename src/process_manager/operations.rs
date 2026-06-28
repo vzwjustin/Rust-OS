@@ -106,7 +106,7 @@ pub fn wait(
     parent_pid: Pid,
     process_table: &Mutex<ProcessTable>,
 ) -> Result<(Pid, i32), &'static str> {
-    loop {
+    {
         let table = process_table.lock();
 
         // Get parent process
@@ -142,7 +142,6 @@ pub fn wait(
 
         // In a real implementation, we would block the process here
         // and wake it up when a child exits via signal
-        break;
     }
 
     Err("Would block waiting for child")
@@ -154,7 +153,7 @@ pub fn waitpid(
     child_pid: Pid,
     process_table: &Mutex<ProcessTable>,
 ) -> Result<i32, &'static str> {
-    loop {
+    {
         let table = process_table.lock();
 
         // Verify child exists and parent is correct
@@ -181,7 +180,6 @@ pub fn waitpid(
         crate::process::scheduler::yield_cpu();
 
         // In real implementation, would block here
-        break;
     }
 
     Err("Would block waiting for specific child")

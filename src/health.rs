@@ -100,6 +100,7 @@ pub struct HealthMonitor {
     components: RwLock<Vec<ComponentHealth>>,
     monitoring_enabled: AtomicBool,
     last_health_check: AtomicU64,
+    last_interrupt_count: AtomicU64,
     health_check_interval: AtomicU64, // milliseconds
 }
 
@@ -119,6 +120,7 @@ impl HealthMonitor {
             components: RwLock::new(Vec::new()),
             monitoring_enabled: AtomicBool::new(true),
             last_health_check: AtomicU64::new(0),
+            last_interrupt_count: AtomicU64::new(0),
             health_check_interval: AtomicU64::new(5000), // 5 seconds
         }
     }
@@ -197,14 +199,23 @@ impl HealthMonitor {
     }
 
     fn estimate_cpu_usage(&self) -> u8 {
-        // Simplified CPU usage estimation
-        // In a real implementation, this would use performance counters
-        let _timer_stats = crate::time::get_timer_stats();
         let interrupt_count = crate::interrupts::get_interrupt_count();
+        let previous_count = self
+            .last_interrupt_count
+            .swap(interrupt_count, Ordering::Relaxed);
+        let current_time = crate::time::get_system_time_ms();
+        let previous_time = self.last_health_check.load(Ordering::Relaxed);
 
-        // Very basic estimation based on interrupt frequency
-        let base_usage = (interrupt_count % 100) as u8;
-        base_usage.min(100)
+        if previous_count == 0 || current_time <= previous_time {
+            return 0;
+        }
+
+        let elapsed_ms = current_time - previous_time;
+        let interrupts = interrupt_count.saturating_sub(previous_count);
+
+        // Treat one interrupt per millisecond as saturated CPU activity. This is still
+        // only a coarse health signal, but it is based on rate instead of counter value.
+        ((interrupts.saturating_mul(100)) / elapsed_ms.max(1)).min(100) as u8
     }
 
     fn get_memory_usage(&self) -> u8 {

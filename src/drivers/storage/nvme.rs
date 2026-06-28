@@ -498,7 +498,7 @@ impl NvmeDriver {
     /// Get next available command ID
     fn get_next_command_id(&mut self) -> u16 {
         let id = self.next_command_id;
-        self.next_command_id = if self.next_command_id >= 65535 {
+        self.next_command_id = if self.next_command_id == u16::MAX {
             1
         } else {
             self.next_command_id + 1
@@ -954,7 +954,7 @@ impl NvmeDriver {
         self.current_sq_tail = (self.current_sq_tail + 1) % self.queue_depth;
 
         // 3. Ring submission queue doorbell
-        let doorbell_offset = 0x1000 + (0 * 2 * (4 << self.doorbell_stride)); // Queue 0 submission doorbell
+        let doorbell_offset = 0x1000; // Queue 0 submission doorbell
         self.write_reg_raw(doorbell_offset as u32, self.current_sq_tail as u32);
 
         // 4. Wait for completion queue entry
@@ -991,7 +991,7 @@ impl NvmeDriver {
         }
 
         // 5. Ring completion queue doorbell
-        let cq_doorbell_offset = 0x1000 + (0 * 2 + 1) * (4 << self.doorbell_stride); // Queue 0 completion doorbell
+        let cq_doorbell_offset = 0x1000 + (4 << self.doorbell_stride); // Queue 0 completion doorbell
         self.write_reg_raw(cq_doorbell_offset as u32, self.current_cq_head as u32);
 
         // Update statistics

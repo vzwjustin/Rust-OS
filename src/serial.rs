@@ -29,14 +29,10 @@ pub fn handle_port1_interrupt() {
 
     // Read and discard available data
     // uart_16550 receive() returns u8 directly, not Option
-    loop {
-        // Try to receive - if no data available, this will fail
-        let _byte = serial.receive();
-        // In a full implementation, we would buffer this data
-        // For now, just consume it to clear the interrupt
-        // Break after one read to avoid blocking
-        break;
-    }
+    // Try to receive - if no data available, this will fail
+    let _byte = serial.receive();
+    // In a full implementation, we would buffer this data.
+    // For now, just consume one byte to clear the interrupt.
 }
 
 /// Handle serial port 2 interrupt
@@ -46,14 +42,10 @@ pub fn handle_port2_interrupt() {
 
     // Read and discard available data
     // uart_16550 receive() returns u8 directly, not Option
-    loop {
-        // Try to receive - if no data available, this will fail
-        let _byte = serial.receive();
-        // In a full implementation, we would buffer this data
-        // For now, just consume it to clear the interrupt
-        // Break after one read to avoid blocking
-        break;
-    }
+    // Try to receive - if no data available, this will fail
+    let _byte = serial.receive();
+    // In a full implementation, we would buffer this data.
+    // For now, just consume one byte to clear the interrupt.
 }
 
 /// Write formatted arguments to serial port 1

@@ -3,16 +3,20 @@
 //! This module implements Linux-compatible socket operations including
 //! send, recv, socket options, and I/O multiplexing.
 
+use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::net::socket::{SocketAddress, SocketOption, SocketOptionType, SocketType};
 use crate::net::{self, NetworkAddress, NetworkError, Protocol};
 use crate::vfs::{self, FdKind};
 
 /// Operation counter for statistics
 static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
+const MAX_SOCKET_RW_CHUNK: usize = 64 * 1024;
+const MAX_SOCKET_IOV: usize = 1024;
 
 /// Initialize socket operations subsystem
 pub fn init_socket_operations() {
@@ -73,12 +77,61 @@ fn register_socket_fd(socket_id: u32) -> LinuxResult<Fd> {
         .map_err(|_| LinuxError::EMFILE)
 }
 
+fn copy_iovec_from_user(iov_ptr: *const IoVec, index: usize) -> LinuxResult<IoVec> {
+    let mut iov = IoVec {
+        iov_base: core::ptr::null_mut(),
+        iov_len: 0,
+    };
+    let iov_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut iov as *mut IoVec as *mut u8,
+            core::mem::size_of::<IoVec>(),
+        )
+    };
+    UserSpaceMemory::copy_from_user(
+        (iov_ptr as u64) + (index * core::mem::size_of::<IoVec>()) as u64,
+        iov_bytes,
+    )
+    .map_err(|_| LinuxError::EFAULT)?;
+    Ok(iov)
+}
+
+fn read_msghdr_fields(msg: *const u8) -> LinuxResult<(*const u8, u32, *const IoVec, usize)> {
+    let mut header = [0u8; 32];
+    UserSpaceMemory::copy_from_user(msg as u64, &mut header).map_err(|_| LinuxError::EFAULT)?;
+
+    let msg_name =
+        usize::from_ne_bytes(header[0..8].try_into().map_err(|_| LinuxError::EINVAL)?) as *const u8;
+    let msg_namelen = u32::from_ne_bytes(header[8..12].try_into().map_err(|_| LinuxError::EINVAL)?);
+    let msg_iov = usize::from_ne_bytes(header[16..24].try_into().map_err(|_| LinuxError::EINVAL)?)
+        as *const IoVec;
+    let msg_iovlen =
+        usize::from_ne_bytes(header[24..32].try_into().map_err(|_| LinuxError::EINVAL)?);
+
+    if msg_iovlen > MAX_SOCKET_IOV {
+        return Err(LinuxError::EINVAL);
+    }
+
+    Ok((msg_name, msg_namelen, msg_iov, msg_iovlen))
+}
+
 /// Parse a SockAddr into a SocketAddress.
 fn parse_sockaddr(addr: *const SockAddr, _addrlen: u32) -> LinuxResult<SocketAddress> {
     if addr.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let sa = unsafe { &*addr };
+    let mut sa = SockAddr {
+        sa_family: 0,
+        sa_data: [0; 14],
+    };
+    let sa_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut sa as *mut SockAddr as *mut u8,
+            core::mem::size_of::<SockAddr>(),
+        )
+    };
+    UserSpaceMemory::copy_from_user(addr as u64, sa_bytes).map_err(|_| LinuxError::EFAULT)?;
+
     match sa.sa_family {
         1 => {
             // AF_UNIX - not yet supported in network stack
@@ -108,26 +161,37 @@ fn write_sockaddr(addr: *mut SockAddr, addrlen: *mut u32, sa: &SocketAddress) ->
     match sa.address {
         NetworkAddress::IPv4(ref ip) => {
             let needed = 16u32; // sizeof(sockaddr_in)
-            let avail = unsafe { *addrlen };
+            let mut len_bytes = [0u8; core::mem::size_of::<u32>()];
+            UserSpaceMemory::copy_from_user(addrlen as u64, &mut len_bytes)
+                .map_err(|_| LinuxError::EFAULT)?;
+            let avail = u32::from_ne_bytes(len_bytes);
             if avail < needed {
-                unsafe {
-                    *addrlen = needed;
-                }
+                UserSpaceMemory::copy_to_user(addrlen as u64, &needed.to_ne_bytes())
+                    .map_err(|_| LinuxError::EFAULT)?;
                 return Err(LinuxError::EINVAL);
             }
-            unsafe {
-                (*addr).sa_family = 2; // AF_INET
-                (*addr).sa_data[0] = (sa.port >> 8) as u8;
-                (*addr).sa_data[1] = sa.port as u8;
-                (*addr).sa_data[2] = ip[0];
-                (*addr).sa_data[3] = ip[1];
-                (*addr).sa_data[4] = ip[2];
-                (*addr).sa_data[5] = ip[3];
-                for i in 6..14 {
-                    (*addr).sa_data[i] = 0;
-                }
-                *addrlen = needed;
-            }
+
+            let mut out = SockAddr {
+                sa_family: 2,
+                sa_data: [0; 14],
+            };
+            out.sa_data[0] = (sa.port >> 8) as u8;
+            out.sa_data[1] = sa.port as u8;
+            out.sa_data[2] = ip[0];
+            out.sa_data[3] = ip[1];
+            out.sa_data[4] = ip[2];
+            out.sa_data[5] = ip[3];
+
+            let out_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &out as *const SockAddr as *const u8,
+                    core::mem::size_of::<SockAddr>(),
+                )
+            };
+            UserSpaceMemory::copy_to_user(addr as u64, out_bytes)
+                .map_err(|_| LinuxError::EFAULT)?;
+            UserSpaceMemory::copy_to_user(addrlen as u64, &needed.to_ne_bytes())
+                .map_err(|_| LinuxError::EFAULT)?;
             Ok(())
         }
         _ => Err(LinuxError::EAFNOSUPPORT),
@@ -138,19 +202,24 @@ fn write_sockaddr(addr: *mut SockAddr, addrlen: *mut u32, sa: &SocketAddress) ->
 pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<isize> {
     inc_ops();
 
-    if buf.is_null() {
+    if buf.is_null() && len > 0 {
         return Err(LinuxError::EFAULT);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
-    let data = unsafe { core::slice::from_raw_parts(buf, len) };
+    if len == 0 {
+        return Ok(0);
+    }
+    let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
+    let mut data = vec![0u8; copy_len];
+    UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
 
     let mut sock = net::network_stack()
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
 
     let _ = flags; // MSG_NOSIGNAL etc. not yet handled
-    sock.send(data)
+    sock.send(&data)
         .map_err(net_err_to_linux)
         .map(|n| n as isize)
 }
@@ -166,12 +235,17 @@ pub fn sendto(
 ) -> LinuxResult<isize> {
     inc_ops();
 
-    if buf.is_null() {
+    if buf.is_null() && len > 0 {
         return Err(LinuxError::EFAULT);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
-    let data = unsafe { core::slice::from_raw_parts(buf, len) };
+    if len == 0 {
+        return Ok(0);
+    }
+    let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
+    let mut data = vec![0u8; copy_len];
+    UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
     let _ = flags;
 
     if dest_addr.is_null() {
@@ -180,7 +254,7 @@ pub fn sendto(
             .get_socket(socket_id)
             .ok_or(LinuxError::EBADF)?;
         return sock
-            .send(data)
+            .send(&data)
             .map_err(net_err_to_linux)
             .map(|n| n as isize);
     }
@@ -189,7 +263,7 @@ pub fn sendto(
     let mut sock = net::network_stack()
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
-    sock.send_to(data, dest)
+    sock.send_to(&data, dest)
         .map_err(net_err_to_linux)
         .map(|n| n as isize)
 }
@@ -207,50 +281,67 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
     let socket_id = fd_to_socket_id(sockfd)?;
     let _ = flags;
 
-    unsafe {
-        let msg_name = *(msg as *const *const u8);
-        let msg_namelen = *(msg.add(8) as *const u32);
-        let msg_iov = *(msg.add(16) as *const *const IoVec);
-        let msg_iovlen = *(msg.add(24) as *const usize);
-
-        let mut total_sent = 0usize;
-        for i in 0..msg_iovlen {
-            let iov = &*msg_iov.add(i);
-            let data = core::slice::from_raw_parts(iov.iov_base, iov.iov_len);
-            let mut sock = net::network_stack()
-                .get_socket(socket_id)
-                .ok_or(LinuxError::EBADF)?;
-            if !msg_name.is_null() && i == 0 {
-                let dest = parse_sockaddr(msg_name as *const SockAddr, msg_namelen)?;
-                let n = sock.send_to(data, dest).map_err(net_err_to_linux)?;
-                total_sent += n;
-            } else {
-                let n = sock.send(data).map_err(net_err_to_linux)?;
-                total_sent += n;
-            }
-        }
-        Ok(total_sent as isize)
+    let (msg_name, msg_namelen, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
+    if msg_iov.is_null() && msg_iovlen > 0 {
+        return Err(LinuxError::EFAULT);
     }
+
+    let mut total_sent = 0usize;
+    for i in 0..msg_iovlen {
+        let iov = copy_iovec_from_user(msg_iov, i)?;
+        if iov.iov_base.is_null() && iov.iov_len > 0 {
+            return Err(LinuxError::EFAULT);
+        }
+        if iov.iov_len == 0 {
+            continue;
+        }
+
+        let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
+        let mut data = vec![0u8; copy_len];
+        UserSpaceMemory::copy_from_user(iov.iov_base as u64, &mut data)
+            .map_err(|_| LinuxError::EFAULT)?;
+
+        let mut sock = net::network_stack()
+            .get_socket(socket_id)
+            .ok_or(LinuxError::EBADF)?;
+        if !msg_name.is_null() && i == 0 {
+            let dest = parse_sockaddr(msg_name as *const SockAddr, msg_namelen)?;
+            let n = sock.send_to(&data, dest).map_err(net_err_to_linux)?;
+            total_sent += n;
+        } else {
+            let n = sock.send(&data).map_err(net_err_to_linux)?;
+            total_sent += n;
+        }
+    }
+    Ok(total_sent as isize)
 }
 
 /// recv - receive message from socket
 pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isize> {
     inc_ops();
 
-    if buf.is_null() {
+    if buf.is_null() && len > 0 {
         return Err(LinuxError::EFAULT);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    if len == 0 {
+        return Ok(0);
+    }
+    let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
+    let mut buffer = vec![0u8; copy_len];
     let _ = flags;
 
     let mut sock = net::network_stack()
         .get_socket(socket_id)
         .ok_or(LinuxError::EBADF)?;
 
-    match sock.recv(buffer) {
-        Ok(n) => Ok(n as isize),
+    match sock.recv(&mut buffer) {
+        Ok(n) => {
+            UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
+                .map_err(|_| LinuxError::EFAULT)?;
+            Ok(n as isize)
+        }
         Err(NetworkError::Timeout) => Ok(0), // Non-blocking, no data
         Err(e) => Err(net_err_to_linux(e)),
     }
@@ -267,12 +358,16 @@ pub fn recvfrom(
 ) -> LinuxResult<isize> {
     inc_ops();
 
-    if buf.is_null() {
+    if buf.is_null() && len > 0 {
         return Err(LinuxError::EFAULT);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    if len == 0 {
+        return Ok(0);
+    }
+    let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
+    let mut buffer = vec![0u8; copy_len];
     let _ = flags;
 
     let mut sock = net::network_stack()
@@ -280,17 +375,23 @@ pub fn recvfrom(
         .ok_or(LinuxError::EBADF)?;
 
     if !src_addr.is_null() {
-        match sock.recv_from(buffer) {
+        match sock.recv_from(&mut buffer) {
             Ok((n, source)) => {
                 write_sockaddr(src_addr, addrlen, &source)?;
+                UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
+                    .map_err(|_| LinuxError::EFAULT)?;
                 Ok(n as isize)
             }
             Err(NetworkError::Timeout) => Ok(0),
             Err(e) => Err(net_err_to_linux(e)),
         }
     } else {
-        match sock.recv(buffer) {
-            Ok(n) => Ok(n as isize),
+        match sock.recv(&mut buffer) {
+            Ok(n) => {
+                UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
+                    .map_err(|_| LinuxError::EFAULT)?;
+                Ok(n as isize)
+            }
             Err(NetworkError::Timeout) => Ok(0),
             Err(e) => Err(net_err_to_linux(e)),
         }
@@ -308,25 +409,37 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
     let socket_id = fd_to_socket_id(sockfd)?;
     let _ = flags;
 
-    unsafe {
-        let msg_iov = *(msg.add(16) as *const *mut IoVec);
-        let msg_iovlen = *(msg.add(24) as *const usize);
-
-        let mut total_read = 0usize;
-        for i in 0..msg_iovlen {
-            let iov = &mut *msg_iov.add(i);
-            let buffer = core::slice::from_raw_parts_mut(iov.iov_base, iov.iov_len);
-            let mut sock = net::network_stack()
-                .get_socket(socket_id)
-                .ok_or(LinuxError::EBADF)?;
-            match sock.recv(buffer) {
-                Ok(n) => total_read += n,
-                Err(NetworkError::Timeout) => break,
-                Err(e) => return Err(net_err_to_linux(e)),
-            }
-        }
-        Ok(total_read as isize)
+    let (_, _, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
+    if msg_iov.is_null() && msg_iovlen > 0 {
+        return Err(LinuxError::EFAULT);
     }
+
+    let mut total_read = 0usize;
+    for i in 0..msg_iovlen {
+        let iov = copy_iovec_from_user(msg_iov, i)?;
+        if iov.iov_base.is_null() && iov.iov_len > 0 {
+            return Err(LinuxError::EFAULT);
+        }
+        if iov.iov_len == 0 {
+            continue;
+        }
+
+        let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
+        let mut buffer = vec![0u8; copy_len];
+        let mut sock = net::network_stack()
+            .get_socket(socket_id)
+            .ok_or(LinuxError::EBADF)?;
+        match sock.recv(&mut buffer) {
+            Ok(n) => {
+                UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
+                    .map_err(|_| LinuxError::EFAULT)?;
+                total_read += n;
+            }
+            Err(NetworkError::Timeout) => break,
+            Err(e) => return Err(net_err_to_linux(e)),
+        }
+    }
+    Ok(total_read as isize)
 }
 
 /// getsockopt - get socket option
