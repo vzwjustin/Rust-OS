@@ -336,9 +336,7 @@ pub fn set_robust_list(head: *mut RobustListHead, len: usize) -> LinuxResult<i32
         return Err(LinuxError::EINVAL);
     }
 
-    ROBUST_LISTS
-        .write()
-        .insert(current_tid(), head as usize);
+    ROBUST_LISTS.write().insert(current_tid(), head as usize);
     Ok(0)
 }
 
@@ -396,11 +394,7 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
     }
 
     let tid = current_tid();
-    let area = THREAD_AREAS
-        .read()
-        .get(&tid)
-        .copied()
-        .unwrap_or([0u8; 32]);
+    let area = THREAD_AREAS.read().get(&tid).copied().unwrap_or([0u8; 32]);
     unsafe {
         core::ptr::copy_nonoverlapping(area.as_ptr(), u_info, 32);
     }
@@ -430,11 +424,7 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let base = TLS_FS_BASE
-                .read()
-                .get(&tid)
-                .copied()
-                .unwrap_or(0);
+            let base = TLS_FS_BASE.read().get(&tid).copied().unwrap_or(0);
             unsafe {
                 *(addr as *mut u64) = base;
             }
@@ -451,11 +441,7 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let base = TLS_GS_BASE
-                .read()
-                .get(&tid)
-                .copied()
-                .unwrap_or(0);
+            let base = TLS_GS_BASE.read().get(&tid).copied().unwrap_or(0);
             unsafe {
                 *(addr as *mut u64) = base;
             }

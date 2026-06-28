@@ -75,12 +75,10 @@ impl Desktop {
 
     /// Initialize the desktop environment
     pub fn init(&mut self) -> Result<(), &'static str> {
-        unsafe { crate::early_serial_write_str("desktop:init begin\r\n") };
         self.status = DesktopStatus::Initializing;
 
         // Clear screen with background color
         framebuffer::clear_screen(self.config.background_color);
-        unsafe { crate::early_serial_write_str("desktop:screen cleared\r\n") };
 
         // Get actual screen dimensions from graphics system
         let (width, height) = if let Some((w, h)) = crate::graphics::get_screen_dimensions() {
@@ -95,11 +93,9 @@ impl Desktop {
 
         // Initialize window manager with actual screen size
         self.window_manager = Some(Box::new(WindowManager::new(width, height)));
-        unsafe { crate::early_serial_write_str("desktop:wm new\r\n") };
 
         if self.config.show_splash {
             self.show_splash_screen();
-            unsafe { crate::early_serial_write_str("desktop:splash done\r\n") };
         }
 
         // Render the clean desktop (no windows pre-opened — user launches apps from the dock).
@@ -108,7 +104,6 @@ impl Desktop {
         }
 
         self.status = DesktopStatus::Running;
-        unsafe { crate::early_serial_write_str("desktop:init done\r\n") };
         Ok(())
     }
 
@@ -258,16 +253,12 @@ lazy_static! {
 
 /// Initialize the desktop environment
 pub fn init_default_desktop() -> Result<(), &'static str> {
-    unsafe { crate::early_serial_write_str("desktop:default begin\r\n") };
     let config = DesktopConfig::default();
     let mut desktop = Desktop::new(config);
-    unsafe { crate::early_serial_write_str("desktop:constructed\r\n") };
     desktop.init()?;
-    unsafe { crate::early_serial_write_str("desktop:locking global\r\n") };
 
     let mut global = GLOBAL_DESKTOP.lock();
     *global = Some(desktop);
-    unsafe { crate::early_serial_write_str("desktop:stored global\r\n") };
     Ok(())
 }
 

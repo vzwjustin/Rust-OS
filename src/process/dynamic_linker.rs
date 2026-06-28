@@ -456,18 +456,16 @@ impl DynamicLinker {
 
             // Try to find the library
             match self.find_library(lib_name) {
-                Some(path) => {
-                    match self.load_library_file(&path) {
-                        Ok(data) => {
-                            self.register_shared_library(lib_name, &data)?;
-                            loaded.push(lib_name.clone());
-                        }
-                        Err(DynamicLinkerError::LibraryNotFound(_)) => {
-                            return Err(DynamicLinkerError::LibraryNotFound(lib_name.clone()));
-                        }
-                        Err(e) => return Err(e),
+                Some(path) => match self.load_library_file(&path) {
+                    Ok(data) => {
+                        self.register_shared_library(lib_name, &data)?;
+                        loaded.push(lib_name.clone());
                     }
-                }
+                    Err(DynamicLinkerError::LibraryNotFound(_)) => {
+                        return Err(DynamicLinkerError::LibraryNotFound(lib_name.clone()));
+                    }
+                    Err(e) => return Err(e),
+                },
                 None => {
                     return Err(DynamicLinkerError::LibraryNotFound(lib_name.clone()));
                 }
@@ -478,11 +476,7 @@ impl DynamicLinker {
     }
 
     /// Parse, map, and register a shared library loaded from the VFS.
-    fn register_shared_library(
-        &mut self,
-        name: &str,
-        data: &[u8],
-    ) -> DynamicLinkerResult<()> {
+    fn register_shared_library(&mut self, name: &str, data: &[u8]) -> DynamicLinkerResult<()> {
         if self.loaded_libraries.contains_key(name) {
             return Ok(());
         }
@@ -493,8 +487,7 @@ impl DynamicLinker {
             .load_shared_library(data, base)
             .map_err(|e| DynamicLinkerError::InvalidElf(format!("{e}")))?;
 
-        let mut dynamic_info =
-            self.parse_dynamic_section(data, &program_headers, loaded_base)?;
+        let mut dynamic_info = self.parse_dynamic_section(data, &program_headers, loaded_base)?;
         self.resolve_library_names(data, &mut dynamic_info)?;
 
         let nested: Vec<String> = dynamic_info
@@ -544,8 +537,8 @@ impl DynamicLinker {
     pub fn load_library_file(&self, path: &str) -> DynamicLinkerResult<Vec<u8>> {
         const MAX_LIBRARY_SIZE: usize = 64 * 1024 * 1024;
 
-        let stat = vfs_stat(path)
-            .map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
+        let stat =
+            vfs_stat(path).map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
 
         let size = stat.size as usize;
         if size == 0 {

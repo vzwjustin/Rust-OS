@@ -5173,8 +5173,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
 
     let phase13_bytes_data = b"phase13-bytes";
     let phase13_bytes = Bytes::new(phase13_bytes_data);
-    if phase13_bytes.len() != phase13_bytes_data.len()
-        || phase13_bytes.data() != phase13_bytes_data
+    if phase13_bytes.len() != phase13_bytes_data.len() || phase13_bytes.data() != phase13_bytes_data
     {
         return Err("GBytes phase13");
     }
@@ -5226,7 +5225,6 @@ pub fn smoke_check() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Validate GSpawn fork/exec wiring after memory and process management are up.
 /// Validate GSpawn fork/exec wiring once memory and process management are up.
 pub fn smoke_check_spawn() -> Result<(), &'static str> {
     if !crate::glib_spawn::spawn_runtime_ready() {
