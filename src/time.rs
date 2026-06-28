@@ -1101,10 +1101,21 @@ fn read_rtc_time() -> Result<u64, &'static str> {
         let month = bcd_to_binary(cmos_data.read());
 
         cmos_address.write(0x09);
-        let year = bcd_to_binary(cmos_data.read()) as u32 + 2000; // Assume 21st century
+        let year_raw = bcd_to_binary(cmos_data.read()) as u32;
 
-        // Convert to Unix timestamp (simplified calculation)
-        // This is a basic implementation - a full RTC driver would handle leap years, etc.
+        // Read the century register (0x32) if available. Not all
+        // motherboards implement it, so default to 20 (21st century).
+        cmos_address.write(0x32);
+        let century_raw = cmos_data.read();
+        let century = if century_raw != 0 {
+            bcd_to_binary(century_raw) as u32 * 100
+        } else {
+            2000
+        };
+
+        let year = century + year_raw;
+
+        // Convert to Unix timestamp
         let days_since_epoch = days_since_unix_epoch(year, month, day)?;
         let timestamp = days_since_epoch * 86400
             + (hours as u64 * 3600)
@@ -1120,13 +1131,12 @@ fn bcd_to_binary(bcd: u8) -> u8 {
     (bcd & 0x0F) + ((bcd >> 4) * 10)
 }
 
-/// Calculate days since Unix epoch (simplified)
+/// Calculate days since Unix epoch (January 1, 1970)
 fn days_since_unix_epoch(year: u32, month: u8, day: u8) -> Result<u64, &'static str> {
     if year < 1970 || month == 0 || month > 12 || day == 0 || day > 31 {
         return Err("Invalid date");
     }
 
-    // Simplified calculation - doesn't handle all edge cases
     let mut days = 0u64;
 
     // Add days for complete years
