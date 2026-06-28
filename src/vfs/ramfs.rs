@@ -440,15 +440,25 @@ impl SuperblockOps for RamFs {
     }
 
     fn statfs(&self) -> VfsResult<StatFs> {
-        // Return dummy statistics
+        let block_size: u64 = 4096;
+        let max_files: u64 = 4096;
+        let max_file_size: u64 = 16 * 1024 * 1024;
+
+        // Walk the inode tree to count inodes and sum file sizes
+        let (inode_count, used_bytes) =
+            count_inodes(&(Arc::clone(&self.root) as Arc<dyn InodeOps>));
+        let used_blocks = (used_bytes + block_size - 1) / block_size;
+        let total_blocks = (max_file_size * max_files) / block_size;
+        let free_blocks = total_blocks.saturating_sub(used_blocks);
+
         Ok(StatFs {
             fs_type: 0x858458f6, // RAMFS_MAGIC
-            block_size: 4096,
-            total_blocks: 0,
-            free_blocks: 0,
-            avail_blocks: 0,
-            total_inodes: 0,
-            free_inodes: 0,
+            block_size,
+            total_blocks,
+            free_blocks,
+            avail_blocks: free_blocks,
+            total_inodes: max_files,
+            free_inodes: max_files.saturating_sub(inode_count),
             max_name_len: 255,
         })
     }
@@ -457,4 +467,36 @@ impl SuperblockOps for RamFs {
 /// Get current time as Unix seconds since epoch.
 fn get_time() -> u64 {
     crate::time::system_time()
+}
+
+/// Recursively count inodes and sum file sizes in the ramfs tree.
+/// Returns (inode_count, total_bytes).
+fn count_inodes(root: &Arc<dyn InodeOps>) -> (u64, u64) {
+    fn walk(inode: &Arc<dyn InodeOps>, count: &mut u64, bytes: &mut u64) {
+        *count += 1;
+        let stat = match inode.stat() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        *bytes += stat.size;
+
+        // Recurse into directories
+        if matches!(inode.inode_type(), InodeType::Directory) {
+            if let Ok(entries) = inode.readdir() {
+                for entry in entries {
+                    if entry.name == "." || entry.name == ".." {
+                        continue;
+                    }
+                    if let Ok(child) = inode.lookup(&entry.name) {
+                        walk(&child, count, bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    walk(root, &mut count, &mut bytes);
+    (count, bytes)
 }

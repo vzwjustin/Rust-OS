@@ -28,6 +28,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
         crate::vfs::VfsError::CrossDevice => LinuxError::EXDEV,
         crate::vfs::VfsError::ReadOnly => LinuxError::EROFS,
         crate::vfs::VfsError::NotSupported => LinuxError::ENOSYS,
+        crate::vfs::VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
     }
 }
 

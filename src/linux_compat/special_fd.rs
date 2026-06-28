@@ -66,12 +66,12 @@ static TIMERFD_BY_ID: RwLock<BTreeMap<u32, TimerFdState>> = RwLock::new(BTreeMap
 static EPOLL_BY_ID: RwLock<BTreeMap<u32, EpollState>> = RwLock::new(BTreeMap::new());
 static SIGNALFD_BY_ID: RwLock<BTreeMap<u32, SignalFdState>> = RwLock::new(BTreeMap::new());
 
-fn placeholder_inode() -> alloc::sync::Arc<dyn vfs::InodeOps> {
+fn root_inode() -> alloc::sync::Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root")
 }
 
 fn register_special(kind: FdKind, flags: u32) -> LinuxResult<i32> {
-    let inode = placeholder_inode();
+    let inode = root_inode();
     vfs::vfs_open_special(inode, flags, kind).map_err(|_| LinuxError::EMFILE)
 }
 

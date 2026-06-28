@@ -7,6 +7,9 @@ Cargo.lock
 /tmp/
 backup/
 .claude/
+.codex/
+.rtk/
+headroom_memory.db
 # System and temporary files
 .DS_Store
 *.log

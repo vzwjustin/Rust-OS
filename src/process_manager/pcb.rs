@@ -98,12 +98,13 @@ impl FileDescriptorType {
             process::FileDescriptorType::StandardInput => FileDescriptorType::StandardInput,
             process::FileDescriptorType::StandardOutput => FileDescriptorType::StandardOutput,
             process::FileDescriptorType::StandardError => FileDescriptorType::StandardError,
-            process::FileDescriptorType::VfsFile { .. } | process::FileDescriptorType::VfsHandle { .. } => {
+            process::FileDescriptorType::VfsFile { .. }
+            | process::FileDescriptorType::VfsHandle { .. } => {
                 FileDescriptorType::File { path: [0u8; 256] }
             }
-            process::FileDescriptorType::Socket { socket_id } => {
-                FileDescriptorType::Socket { socket_id: *socket_id }
-            }
+            process::FileDescriptorType::Socket { socket_id } => FileDescriptorType::Socket {
+                socket_id: *socket_id,
+            },
             process::FileDescriptorType::Pipe { pipe_id } => FileDescriptorType::Pipe {
                 pipe_id: *pipe_id,
                 read_end: false,

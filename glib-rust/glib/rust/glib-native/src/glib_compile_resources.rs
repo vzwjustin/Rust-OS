@@ -116,9 +116,24 @@ pub fn run(args: &[&str]) -> i32 {
     let Some(path) = xml_path else {
         return 1;
     };
-    // Stub: use path string as minimal XML when no filesystem read exists.
-    let xml = format!("<gresource prefix=\"/org/test/\"><file name=\"{path}\"></file></gresource>");
-    match compile_resources(&xml) {
+
+    let xml_data = match crate::stdio::read_file_bytes(path) {
+        Some(data) => data,
+        None => {
+            gwarn!("Failed to read XML file: {}", path);
+            return 1;
+        }
+    };
+
+    let xml = match core::str::from_utf8(&xml_data) {
+        Ok(s) => s,
+        Err(e) => {
+            gwarn!("Invalid UTF-8 in XML file: {}", e);
+            return 1;
+        }
+    };
+
+    match compile_resources(xml) {
         Ok(source) => {
             gwarn!("{source}");
             0
@@ -156,5 +171,23 @@ mod tests {
     #[test]
     fn run_help_ok() {
         assert_eq!(run(&["--help"]), 0);
+    }
+
+    #[test]
+    fn run_reads_real_xml_file() {
+        use std::fs;
+        let dir = std::env::temp_dir().join("glib_compile_resources_test");
+        let _ = fs::create_dir_all(&dir);
+        let xml_path = dir.join("test.gresource.xml");
+        let xml = r#"<gresource prefix="/app/"><file name="ui.xml"></file></gresource>"#;
+        let _ = fs::write(&xml_path, xml);
+        let path_str = xml_path.to_string_lossy().to_string();
+        assert_eq!(run(&[&path_str]), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_missing_file_fails() {
+        assert_eq!(run(&["/nonexistent/path/file.xml"]), 1);
     }
 }

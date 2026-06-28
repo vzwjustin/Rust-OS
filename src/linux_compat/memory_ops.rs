@@ -46,8 +46,11 @@ use crate::vfs;
 
 // Import memory management components
 use crate::memory_manager::{
-    api::{get_memory_stats, vm_brk, vm_mmap, vm_mmap_file, vm_mprotect, vm_munmap, vm_sbrk},
-    MmapFlags, ProtectionFlags, VmError,
+    api::{
+        get_memory_stats, vm_brk, vm_file_backed_regions_in_range, vm_mmap, vm_mmap_file,
+        vm_mprotect, vm_munmap, vm_sbrk,
+    },
+    MemoryRegion, MmapFlags, ProtectionFlags, VmError,
 };
 
 // ============================================================================
@@ -531,29 +534,76 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let _aligned_length = (length + 4095) & !4095;
+    let aligned_length = (length + 4095) & !4095;
 
     // Synchronize mapped pages with backing file
     // MS_SYNC: Synchronous write - wait for write to complete
     // MS_ASYNC: Asynchronous write - schedule write but don't wait
     // MS_INVALIDATE: Invalidate cached copies
 
-    if flags & ms::MS_SYNC != 0 {
-        // Synchronous synchronization
-        // In a real implementation:
-        // 1. Find all dirty pages in the range
-        // 2. Write them back to the file
-        // 3. Wait for writes to complete
-        // 4. Clear dirty bits
+    // For file-backed mappings, walk every overlapping region and write its
+    // (potentially dirty) pages back to the backing file via VFS. Anonymous
+    // mappings have no backing store, so they are a legitimate no-op here.
+    let regions = match vm_file_backed_regions_in_range(addr_val, length) {
+        Ok(rs) => rs,
+        Err(_) => return Err(LinuxError::ENOMEM),
+    };
 
-        // For file-backed mappings, would call VFS write operations
-        // For anonymous mappings, this is a no-op
+    if !regions.is_empty() {
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        let mut page_buf = [0u8; 4096];
+
+        for region in &regions {
+            // Only shared, writable file mappings need writeback. Private
+            // file mappings use COW and their modifications never reach the
+            // file, so skip them to match POSIX msync semantics.
+            if !region.shared || !region.protection.is_writable() {
+                continue;
+            }
+
+            let fd = match region.file_descriptor {
+                Some(fd) => fd as i32,
+                None => continue,
+            };
+
+            // Clamp the region to the caller's [addr, addr+length) range.
+            let reg_start = region.start.as_u64() as usize;
+            let reg_end = region.end.as_u64() as usize;
+            let span_start = core::cmp::max(reg_start, addr_val) & !0xFFF;
+            let span_end = core::cmp::min(reg_end, addr_val + aligned_length);
+
+            // File offset corresponding to span_start within this region.
+            let file_off_base = region.file_offset + (span_start.saturating_sub(reg_start));
+
+            let mut va = span_start;
+            let mut foff = file_off_base;
+            while va < span_end {
+                let page_len = core::cmp::min(4096, span_end - va);
+                if let Some(phys) = crate::memory::translate_addr(x86_64::VirtAddr::new(va as u64))
+                {
+                    unsafe {
+                        let src = (phys_offset + phys.as_u64()) as *const u8;
+                        core::ptr::copy_nonoverlapping(src, page_buf.as_mut_ptr(), page_len);
+                    }
+                    // Write back synchronously; vfs_pwrite blocks until done.
+                    let _ = crate::vfs::vfs_pwrite(fd, &page_buf[..page_len], foff as u64);
+                }
+                va += 4096;
+                foff += 4096;
+            }
+        }
+    }
+
+    if flags & ms::MS_SYNC != 0 {
+        // Synchronous synchronization: the per-page vfs_pwrite calls above
+        // already completed (they block until the write finishes), so there
+        // is nothing more to wait for here.
     }
 
     if flags & ms::MS_ASYNC != 0 {
-        // Asynchronous synchronization
-        // Schedule writes but don't wait
-        // Kernel will flush pages in background
+        // Asynchronous synchronization: without a deferred-write page cache,
+        // we fall back to performing the writes synchronously above. A future
+        // page-cache layer could schedule these writes and return immediately.
     }
 
     if flags & ms::MS_INVALIDATE != 0 {
@@ -1258,6 +1308,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
         crate::vfs::VfsError::CrossDevice => LinuxError::EXDEV,
         crate::vfs::VfsError::ReadOnly => LinuxError::EROFS,
         crate::vfs::VfsError::NotSupported => LinuxError::ENOSYS,
+        crate::vfs::VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
     }
 }
 

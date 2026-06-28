@@ -175,8 +175,7 @@ pub fn exec(program: &[u8], args: &[&str]) -> LinuxResult<i32> {
     inc_ops();
 
     let pid = process::current_pid();
-    process::exec::exec_elf_binary(pid, program, args, &[])
-        .map_err(|_| LinuxError::ENOEXEC)?;
+    process::exec::exec_elf_binary(pid, program, args, &[]).map_err(|_| LinuxError::ENOEXEC)?;
 
     Ok(0)
 }
@@ -1044,11 +1043,7 @@ pub fn fire_expired_alarms() {
 /// expiration and `it_interval` is the reload interval, both in
 /// seconds+microseconds. If `old_value` is non-null, the previous
 /// timer value is written there.
-pub fn setitimer(
-    which: i32,
-    new_value: *const u8,
-    old_value: *mut u8,
-) -> LinuxResult<i32> {
+pub fn setitimer(which: i32, new_value: *const u8, old_value: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     if which != ITIMER_REAL {
@@ -1100,10 +1095,10 @@ pub fn setitimer(
             let old_interval_secs = ms_to_secs(pcb.alarm_interval);
 
             // Arm the new timer
-            let initial_ms = secs_to_ms(new.it_value.tv_sec as u32)
-                + (new.it_value.tv_usec as u64 / 1000);
-            let interval_ms = secs_to_ms(new.it_interval.tv_sec as u32)
-                + (new.it_interval.tv_usec as u64 / 1000);
+            let initial_ms =
+                secs_to_ms(new.it_value.tv_sec as u32) + (new.it_value.tv_usec as u64 / 1000);
+            let interval_ms =
+                secs_to_ms(new.it_interval.tv_sec as u32) + (new.it_interval.tv_usec as u64 / 1000);
 
             if initial_ms == 0 {
                 pcb.alarm_deadline = 0;

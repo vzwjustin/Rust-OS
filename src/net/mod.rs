@@ -123,6 +123,37 @@ pub enum Protocol {
     ICMPv6 = 58,
 }
 
+/// Compute the Internet checksum (RFC 1071) over `data`.
+///
+/// This is the standard ones-complement sum of all 16-bit big-endian
+/// words: the running 32-bit sum is folded back into 16 bits (end-around
+/// carry) and the final ones-complement is returned. If `data` has an odd
+/// length, the trailing byte is treated as the high octet of a final
+/// 16-bit word whose low octet is zero, as required by RFC 1071 Section 3.
+///
+/// All IP header, ICMP, ICMPv6 and UDP checksums in the stack are derived
+/// from this single primitive so that the checksum field itself is the only
+/// thing that must be zeroed by callers before invocation.
+pub fn internet_checksum(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+
+    for chunk in data.chunks(2) {
+        if chunk.len() == 2 {
+            sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+        } else {
+            // Odd trailing byte: pad with a zero low octet (network byte order).
+            sum += (chunk[0] as u32) << 8;
+        }
+    }
+
+    // Fold 32-bit sum back into 16 bits (end-around carry).
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    !sum as u16
+}
+
 /// Network packet buffer
 #[derive(Debug, Clone)]
 pub struct PacketBuffer {

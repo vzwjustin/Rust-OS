@@ -305,6 +305,22 @@ impl VirtualMemoryManager {
         None
     }
 
+    /// Return all file-backed regions that overlap `[start, end)`.
+    ///
+    /// Used by `msync()` to locate mappings that need their dirty pages
+    /// written back to a backing file. Anonymous regions are skipped because
+    /// they have no backing store to synchronize.
+    pub fn file_backed_regions_in_range(
+        &self,
+        start: VirtAddr,
+        end: VirtAddr,
+    ) -> Vec<&MemoryRegion> {
+        self.regions
+            .values()
+            .filter(|r| r.memory_type == MemoryType::FileBacked && r.overlaps_range(start, end))
+            .collect()
+    }
+
     /// Map a memory region to physical frames
     fn map_region(&self, region: &MemoryRegion) -> VmResult<()> {
         let page_count = region.size_in_pages();

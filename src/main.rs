@@ -142,7 +142,11 @@ mod usermode_test;
 mod glib;
 mod glib_platform;
 mod glib_spawn;
+mod gnome;
+// Include GNOME foundation subsystems
+mod dbus;
 mod user_sched;
+mod wayland;
 
 // VGA_WRITER is now used via macros in print module
 
@@ -433,6 +437,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     match glib::smoke_check() {
         Ok(()) => unsafe {
             early_serial_write_str("RustOS: GLib native smoke check passed\r\n");
+            gnome::mark_glib_gio_ready();
+            gnome::log_boot_readiness();
         },
         Err(reason) => unsafe {
             early_serial_write_str("RustOS: GLib native smoke check FAILED: ");
@@ -454,654 +460,699 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     #[cfg(not(test))]
     {
-    // Set physical memory offset for VGA Mode 13h graphics
-    // This allows the VGA driver to access the framebuffer at 0xA0000
-    vga_mode13h::set_phys_mem_offset(phys_mem_offset);
-    unsafe {
-        early_serial_write_str("RustOS: VGA physical memory offset configured\r\n");
-    }
+        // Set physical memory offset for VGA Mode 13h graphics
+        // This allows the VGA driver to access the framebuffer at 0xA0000
+        vga_mode13h::set_phys_mem_offset(phys_mem_offset);
+        unsafe {
+            early_serial_write_str("RustOS: VGA physical memory offset configured\r\n");
+        }
 
-    // ========================================================================
-    // EARLY GRAPHICS INIT: Initialize VBE framebuffer before boot splash
-    // so the entire boot sequence uses a graphical splash screen instead of
-    // text-mode VGA. Falls back to text mode if display init fails.
-    // ========================================================================
-    let mut early_graphics_result = boot_ui::GraphicsInitResult::new();
-    let mut early_display_ready = false;
+        // ========================================================================
+        // EARLY GRAPHICS INIT: Initialize VBE framebuffer before boot splash
+        // so the entire boot sequence uses a graphical splash screen instead of
+        // text-mode VGA. Falls back to text mode if display init fails.
+        // ========================================================================
+        let mut early_graphics_result = boot_ui::GraphicsInitResult::new();
+        let mut early_display_ready = false;
 
-    {
-        let bc = boot_ui::boot_config();
-        if !bc.force_text_mode && !bc.safe_mode {
-            match drivers::display::init(phys_mem_offset) {
-                Ok(mode) => {
-                    crate::serial_println!(
-                        "display: {}x{}x{} initialized (early)",
-                        mode.width,
-                        mode.height,
-                        mode.bpp
-                    );
-                    early_graphics_result.framebuffer_ready = true;
-                    early_graphics_result.width = mode.width;
-                    early_graphics_result.height = mode.height;
-                    early_graphics_result.bpp = mode.bpp as u16;
-                    early_graphics_result.output_verified = true;
-                    early_display_ready = true;
-                }
-                Err(e) => {
-                    crate::serial_println!("display: early init failed: {}", e);
+        {
+            let bc = boot_ui::boot_config();
+            if !bc.force_text_mode && !bc.safe_mode {
+                match drivers::display::init(phys_mem_offset) {
+                    Ok(mode) => {
+                        crate::serial_println!(
+                            "display: {}x{}x{} initialized (early)",
+                            mode.width,
+                            mode.height,
+                            mode.bpp
+                        );
+                        early_graphics_result.framebuffer_ready = true;
+                        early_graphics_result.width = mode.width;
+                        early_graphics_result.height = mode.height;
+                        early_graphics_result.bpp = mode.bpp as u16;
+                        early_graphics_result.output_verified = true;
+                        gnome::mark_boot_graphics_ready();
+                        early_display_ready = true;
+                    }
+                    Err(e) => {
+                        crate::serial_println!("display: early init failed: {}", e);
+                    }
                 }
             }
         }
-    }
 
-    // Record boot start time (after basic init)
-    let _boot_start_time = 0u64; // Will use time::uptime_ms() after time init
+        // Record boot start time (after basic init)
+        let _boot_start_time = 0u64; // Will use time::uptime_ms() after time init
 
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: About to show boot splash...\r\n");
-    }
-
-    // ========================================================================
-    // PHASE 1: Boot Splash (graphical if framebuffer is ready, text fallback)
-    // ========================================================================
-    if early_display_ready {
-        boot_ui::show_graphical_splash();
-    } else {
-        boot_ui::show_boot_splash();
-    }
-
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Boot splash complete, doing delay...\r\n");
-    }
-
-    boot_ui::boot_delay_medium();
-
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Delay complete\r\n");
-    }
-
-    // ========================================================================
-    // PHASE 2: Hardware Detection
-    // ========================================================================
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Starting hardware detection...\r\n");
-    }
-    let hardware_result = boot_ui::hardware_detection_progress();
-    unsafe {
-        early_serial_write_str("RustOS: Hardware detection done\r\n");
-    }
-
-    // ========================================================================
-    // PHASE 3: ACPI Initialization
-    // ========================================================================
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Starting ACPI phase...\r\n");
-    }
-
-    // Note: bootloader v0.9.33 doesn't provide rsdp_addr or physical_memory_offset
-    // We'll use manual ACPI detection and a default physical offset
-    let physical_memory_offset = x86_64::VirtAddr::new(phys_mem_offset);
-    let _acpi_result = {
+        // SAFETY: Debug output
         unsafe {
-            early_serial_write_str("RustOS: ACPI begin_stage...\r\n");
+            early_serial_write_str("RustOS: About to show boot splash...\r\n");
         }
-        boot_ui::begin_stage(boot_ui::BootStage::AcpiInit, 1);
-        unsafe {
-            early_serial_write_str("RustOS: ACPI report_warning...\r\n");
-        }
-        boot_ui::report_warning("ACPI", "Using manual ACPI detection");
-        unsafe {
-            early_serial_write_str("RustOS: ACPI complete_stage...\r\n");
-        }
-        boot_ui::complete_stage(boot_ui::BootStage::AcpiInit);
-        // Try ACPI initialization with manual detection
-        unsafe {
-            early_serial_write_str("RustOS: ACPI init_progress...\r\n");
-        }
-        boot_ui::acpi_init_progress(None, physical_memory_offset.as_u64())
-    };
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: ACPI phase complete\r\n");
-    }
 
-    // ========================================================================
-    // PHASE 4: PCI Bus Enumeration
-    // ========================================================================
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Starting PCI enumeration...\r\n");
-    }
-    let _pci_result = boot_ui::pci_enum_progress();
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: PCI enumeration done\r\n");
-    }
-
-    // ========================================================================
-    // PHASE 5: Memory Management Initialization
-    // ========================================================================
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Starting memory management init...\r\n");
-    }
-    let memory_result =
-        boot_ui::memory_init_progress(&boot_info.memory_map, physical_memory_offset);
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Memory management done\r\n");
-    }
-
-    // Initialize the full paging-based memory manager (frame allocator + page table manager).
-    // boot_ui::memory_init_progress only analyzes the memory map; this sets up the actual
-    // paging infrastructure needed by map_user_page, protect_user_page, mmap, brk, etc.
-    unsafe {
-        early_serial_write_str("RustOS: Initializing paging memory manager...\r\n");
-    }
-    match memory::init_memory_management(
-        boot_info.memory_map.iter().as_slice(),
-        Some(phys_mem_offset),
-    ) {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
-        },
-        Err(e) => unsafe {
-            let msg = match e {
-                memory::MemoryError::OutOfMemory => "Out of physical memory",
-                memory::MemoryError::MappingFailed => "Failed to map virtual memory",
-                memory::MemoryError::HeapInitFailed => "Heap initialization failed",
-                memory::MemoryError::InvalidAddress => "Invalid address",
-                _ => "Other memory error",
-            };
-            early_serial_write_str("RustOS: Paging memory manager init FAILED: ");
-            early_serial_write_str(msg);
-            early_serial_write_str("\r\n");
-        },
-    }
-
-    // Initialize the virtual memory manager (mmap/brk/mprotect support).
-    unsafe {
-        early_serial_write_str("RustOS: Initializing virtual memory manager...\r\n");
-    }
-    match memory_manager::init_virtual_memory(physical_memory_offset) {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: Virtual memory manager initialized\r\n");
-        },
-        Err(_) => unsafe {
-            early_serial_write_str("RustOS: Virtual memory manager init FAILED\r\n");
-        },
-    }
-
-    // Runtime proof that user-page mapping actually backs frames (brk/mmap path).
-    match memory::selftest_user_paging() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: user-paging self-test PASSED\r\n");
-        },
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: user-paging self-test FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
-    }
-
-    // ========================================================================
-    // PHASE 6: Interrupt and System Setup
-    // ========================================================================
-    boot_ui::begin_stage(boot_ui::BootStage::InterruptInit, 5);
-
-    // Initialize error handling system early
-    boot_ui::update_substage(1, "Initializing error handling...");
-    error::init_error_handling();
-    boot_ui::report_success("Error handling system initialized");
-
-    // Initialize health monitoring system
-    boot_ui::update_substage(2, "Starting health monitoring...");
-    health::init_health_monitoring();
-    boot_ui::report_success("System health monitoring active");
-
-    // Initialize comprehensive logging and debugging
-    boot_ui::update_substage(3, "Setting up logging subsystem...");
-    logging::init_logging_and_debugging();
-    boot_ui::report_success("Logging and debugging ready");
-
-    // Initialize GDT and interrupts
-    boot_ui::update_substage(4, "Configuring GDT and IDT...");
-    gdt::init();
-    interrupts::init();
-    boot_ui::report_success("GDT and interrupts configured");
-
-    // Initialize fast syscall support
-    boot_ui::update_substage(5, "Setting up syscall interface...");
-    if syscall_fast::is_supported() {
-        syscall_fast::init();
-        boot_ui::report_success("Fast syscall (SYSCALL/SYSRET) enabled");
-    } else {
-        boot_ui::report_warning("Syscall", "Using INT 0x80 fallback");
-    }
-
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Syscall init done, completing stage...\r\n");
-    }
-
-    boot_ui::complete_stage(boot_ui::BootStage::InterruptInit);
-
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Stage complete, doing short delay...\r\n");
-    }
-
-    // All PIC interrupts are masked in interrupts::init() for safe boot
-    boot_ui::boot_delay_short();
-
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Short delay done\r\n");
-    }
-
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Phase 6 complete, starting Phase 7...\r\n");
-    }
-
-    // ========================================================================
-    // Boot Menu - Skip in graphical mode (auto-boot like native OS)
-    // ========================================================================
-    let boot_selection = if early_display_ready {
-        boot_ui::BootMenuSelection::NormalBoot
-    } else {
-        unsafe {
-            early_serial_write_str("RustOS: Showing boot menu (text mode)...\r\n");
-        }
-        boot_ui::show_boot_menu()
-    };
-    unsafe {
-        early_serial_write_str("RustOS: Boot menu selection made\r\n");
-    }
-
-    // Clear screen for normal boot progress display
-    if boot_selection == boot_ui::BootMenuSelection::NormalBoot {
+        // ========================================================================
+        // PHASE 1: Boot Splash (graphical if framebuffer is ready, text fallback)
+        // ========================================================================
         if early_display_ready {
             boot_ui::show_graphical_splash();
         } else {
             boot_ui::show_boot_splash();
         }
-    }
 
-    // ========================================================================
-    // PHASE 7: Driver Loading
-    // ========================================================================
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Starting driver loading...\r\n");
-    }
-    let driver_result = boot_ui::driver_loading_progress();
-    // SAFETY: Debug output
-    unsafe {
-        early_serial_write_str("RustOS: Driver loading done\r\n");
-    }
-
-    // Time system was already initialized in driver_loading_progress()
-    // Check if it succeeded and enable timer interrupt
-    unsafe {
-        early_serial_write_str("RustOS: Checking time init result...\r\n");
-    }
-    let time_initialized = driver_result.timer_loaded;
-    unsafe {
-        early_serial_write_str("RustOS: time_initialized check done\r\n");
-    }
-    if time_initialized {
+        // SAFETY: Debug output
         unsafe {
-            early_serial_write_str("RustOS: About to get timer stats...\r\n");
+            early_serial_write_str("RustOS: Boot splash complete, doing delay...\r\n");
         }
-        let stats = time::get_timer_stats();
-        unsafe {
-            early_serial_write_str("RustOS: Got timer stats\r\n");
-        }
-        log_info!(
-            "kernel",
-            "Time system initialized with {:?} timer",
-            stats.active_timer
-        );
 
-        // Initialize system time from RTC
-        if let Ok(()) = time::init_system_time_from_rtc() {
-            log_info!(
-                "kernel",
-                "System time initialized from RTC: {}",
-                time::system_time()
-            );
-        }
-    } else {
-        log_error!(
-            "kernel",
-            "Time system initialization failed in driver loading phase"
-        );
-    }
-
-    // Enable keyboard and mouse interrupts for user input
-    unsafe {
-        early_serial_write_str("RustOS: Enabling keyboard interrupt...\r\n");
-    }
-    interrupts::enable_keyboard_interrupt();
-    unsafe {
-        early_serial_write_str("RustOS: Keyboard interrupt enabled\r\n");
-    }
-    unsafe {
-        early_serial_write_str("RustOS: Enabling mouse interrupt...\r\n");
-    }
-    interrupts::enable_mouse_interrupt();
-    unsafe {
-        early_serial_write_str("RustOS: Mouse interrupt enabled\r\n");
-    }
-
-    // ========================================================================
-    // PHASE 8: File System Mount
-    // ========================================================================
-    // Initialize process management and scheduler before filesystem/Linux init.
-    unsafe {
-        early_serial_write_str("RustOS: Initializing process manager...\r\n");
-    }
-    match process::init() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: Process manager initialized\r\n");
-        },
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: Process manager init FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
-    }
-    match process_manager::init() {
-        Ok(()) => {
-            crate::glib_spawn::mark_spawn_runtime_ready();
-            unsafe {
-                early_serial_write_str("RustOS: POSIX process manager initialized\r\n");
-            }
-        }
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: POSIX process manager init FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
-    }
-    match glib::smoke_check_spawn() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
-        },
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
-    }
-    unsafe {
-        early_serial_write_str("RustOS: Initializing scheduler...\r\n");
-    }
-    match scheduler::init() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: Scheduler initialized\r\n");
-        },
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: Scheduler init FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
-    }
-    unsafe {
-        early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
-    }
-    match security::init() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: Security subsystem initialized\r\n");
-        },
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: Security init FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
-    }
-
-    unsafe {
-        early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n");
-    }
-    let _fs_result = boot_ui::filesystem_mount_progress();
-    unsafe {
-        early_serial_write_str("RustOS: Phase 8 complete\r\n");
-    }
-
-    // Enable timer interrupt now that filesystem init is done
-    unsafe {
-        early_serial_write_str("RustOS: Enabling timer interrupt...\r\n");
-    }
-    interrupts::enable_timer_interrupt();
-    unsafe {
-        early_serial_write_str("RustOS: Timer interrupt enabled\r\n");
-    }
-
-    // Initialize Linux compatibility layer (file_ops, process_ops, etc.)
-    unsafe {
-        early_serial_write_str("RustOS: Initializing Linux compatibility layer...\r\n");
-    }
-    linux_compat::init_linux_compat();
-    unsafe {
-        early_serial_write_str("RustOS: Linux compatibility layer initialized\r\n");
-    }
-
-    // Initialize Linux integration layer
-    if !early_display_ready {
-        boot_display::show_subsystem_init(
-            "Linux Integration Layer",
-            boot_display::SubsystemStatus::Initializing,
-        );
-    }
-    match linux_integration::init() {
-        Ok(_) => {
-            unsafe {
-                early_serial_write_str("RustOS: Linux init OK, showing status...\r\n");
-            }
-            if !early_display_ready {
-                boot_display::show_subsystem_init(
-                    "Linux Integration Layer",
-                    boot_display::SubsystemStatus::Ready,
-                );
-            }
-            unsafe {
-                early_serial_write_str("RustOS: Linux status shown, skip state updates\r\n");
-            }
-            // Skip subsystem state updates entirely - they can crash
-        }
-        Err(_e) => {
-            unsafe {
-                early_serial_write_str("RustOS: Linux init error\r\n");
-            }
-            if !early_display_ready {
-                boot_display::show_subsystem_init(
-                    "Linux Integration Layer",
-                    boot_display::SubsystemStatus::Warning,
-                );
-            }
-        }
-    }
-    unsafe {
-        early_serial_write_str("RustOS: Linux integration done\r\n");
-    }
-
-    // ========================================================================
-    // PHASE 9: Graphics Initialization (already done early — mark complete)
-    // ========================================================================
-    let mut graphics_result = early_graphics_result;
-    let display_driver_ready = early_display_ready;
-
-    if display_driver_ready {
-        boot_ui::begin_stage(boot_ui::BootStage::GraphicsInit, 1);
-        boot_ui::update_substage(1, "Display ready (early init)");
-        boot_ui::report_success("Display output verified");
-        boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
-    } else if !boot_ui::boot_config().force_text_mode && !boot_ui::boot_config().safe_mode {
-        // Fall back to existing graphics init (checks bootloader framebuffer, then text mode)
-        graphics_result = boot_ui::graphics_init_progress();
-    }
-
-    if display_driver_ready {
-        crate::serial_println!(
-            "display: driver ready {}x{}x{}",
-            graphics_result.width,
-            graphics_result.height,
-            graphics_result.bpp
-        );
-    }
-    unsafe {
-        early_serial_write_str("RustOS: Phase 9 complete\r\n");
-    }
-
-    // Render graphical boot progress if framebuffer is ready
-    if graphics_result.framebuffer_ready {
-        boot_ui::render_graphical_boot_progress();
-    }
-
-    // Decide boot mode based on graphics initialization
-    let use_graphics_desktop = graphics_result.framebuffer_ready
-        && graphics_result.bpp == 32
-        && !graphics_result.fallback_to_text;
-
-    // ========================================================================
-    // PHASE 10: Desktop Environment Initialization
-    // ========================================================================
-    let desktop_result = if use_graphics_desktop {
-        if display_driver_ready {
-            let mut result = boot_ui::DesktopInitResult::new();
-            match desktop::init_default_desktop() {
-                Ok(()) => {
-                    result.window_manager_ready = true;
-                    result.input_ready = true;
-                    result.taskbar_ready = true;
-                    result.windows_created = true;
-                }
-                Err(e) => {
-                    crate::serial_println!("Desktop setup error: {}", e);
-                }
-            }
-            result
-        } else {
-            boot_ui::desktop_init_progress()
-        }
-    } else {
-        // Skip desktop init when the 32-bit framebuffer desktop is unavailable.
-        boot_ui::begin_stage(boot_ui::BootStage::DesktopInit, 1);
-        boot_ui::update_substage(1, "32-bit framebuffer desktop unavailable...");
-        boot_ui::report_warning("Desktop", "32-bit graphical UI unavailable");
-        boot_ui::complete_stage(boot_ui::BootStage::DesktopInit);
-        boot_ui::DesktopInitResult::new()
-    };
-
-    // ========================================================================
-    // Boot Complete Summary
-    // ========================================================================
-    let boot_time = if time_initialized {
-        time::uptime_ms()
-    } else {
-        0
-    };
-    unsafe {
-        early_serial_write_str("RustOS: Boot complete in ");
-        early_serial_write_u64(boot_time);
-        early_serial_write_str("ms\r\n");
-    }
-    if !display_driver_ready {
-        boot_ui::boot_complete_summary();
-        boot_display::show_boot_complete(boot_time);
-    }
-
-    // Show first boot information (text mode only)
-    if !graphics_result.framebuffer_ready {
-        boot_ui::show_first_boot_info(&hardware_result, &memory_result);
-    }
-
-    // Brief pause before transitioning to desktop
-    if !display_driver_ready {
         boot_ui::boot_delay_medium();
-    }
 
-    // Render graphical boot complete screen
-    if graphics_result.framebuffer_ready {
-        boot_ui::render_graphical_boot_complete();
-    }
-
-    // ========================================================================
-    // Transition to Desktop Environment
-    // ========================================================================
-    if !display_driver_ready {
-        boot_ui::transition_to_desktop();
-    } else if graphics_result.framebuffer_ready {
-        // GNOME-style smooth fade before desktop appears
-        boot_ui::transition_to_desktop();
-    }
-
-    // ========================================================================
-    // Userspace init (PID 1) when rootfs provides /bin/init or /init
-    // ========================================================================
-    let boot_config = boot_ui::boot_config();
-    if boot_config.prefer_userspace_init
-        && !boot_config.safe_mode
-        && initramfs::userspace_init_available()
-    {
+        // SAFETY: Debug output
         unsafe {
-            early_serial_write_str("RustOS: userspace init found, launching PID 1\r\n");
+            early_serial_write_str("RustOS: Delay complete\r\n");
         }
-        crate::serial_println!("Boot: transferring control to userspace init");
+
+        // ========================================================================
+        // PHASE 2: Hardware Detection
+        // ========================================================================
+        // SAFETY: Debug output
         unsafe {
-            initramfs::boot_userspace_init();
+            early_serial_write_str("RustOS: Starting hardware detection...\r\n");
         }
-    } else if boot_config.verbose {
+        let hardware_result = boot_ui::hardware_detection_progress();
         unsafe {
-            early_serial_write_str(
-                "RustOS: no userspace init (or disabled), using kernel desktop\r\n",
-            );
+            early_serial_write_str("RustOS: Hardware detection done\r\n");
         }
-    }
 
-    // Launch appropriate desktop environment
-    if use_graphics_desktop && desktop_result.window_manager_ready {
-        crate::serial_println!(
-            "desktop: {}x{}x{} gpu={}",
-            graphics_result.width,
-            graphics_result.height,
-            graphics_result.bpp,
-            graphics_result.gpu_accelerated
-        );
+        // ========================================================================
+        // PHASE 3: ACPI Initialization
+        // ========================================================================
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Starting ACPI phase...\r\n");
+        }
 
-        // Enter modern desktop main loop
-        modern_desktop_main_loop()
-    } else {
-        // Fall back to limited VGA graphics only when the 32-bit desktop is unavailable.
-        handle_graphics_fallback();
+        // Note: bootloader v0.9.33 doesn't provide rsdp_addr or physical_memory_offset
+        // We'll use manual ACPI detection and a default physical offset
+        let physical_memory_offset = x86_64::VirtAddr::new(phys_mem_offset);
+        let _acpi_result = {
+            unsafe {
+                early_serial_write_str("RustOS: ACPI begin_stage...\r\n");
+            }
+            boot_ui::begin_stage(boot_ui::BootStage::AcpiInit, 1);
+            unsafe {
+                early_serial_write_str("RustOS: ACPI report_warning...\r\n");
+            }
+            boot_ui::report_warning("ACPI", "Using manual ACPI detection");
+            unsafe {
+                early_serial_write_str("RustOS: ACPI complete_stage...\r\n");
+            }
+            boot_ui::complete_stage(boot_ui::BootStage::AcpiInit);
+            // Try ACPI initialization with manual detection
+            unsafe {
+                early_serial_write_str("RustOS: ACPI init_progress...\r\n");
+            }
+            boot_ui::acpi_init_progress(None, physical_memory_offset.as_u64())
+        };
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: ACPI phase complete\r\n");
+        }
 
-        println!();
-        println!("Launching LIMITED GRAPHICS FALLBACK");
-        println!("   Mode: VGA Mode 13h (320x200x8)");
-        println!("   Interface: diagnostic fallback");
-        println!();
+        // ========================================================================
+        // PHASE 4: PCI Bus Enumeration
+        // ========================================================================
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Starting PCI enumeration...\r\n");
+        }
+        let _pci_result = boot_ui::pci_enum_progress();
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: PCI enumeration done\r\n");
+        }
 
-        // Brief delay to show message before mode switch
+        // ========================================================================
+        // PHASE 5: Memory Management Initialization
+        // ========================================================================
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Starting memory management init...\r\n");
+        }
+        let memory_result =
+            boot_ui::memory_init_progress(&boot_info.memory_map, physical_memory_offset);
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Memory management done\r\n");
+        }
+
+        // Initialize the full paging-based memory manager (frame allocator + page table manager).
+        // boot_ui::memory_init_progress only analyzes the memory map; this sets up the actual
+        // paging infrastructure needed by map_user_page, protect_user_page, mmap, brk, etc.
+        unsafe {
+            early_serial_write_str("RustOS: Initializing paging memory manager...\r\n");
+        }
+        match memory::init_memory_management(
+            boot_info.memory_map.iter().as_slice(),
+            Some(phys_mem_offset),
+        ) {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
+            },
+            Err(e) => unsafe {
+                let msg = match e {
+                    memory::MemoryError::OutOfMemory => "Out of physical memory",
+                    memory::MemoryError::MappingFailed => "Failed to map virtual memory",
+                    memory::MemoryError::HeapInitFailed => "Heap initialization failed",
+                    memory::MemoryError::InvalidAddress => "Invalid address",
+                    _ => "Other memory error",
+                };
+                early_serial_write_str("RustOS: Paging memory manager init FAILED: ");
+                early_serial_write_str(msg);
+                early_serial_write_str("\r\n");
+            },
+        }
+
+        // Initialize the virtual memory manager (mmap/brk/mprotect support).
+        unsafe {
+            early_serial_write_str("RustOS: Initializing virtual memory manager...\r\n");
+        }
+        match memory_manager::init_virtual_memory(physical_memory_offset) {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Virtual memory manager initialized\r\n");
+            },
+            Err(_) => unsafe {
+                early_serial_write_str("RustOS: Virtual memory manager init FAILED\r\n");
+            },
+        }
+
+        // Runtime proof that user-page mapping actually backs frames (brk/mmap path).
+        match memory::selftest_user_paging() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: user-paging self-test PASSED\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: user-paging self-test FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
+        // ========================================================================
+        // PHASE 6: Interrupt and System Setup
+        // ========================================================================
+        boot_ui::begin_stage(boot_ui::BootStage::InterruptInit, 5);
+
+        // Initialize error handling system early
+        boot_ui::update_substage(1, "Initializing error handling...");
+        error::init_error_handling();
+        boot_ui::report_success("Error handling system initialized");
+
+        // Initialize health monitoring system
+        boot_ui::update_substage(2, "Starting health monitoring...");
+        health::init_health_monitoring();
+        boot_ui::report_success("System health monitoring active");
+
+        // Initialize comprehensive logging and debugging
+        boot_ui::update_substage(3, "Setting up logging subsystem...");
+        logging::init_logging_and_debugging();
+        boot_ui::report_success("Logging and debugging ready");
+
+        // Initialize GDT and interrupts
+        boot_ui::update_substage(4, "Configuring GDT and IDT...");
+        gdt::init();
+        interrupts::init();
+        boot_ui::report_success("GDT and interrupts configured");
+
+        // Initialize fast syscall support
+        boot_ui::update_substage(5, "Setting up syscall interface...");
+        if syscall_fast::is_supported() {
+            syscall_fast::init();
+            boot_ui::report_success("Fast syscall (SYSCALL/SYSRET) enabled");
+        } else {
+            boot_ui::report_warning("Syscall", "Using INT 0x80 fallback");
+        }
+
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Syscall init done, completing stage...\r\n");
+        }
+
+        boot_ui::complete_stage(boot_ui::BootStage::InterruptInit);
+
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Stage complete, doing short delay...\r\n");
+        }
+
+        // All PIC interrupts are masked in interrupts::init() for safe boot
         boot_ui::boot_delay_short();
 
-        // Initialize pixel-based desktop with VGA Mode 13h
+        // SAFETY: Debug output
         unsafe {
-            early_serial_write_str("RustOS: Starting simple_desktop::init_pixel_desktop()\r\n");
+            early_serial_write_str("RustOS: Short delay done\r\n");
         }
 
-        simple_desktop::init_pixel_desktop();
+        // SAFETY: Debug output
         unsafe {
-            early_serial_write_str("RustOS: Starting pixel_desktop_main_loop()\r\n");
+            early_serial_write_str("RustOS: Phase 6 complete, starting Phase 7...\r\n");
         }
-        pixel_desktop_main_loop()
-    }
+
+        // ========================================================================
+        // Boot Menu - Skip in graphical mode (auto-boot like native OS)
+        // ========================================================================
+        let boot_selection = if early_display_ready {
+            boot_ui::BootMenuSelection::NormalBoot
+        } else {
+            unsafe {
+                early_serial_write_str("RustOS: Showing boot menu (text mode)...\r\n");
+            }
+            boot_ui::show_boot_menu()
+        };
+        unsafe {
+            early_serial_write_str("RustOS: Boot menu selection made\r\n");
+        }
+
+        // Clear screen for normal boot progress display
+        if boot_selection == boot_ui::BootMenuSelection::NormalBoot {
+            if early_display_ready {
+                boot_ui::show_graphical_splash();
+            } else {
+                boot_ui::show_boot_splash();
+            }
+        }
+
+        // ========================================================================
+        // PHASE 7: Driver Loading
+        // ========================================================================
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Starting driver loading...\r\n");
+        }
+        let driver_result = boot_ui::driver_loading_progress();
+        // SAFETY: Debug output
+        unsafe {
+            early_serial_write_str("RustOS: Driver loading done\r\n");
+        }
+
+        // Time system was already initialized in driver_loading_progress()
+        // Check if it succeeded and enable timer interrupt
+        unsafe {
+            early_serial_write_str("RustOS: Checking time init result...\r\n");
+        }
+        let time_initialized = driver_result.timer_loaded;
+        unsafe {
+            early_serial_write_str("RustOS: time_initialized check done\r\n");
+        }
+        if time_initialized {
+            unsafe {
+                early_serial_write_str("RustOS: About to get timer stats...\r\n");
+            }
+            let stats = time::get_timer_stats();
+            unsafe {
+                early_serial_write_str("RustOS: Got timer stats\r\n");
+            }
+            log_info!(
+                "kernel",
+                "Time system initialized with {:?} timer",
+                stats.active_timer
+            );
+
+            // Initialize system time from RTC
+            if let Ok(()) = time::init_system_time_from_rtc() {
+                log_info!(
+                    "kernel",
+                    "System time initialized from RTC: {}",
+                    time::system_time()
+                );
+            }
+        } else {
+            log_error!(
+                "kernel",
+                "Time system initialization failed in driver loading phase"
+            );
+        }
+
+        // Enable keyboard and mouse interrupts for user input
+        unsafe {
+            early_serial_write_str("RustOS: Enabling keyboard interrupt...\r\n");
+        }
+        interrupts::enable_keyboard_interrupt();
+        unsafe {
+            early_serial_write_str("RustOS: Keyboard interrupt enabled\r\n");
+        }
+        unsafe {
+            early_serial_write_str("RustOS: Enabling mouse interrupt...\r\n");
+        }
+        interrupts::enable_mouse_interrupt();
+        unsafe {
+            early_serial_write_str("RustOS: Mouse interrupt enabled\r\n");
+        }
+
+        // ========================================================================
+        // PHASE 8: File System Mount
+        // ========================================================================
+        // Initialize process management and scheduler before filesystem/Linux init.
+        unsafe {
+            early_serial_write_str("RustOS: Initializing process manager...\r\n");
+        }
+        match process::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Process manager initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Process manager init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+        match process_manager::init() {
+            Ok(()) => {
+                crate::glib_spawn::mark_spawn_runtime_ready();
+                unsafe {
+                    early_serial_write_str("RustOS: POSIX process manager initialized\r\n");
+                }
+            }
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: POSIX process manager init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+        match glib::smoke_check_spawn() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
+                match glib::smoke_check_gnome_readiness() {
+                    Ok(()) => {
+                        early_serial_write_str("RustOS: GNOME readiness smoke check passed\r\n")
+                    }
+                    Err(reason) => {
+                        early_serial_write_str("RustOS: GNOME readiness smoke check FAILED: ");
+                        early_serial_write_str(reason);
+                        early_serial_write_str("\r\n");
+                    }
+                }
+                gnome::log_boot_readiness();
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+        unsafe {
+            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+        }
+        match scheduler::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Scheduler initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Scheduler init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+        unsafe {
+            early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
+        }
+        match security::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Security subsystem initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Security init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
+        unsafe {
+            early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n");
+        }
+        let _fs_result = boot_ui::filesystem_mount_progress();
+        unsafe {
+            early_serial_write_str("RustOS: Phase 8 complete\r\n");
+        }
+
+        // Enable timer interrupt now that filesystem init is done
+        unsafe {
+            early_serial_write_str("RustOS: Enabling timer interrupt...\r\n");
+        }
+        interrupts::enable_timer_interrupt();
+        unsafe {
+            early_serial_write_str("RustOS: Timer interrupt enabled\r\n");
+        }
+
+        // Initialize Linux compatibility layer (file_ops, process_ops, etc.)
+        unsafe {
+            early_serial_write_str("RustOS: Initializing Linux compatibility layer...\r\n");
+        }
+        linux_compat::init_linux_compat();
+        unsafe {
+            early_serial_write_str("RustOS: Linux compatibility layer initialized\r\n");
+        }
+
+        // Initialize Linux integration layer
+        if !early_display_ready {
+            boot_display::show_subsystem_init(
+                "Linux Integration Layer",
+                boot_display::SubsystemStatus::Initializing,
+            );
+        }
+        match linux_integration::init() {
+            Ok(_) => {
+                unsafe {
+                    early_serial_write_str("RustOS: Linux init OK, showing status...\r\n");
+                }
+                if !early_display_ready {
+                    boot_display::show_subsystem_init(
+                        "Linux Integration Layer",
+                        boot_display::SubsystemStatus::Ready,
+                    );
+                }
+                unsafe {
+                    early_serial_write_str("RustOS: Linux status shown, skip state updates\r\n");
+                }
+                // Skip subsystem state updates entirely - they can crash
+            }
+            Err(_e) => {
+                unsafe {
+                    early_serial_write_str("RustOS: Linux init error\r\n");
+                }
+                if !early_display_ready {
+                    boot_display::show_subsystem_init(
+                        "Linux Integration Layer",
+                        boot_display::SubsystemStatus::Warning,
+                    );
+                }
+            }
+        }
+        unsafe {
+            early_serial_write_str("RustOS: Linux integration done\r\n");
+        }
+
+        // Initialize D-Bus message bus
+        unsafe {
+            early_serial_write_str("RustOS: Initializing D-Bus message bus...\r\n");
+        }
+        match dbus::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: D-Bus message bus ready\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: D-Bus init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
+        // Initialize Wayland compositor
+        unsafe {
+            early_serial_write_str("RustOS: Initializing Wayland compositor...\r\n");
+        }
+        match wayland::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Wayland compositor ready\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Wayland init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
+        // Log GNOME readiness after all foundation subsystems are initialized
+        gnome::log_boot_readiness();
+
+        // ========================================================================
+        // PHASE 9: Graphics Initialization (already done early — mark complete)
+        // ========================================================================
+        let mut graphics_result = early_graphics_result;
+        let display_driver_ready = early_display_ready;
+
+        if display_driver_ready {
+            boot_ui::begin_stage(boot_ui::BootStage::GraphicsInit, 1);
+            boot_ui::update_substage(1, "Display ready (early init)");
+            boot_ui::report_success("Display output verified");
+            boot_ui::complete_stage(boot_ui::BootStage::GraphicsInit);
+        } else if !boot_ui::boot_config().force_text_mode && !boot_ui::boot_config().safe_mode {
+            // Fall back to existing graphics init (checks bootloader framebuffer, then text mode)
+            graphics_result = boot_ui::graphics_init_progress();
+        }
+
+        if display_driver_ready {
+            crate::serial_println!(
+                "display: driver ready {}x{}x{}",
+                graphics_result.width,
+                graphics_result.height,
+                graphics_result.bpp
+            );
+        }
+        unsafe {
+            early_serial_write_str("RustOS: Phase 9 complete\r\n");
+        }
+
+        // Render graphical boot progress if framebuffer is ready
+        if graphics_result.framebuffer_ready {
+            boot_ui::render_graphical_boot_progress();
+        }
+
+        // Decide boot mode based on graphics initialization
+        let use_graphics_desktop = graphics_result.framebuffer_ready
+            && graphics_result.bpp == 32
+            && !graphics_result.fallback_to_text;
+
+        // ========================================================================
+        // PHASE 10: Desktop Environment Initialization
+        // ========================================================================
+        let desktop_result = if use_graphics_desktop {
+            if display_driver_ready {
+                let mut result = boot_ui::DesktopInitResult::new();
+                match desktop::init_default_desktop() {
+                    Ok(()) => {
+                        result.window_manager_ready = true;
+                        result.input_ready = true;
+                        result.taskbar_ready = true;
+                        result.windows_created = true;
+                    }
+                    Err(e) => {
+                        crate::serial_println!("Desktop setup error: {}", e);
+                    }
+                }
+                result
+            } else {
+                boot_ui::desktop_init_progress()
+            }
+        } else {
+            // Skip desktop init when the 32-bit framebuffer desktop is unavailable.
+            boot_ui::begin_stage(boot_ui::BootStage::DesktopInit, 1);
+            boot_ui::update_substage(1, "32-bit framebuffer desktop unavailable...");
+            boot_ui::report_warning("Desktop", "32-bit graphical UI unavailable");
+            boot_ui::complete_stage(boot_ui::BootStage::DesktopInit);
+            boot_ui::DesktopInitResult::new()
+        };
+
+        // ========================================================================
+        // Boot Complete Summary
+        // ========================================================================
+        let boot_time = if time_initialized {
+            time::uptime_ms()
+        } else {
+            0
+        };
+        unsafe {
+            early_serial_write_str("RustOS: Boot complete in ");
+            early_serial_write_u64(boot_time);
+            early_serial_write_str("ms\r\n");
+        }
+        if !display_driver_ready {
+            boot_ui::boot_complete_summary();
+            boot_display::show_boot_complete(boot_time);
+        }
+
+        // Show first boot information (text mode only)
+        if !graphics_result.framebuffer_ready {
+            boot_ui::show_first_boot_info(&hardware_result, &memory_result);
+        }
+
+        // Brief pause before transitioning to desktop
+        if !display_driver_ready {
+            boot_ui::boot_delay_medium();
+        }
+
+        // Render graphical boot complete screen
+        if graphics_result.framebuffer_ready {
+            boot_ui::render_graphical_boot_complete();
+        }
+
+        // ========================================================================
+        // Transition to Desktop Environment
+        // ========================================================================
+        if !display_driver_ready {
+            boot_ui::transition_to_desktop();
+        } else if graphics_result.framebuffer_ready {
+            // GNOME-style smooth fade before desktop appears
+            boot_ui::transition_to_desktop();
+        }
+
+        // ========================================================================
+        // Userspace init (PID 1) when rootfs provides /bin/init or /init
+        // ========================================================================
+        let boot_config = boot_ui::boot_config();
+        if boot_config.prefer_userspace_init
+            && !boot_config.safe_mode
+            && initramfs::userspace_init_available()
+        {
+            unsafe {
+                early_serial_write_str("RustOS: userspace init found, launching PID 1\r\n");
+            }
+            crate::serial_println!("Boot: transferring control to userspace init");
+            unsafe {
+                initramfs::boot_userspace_init();
+            }
+        } else if boot_config.verbose {
+            unsafe {
+                early_serial_write_str(
+                    "RustOS: no userspace init (or disabled), using kernel desktop\r\n",
+                );
+            }
+        }
+
+        // Launch appropriate desktop environment
+        if use_graphics_desktop && desktop_result.window_manager_ready {
+            crate::serial_println!(
+                "desktop: {}x{}x{} gpu={}",
+                graphics_result.width,
+                graphics_result.height,
+                graphics_result.bpp,
+                graphics_result.gpu_accelerated
+            );
+
+            // Enter modern desktop main loop
+            modern_desktop_main_loop()
+        } else {
+            // Fall back to limited VGA graphics only when the 32-bit desktop is unavailable.
+            handle_graphics_fallback();
+
+            println!();
+            println!("Launching LIMITED GRAPHICS FALLBACK");
+            println!("   Mode: VGA Mode 13h (320x200x8)");
+            println!("   Interface: diagnostic fallback");
+            println!();
+
+            // Brief delay to show message before mode switch
+            boot_ui::boot_delay_short();
+
+            // Initialize pixel-based desktop with VGA Mode 13h
+            unsafe {
+                early_serial_write_str("RustOS: Starting simple_desktop::init_pixel_desktop()\r\n");
+            }
+
+            simple_desktop::init_pixel_desktop();
+            unsafe {
+                early_serial_write_str("RustOS: Starting pixel_desktop_main_loop()\r\n");
+            }
+            pixel_desktop_main_loop()
+        }
     }
 }
 

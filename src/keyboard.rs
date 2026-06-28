@@ -29,8 +29,7 @@ lazy_static! {
 // `get_scancode` for consumers that want raw scancodes (e.g. IPC keyboard
 // event forwarding).
 lazy_static! {
-    static ref SCANCODE_QUEUE: Mutex<Queue<u8, SCANCODE_BUFFER_SIZE>> =
-        Mutex::new(Queue::new());
+    static ref SCANCODE_QUEUE: Mutex<Queue<u8, SCANCODE_BUFFER_SIZE>> = Mutex::new(Queue::new());
 }
 
 /// Keyboard scan codes for special keys

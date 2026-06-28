@@ -239,8 +239,8 @@ pub struct StackInfo {
 pub fn get_stack_info() -> StackInfo {
     unsafe {
         StackInfo {
-            kernel_stack: VirtAddr::new(0), // Would be set during task switching
-            user_stack: None,               // Would be set during task switching
+            kernel_stack: TSS.privilege_stack_table[0],
+            user_stack: None,
             interrupt_stacks: [
                 TSS.interrupt_stack_table[0],
                 TSS.interrupt_stack_table[1],

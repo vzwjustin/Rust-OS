@@ -19,7 +19,7 @@ use core::sync::atomic::AtomicU64;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::structures::paging::PhysFrame;
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 use super::{GPUCapabilities, GPUTier, GPUVendor};
 
@@ -228,6 +228,13 @@ pub struct GPUMemoryManager {
     pub next_dma_id: u32,
     pub fragmentation_threshold: f32,
     pub compaction_enabled: bool,
+    /// Base virtual address of the GPU-coherent memory window assigned to this
+    /// GPU during init. 0 means no real GPU is present and coherent-memory
+    /// operations should no-op/return an error rather than use fake addresses.
+    pub gpu_memory_base: u64,
+    /// Size in bytes of the GPU-coherent memory window starting at
+    /// `gpu_memory_base`. 0 means the window is unconfigured.
+    pub gpu_memory_size: u64,
 }
 
 impl GPUMemoryManager {
@@ -275,7 +282,20 @@ impl GPUMemoryManager {
             next_dma_id: 1,
             fragmentation_threshold: 0.3, // 30% fragmentation threshold
             compaction_enabled: true,
+            gpu_memory_base: 0,
+            gpu_memory_size: 0,
         }
+    }
+
+    /// Configure the GPU-coherent memory window for this GPU.
+    ///
+    /// Called during GPU init once the real aperture base/size are known
+    /// (e.g. from a PCI BAR or firmware table). Until this is called, the
+    /// coherent-memory mapping helpers refuse to operate so that no fake
+    /// addresses are ever used.
+    pub fn set_gpu_memory_window(&mut self, base: u64, size: u64) {
+        self.gpu_memory_base = base;
+        self.gpu_memory_size = size;
     }
 
     /// Allocate GPU memory with specified size and alignment
@@ -925,7 +945,9 @@ impl GPUMemoryManager {
             };
             let stats = mm.get_zone_stats();
             let zone_stats = &stats[zone as usize];
-            let free_frames = zone_stats.total_frames.saturating_sub(zone_stats.allocated_frames);
+            let free_frames = zone_stats
+                .total_frames
+                .saturating_sub(zone_stats.allocated_frames);
             // Check that the zone has enough free frames
             if free_frames < pages {
                 return false;
@@ -977,8 +999,20 @@ impl GPUMemoryManager {
 
     /// Map GPU coherent memory with appropriate caching flags
     fn map_gpu_coherent_memory(&self, pages: &[PhysFrame]) -> Result<u64, &'static str> {
-        // Choose virtual address in GPU-accessible range
-        let virt_base = 0xFE000000u64 + (self.gpu_id as u64 * 0x10000000);
+        // Use the GPU-coherent memory window configured during GPU init.
+        // If no real GPU is present (base == 0), refuse rather than fall back
+        // to a hardcoded fake address range.
+        if self.gpu_memory_base == 0 || self.gpu_memory_size == 0 {
+            return Err("GPU coherent memory window not configured");
+        }
+
+        let window_end = self.gpu_memory_base.saturating_add(self.gpu_memory_size);
+        let needed = (pages.len() * 4096) as u64;
+        if needed > self.gpu_memory_size {
+            return Err("Requested mapping exceeds GPU coherent memory window");
+        }
+
+        let virt_base = self.gpu_memory_base;
 
         for (i, frame) in pages.iter().enumerate() {
             let virt_addr = virt_base + (i * 4096) as u64;
@@ -1000,28 +1034,32 @@ impl GPUMemoryManager {
 
     /// Map a page with GPU-coherent caching attributes
     fn map_page_gpu_coherent(&self, virt_addr: u64, phys_addr: u64) -> Result<(), &'static str> {
-        // In production, this would use the page table manager with specific flags
-        // GPU-coherent memory typically uses write-combining or uncached attributes
+        // GPU-coherent memory uses write-combining (write-through) caching so
+        // streaming writes are coalesced without polluting the CPU cache.
+        // Map through the real kernel page-table manager rather than writing
+        // page-table entries to a hardcoded address.
 
-        unsafe {
-            // Simulate page table entry creation with GPU-coherent flags
-            let page_table_entry = phys_addr | 0x1 | 0x2 | 0x10; // Present | Writable | Write-through
-
-            // In a real implementation, this would update the actual page tables
-            // For now, we'll just validate the addresses are reasonable
-            if virt_addr < 0xFE000000 || virt_addr >= 0xFF000000 {
-                return Err("Virtual address outside GPU memory range");
-            }
-
-            if phys_addr >= 0x100000000 {
-                return Err("Physical address above 4GB not supported");
-            }
-
-            // Store mapping info (simplified)
-            core::ptr::write_volatile(0xFFFFF000 as *mut u64, page_table_entry);
+        if self.gpu_memory_base == 0 || self.gpu_memory_size == 0 {
+            return Err("GPU coherent memory window not configured");
         }
 
-        Ok(())
+        let window_end = self.gpu_memory_base.saturating_add(self.gpu_memory_size);
+        if virt_addr < self.gpu_memory_base || virt_addr >= window_end {
+            return Err("Virtual address outside GPU memory window");
+        }
+
+        if phys_addr >= 0x1_0000_0000 {
+            return Err("Physical address above 4GB not supported");
+        }
+
+        // PRESENT | WRITABLE | WRITE_COMBINING (write-through) for GPU-coherent
+        // memory. This goes through the active OffsetPageTable via the global
+        // memory manager, allocating any intermediate page tables as needed.
+        let flags = crate::memory::MemoryFlags::PRESENT
+            | crate::memory::MemoryFlags::WRITABLE
+            | crate::memory::MemoryFlags::WRITE_COMBINING;
+
+        crate::memory::map_physical_memory(virt_addr as usize, phys_addr as usize, flags)
     }
 
     /// Configure GPU memory controller for new allocation
@@ -1074,13 +1112,12 @@ impl GPUMemoryManager {
 
     /// Convert virtual address to physical address
     fn virt_to_phys(&self, virt_addr: u64) -> Result<u64, &'static str> {
-        // In production, this would walk the page tables
-        // For now, assume direct mapping offset
-        if virt_addr >= 0xFE000000 && virt_addr < 0xFF000000 {
-            Ok(virt_addr - 0xFE000000 + 0x1000000) // Assume physical starts at 16MB
-        } else {
-            Err("Invalid virtual address for translation")
-        }
+        // Walk the active page tables via the kernel memory manager instead of
+        // assuming a fixed direct-mapping offset, which is only valid for the
+        // bootloader's identity mapping and not for GPU aperture mappings.
+        crate::memory::translate_addr(VirtAddr::new(virt_addr))
+            .map(|p| p.as_u64())
+            .ok_or("Virtual address is not mapped")
     }
 
     /// Get GPU vendor for this memory manager
@@ -1097,17 +1134,17 @@ impl GPUMemoryManager {
 
     /// Unmap a virtual page
     fn unmap_page(&self, virt_addr: u64) -> Result<(), &'static str> {
-        // In production, this would remove the page table entry
-        if virt_addr < 0xFE000000 || virt_addr >= 0xFF000000 {
+        if self.gpu_memory_base == 0 || self.gpu_memory_size == 0 {
+            return Err("GPU coherent memory window not configured");
+        }
+
+        let window_end = self.gpu_memory_base.saturating_add(self.gpu_memory_size);
+        if virt_addr < self.gpu_memory_base || virt_addr >= window_end {
             return Err("Invalid virtual address for unmapping");
         }
 
-        // Simulate page table entry removal
-        unsafe {
-            core::ptr::write_volatile((0xFFFFF000 + (virt_addr >> 12) * 8) as *mut u64, 0);
-        }
-
-        Ok(())
+        // Remove the mapping through the real kernel page-table manager.
+        crate::memory::unmap_page(virt_addr as usize)
     }
 
     fn free_host_memory(&self, ptr: NonNull<u8>, size: usize) -> Result<(), &'static str> {

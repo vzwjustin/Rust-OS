@@ -1453,6 +1453,14 @@ impl PageTableManager {
         self.mapper.translate_addr(addr)
     }
 
+    /// Get a mutable reference to the inner offset page table mapper.
+    ///
+    /// This allows callers that need `&mut impl Mapper<Size4KiB>` (such as
+    /// the ELF loader) to use the kernel's real page table manager.
+    pub fn mapper_mut(&mut self) -> &mut OffsetPageTable<'static> {
+        &mut self.mapper
+    }
+
     /// Map a single page with specific flags
     pub fn map_page(
         &mut self,
@@ -1896,8 +1904,10 @@ impl PageTableManager {
 
 /// Main memory management system
 pub struct MemoryManager {
-    frame_allocator: Mutex<PhysicalFrameAllocator>,
-    page_table_manager: Mutex<PageTableManager>,
+    /// Frame allocator for physical memory
+    pub frame_allocator: Mutex<PhysicalFrameAllocator>,
+    /// Page table manager
+    pub page_table_manager: Mutex<PageTableManager>,
     /// Offset of the direct physical-memory mapping. Required to form valid
     /// pointers to physical frames (mirrors PageTableManager's own field).
     physical_memory_offset: VirtAddr,
@@ -1913,11 +1923,11 @@ pub struct MemoryManager {
 /// Security features configuration
 #[derive(Debug, Clone)]
 pub struct SecurityFeatures {
-    aslr_enabled: bool,
-    stack_canaries_enabled: bool,
-    nx_bit_enabled: bool,
-    smep_enabled: bool,
-    smap_enabled: bool,
+    pub aslr_enabled: bool,
+    pub stack_canaries_enabled: bool,
+    pub nx_bit_enabled: bool,
+    pub smep_enabled: bool,
+    pub smap_enabled: bool,
 }
 
 impl Default for SecurityFeatures {
@@ -1963,6 +1973,28 @@ impl MemoryManager {
     /// Get the physical memory offset used for direct physical-memory mapping.
     pub fn physical_memory_offset(&self) -> VirtAddr {
         self.physical_memory_offset
+    }
+
+    /// Allocate a physically contiguous block from the requested memory zone.
+    pub fn allocate_contiguous_pages(
+        &self,
+        num_pages: usize,
+        zone: MemoryZone,
+    ) -> Option<PhysFrame> {
+        if num_pages == 0 {
+            return None;
+        }
+
+        let mut order = 0;
+        let mut pages = 1usize;
+        while pages < num_pages {
+            pages = pages.checked_shl(1)?;
+            order += 1;
+        }
+
+        self.frame_allocator
+            .lock()
+            .allocate_frames_in_zone(zone, order)
     }
 
     /// Map a virtual memory region to physical frames
@@ -2955,7 +2987,6 @@ pub enum MemoryError {
     PrivilegeViolation,
     ExecuteViolation,
     GuardPageViolation,
-    LazyAllocationNotImplemented,
     ProtectionFailed,
     InvalidOrder,
     BuddyAllocationFailed,
@@ -2977,9 +3008,6 @@ impl fmt::Display for MemoryError {
             MemoryError::PrivilegeViolation => write!(f, "Privilege violation"),
             MemoryError::ExecuteViolation => write!(f, "Execute access violation"),
             MemoryError::GuardPageViolation => write!(f, "Guard page access violation"),
-            MemoryError::LazyAllocationNotImplemented => {
-                write!(f, "Lazy allocation not implemented")
-            }
             MemoryError::ProtectionFailed => write!(f, "Failed to change memory protection"),
             MemoryError::InvalidOrder => write!(f, "Invalid buddy allocator order"),
             MemoryError::BuddyAllocationFailed => write!(f, "Buddy allocation failed"),

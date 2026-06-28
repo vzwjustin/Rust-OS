@@ -328,6 +328,18 @@ impl StdioPlatform for RustOsStdioPlatform {
             -1
         }
     }
+
+    fn list_dir(&self, path: &str) -> Vec<String> {
+        vfs::vfs_list_dir(path)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| entry.name)
+                    .filter(|name| name != "." && name != "..")
+                    .collect()
+            })
+            .unwrap_or_else(|_| Vec::new())
+    }
 }
 
 pub struct RustOsSpawnPlatform;

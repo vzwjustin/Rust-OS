@@ -11,7 +11,6 @@ use crate::scheduler::Pid;
 use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use core::arch::asm;
-use x86_64::structures::idt::InterruptStackFrame;
 
 mod linux;
 
@@ -192,93 +191,16 @@ pub fn init() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Set up the system call interrupt handler
-fn setup_syscall_interrupt() {
-    use lazy_static::lazy_static;
-    use spin::Mutex;
-    use x86_64::structures::idt::InterruptDescriptorTable;
-
-    lazy_static! {
-        static ref SYSCALL_IDT: Mutex<InterruptDescriptorTable> = {
-            let mut idt = InterruptDescriptorTable::new();
-            idt[0x80].set_handler_fn(syscall_interrupt_handler);
-            Mutex::new(idt)
-        };
-    }
-
-    // Load the IDT entry for system calls
-    // Note: In a real implementation, this would be integrated with the main IDT
-}
-
-/// System call interrupt handler (interrupt 0x80)
+/// Set up the system call interrupt handler.
 ///
-/// ponytail: BROKEN and NOT installed. This handler has the same register-clobber
-/// bug as the (now-fixed) one in `syscall_handler.rs`: the `extern "x86-interrupt"`
-/// prologue reuses rdi/rsi/... before the `asm!` below reads them, and the final
-/// RAX write is overwritten by the epilogue before `iretq`. It is only registered
-/// into the local `SYSCALL_IDT` in `setup_syscall_interrupt`, which is never
-/// loaded, so it never runs — the live INT 0x80 path is
-/// `crate::syscall_handler::syscall_0x80_handler` (naked, fixed). Left as-is to
-/// avoid a blind naked rewrite that would also have to recover the user RSP/RIP
-/// this version reads from `InterruptStackFrame`; flagged for follow-up.
-extern "x86-interrupt" fn syscall_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Extract system call parameters from registers
-    let (syscall_num, arg1, arg2, arg3, arg4, arg5, arg6): (u64, u64, u64, u64, u64, u64, u64);
-
-    unsafe {
-        asm!(
-            "mov {0:r}, rax",    // System call number
-            "mov {1:r}, rdi",    // First argument
-            "mov {2:r}, rsi",    // Second argument
-            "mov {3:r}, rdx",    // Third argument
-            "mov {4:r}, r10",    // Fourth argument (r10 instead of rcx)
-            "mov {5:r}, r8",     // Fifth argument
-            "mov {6:r}, r9",     // Sixth argument
-            out(reg) syscall_num,
-            out(reg) arg1,
-            out(reg) arg2,
-            out(reg) arg3,
-            out(reg) arg4,
-            out(reg) arg5,
-            out(reg) arg6,
-        );
-    }
-
-    let context = SyscallContext {
-        pid: get_current_pid(),
-        syscall_num: SyscallNumber::from(syscall_num),
-        args: [arg1, arg2, arg3, arg4, arg5, arg6],
-        user_sp: _stack_frame.stack_pointer.as_u64(),
-        user_ip: _stack_frame.instruction_pointer.as_u64(),
-        privilege_level: 3, // Assume user mode
-        cwd: get_process_cwd(get_current_pid()),
-    };
-
-    // Dispatch the system call
-    let result = dispatch_syscall(&context);
-
-    // Update statistics
-    unsafe {
-        SYSCALL_STATS.total_calls += 1;
-        if syscall_num < 64 {
-            SYSCALL_STATS.calls_by_type[syscall_num as usize] += 1;
-        }
-
-        match result {
-            Ok(_) => SYSCALL_STATS.successful_calls += 1,
-            Err(_) => SYSCALL_STATS.failed_calls += 1,
-        }
-    }
-
-    // Return result in RAX register
-    let return_value = match result {
-        Ok(value) => value,
-        Err(error) => -(error as i64) as u64, // Negative error codes
-    };
-
-    unsafe {
-        asm!("mov rax, {0:r}", in(reg) return_value);
-    }
+/// The live INT 0x80 path is `crate::syscall_handler::syscall_0x80_handler`
+/// (a naked assembly stub that correctly preserves user registers). The
+/// real syscall entry point is installed by the main interrupt subsystem
+/// during boot, so this function does not need to register a separate IDT.
+fn setup_syscall_interrupt() {
+    // The syscall gate (INT 0x80) is installed by the interrupt subsystem
+    // in `crate::interrupts::init()` which loads the real IDT. No local
+    // IDT construction is needed here.
 }
 
 /// Dispatch a system call to the appropriate handler
@@ -1191,14 +1113,7 @@ fn shrink_process_heap(pid: Pid, size: u64) -> Result<(), &'static str> {
 }
 
 /// Memory map
-fn sys_mmap(
-    _addr: u64,
-    length: u64,
-    prot: i32,
-    flags: i32,
-    fd: i32,
-    _offset: u64,
-) -> SyscallResult {
+fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64) -> SyscallResult {
     // Security validation
     if length == 0 {
         return Err(SyscallError::InvalidArgument);
@@ -1230,8 +1145,98 @@ fn sys_mmap(
     let is_anonymous = (flags & 0x20) != 0;
 
     if !is_anonymous && fd >= 0 {
-        // File-backed mapping - not yet implemented
-        return Err(SyscallError::NotSupported);
+        // File-backed mapping.
+        //
+        // We allocate an anonymous region (temporarily writable so we can fill
+        // it), copy the file contents into it in page-sized chunks, zero-fill
+        // any remainder when the file is shorter than the requested length, and
+        // finally re-protect the region to the caller-requested permissions.
+
+        // (a) Allocate an anonymous region, forced writable for filling.
+        let fill_protection = crate::memory::MemoryProtection {
+            readable: true,
+            writable: true,
+            executable: false,
+            user_accessible: true,
+            cache_disabled: false,
+            write_through: false,
+            copy_on_write: false,
+            guard_page: false,
+        };
+
+        let virt_addr = match crate::memory::allocate_memory(
+            length as usize,
+            crate::memory::MemoryRegionType::UserHeap,
+            fill_protection,
+        ) {
+            Ok(virt_addr) => virt_addr,
+            Err(memory_error) => {
+                let syscall_error = match memory_error {
+                    crate::memory::MemoryError::OutOfMemory => SyscallError::OutOfMemory,
+                    crate::memory::MemoryError::NoVirtualSpace => SyscallError::OutOfMemory,
+                    _ => SyscallError::InvalidArgument,
+                };
+                return Err(syscall_error);
+            }
+        };
+
+        // Helper to roll back the allocation on error.
+        let free_and_fail = |err: SyscallError| -> SyscallResult {
+            let _ = crate::memory::deallocate_memory(virt_addr);
+            Err(err)
+        };
+
+        // (b) Determine the file size via the VFS by seeking to end.
+        let file_size = match crate::fs::vfs().seek(fd, crate::fs::SeekFrom::End(0)) {
+            Ok(size) => size as usize,
+            Err(_) => return free_and_fail(SyscallError::InvalidArgument),
+        };
+        // Restore the file position to the requested offset before reading.
+        if let Err(_) = crate::fs::vfs().seek(fd, crate::fs::SeekFrom::Start(offset)) {
+            return free_and_fail(SyscallError::InvalidArgument);
+        }
+
+        // Bytes available in the file starting from `offset`.
+        let available = if (offset as usize) >= file_size {
+            0
+        } else {
+            file_size - offset as usize
+        };
+        // Only map up to `length` bytes from the file.
+        let to_read = core::cmp::min(available, length as usize);
+
+        // (c) Read file contents into the allocated region in page-sized chunks.
+        const PAGE_SIZE: usize = 4096;
+        let base_ptr = virt_addr.as_u64() as *mut u8;
+        let mut copied: usize = 0;
+        while copied < to_read {
+            let chunk_len = core::cmp::min(PAGE_SIZE, to_read - copied);
+            // SAFETY: `base_ptr` points to a freshly-allocated, mapped,
+            // writable region of `length` bytes. `copied + chunk_len <= to_read
+            // <= length`, so this slice stays within the mapping.
+            let dst = unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
+            match crate::fs::vfs().read(fd, dst) {
+                Ok(0) => break, // EOF reached early
+                Ok(n) => copied += n,
+                Err(_) => return free_and_fail(SyscallError::InvalidArgument),
+            }
+        }
+
+        // Zero-fill the remainder when the file is smaller than the mapping.
+        if copied < length as usize {
+            // SAFETY: `copied < length`, and `base_ptr` points to a mapped
+            // writable region of `length` bytes, so the tail is valid to zero.
+            unsafe {
+                core::ptr::write_bytes(base_ptr.add(copied), 0u8, length as usize - copied);
+            }
+        }
+
+        // (d) Re-protect the region to the caller-requested permissions.
+        if let Err(_) = crate::memory::protect_memory(virt_addr, length as usize, protection) {
+            return free_and_fail(SyscallError::OutOfMemory);
+        }
+
+        return Ok(virt_addr.as_u64());
     }
 
     // For anonymous mappings

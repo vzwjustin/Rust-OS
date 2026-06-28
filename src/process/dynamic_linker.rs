@@ -689,16 +689,26 @@ impl DynamicLinker {
                     // PLT entry: S
                     let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
 
-                    // Resolve symbol by index
+                    // Eager binding: resolve the symbol now and write its address
+                    // directly into the GOT entry. A full lazy-binding trampoline
+                    // (which would patch the GOT on first call via a resolver stub)
+                    // is not feasible in this no_std environment because there is no
+                    // user-space resolver routine we can point the GOT at. Eager
+                    // binding is correct and avoids leaving GOT entries unresolved,
+                    // which would fault on first call.
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
-                        // For eager binding, write symbol address directly
                         unsafe {
                             self.write_relocation_value(target, symbol_addr.as_u64())?;
                         }
                     } else {
-                        // For lazy binding, we could write resolver stub address here
-                        // For now, leave it unresolved (will be resolved on first call)
-                        // This is optional - we could also error out like GLOB_DAT
+                        // Symbol could not be resolved at load time. Unlike a lazy
+                        // scheme that could defer the failure to first call, an
+                        // unresolved GOT entry would trap immediately on use, so
+                        // surface the error now (matching GLOB_DAT behavior).
+                        return Err(DynamicLinkerError::SymbolNotFound(format!(
+                            "symbol index {}",
+                            reloc.symbol
+                        )));
                     }
                 }
                 relocation_types::R_X86_64_64 => {

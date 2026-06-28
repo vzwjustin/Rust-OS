@@ -1922,17 +1922,47 @@ fn syscall_signalfd4(fd: i32, mask: *const u8, sizemask: u32, flags: i32) -> i64
 fn read_signalfd_mask(mask: *const u8, sizemask: u32) -> crate::linux_compat::LinuxResult<u64> {
     use crate::linux_compat::LinuxError;
     if mask.is_null() {
-        return Err(LinuxError::EFAULT);
+        return Err(crate::linux_compat::LinuxError::EFAULT);
     }
     if sizemask < 8 {
-        return Err(LinuxError::EINVAL);
+        return Err(crate::linux_compat::LinuxError::EINVAL);
     }
     let mut bytes = [0u8; 8];
     // SAFETY: caller guarantees mask points to at least sizemask bytes.
-    unsafe {
-        core::ptr::copy_nonoverlapping(mask, bytes.as_mut_ptr(), 8);
-    }
+    read_user_bytes(mask, &mut bytes)?;
     Ok(u64::from_ne_bytes(bytes))
+}
+
+fn read_user_bytes(ptr: *const u8, dst: &mut [u8]) -> crate::linux_compat::LinuxResult<()> {
+    if ptr.is_null() {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+    let valid = crate::memory::check_memory_access(ptr as usize, dst.len(), false, 3)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)?;
+    if !valid {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, dst.as_mut_ptr(), dst.len());
+    }
+    Ok(())
+}
+
+fn write_user_bytes(ptr: *mut u8, src: &[u8]) -> crate::linux_compat::LinuxResult<()> {
+    if ptr.is_null() {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+    let valid = crate::memory::check_memory_access(ptr as usize, src.len(), true, 3)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)?;
+    if !valid {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(src.as_ptr(), ptr, src.len());
+    }
+    Ok(())
 }
 fn syscall_timerfd_create(clockid: i32, flags: i32) -> i64 {
     match crate::linux_compat::special_fd::timerfd_create(clockid, flags) {
@@ -2073,13 +2103,13 @@ fn syscall_rt_sigtimedwait(
     use crate::linux_compat::LinuxError;
 
     if set.is_null() || sigsetsize < 8 {
-        return -(LinuxError::EINVAL as i64);
+        return -(crate::linux_compat::LinuxError::EINVAL as i64);
     }
 
     // Read the signal set
     let mut set_bytes = [0u8; 8];
-    unsafe {
-        core::ptr::copy_nonoverlapping(set, set_bytes.as_mut_ptr(), 8);
+    if let Err(e) = read_user_bytes(set, &mut set_bytes) {
+        return -(e as i64);
     }
     let set_val = u64::from_ne_bytes(set_bytes);
 
@@ -2088,13 +2118,14 @@ fn syscall_rt_sigtimedwait(
         None
     } else {
         let mut ts = [0u8; 16];
-        unsafe {
-            core::ptr::copy_nonoverlapping(timeout, ts.as_mut_ptr(), 16);
+        if let Err(e) = read_user_bytes(timeout, &mut ts) {
+            return -(e as i64);
         }
         let secs = i64::from_ne_bytes([ts[0], ts[1], ts[2], ts[3], ts[4], ts[5], ts[6], ts[7]]);
-        let nsecs = i64::from_ne_bytes([ts[8], ts[9], ts[10], ts[11], ts[12], ts[13], ts[14], ts[15]]);
+        let nsecs =
+            i64::from_ne_bytes([ts[8], ts[9], ts[10], ts[11], ts[12], ts[13], ts[14], ts[15]]);
         if secs < 0 || nsecs < 0 {
-            return -(LinuxError::EINVAL as i64);
+            return -(crate::linux_compat::LinuxError::EINVAL as i64);
         }
         Some(secs as u64 * 1_000_000_000 + nsecs as u64)
     };
@@ -2105,8 +2136,8 @@ fn syscall_rt_sigtimedwait(
             if !info.is_null() {
                 let mut siginfo = [0u8; 128];
                 siginfo[..4].copy_from_slice(&(sig as u32).to_ne_bytes());
-                unsafe {
-                    core::ptr::copy_nonoverlapping(siginfo.as_ptr(), info, 128);
+                if let Err(e) = write_user_bytes(info, &siginfo) {
+                    return -(e as i64);
                 }
             }
             sig as i64

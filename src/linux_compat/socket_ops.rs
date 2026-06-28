@@ -947,7 +947,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
 
     // AF_UNIX (1) - create a Unix domain socket backed by IPC pipes
     if domain == 1 {
-        // Create a placeholder fd for the Unix socket. The actual pipe
+        // Create a root-backed fd for the Unix socket. The actual pipe
         // is created on bind() (listener) or connect() (connector).
         let inode = crate::vfs::get_vfs()
             .lookup("/")

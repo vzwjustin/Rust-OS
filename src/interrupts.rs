@@ -131,8 +131,7 @@ static USER_PAGE_FAULT_HANDLER: spin::Mutex<
 /// Install a user page fault handler. Returns the previous handler.
 pub fn install_page_fault_handler(
     handler: fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>,
-) -> Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>>
-{
+) -> Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>> {
     let mut slot = USER_PAGE_FAULT_HANDLER.lock();
     let old = *slot;
     *slot = Some(handler);
@@ -804,9 +803,75 @@ extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptSta
     crate::serial_println!("CRITICAL: SIMD floating point exception (#XF)");
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
 
+    // A #XF can fire for two distinct reasons:
+    //   1. The process has not yet been granted SIMD/FPU access (CR0.EM set,
+    //      CR0.MP clear, or CR4.OSFXSR unset). In that case the exception is
+    //      really a "first use" trap: enable FPU/SSE for the faulting context
+    //      and resume rather than killing the process.
+    //   2. SIMD is already enabled and the MXCSR reports a genuine numerical
+    //      exception (IE/DE/ZE/OE/UE/PE). That is a real fault and the
+    //      process is terminated.
+    //
+    // We detect case 1 by inspecting CR0 (EM/MP) and CR4 (OSFXSR). If any of
+    // those are in the "FPU disabled" state, fix them up and return, which
+    // resumes the faulting instruction.
+    let mut fpu_was_disabled = false;
+    unsafe {
+        // CR0: bit 1 = MP (monitor coprocessor), bit 2 = EM (emulation).
+        // We want MP=1 and EM=0 for native FPU/SSE access.
+        let mut cr0: u64;
+        core::arch::asm!(
+            "mov {}, cr0",
+            out(reg) cr0,
+            options(nostack, preserves_flags),
+        );
+        if (cr0 & 0x4) != 0 || (cr0 & 0x2) == 0 {
+            fpu_was_disabled = true;
+            cr0 &= !0x4; // clear EM
+            cr0 |= 0x2; // set MP
+            core::arch::asm!(
+                "mov cr0, {}",
+                in(reg) cr0,
+                options(nostack, preserves_flags),
+            );
+        }
+
+        // CR4: bit 9 = OSFXSR (enable SSE/FXSAVE), bit 10 = OSXMMEXCPT
+        // (enable #XF reporting for SIMD exceptions). Both must be set for
+        // userspace SIMD to work correctly.
+        let mut cr4: u64;
+        core::arch::asm!(
+            "mov {}, cr4",
+            out(reg) cr4,
+            options(nostack, preserves_flags),
+        );
+        if (cr4 & 0x600) != 0x600 {
+            fpu_was_disabled = true;
+            cr4 |= 0x600; // set OSFXSR | OSXMMEXCPT
+            core::arch::asm!(
+                "mov cr4, {}",
+                in(reg) cr4,
+                options(nostack, preserves_flags),
+            );
+        }
+
+        // Clear the Task-Switched (TS) flag so the FPU is usable without
+        // raising a Device-Not-Available fault on the next SSE instruction.
+        core::arch::asm!("clts", options(nostack, preserves_flags));
+    }
+
+    if fpu_was_disabled {
+        crate::serial_println!(
+            "simd_floating_point_handler: FPU/SSE was disabled; enabled it and resuming"
+        );
+        // Returning from an x86-interrupt handler resumes the faulting
+        // instruction, which will now execute with SIMD enabled.
+        return;
+    }
+
+    // SIMD was already enabled, so this is a genuine numerical exception.
     // The MXCSR register contains the cause: IE (bit 0), DE (bit 1),
     // ZE (bit 2), OE (bit 3), UE (bit 4), PE (bit 5).
-    // For now, report and terminate the faulting process.
     let error_context = ErrorContext::new(
         KernelError::Process(ProcessError::InvalidState),
         ErrorSeverity::Error,

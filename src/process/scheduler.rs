@@ -566,9 +566,11 @@ fn yield_cpu_tail() {
             // current_ctx and loads next_ctx's registers. The page
             // table is switched via CR3 if different.
             unsafe {
-                if let Err(e) = super::context::get_context_switcher()
-                    .switch_context(&mut current_ctx, &next_ctx, next_pid)
-                {
+                if let Err(e) = super::context::get_context_switcher().switch_context(
+                    &mut current_ctx,
+                    &next_ctx,
+                    next_pid,
+                ) {
                     crate::serial_println!("Context switch failed: {}", e);
                 }
             }

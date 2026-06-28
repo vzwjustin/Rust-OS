@@ -655,6 +655,398 @@ impl Ext4FileSystem {
 
         Ok(current_inode)
     }
+
+    // ===================================================================
+    // Write-path helpers
+    //
+    // The existing reader in this module treats `i_block[0..12]` as classic
+    // ext2-style direct block pointers (it does NOT parse extent trees).
+    // To stay consistent with what the reader can consume, the write path
+    // below also uses classic direct blocks and never sets the EXT4_EXTENTS
+    // flag on newly-created inodes. Indirect/singly/doubly/triply indirect
+    // blocks, extent trees, and journaling are intentionally NOT supported
+    // here; they are called out where relevant.
+    // ===================================================================
+
+    /// Current time as a 32-bit value for inode timestamps.
+    /// Uses the same source as `fs::get_current_time` (system time in ms).
+    fn current_time(&self) -> u32 {
+        crate::time::get_system_time_ms() as u32
+    }
+
+    /// Round `val` up to the next multiple of `multiple` (power of two).
+    fn round_up(&self, val: usize, multiple: usize) -> usize {
+        (val + multiple - 1) & !(multiple - 1)
+    }
+
+    /// Split an absolute path into (parent_dir, filename).
+    /// e.g. "/foo/bar/baz.txt" -> ("/foo/bar", "baz.txt")
+    fn split_path<'a>(&self, path: &'a str) -> FsResult<(&'a str, &'a str)> {
+        let trimmed = path.trim_end_matches('/');
+        if trimmed.is_empty() {
+            return Err(FsError::InvalidArgument); // cannot create the root
+        }
+        match trimmed.rfind('/') {
+            Some(idx) => {
+                let name = &trimmed[idx + 1..];
+                if name.is_empty() {
+                    return Err(FsError::InvalidArgument);
+                }
+                let parent = &trimmed[..idx];
+                let parent = if parent.is_empty() { "/" } else { parent };
+                Ok((parent, name))
+            }
+            None => Ok(("/", trimmed)),
+        }
+    }
+
+    /// Location of the superblock as (block_number, byte_offset_within_block).
+    fn superblock_location(&self) -> (u64, usize) {
+        if self.block_size == 1024 {
+            (1, 0)
+        } else {
+            (0, 1024)
+        }
+    }
+
+    /// Location of a group descriptor as (gdt_block_number, byte_offset, desc_size).
+    fn gdt_location(&self, group: usize) -> (u64, usize, usize) {
+        let gdt_block = if self.block_size == 1024 { 2 } else { 1 };
+        let desc_size =
+            if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
+                self.superblock.s_desc_size as usize
+            } else {
+                32
+            };
+        let descs_per_block = self.block_size as usize / desc_size;
+        let block_idx = group / descs_per_block;
+        let desc_idx = group % descs_per_block;
+        (
+            gdt_block + block_idx as u64,
+            desc_idx * desc_size,
+            desc_size,
+        )
+    }
+
+    /// Decrement the global free-inode count in the on-disk superblock.
+    ///
+    /// NOTE: The in-memory `self.superblock` copy is intentionally left stale
+    /// (it is not behind an `RwLock` and the trait methods only give `&self`).
+    /// Allocation does not rely on the free count — it scans the bitmaps — so
+    /// correctness is unaffected; only `statfs` reporting may lag until remount.
+    fn decrement_superblock_free_inodes(&self) -> FsResult<()> {
+        let (sb_block, sb_off) = self.superblock_location();
+        let mut data = self.read_block(sb_block)?;
+        let sb_ptr = unsafe { data.as_mut_ptr().add(sb_off) } as *mut Ext4Superblock;
+        let mut sb = unsafe { core::ptr::read_unaligned(sb_ptr) };
+        if sb.s_free_inodes_count > 0 {
+            sb.s_free_inodes_count -= 1;
+        }
+        unsafe { core::ptr::write_unaligned(sb_ptr, sb) };
+        self.write_block(sb_block, &data)?;
+        Ok(())
+    }
+
+    /// Decrement the global free-block count in the on-disk superblock by `count`.
+    fn decrement_superblock_free_blocks(&self, count: u32) -> FsResult<()> {
+        let (sb_block, sb_off) = self.superblock_location();
+        let mut data = self.read_block(sb_block)?;
+        let sb_ptr = unsafe { data.as_mut_ptr().add(sb_off) } as *mut Ext4Superblock;
+        let mut sb = unsafe { core::ptr::read_unaligned(sb_ptr) };
+        let cur = sb.s_free_blocks_count_lo;
+        sb.s_free_blocks_count_lo = cur.saturating_sub(count);
+        // NOTE: high 32 bits (s_free_blocks_count_hi) are not updated; this
+        // implementation only handles filesystems that fit in 32-bit block
+        // counts, which is consistent with the reader's 64-bit-but-rare path.
+        unsafe { core::ptr::write_unaligned(sb_ptr, sb) };
+        self.write_block(sb_block, &data)?;
+        Ok(())
+    }
+
+    /// Adjust a group descriptor's free inode/block counts on disk.
+    /// Only the low 16-bit counts are updated (sufficient for non-huge volumes).
+    fn adjust_group_desc_free(
+        &self,
+        group: usize,
+        delta_inodes: i32,
+        delta_blocks: i32,
+    ) -> FsResult<()> {
+        let (gdt_block_num, off, _desc_size) = self.gdt_location(group);
+        let mut data = self.read_block(gdt_block_num)?;
+        let desc_ptr = unsafe { data.as_mut_ptr().add(off) } as *mut Ext4GroupDesc;
+        let mut desc = unsafe { core::ptr::read_unaligned(desc_ptr) };
+        if delta_inodes != 0 {
+            let cur = desc.bg_free_inodes_count_lo as i32;
+            desc.bg_free_inodes_count_lo = (cur + delta_inodes).max(0) as u16;
+        }
+        if delta_blocks != 0 {
+            let cur = desc.bg_free_blocks_count_lo as i32;
+            desc.bg_free_blocks_count_lo = (cur + delta_blocks).max(0) as u16;
+        }
+        unsafe { core::ptr::write_unaligned(desc_ptr, desc) };
+        self.write_block(gdt_block_num, &data)?;
+        Ok(())
+    }
+
+    /// Find the first free (zero) bit in a bitmap block, set it, and write the
+    /// block back. Returns `Some(bit_index)` if a bit was allocated, else `None`.
+    /// `max_bits` bounds the valid bit range for this bitmap.
+    fn alloc_bitmap_bit(&self, bitmap_block: u64, max_bits: u32) -> FsResult<Option<u32>> {
+        let mut data = self.read_block(bitmap_block)?;
+        let limit_bytes = ((max_bits as usize) + 7) / 8;
+        let scan_bytes = core::cmp::min(limit_bytes, data.len());
+        for byte_idx in 0..scan_bytes {
+            if data[byte_idx] != 0xFF {
+                for bit in 0..8u32 {
+                    let bit_index = (byte_idx * 8) as u32 + bit;
+                    if bit_index >= max_bits {
+                        break;
+                    }
+                    if data[byte_idx] & (1 << bit) == 0 {
+                        data[byte_idx] |= 1 << bit;
+                        self.write_block(bitmap_block, &data)?;
+                        return Ok(Some(bit_index));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Allocate a free inode by scanning the per-group inode bitmaps.
+    /// Updates the inode bitmap, superblock free-inode count, and the
+    /// group descriptor free-inode count on disk. Returns the new inode number.
+    fn alloc_inode(&self) -> FsResult<InodeNumber> {
+        let first_ino = self.superblock.s_first_ino as u64;
+        for (group_idx, desc) in self.group_desc_table.iter().enumerate() {
+            // Ignore the 64-bit high half of the bitmap block pointer; the
+            // reader does the same and bitmap blocks always live in the low
+            // 32-bit block address space for supported volume sizes.
+            let inode_bitmap_block = desc.bg_inode_bitmap_lo as u64;
+            if inode_bitmap_block == 0 {
+                continue;
+            }
+            let bit = self.alloc_bitmap_bit(inode_bitmap_block, self.inodes_per_group as u32)?;
+            if let Some(b) = bit {
+                let inode_num = group_idx as u64 * self.inodes_per_group as u64 + b as u64 + 1;
+                // Reserved inodes should already be marked used in the bitmap,
+                // so this is purely defensive against a corrupt bitmap.
+                if inode_num < first_ino {
+                    continue;
+                }
+                self.decrement_superblock_free_inodes()?;
+                self.adjust_group_desc_free(group_idx, -1, 0)?;
+                return Ok(inode_num);
+            }
+        }
+        Err(FsError::NoSpaceLeft)
+    }
+
+    /// Allocate a free data block by scanning the per-group block bitmaps.
+    /// Updates the block bitmap, superblock free-block count, and the group
+    /// descriptor free-block count on disk. The newly allocated block is zeroed
+    /// (via the block cache) so callers never see stale block contents.
+    /// Returns the new absolute block number.
+    fn alloc_block(&self) -> FsResult<u64> {
+        let first_data_block = self.superblock.s_first_data_block as u64;
+        let bpg = self.blocks_per_group as u64;
+        for (group_idx, desc) in self.group_desc_table.iter().enumerate() {
+            let block_bitmap_block = desc.bg_block_bitmap_lo as u64;
+            if block_bitmap_block == 0 {
+                continue;
+            }
+            let bit = self.alloc_bitmap_bit(block_bitmap_block, self.blocks_per_group as u32)?;
+            if let Some(b) = bit {
+                let block_num = first_data_block + group_idx as u64 * bpg + b as u64;
+                self.decrement_superblock_free_blocks(1)?;
+                self.adjust_group_desc_free(group_idx, 0, -1)?;
+                // Zero the freshly allocated block in the cache + dirty log.
+                let zero = vec![0u8; self.block_size as usize];
+                self.write_block(block_num, &zero)?;
+                return Ok(block_num);
+            }
+        }
+        Err(FsError::NoSpaceLeft)
+    }
+
+    /// Write an inode back to its on-disk inode table block and update the
+    /// inode cache. Mirrors `read_inode`'s location math.
+    fn write_inode(&self, inode_num: InodeNumber, inode: &Ext4Inode) -> FsResult<()> {
+        if inode_num == 0 {
+            return Err(FsError::InvalidArgument);
+        }
+        let group = (inode_num - 1) / self.inodes_per_group as u64;
+        let index = (inode_num - 1) % self.inodes_per_group as u64;
+
+        if group >= self.group_desc_table.len() as u64 {
+            return Err(FsError::NotFound);
+        }
+
+        let group_desc = &self.group_desc_table[group as usize];
+        let inode_table_block =
+            if self.superblock.s_feature_incompat & Ext4FeatureIncompat::BIT64.bits() != 0 {
+                ((group_desc.bg_inode_table_hi as u64) << 32)
+                    | (group_desc.bg_inode_table_lo as u64)
+            } else {
+                group_desc.bg_inode_table_lo as u64
+            };
+
+        let inode_size = if self.superblock.s_rev_level >= 1 {
+            self.superblock.s_inode_size as usize
+        } else {
+            EXT4_GOOD_OLD_INODE_SIZE as usize
+        };
+
+        let inodes_per_block = self.block_size as usize / inode_size;
+        let block_offset = index as usize / inodes_per_block;
+        let inode_offset = (index as usize % inodes_per_block) * inode_size;
+
+        let block_num = inode_table_block + block_offset as u64;
+        let mut data = self.read_block(block_num)?;
+
+        if inode_offset + mem::size_of::<Ext4Inode>() > data.len() {
+            return Err(FsError::IoError);
+        }
+
+        // SAFETY: `data` is a block-sized Vec aligned to at least the block
+        // size; we write the inode at the computed byte offset using
+        // write_unaligned because Ext4Inode is #[repr(C, packed)].
+        unsafe {
+            core::ptr::write_unaligned(
+                data.as_mut_ptr().add(inode_offset) as *mut Ext4Inode,
+                *inode,
+            );
+        }
+
+        self.write_block(block_num, &data)?;
+
+        // Update the inode cache so subsequent reads see the new value.
+        {
+            let mut cache = self.inode_cache.write();
+            cache.insert(inode_num, *inode);
+        }
+
+        Ok(())
+    }
+
+    /// Append a directory entry (`name` -> `target_inode`) into the parent
+    /// directory identified by `parent_inode_num`. Handles two cases:
+    ///   1. Split an existing directory entry whose `rec_len` has enough slack.
+    ///   2. Allocate a fresh directory data block when no slack is available.
+    /// Only the first 12 direct blocks of the parent are used, matching the
+    /// reader's `read_directory_entries` limitation.
+    fn add_dir_entry(
+        &self,
+        parent_inode_num: InodeNumber,
+        name: &str,
+        target_inode: InodeNumber,
+        file_type: u8,
+    ) -> FsResult<()> {
+        if name.is_empty() || name.len() > 255 {
+            return Err(FsError::NameTooLong);
+        }
+
+        let mut parent = self.read_inode(parent_inode_num)?;
+        let name_bytes = name.as_bytes();
+        let needed = self.round_up(8 + name_bytes.len(), 4) as u16;
+        let block_size = self.block_size as usize;
+
+        let mut i_block = unsafe { core::ptr::addr_of!(parent.i_block).read_unaligned() };
+
+        // First pass: try to find slack in an existing directory block.
+        for slot in 0..12usize {
+            let block_ptr = i_block[slot];
+            if block_ptr == 0 {
+                continue;
+            }
+
+            let mut data = self.read_block(block_ptr as u64)?;
+            let mut offset = 0usize;
+            while offset + mem::size_of::<Ext4DirEntry2>() <= data.len() {
+                let entry_ptr = unsafe { data.as_ptr().add(offset) } as *const Ext4DirEntry2;
+                let entry = unsafe { core::ptr::read_unaligned(entry_ptr) };
+                if entry.rec_len == 0 {
+                    break;
+                }
+                let used = self.round_up(8 + entry.name_len as usize, 4) as u16;
+                // rec_len is always >= used for a well-formed entry; slack is
+                // the reusable tail space inside this record.
+                let slack = entry.rec_len.saturating_sub(used);
+                if slack >= needed {
+                    // Shrink the existing entry to its real size...
+                    unsafe {
+                        let mut e = core::ptr::read_unaligned(entry_ptr);
+                        e.rec_len = used;
+                        core::ptr::write_unaligned(
+                            data.as_mut_ptr().add(offset) as *mut Ext4DirEntry2,
+                            e,
+                        );
+                    }
+                    // ...and place the new entry in the freed slack.
+                    let new_off = offset + used as usize;
+                    let new_entry = Ext4DirEntry2 {
+                        inode: target_inode as u32,
+                        rec_len: slack,
+                        name_len: name_bytes.len() as u8,
+                        file_type,
+                    };
+                    unsafe {
+                        core::ptr::write_unaligned(
+                            data.as_mut_ptr().add(new_off) as *mut Ext4DirEntry2,
+                            new_entry,
+                        );
+                    }
+                    data[new_off + 8..new_off + 8 + name_bytes.len()].copy_from_slice(name_bytes);
+                    self.write_block(block_ptr as u64, &data)?;
+
+                    parent.i_mtime = self.current_time();
+                    self.write_inode(parent_inode_num, &parent)?;
+                    return Ok(());
+                }
+                offset += entry.rec_len as usize;
+            }
+        }
+
+        // Second pass: no slack found — allocate a new directory data block in
+        // the first free direct-block slot.
+        for slot in 0..12usize {
+            if i_block[slot] != 0 {
+                continue;
+            }
+
+            let new_block = self.alloc_block()?;
+            i_block[slot] = new_block as u32;
+            unsafe {
+                core::ptr::addr_of_mut!(parent.i_block).write_unaligned(i_block);
+            }
+
+            // The new block contains a single directory entry whose rec_len
+            // spans the whole block (standard for the sole entry in a block).
+            let mut data = vec![0u8; block_size];
+            let entry = Ext4DirEntry2 {
+                inode: target_inode as u32,
+                rec_len: block_size as u16,
+                name_len: name_bytes.len() as u8,
+                file_type,
+            };
+            unsafe {
+                core::ptr::write_unaligned(data.as_mut_ptr() as *mut Ext4DirEntry2, entry);
+            }
+            data[8..8 + name_bytes.len()].copy_from_slice(name_bytes);
+            self.write_block(new_block, &data)?;
+
+            // Account for the new block in the parent inode.
+            parent.i_blocks_lo = parent.i_blocks_lo.saturating_add((block_size / 512) as u32);
+            parent.i_size_lo = parent.i_size_lo.saturating_add(block_size as u32);
+            parent.i_mtime = self.current_time();
+            self.write_inode(parent_inode_num, &parent)?;
+            return Ok(());
+        }
+
+        // Parent directory is full and uses only direct blocks (no indirect
+        // blocks are supported by this implementation).
+        Err(FsError::NoSpaceLeft)
+    }
 }
 
 impl FileSystem for Ext4FileSystem {
@@ -683,10 +1075,54 @@ impl FileSystem for Ext4FileSystem {
         })
     }
 
-    fn create(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        // File creation requires complex inode allocation and directory modification
-        // For now, return not supported
-        Err(FsError::NotSupported)
+    fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        // Split the target path into parent directory and file name.
+        let (parent_path, filename) = self.split_path(path)?;
+
+        // The parent must exist and be a directory.
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        let parent_inode = self.read_inode(parent_inode_num)?;
+        let parent_meta = self.inode_to_metadata(parent_inode_num, &parent_inode);
+        if parent_meta.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+
+        // Refuse to clobber an existing entry.
+        if self.resolve_path(path).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Allocate a free inode and initialize it as a regular file.
+        let new_inode_num = self.alloc_inode()?;
+        let mode = (0o100000u32 | permissions.to_octal() as u32) as u16; // S_IFREG | perms
+        let now = self.current_time();
+        let mut inode: Ext4Inode = unsafe { mem::zeroed() };
+        inode.i_mode = mode;
+        inode.i_uid = 0;
+        inode.i_size_lo = 0;
+        inode.i_atime = now;
+        inode.i_ctime = now;
+        inode.i_mtime = now;
+        inode.i_dtime = 0;
+        inode.i_gid = 0;
+        inode.i_links_count = 1;
+        inode.i_blocks_lo = 0;
+        // i_flags = 0: deliberately do NOT set EXT4_EXTENTS_FL (0x80000) because
+        // the reader in this module consumes classic direct-block pointers, not
+        // extent trees. i_block stays all-zero (empty file).
+        inode.i_flags = 0;
+        self.write_inode(new_inode_num, &inode)?;
+
+        // Link the new inode into the parent directory.
+        // file_type 1 == regular file (matches the reader's mapping).
+        self.add_dir_entry(parent_inode_num, filename, new_inode_num, 1)?;
+
+        // Flush all dirty metadata (bitmaps, superblock, GDT, inode table,
+        // directory block) to disk. Journaling is not implemented; this is a
+        // direct ordered write of metadata blocks.
+        self.flush_dirty_blocks()?;
+
+        Ok(new_inode_num)
     }
 
     fn open(&self, path: &str, _flags: OpenFlags) -> FsResult<InodeNumber> {
@@ -741,10 +1177,91 @@ impl FileSystem for Ext4FileSystem {
         Ok(bytes_read)
     }
 
-    fn write(&self, _inode: InodeNumber, _offset: u64, _buffer: &[u8]) -> FsResult<usize> {
-        // Writing requires complex block allocation and metadata updates
-        // For now, return read-only error
-        Err(FsError::ReadOnly)
+    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+
+        let mut ino = self.read_inode(inode)?;
+        let meta = self.inode_to_metadata(inode, &ino);
+
+        // Cannot write to a directory via the file-write path.
+        if meta.file_type == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+
+        // The reader only consumes the first 12 direct block pointers, so the
+        // writer is constrained to the same 12 direct blocks. Indirect blocks
+        // and extent-tree-based mapping are not supported here.
+        let block_size = self.block_size as u64;
+        let max_blocks = 12u64;
+        let max_offset = max_blocks * block_size;
+
+        if offset >= max_offset {
+            return Err(FsError::NoSpaceLeft);
+        }
+
+        // Clip the write to the end of the direct-block region so we never
+        // silently drop data beyond what the reader can later read back.
+        let end = offset + buffer.len() as u64;
+        let writable_end = core::cmp::min(end, max_offset);
+        let writable_len = (writable_end - offset) as usize;
+        let writable = &buffer[..writable_len];
+
+        let mut bytes_written = 0usize;
+        let mut block_idx = offset / block_size;
+        let mut block_off = (offset % block_size) as usize;
+        let mut i_block = unsafe { core::ptr::addr_of!(ino.i_block).read_unaligned() };
+
+        while bytes_written < writable_len {
+            if block_idx >= max_blocks {
+                break;
+            }
+            let bidx = block_idx as usize;
+            let mut block_ptr = i_block[bidx];
+            if block_ptr == 0 {
+                // Allocate a new data block for this slot.
+                let new_block = self.alloc_block()?;
+                i_block[bidx] = new_block as u32;
+                block_ptr = new_block as u32;
+            }
+
+            // Read the existing block so partial writes preserve the rest of
+            // the block's contents (alloc_block already zeroed fresh blocks,
+            // but a pre-existing block may hold live data).
+            let mut data = self.read_block(block_ptr as u64)?;
+            let copy_len = core::cmp::min(
+                block_size as usize - block_off,
+                writable_len - bytes_written,
+            );
+            data[block_off..block_off + copy_len]
+                .copy_from_slice(&writable[bytes_written..bytes_written + copy_len]);
+            self.write_block(block_ptr as u64, &data)?;
+
+            bytes_written += copy_len;
+            block_idx += 1;
+            block_off = 0;
+        }
+
+        // Persist the (possibly updated) direct-block pointer array.
+        unsafe { core::ptr::addr_of_mut!(ino.i_block).write_unaligned(i_block) };
+
+        // Update file size, block count, and timestamps.
+        let new_size = core::cmp::max(meta.size, offset + bytes_written as u64);
+        // Only the low 32 bits of size are maintained; LARGE_FILE (>4GiB)
+        // support is not implemented, which matches the direct-block limit.
+        ino.i_size_lo = new_size as u32;
+        ino.i_mtime = self.current_time();
+        ino.i_atime = ino.i_mtime;
+        // i_blocks is in 512-byte units; recompute from the number of populated
+        // direct blocks (we only ever use direct blocks).
+        let used_blocks = i_block.iter().filter(|&&b| b != 0).count() as u32;
+        ino.i_blocks_lo = used_blocks * (self.block_size / 512);
+
+        self.write_inode(inode, &ino)?;
+        self.flush_dirty_blocks()?;
+
+        Ok(bytes_written)
     }
 
     fn metadata(&self, inode_num: InodeNumber) -> FsResult<FileMetadata> {

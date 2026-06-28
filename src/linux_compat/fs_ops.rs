@@ -92,6 +92,7 @@ fn vfs_error_to_linux(err: VfsError) -> LinuxError {
         VfsError::CrossDevice => LinuxError::EXDEV,
         VfsError::ReadOnly => LinuxError::EROFS,
         VfsError::NotSupported => LinuxError::ENOSYS,
+        VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
     }
 }
 
@@ -114,7 +115,7 @@ fn normalize_mount_path(path: &str) -> String {
     String::from(path.trim_end_matches('/'))
 }
 
-fn placeholder_inode() -> Arc<dyn vfs::InodeOps> {
+fn root_inode() -> Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root mount")
 }
 
@@ -126,12 +127,13 @@ fn alloc_inotify_fd(flags: i32) -> LinuxResult<Fd> {
 
     let vfs_flags = if flags & 0x800 != 0 { 0x800 } else { 0 };
 
-    let fd = vfs::vfs_open_special(placeholder_inode(), vfs_flags, FdKind::Inotify(id)).map_err(
-        |e| match e {
-            VfsError::TooManyFiles => LinuxError::EMFILE,
-            _ => LinuxError::EMFILE,
-        },
-    )?;
+    let fd =
+        vfs::vfs_open_special(root_inode(), vfs_flags, FdKind::Inotify(id)).map_err(
+            |e| match e {
+                VfsError::TooManyFiles => LinuxError::EMFILE,
+                _ => LinuxError::EMFILE,
+            },
+        )?;
 
     INOTIFY_FD_MAP.lock().insert(fd, id);
     Ok(fd)

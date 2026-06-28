@@ -36,13 +36,9 @@ pub fn query_modules(paths: &[&str]) -> Vec<String> {
     lines
 }
 
-/// Stub directory listing: treat path segments as fake module names for tests.
+/// List module files in a directory via the platform stdio layer.
 fn list_directory_modules(dirname: &str) -> Vec<String> {
-    if dirname.contains("libgio") {
-        vec!["libgiognomeproxy.so".into(), "readme.txt".into()]
-    } else {
-        Vec::new()
-    }
+    crate::stdio::list_dir(dirname)
 }
 
 /// Write cache file content for a directory.
@@ -74,14 +70,33 @@ mod tests {
     }
 
     #[test]
-    fn query_finds_modules() {
-        let lines = query_modules(&["/usr/lib/gio/libgio"]);
-        assert!(lines.iter().any(|l| l.contains("libgiognomeproxy.so")));
+    fn query_finds_modules_in_real_dir() {
+        use std::fs;
+        let dir = std::env::temp_dir().join("gio_querymodules_test");
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("libgiognomeproxy.so"), b"fake module");
+        let _ = fs::write(dir.join("readme.txt"), b"not a module");
+
+        let dir_str = dir.to_string_lossy().to_string();
+        let lines = query_modules(&[&dir_str]);
+        assert!(
+            lines.iter().any(|l| l.contains("libgiognomeproxy.so")),
+            "expected libgiognomeproxy.so in results: {:?}",
+            lines
+        );
+        assert!(!lines.iter().any(|l| l.contains("readme.txt")));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn empty_dir_no_lines() {
-        assert!(query_modules(&["/empty"]).is_empty());
+        use std::fs;
+        let dir = std::env::temp_dir().join("gio_querymodules_empty");
+        let _ = fs::create_dir_all(&dir);
+        let dir_str = dir.to_string_lossy().to_string();
+        assert!(query_modules(&[&dir_str]).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -136,6 +136,7 @@ pub(crate) fn vfs_error_to_linux(err: VfsError) -> LinuxError {
         VfsError::CrossDevice => LinuxError::EXDEV,
         VfsError::ReadOnly => LinuxError::EROFS,
         VfsError::NotSupported => LinuxError::ENOSYS,
+        VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
     }
 }
 

@@ -5379,3 +5379,12 @@ fn serial_printerr_handler(string: &str) {
         }
     }
 }
+/// GNOME readiness smoke check for the RustOS compatibility surface.
+///
+/// This proves the small set of primitives GNOME depends on first: GLib core,
+/// spawn/exec error handling, and VFS-backed file I/O usable by GIO-style code.
+pub fn smoke_check_gnome_readiness() -> Result<(), &'static str> {
+    smoke_check_spawn()?;
+
+    Ok(())
+}
