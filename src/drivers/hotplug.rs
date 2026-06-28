@@ -502,7 +502,10 @@ impl HotplugManager {
             return Ok(0);
         }
 
+        #[cfg(not(test))]
         let mut new_devices = 0;
+        #[cfg(test)]
+        let new_devices = 0;
 
         // Scan PCI bus for new devices
         #[cfg(not(test))]

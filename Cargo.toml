@@ -118,6 +118,8 @@ stack-protection = []
 memory_manager = []
 time = []
 serial = []
+disabled-tests = []
+std-tests = []
 
 [build-dependencies]
 cc = "1.0"

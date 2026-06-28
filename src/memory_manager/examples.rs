@@ -419,8 +419,6 @@ pub fn run_all_examples() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test_case]
     fn test_all_examples() {
         // In a test environment, we would initialize the memory manager first

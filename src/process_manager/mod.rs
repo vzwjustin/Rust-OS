@@ -11,7 +11,6 @@ pub mod pcb;
 pub mod table;
 
 pub use pcb::{FileDescriptor, FileDescriptorType, ProcessControlBlock, ProcessState};
-pub use table::ProcessTable;
 
 use crate::process::{self, Pid, Priority};
 

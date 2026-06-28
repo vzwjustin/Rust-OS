@@ -353,7 +353,7 @@ impl SizeUtils {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
 

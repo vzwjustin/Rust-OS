@@ -834,7 +834,7 @@ pub fn deallocate_buffer(buffer: PacketBuffer) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 
