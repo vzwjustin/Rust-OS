@@ -466,9 +466,7 @@ impl Vfs {
                 }
 
                 if component == ".." {
-                    current = ancestors
-                        .pop()
-                        .unwrap_or_else(|| Arc::clone(&root));
+                    current = ancestors.pop().unwrap_or_else(|| Arc::clone(&root));
                     continue;
                 }
 
@@ -671,6 +669,18 @@ impl Vfs {
         inode.stat()
     }
 
+    /// Get file statistics without following symlinks (lstat).
+    ///
+    /// If the final path component is a symlink, returns the stat of
+    /// the symlink inode itself rather than the target it points to.
+    pub fn lstat(&self, path: &str) -> VfsResult<Stat> {
+        // Resolve the parent directory, then lookup the final component
+        // directly. This gives us the symlink inode without following it.
+        let (parent, filename) = self.resolve_parent(path)?;
+        let inode = parent.lookup(&filename)?;
+        inode.stat()
+    }
+
     /// Look up an inode by path
     pub fn lookup(&self, path: &str) -> VfsResult<Arc<dyn InodeOps>> {
         self.resolve_path(path)
@@ -856,6 +866,11 @@ pub fn vfs_seek(fd: i32, offset: SeekFrom) -> VfsResult<u64> {
 /// Get file statistics
 pub fn vfs_stat(path: &str) -> VfsResult<Stat> {
     VFS.stat(path)
+}
+
+/// Get file statistics without following symlinks (lstat)
+pub fn vfs_lstat(path: &str) -> VfsResult<Stat> {
+    VFS.lstat(path)
 }
 
 /// Get file statistics by file descriptor

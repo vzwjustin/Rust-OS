@@ -388,7 +388,12 @@ pub fn lstat(path: *const u8, statbuf: *mut Stat) -> LinuxResult<i32> {
 /// * `pathname` - File path (may be relative to dirfd)
 /// * `statbuf` - Output stat buffer
 /// * `flags` - AT_SYMLINK_NOFOLLOW (0x100) or 0
-pub fn newfstatat(dirfd: Fd, pathname: *const u8, statbuf: *mut Stat, flags: i32) -> LinuxResult<i32> {
+pub fn newfstatat(
+    dirfd: Fd,
+    pathname: *const u8,
+    statbuf: *mut Stat,
+    flags: i32,
+) -> LinuxResult<i32> {
     inc_ops();
 
     if pathname.is_null() || statbuf.is_null() {
@@ -398,10 +403,16 @@ pub fn newfstatat(dirfd: Fd, pathname: *const u8, statbuf: *mut Stat, flags: i32
     // Resolve the path relative to dirfd
     let path_str = resolve_at_path(dirfd, pathname)?;
 
-    // For now, lstat and stat are the same (no symlink distinction)
-    let _ = flags; // AT_SYMLINK_NOFOLLOW not yet differentiated
+    // AT_SYMLINK_NOFOLLOW (0x100): stat the symlink itself, not the target.
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
 
-    match vfs::vfs_stat(&path_str) {
+    let stat_result = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        vfs::vfs_lstat(&path_str)
+    } else {
+        vfs::vfs_stat(&path_str)
+    };
+
+    match stat_result {
         Ok(vfs_stat) => {
             populate_linux_stat(statbuf, &vfs_stat);
             Ok(0)
