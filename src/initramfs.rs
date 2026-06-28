@@ -922,23 +922,12 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
             }
 
             InodeType::Symlink => {
-                // Symbolic links store the target path in file_data
-                // For now, we create a regular file with the symlink target as content
-                // A full implementation would need VFS symlink support
-                let fd = vfs
-                    .open(
-                        &path,
-                        OpenFlags::new(OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC),
-                        entry.permissions(),
-                    )
+                // Symbolic links: file_data contains the target path as UTF-8.
+                // Use the VFS symlink() function to create a real symlink.
+                let target = core::str::from_utf8(file_data)
                     .map_err(|_| InitramfsError::ExtractionFailed)?;
-
-                if !file_data.is_empty() {
-                    vfs.write(fd, file_data)
-                        .map_err(|_| InitramfsError::ExtractionFailed)?;
-                }
-
-                vfs.close(fd)
+                let target = target.trim_end_matches('\0');
+                vfs.symlink(target, &path)
                     .map_err(|_| InitramfsError::ExtractionFailed)?;
             }
 
