@@ -696,7 +696,6 @@ pub fn send_ipv6_packet(
 
     // Resolve destination MAC address for IPv6
     // For IPv6, we use NDP (Neighbor Discovery Protocol) instead of ARP
-    // For now, use broadcast/multicast MAC for IPv6
     let dest_mac = if dst_ip.is_broadcast() || dst_ip.is_multicast() {
         // IPv6 multicast MAC: 33:33:xx:xx:xx:xx where xx:xx:xx:xx are lower 32 bits of IPv6 address
         if let NetworkAddress::IPv6(addr) = dst_ip {
@@ -705,9 +704,18 @@ pub fn send_ipv6_packet(
             NetworkAddress::Mac([0xFF; 6]) // Fallback to broadcast
         }
     } else {
-        // Try neighbor discovery table lookup (similar to ARP for IPv4)
-        // For now, use broadcast as fallback
-        NetworkAddress::Mac([0xFF; 6])
+        // Try neighbor discovery cache lookup (similar to ARP for IPv4).
+        // If a reachable entry exists, use its MAC; otherwise fall back to
+        // broadcast so the packet at least reaches the local segment.
+        if let Some(entry) = super::icmp::ICMP_MANAGER.lookup_neighbor(&dst_ip) {
+            if let Some(mac) = entry.mac_address {
+                mac
+            } else {
+                NetworkAddress::Mac([0xFF; 6])
+            }
+        } else {
+            NetworkAddress::Mac([0xFF; 6])
+        }
     };
 
     // Get source MAC from interface

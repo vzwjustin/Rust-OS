@@ -368,7 +368,7 @@ impl IcmpManager {
     }
 }
 
-static ICMP_MANAGER: IcmpManager = IcmpManager {
+pub(crate) static ICMP_MANAGER: IcmpManager = IcmpManager {
     ping_sessions: RwLock::new(BTreeMap::new()),
     next_ping_id: RwLock::new(1),
     neighbor_cache: RwLock::new(BTreeMap::new()),
