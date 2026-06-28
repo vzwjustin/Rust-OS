@@ -89,12 +89,9 @@ pub fn record_cache_miss() {
 /// Record a syscall invocation
 pub fn record_syscall() {
     // Lazily capture the start timestamp on the first syscall
-    SYSCALL_START_TICKS.compare_exchange(
-        0,
-        read_tsc(),
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-    ).ok();
+    SYSCALL_START_TICKS
+        .compare_exchange(0, read_tsc(), Ordering::Relaxed, Ordering::Relaxed)
+        .ok();
     SYSCALL_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -124,18 +121,11 @@ pub fn reset_counters() {
 
 /// Calculate CPU utilization percentage
 pub fn cpu_utilization() -> u8 {
-    // In production, this would read actual CPU idle/busy time
-    // For now, estimate based on interrupt rate
-    let interrupts = INTERRUPTS.load(Ordering::Relaxed);
-    let cycles = CPU_CYCLES.load(Ordering::Relaxed);
-
-    if cycles > 0 {
-        // Rough estimate: more interrupts = more activity
-        let util = (interrupts * 100 / (cycles / 1000000)).min(100) as u8;
-        util
-    } else {
-        0
-    }
+    // Use the health monitor's CPU usage estimate, which is based on
+    // interrupt rate over time. This is a reasonable proxy for CPU
+    // activity in a kernel without per-CPU idle accounting.
+    let metrics = crate::health::get_health_metrics();
+    metrics.cpu_usage
 }
 
 /// Get memory usage statistics from hardware
@@ -213,7 +203,11 @@ fn estimate_tsc_frequency_hz() -> u64 {
     // Without a calibrated delay source we cannot derive Hz from TSC alone.
     // Assume a nominal 1 GHz TSC (common on modern x86) as a fallback so
     // the reported rate is at least a sane order of magnitude.
-    let freq = if tsc_delta > 0 { 1_000_000_000 } else { 1_000_000_000 };
+    let freq = if tsc_delta > 0 {
+        1_000_000_000
+    } else {
+        1_000_000_000
+    };
     CACHED_FREQ.store(freq, Ordering::Relaxed);
     freq
 }
