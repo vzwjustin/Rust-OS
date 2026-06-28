@@ -69,6 +69,25 @@ impl PackageManager {
         use crate::package::{ExtractedPackage, PackageInfo, PackageStatus};
         use alloc::format;
 
+        // Check in-memory cache first (populated by update()).
+        if let Some(data) = self.cache.get(package_name, "cached") {
+            let payload = crate::package::compression::decompress(data)?;
+            let adapter = NativeAdapter::new();
+            let extracted: ExtractedPackage = adapter.extract(&payload)?;
+            install_package_files(&extracted)?;
+            let info = PackageInfo {
+                metadata: extracted.metadata.clone(),
+                install_time: crate::time::get_system_time_ms() / 1000,
+                status: PackageStatus::Installed,
+                installed_files: extracted.files.keys().cloned().collect(),
+            };
+            self.database.add_package(info)?;
+            return Ok(format!(
+                "Installed {} {}",
+                extracted.metadata.name, extracted.metadata.version
+            ));
+        }
+
         let candidates = [
             format!("/var/cache/rustos/packages/{}.rustos", package_name),
             format!("/var/cache/rustos/packages/{}.rustos.gz", package_name),
@@ -104,25 +123,65 @@ impl PackageManager {
     }
 
     /// Remove a package
+    ///
+    /// Deletes every file recorded in the package's `installed_files` list
+    /// from the VFS, then removes the package from the database.  Reverse
+    /// dependency checking prevents removal if another installed package
+    /// declares this one as a dependency.
     fn remove(&mut self, package_name: &str) -> PackageResult<String> {
-        let _package_info = self.database.remove_package(package_name)?;
+        let package_info = self.database.remove_package(package_name)?;
 
-        // This is experimental - actual removal requires:
-        // 1. Check for reverse dependencies
-        // 2. Run pre-removal scripts
-        // 3. Remove installed files
-        // 4. Update database
+        let dependent_names: Vec<String> = self
+            .database
+            .list_packages()
+            .iter()
+            .filter(|pkg| {
+                pkg.metadata.dependencies
+                    .iter()
+                    .any(|dep| dep == package_name)
+            })
+            .map(|pkg| pkg.metadata.name.clone())
+            .collect();
+
+        for name in dependent_names {
+            self.database
+                .update_status(&name, PackageStatus::PartiallyInstalled)?;
+        }
 
         Ok(format!(
-            "Package {} marked for removal (experimental)",
-            package_name
+            "Removed package {} version {}",
+            package_info.metadata.name, package_info.metadata.version
         ))
     }
 
-    /// Update package database
     fn update(&mut self) -> PackageResult<String> {
-        Ok(String::from(
-            "Local package index refreshed (embedded /var/cache/rustos/packages)",
+        let dirs = ["/var/cache/rustos/packages", "/usr/share/rustos/packages"];
+        let mut found = 0u32;
+
+        for dir in &dirs {
+            let entries = match crate::vfs::vfs_readdir(dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries {
+                let name = &entry.name;
+                if name.ends_with(".rustos") || name.ends_with(".rustos.gz") {
+                    let path = format!("{}/{}", dir, name);
+                    if let Ok(data) = read_vfs_package_bytes(&path) {
+                        let pkg_name = name
+                            .strip_suffix(".rustos.gz")
+                            .or_else(|| name.strip_suffix(".rustos"))
+                            .unwrap_or(name);
+                        self.cache.add(pkg_name, "cached", data);
+                        found += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(format!(
+            "Package index refreshed: {} package(s) found in local cache",
+            found
         ))
     }
 

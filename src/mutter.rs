@@ -469,10 +469,7 @@ pub fn update_client() {
     let now = crate::time::system_time();
     let hours = (now / 3600) % 24;
     let mins = (now / 60) % 60;
-    let clock_text = match (
-        hours,
-        mins,
-    ) {
+    let clock_text = match (hours, mins) {
         (h, m) => {
             let h_str = if h < 10 {
                 alloc::format!("0{}", h)

@@ -82,11 +82,13 @@ impl DeviceNode {
 #[derive(Debug)]
 pub struct DevFs {
     /// Device nodes
-    devices: RwLock<BTreeMap<&'static str, DeviceNode>>,
+    devices: RwLock<BTreeMap<String, DeviceNode>>,
     /// Root directory metadata
     root_metadata: FileMetadata,
     /// Simple PRNG state for /dev/random
     prng_state: RwLock<u64>,
+    /// Next inode number for dynamically added devices
+    next_inode: RwLock<u64>,
 }
 
 impl DevFs {
@@ -97,7 +99,7 @@ impl DevFs {
 
         // Create standard device nodes
         devices.insert(
-            "null",
+            "null".to_string(),
             DeviceNode::new_char_device(
                 2,
                 DeviceType::Null,
@@ -108,7 +110,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "zero",
+            "zero".to_string(),
             DeviceNode::new_char_device(
                 3,
                 DeviceType::Zero,
@@ -119,7 +121,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "random",
+            "random".to_string(),
             DeviceNode::new_char_device(
                 4,
                 DeviceType::Random,
@@ -130,7 +132,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "urandom",
+            "urandom".to_string(),
             DeviceNode::new_char_device(
                 5,
                 DeviceType::URandom,
@@ -141,7 +143,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "console",
+            "console".to_string(),
             DeviceNode::new_char_device(
                 6,
                 DeviceType::Console,
@@ -152,7 +154,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "stdin",
+            "stdin".to_string(),
             DeviceNode::new_char_device(
                 7,
                 DeviceType::Stdin,
@@ -163,7 +165,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "stdout",
+            "stdout".to_string(),
             DeviceNode::new_char_device(
                 8,
                 DeviceType::Stdout,
@@ -174,7 +176,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "stderr",
+            "stderr".to_string(),
             DeviceNode::new_char_device(
                 9,
                 DeviceType::Stderr,
@@ -185,7 +187,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "mem",
+            "mem".to_string(),
             DeviceNode::new_char_device(
                 10,
                 DeviceType::Memory,
@@ -196,7 +198,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "kmem",
+            "kmem".to_string(),
             DeviceNode::new_char_device(
                 11,
                 DeviceType::KernelMemory,
@@ -207,7 +209,7 @@ impl DevFs {
         );
 
         devices.insert(
-            "full",
+            "full".to_string(),
             DeviceNode::new_char_device(
                 12,
                 DeviceType::Full,
@@ -223,6 +225,7 @@ impl DevFs {
             devices: RwLock::new(devices),
             root_metadata,
             prng_state: RwLock::new(0x123456789abcdef0),
+            next_inode: RwLock::new(100),
         }
     }
 
@@ -252,6 +255,38 @@ impl DevFs {
     fn get_device_inode(&self, name: &str) -> Option<InodeNumber> {
         let devices = self.devices.read();
         devices.get(name).map(|dev| dev.metadata.inode)
+    }
+
+    /// Add a device node dynamically
+    pub fn add_device(
+        &self,
+        name: &str,
+        device_type: DeviceType,
+        major: u32,
+        minor: u32,
+        permissions: FilePermissions,
+    ) -> FsResult<InodeNumber> {
+        let mut devices = self.devices.write();
+        if devices.contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let mut next_inode = self.next_inode.write();
+        let inode = *next_inode;
+        *next_inode += 1;
+
+        let node = DeviceNode::new_char_device(inode, device_type, major, minor, permissions);
+        devices.insert(name.to_string(), node);
+        Ok(inode)
+    }
+
+    /// Remove a device node dynamically
+    pub fn remove_device(&self, name: &str) -> FsResult<()> {
+        let mut devices = self.devices.write();
+        if devices.remove(name).is_none() {
+            return Err(FsError::NotFound);
+        }
+        Ok(())
     }
 }
 
@@ -579,21 +614,63 @@ impl DevFs {
     }
 }
 
-/// Create a device node (for use by device drivers)
+/// Create device node (for use by device drivers)
 pub fn create_device_node(
-    _name: &str,
-    _device_type: DeviceType,
-    _major: u32,
-    _minor: u32,
-    _permissions: FilePermissions,
+    name: &str,
+    device_type: DeviceType,
+    major: u32,
+    minor: u32,
+    permissions: FilePermissions,
 ) -> FsResult<()> {
-    // This would be called by device drivers to register new devices
-    // For now, we only support the predefined devices
-    Err(FsError::NotSupported)
+    let dev_fs = get_devfs()?;
+    dev_fs.add_device(name, device_type, major, minor, permissions)?;
+    Ok(())
 }
 
-/// Remove a device node
-pub fn remove_device_node(_name: &str) -> FsResult<()> {
-    // This would be called when a device is removed
-    Err(FsError::NotSupported)
+/// Remove device node
+pub fn remove_device_node(name: &str) -> FsResult<()> {
+    let dev_fs = get_devfs()?;
+    dev_fs.remove_device(name)
+}
+
+/// Get the global DevFs instance if it has been registered.
+fn get_devfs() -> FsResult<&'static DevFs> {
+    GLOBAL_DEVFS
+        .read()
+        .as_ref()
+        .copied()
+        .ok_or(FsError::NotSupported)
+}
+
+/// Register the global DevFs instance (called during VFS init).
+pub fn register_devfs(devfs: &'static DevFs) {
+    *GLOBAL_DEVFS.write() = Some(devfs);
+}
+
+static GLOBAL_DEVFS: RwLock<Option<&'static DevFs>> = RwLock::new(None);
+
+/// Thin wrapper around a `&'static DevFs` that implements `FileSystem`.
+///
+/// This lets the same DevFs instance be mounted at `/dev` and also used by
+/// dynamic device registration.
+#[derive(Debug)]
+pub struct DevFsMount(pub &'static DevFs);
+
+impl FileSystem for DevFsMount {
+    fn fs_type(&self) -> FileSystemType { self.0.fs_type() }
+    fn statfs(&self) -> FsResult<FileSystemStats> { self.0.statfs() }
+    fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> { self.0.create(path, permissions) }
+    fn open(&self, path: &str, flags: OpenFlags) -> FsResult<InodeNumber> { self.0.open(path, flags) }
+    fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> { self.0.read(inode, offset, buffer) }
+    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> { self.0.write(inode, offset, buffer) }
+    fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> { self.0.metadata(inode) }
+    fn set_metadata(&self, inode: InodeNumber, metadata: &FileMetadata) -> FsResult<()> { self.0.set_metadata(inode, metadata) }
+    fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> { self.0.mkdir(path, permissions) }
+    fn rmdir(&self, path: &str) -> FsResult<()> { self.0.rmdir(path) }
+    fn unlink(&self, path: &str) -> FsResult<()> { self.0.unlink(path) }
+    fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> { self.0.readdir(inode) }
+    fn rename(&self, old_path: &str, new_path: &str) -> FsResult<()> { self.0.rename(old_path, new_path) }
+    fn symlink(&self, target: &str, link_path: &str) -> FsResult<()> { self.0.symlink(target, link_path) }
+    fn readlink(&self, path: &str) -> FsResult<String> { self.0.readlink(path) }
+    fn sync(&self) -> FsResult<()> { self.0.sync() }
 }

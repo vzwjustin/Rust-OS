@@ -103,6 +103,7 @@ impl OpenFlags {
     pub const APPEND: u32 = 0x800;
     pub const NONBLOCK: u32 = 0x1000;
     pub const DIRECTORY: u32 = 0x10000;
+    pub const CLOEXEC: u32 = 0x80000;
 
     pub const fn new(bits: u32) -> Self {
         Self { bits }
@@ -260,6 +261,11 @@ pub trait InodeOps: Send + Sync {
 
     /// Change file owner and group (default: not supported)
     fn set_owner(&self, _uid: u32, _gid: u32) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
+
+    /// Change file access and modification times (default: not supported)
+    fn set_times(&self, _atime: u64, _mtime: u64) -> VfsResult<()> {
         Err(VfsError::NotSupported)
     }
 }
@@ -572,6 +578,12 @@ impl Vfs {
         file_table.kind(fd)
     }
 
+    /// Set flags on an existing file descriptor.
+    pub fn set_fd_flags(&self, fd: i32, flags: OpenFlags) -> VfsResult<()> {
+        let mut file_table = self.file_table.lock();
+        file_table.set_flags(fd, flags)
+    }
+
     /// Snapshot open fds for syscall tracing.
     pub fn open_fd_snapshot(&self) -> Vec<(i32, FdKind)> {
         let file_table = self.file_table.lock();
@@ -677,6 +689,12 @@ impl Vfs {
     pub fn stat(&self, path: &str) -> VfsResult<Stat> {
         let inode = self.resolve_path(path)?;
         inode.stat()
+    }
+
+    /// Set file access and modification times
+    pub fn set_times(&self, path: &str, atime: u64, mtime: u64) -> VfsResult<()> {
+        let inode = self.resolve_path(path)?;
+        inode.set_times(atime, mtime)
     }
 
     /// List directory entries for a path.
@@ -898,6 +916,11 @@ pub fn vfs_stat(path: &str) -> VfsResult<Stat> {
     VFS.stat(path)
 }
 
+/// Set file access and modification times
+pub fn vfs_set_times(path: &str, atime: u64, mtime: u64) -> VfsResult<()> {
+    VFS.set_times(path, atime, mtime)
+}
+
 /// List directory entries for a path.
 pub fn vfs_list_dir(path: &str) -> VfsResult<Vec<DirEntry>> {
     VFS.list_dir(path)
@@ -946,6 +969,11 @@ pub fn vfs_set_dir_cookie(fd: i32, cookie: u64) -> VfsResult<()> {
 /// Get fd kind
 pub fn vfs_fd_kind(fd: i32) -> VfsResult<FdKind> {
     VFS.fd_kind(fd)
+}
+
+/// Set flags on an existing file descriptor
+pub fn vfs_set_fd_flags(fd: i32, flags: u32) -> VfsResult<()> {
+    VFS.set_fd_flags(fd, OpenFlags::new(flags))
 }
 
 /// Open a special fd

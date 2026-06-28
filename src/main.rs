@@ -1671,7 +1671,14 @@ fn pixel_desktop_main_loop() -> ! {
 /// - Mouse cursor rendering and movement
 /// - Window focus, dragging, and interaction
 /// - Periodic desktop updates and rendering
-extern "C" fn modern_desktop_idle_resume() {}
+extern "C" fn modern_desktop_idle_resume() -> ! {
+    // Resume point after a bootstrap user task exits during the desktop idle
+    // phase. The bootstrap code jumps here directly, so this function must
+    // never return. Halt the CPU until the next interrupt wakes the kernel.
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
 
 fn modern_desktop_main_loop() -> ! {
     // Desktop state

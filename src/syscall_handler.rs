@@ -1613,8 +1613,14 @@ fn syscall_membarrier(cmd: i32, flags: i32) -> i64 {
         Err(e) => -(e as i64),
     }
 }
-fn syscall_rt_sigpending(_set: *mut u8, _sigsetsize: usize) -> i64 {
-    0
+fn syscall_rt_sigpending(set: *mut u8, sigsetsize: usize) -> i64 {
+    match crate::linux_compat::signal_ops::rt_sigpending(
+        set as *mut crate::linux_compat::types::SigSet,
+        sigsetsize,
+    ) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_rt_sigtimedwait(
     set: *const u8,
@@ -1676,8 +1682,11 @@ fn syscall_rt_sigsuspend(mask: *const u8, sigsetsize: usize) -> i64 {
         Err(e) => -(e as i64),
     }
 }
-fn syscall_sigaltstack(_ss: *const u8, _old_ss: *mut u8) -> i64 {
-    0
+fn syscall_sigaltstack(ss: *const u8, old_ss: *mut u8) -> i64 {
+    match crate::linux_compat::signal_ops::sigaltstack(ss, old_ss) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 
 // ── Time extension syscalls ──
@@ -1799,10 +1808,10 @@ fn syscall_flock(fd: i32, operation: i32) -> i64 {
     }
 }
 fn syscall_pause() -> i64 {
-    // pause() blocks until a signal is delivered. Without a wait queue we
-    // return EINTR (4) to indicate the call was interrupted, matching the
-    // behavior when no signal handler is installed.
-    -4 // EINTR
+    match crate::linux_compat::signal_ops::pause() {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
 }
 fn syscall_alarm(seconds: u32) -> i64 {
     match crate::linux_compat::process_ops::alarm(seconds) {

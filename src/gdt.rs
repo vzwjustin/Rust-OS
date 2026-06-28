@@ -152,6 +152,18 @@ pub fn get_tss_selector() -> GdtSegmentSelector {
     GDT.1.tss_selector
 }
 
+/// Update the kernel stack pointer in the TSS (RSP0) used for ring 0
+/// entry from ring 3 (syscalls, interrupts).
+///
+/// SAFETY: `kernel_stack` must point to the top of a valid, mapped kernel
+/// stack for the current process. This function is only safe when called
+/// during a context switch where the supplied stack is active.
+pub unsafe fn set_kernel_stack_pointer(kernel_stack: u64) {
+    if kernel_stack != 0 {
+        TSS.privilege_stack_table[0] = VirtAddr::new(kernel_stack);
+    }
+}
+
 /// Get current privilege level from CS register
 pub fn get_current_privilege_level() -> u16 {
     CS::get_reg().rpl() as u16
@@ -263,13 +275,9 @@ pub fn get_stack_info() -> StackInfo {
 ///
 /// The stack pointer must point to a valid, mapped kernel stack.
 pub fn set_kernel_stack(stack_ptr: VirtAddr) {
-    // Get a mutable reference to TSS
-    // Safety: We have exclusive access during init
     unsafe {
         TSS.privilege_stack_table[0] = stack_ptr;
     }
-
-    crate::serial_println!("Kernel stack set to {:?} in TSS", stack_ptr);
 }
 
 /// Set user stack pointer (for task switching)
@@ -367,14 +375,28 @@ pub fn print_gdt_info() {
     // Production kernels don't expose GDT details
 }
 
-/// Production GDT validation
+/// Production GDT validation.
+///
+/// Verifies that we are running in kernel mode and that the kernel code
+/// segment selector describes a valid executable segment at Ring 0.
+/// This turns the previous no-op validation into a real self-check.
 pub fn test_gdt() {
-    // Production: validate GDT setup internally without exposing details
-    let _is_kernel = is_kernel_mode();
-    let _is_user = is_user_mode();
+    assert!(
+        is_kernel_mode(),
+        "GDT self-test failed: not running in kernel mode"
+    );
 
-    // Validate segment selectors are valid
-    let _info = get_segment_info(get_kernel_code_selector());
+    let info = get_segment_info(get_kernel_code_selector());
+    assert!(
+        info.is_some(),
+        "GDT self-test failed: kernel code segment selector invalid"
+    );
+
+    let info = info.unwrap();
+    assert!(
+        info.is_code && info.is_executable && matches!(info.privilege_level, PrivilegeLevel::Ring0),
+        "GDT self-test failed: kernel code segment misconfigured"
+    );
 }
 
 /// Advanced TSS management for future extensions

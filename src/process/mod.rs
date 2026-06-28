@@ -190,6 +190,8 @@ pub struct ProcessControlBlock {
     pub priority: Priority,
     /// CPU context for context switching
     pub context: CpuContext,
+    /// FPU/SSE state for lazy FPU switching
+    pub fpu: context::FpuState,
     /// Memory management information
     pub memory: MemoryInfo,
     /// Process name
@@ -258,6 +260,7 @@ pub struct ProcessControlBlock {
     pub pending_signals: alloc::vec::Vec<u32>,
     /// Program entry point address
     pub entry_point: u64,
+
     /// File descriptors map (alias for compatibility)
     pub file_descriptors: BTreeMap<u32, FileDescriptor>,
     /// mlockall() flags (MCL_CURRENT, MCL_FUTURE, MCL_ONFAULT)
@@ -346,9 +349,46 @@ impl FileDescriptor {
                 self.offset += bytes_read as u64;
                 Ok(bytes_read)
             }
+            FileDescriptorType::VfsHandle { vfs_fd } => {
+                crate::fs::vfs().seek(*vfs_fd, crate::fs::SeekFrom::Start(self.offset))?;
+                let bytes_read = crate::fs::vfs().read(*vfs_fd, buffer)?;
+                self.offset += bytes_read as u64;
+                Ok(bytes_read)
+            }
             FileDescriptorType::StandardInput => {
-                // For stdin, read from keyboard buffer
-                Ok(0)
+                // Non-blocking read from the keyboard event queue.
+                // Each character event is encoded as a single byte; if no event
+                // is pending we return 0 so the caller can block or poll.
+                let mut written = 0usize;
+                while written < buffer.len() {
+                    match crate::keyboard::get_key_event() {
+                        Some(crate::keyboard::KeyEvent::CharacterPress(c)) => {
+                            if c == '\n' || c == '\r' {
+                                buffer[written] = b'\n';
+                                written += 1;
+                                break;
+                            } else if c.is_ascii() {
+                                buffer[written] = c as u8;
+                                written += 1;
+                            }
+                        }
+                        Some(crate::keyboard::KeyEvent::SpecialPress(crate::keyboard::SpecialKey::Enter)) => {
+                            buffer[written] = b'\n';
+                            written += 1;
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+                Ok(written)
+            }
+            FileDescriptorType::Pipe { pipe_id } => {
+                let ipc_manager = crate::process::ipc::get_ipc_manager();
+                let bytes_read = ipc_manager
+                    .pipe_read(*pipe_id, buffer)
+                    .map_err(|_| crate::fs::FsError::IoError)?;
+                self.offset += bytes_read as u64;
+                Ok(bytes_read)
             }
             _ => Err(crate::fs::FsError::BadFileDescriptor),
         }
@@ -362,12 +402,40 @@ impl FileDescriptor {
                 self.offset += bytes_written as u64;
                 Ok(bytes_written)
             }
+            FileDescriptorType::VfsHandle { vfs_fd } => {
+                crate::fs::vfs().seek(*vfs_fd, crate::fs::SeekFrom::Start(self.offset))?;
+                let bytes_written = crate::fs::vfs().write(*vfs_fd, data)?;
+                self.offset += bytes_written as u64;
+                Ok(bytes_written)
+            }
             FileDescriptorType::StandardOutput | FileDescriptorType::StandardError => {
                 // For stdout/stderr, write to serial console
                 for &byte in data {
                     crate::serial_print!("{}", byte as char);
                 }
                 Ok(data.len())
+            }
+            FileDescriptorType::Pipe { pipe_id } => {
+                let ipc_manager = crate::process::ipc::get_ipc_manager();
+                let bytes_written = ipc_manager
+                    .pipe_write(*pipe_id, data)
+                    .map_err(|_| crate::fs::FsError::IoError)?;
+                self.offset += bytes_written as u64;
+                Ok(bytes_written)
+            }
+            _ => Err(crate::fs::FsError::BadFileDescriptor),
+        }
+    }
+
+    /// Get the current size of the underlying file, if applicable.
+    /// Used by `lseek(SEEK_END)` to compute offsets from the end of the file.
+    pub fn size(&self) -> Result<u64, crate::fs::FsError> {
+        match &self.fd_type {
+            FileDescriptorType::VfsFile { inode } => Ok(inode.size()),
+            FileDescriptorType::VfsHandle { vfs_fd } => {
+                crate::vfs::vfs_fstat(*vfs_fd)
+                    .map(|stat| stat.size)
+                    .map_err(|_| crate::fs::FsError::IoError)
             }
             _ => Err(crate::fs::FsError::BadFileDescriptor),
         }
@@ -481,6 +549,7 @@ impl ProcessControlBlock {
             state: ProcessState::Ready,
             priority: Priority::default(),
             context: CpuContext::default(),
+            fpu: context::FpuState::default(),
             memory: MemoryInfo::default(),
             name: [0; 32],
             cpu_time: 0,
@@ -524,6 +593,7 @@ impl ProcessControlBlock {
             signal_handlers: BTreeMap::new(),
             pending_signals: alloc::vec::Vec::new(),
             entry_point: 0,
+
             file_descriptors: fd_table,
             mlock_flags: 0,
             memory_policy: 0, // MPOL_DEFAULT

@@ -496,7 +496,10 @@ impl HotplugManager {
         stats
     }
 
-    /// Scan for new devices (placeholder)
+    /// Scan for new devices on all supported buses.
+    ///
+    /// Currently scans the PCI bus for devices not yet in the registry
+    /// and registers them.  USB hotplug requires a host controller driver.
     pub fn scan_for_devices(&self) -> HotplugResult<usize> {
         if !self.is_enabled() {
             return Ok(0);

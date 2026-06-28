@@ -87,8 +87,12 @@ impl DmaBuffer {
         // Align size to alignment boundary
         let aligned_size = (size + alignment - 1) & !(alignment - 1);
 
-        // Allocate aligned memory
-        // In a real implementation, this would use DMA-coherent allocation
+        // Allocate aligned memory from the kernel heap.  The kernel heap is
+        // directly mapped (identity-mapped or via a fixed offset), so the
+        // physical address returned by translate_addr is valid for DMA.
+        // A dedicated DMA-coherent pool would be needed for architectures
+        // where the kernel heap is not cache-coherent with devices, but on
+        // x86_64 the default is cache-coherent.
         let layout = core::alloc::Layout::from_size_align(aligned_size, alignment)
             .map_err(|_| NetworkError::InsufficientMemory)?;
 

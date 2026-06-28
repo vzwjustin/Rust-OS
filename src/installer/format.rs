@@ -46,7 +46,9 @@ pub fn format_vfat(
     boot[48..50].copy_from_slice(&1u16.to_le_bytes());
     boot[50..52].copy_from_slice(&6u16.to_le_bytes());
     boot[64] = 0x80;
-    boot[67..71].copy_from_slice(&0x12345678u32.to_le_bytes());
+    // Use a time-based volume serial number instead of a hardcoded placeholder.
+    let serial = (crate::time::uptime_ns() >> 16) as u32;
+    boot[67..71].copy_from_slice(&serial.to_le_bytes());
     write_volume_label(&mut boot[71..82], volume_label);
     boot[82..90].copy_from_slice(b"FAT32   ");
     boot[510..512].copy_from_slice(&0xAA55u16.to_le_bytes());

@@ -413,6 +413,13 @@ impl InodeOps for RamFsInode {
         *self.ctime.write() = get_time();
         Ok(())
     }
+
+    fn set_times(&self, atime: u64, mtime: u64) -> VfsResult<()> {
+        *self.atime.write() = atime;
+        *self.mtime.write() = mtime;
+        *self.ctime.write() = get_time();
+        Ok(())
+    }
 }
 
 /// RAM filesystem superblock

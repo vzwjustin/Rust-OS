@@ -520,10 +520,11 @@ pub fn create_network_driver_from_pci(
     device_id: u16,
     base_addr: u64,
     irq: u8,
+    pci_address: u32,
 ) -> Option<(Box<dyn NetworkDriver>, ExtendedNetworkCapabilities)> {
     // Try Intel E1000 series
     if let Some((driver, caps)) =
-        intel_e1000::create_intel_e1000_driver(vendor_id, device_id, base_addr, irq)
+        intel_e1000::create_intel_e1000_driver(vendor_id, device_id, base_addr, irq, pci_address)
     {
         return Some((driver, caps));
     }
@@ -542,7 +543,12 @@ pub fn create_network_driver_from_pci(
         return Some((driver, caps));
     }
 
-    // Atheros WiFi driver is a stub — not loaded in production
+    // Try Qualcomm Atheros WiFi series
+    if let Some((driver, caps)) =
+        atheros_wifi::create_atheros_wifi_driver(vendor_id, device_id, base_addr, irq)
+    {
+        return Some((driver, caps));
+    }
 
     None
 }
@@ -581,9 +587,10 @@ pub fn init_network_drivers() -> Result<NetworkDriverManager, NetworkError> {
         );
 
         let mapped = base_addr;
+        let pci_address = ((dev.bus as u32) << 16) | ((dev.device as u32) << 11) | ((dev.function as u32) << 8);
 
         if let Some((driver, caps)) =
-            create_network_driver_from_pci(dev.vendor_id, dev.device_id, mapped, irq)
+            create_network_driver_from_pci(dev.vendor_id, dev.device_id, mapped, irq, pci_address)
         {
             crate::serial_println!(
                 "net: loaded driver '{}' for {:04X}:{:04X}",
@@ -708,9 +715,10 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
 
         let base_addr = (bar0 & 0xFFFF_FFF0) as u64;
         let irq = 0u8;
+        let pci_address = ((device.bus as u32) << 16) | ((device.device as u32) << 11) | ((device.function as u32) << 8);
 
         if let Some((mut driver, _caps)) =
-            create_network_driver_from_pci(device.vendor_id, device.device_id, base_addr, irq)
+            create_network_driver_from_pci(device.vendor_id, device.device_id, base_addr, irq, pci_address)
         {
             let name = driver.name().to_string();
             crate::serial_println!(

@@ -5,6 +5,7 @@
 
 use super::{get_system_time, Pid, Priority};
 use alloc::collections::{BTreeMap, VecDeque};
+use alloc::vec::Vec;
 
 /// Scheduling algorithm types
 #[derive(Debug, Clone, Copy)]
@@ -371,9 +372,54 @@ impl Scheduler {
         None
     }
 
-    /// Multilevel feedback queue scheduling
+    /// Multilevel feedback queue scheduling with aging
     fn multilevel_feedback_schedule(&mut self) -> Option<Pid> {
-        // Same as priority for now, but could implement aging
+        // Aging: promote processes that have waited too long to prevent
+        // starvation.  A process that has been ready for longer than the
+        // aging threshold (10x its queue's time slice) is moved to a
+        // higher-priority queue before the selection pass.
+        const AGING_FACTOR: u32 = 10;
+        let now = get_system_time();
+
+        // Collect promotions to apply (can't mutate queues while iterating)
+        let mut promotions: Vec<(Pid, Priority, Priority)> = Vec::new();
+        for (&priority, queue) in &self.queues {
+            let aging_threshold = queue.time_slice.saturating_mul(AGING_FACTOR) as u64;
+            for &pid in &queue.processes {
+                if let Some(info) = self.process_info.get(&pid) {
+                    let wait_time = now.saturating_sub(info.ready_time);
+                    if wait_time > aging_threshold {
+                        // Promote to the next higher priority if possible
+                        let higher = match priority {
+                            Priority::Idle => Some(Priority::Low),
+                            Priority::Low => Some(Priority::Normal),
+                            Priority::Normal => Some(Priority::High),
+                            Priority::High => Some(Priority::RealTime),
+                            Priority::RealTime => None,
+                        };
+                        if let Some(new_pri) = higher {
+                            promotions.push((pid, priority, new_pri));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply promotions
+        for (pid, old_pri, new_pri) in promotions {
+            if let Some(queue) = self.queues.get_mut(&old_pri) {
+                queue.remove_process(pid);
+            }
+            if let Some(queue) = self.queues.get_mut(&new_pri) {
+                queue.add_process(pid);
+            }
+            if let Some(info) = self.process_info.get_mut(&pid) {
+                info.priority = new_pri;
+                info.ready_time = now; // Reset wait timer after promotion
+            }
+        }
+
+        // Now select from highest priority queue first
         self.priority_schedule()
     }
 
@@ -540,19 +586,33 @@ fn yield_cpu_tail() {
         let next_pcb = process_manager.get_process(next_pid);
 
         if let (Some(current), Some(next)) = (current_pcb, next_pcb) {
-            // Build ProcessContext from PCB data
+            // Look up each process's main thread so the context switch can update
+            // TSS.RSP0 to the correct kernel stack.
+            let current_thread_stack = current
+                .main_thread
+                .and_then(|tid| super::thread::get_thread_manager().get_thread(tid))
+                .map(|t| t.kernel_stack + t.stack_size as u64)
+                .unwrap_or(0);
+            let next_thread_stack = next
+                .main_thread
+                .and_then(|tid| super::thread::get_thread_manager().get_thread(tid))
+                .map(|t| t.kernel_stack + t.stack_size as u64)
+                .unwrap_or(0);
+
+            // Build ProcessContext from PCB data. FPU and kernel stack state are
+            // persisted in the PCB / TCB so they survive across switches.
             let mut current_ctx = super::context::ProcessContext {
                 cpu: current.context.clone(),
-                fpu: super::context::FpuState::default(),
-                kernel_stack: 0,
+                fpu: current.fpu.clone(),
+                kernel_stack: current_thread_stack,
                 user_stack: 0,
                 page_table: current.memory.page_directory,
             };
 
             let next_ctx = super::context::ProcessContext {
                 cpu: next.context.clone(),
-                fpu: super::context::FpuState::default(),
-                kernel_stack: 0,
+                fpu: next.fpu.clone(),
+                kernel_stack: next_thread_stack,
                 user_stack: 0,
                 page_table: next.memory.page_directory,
             };
@@ -576,9 +636,10 @@ fn yield_cpu_tail() {
             }
 
             // When we return here, we've been scheduled back in.
-            // Save the restored context back to our PCB.
+            // Save the restored CPU and FPU context back to our PCB.
             let _ = process_manager.with_process_mut(current_pid, |pcb| {
                 pcb.context = current_ctx.cpu;
+                pcb.fpu = current_ctx.fpu;
             });
         } else {
             // Fallback: just update tracking if we can't get PCBs

@@ -116,10 +116,7 @@ fn rebuild_index(repo_dir: &str, ext: &str) -> PackageResult<()> {
         if let Some(idx) = stem.rfind('-') {
             let name = &stem[..idx];
             let version = &stem[idx + 1..];
-            lines.push(format!(
-                "{}|{}|all|cached package|0|0",
-                name, version
-            ));
+            lines.push(format!("{}|{}|all|cached package|0|0", name, version));
         }
     }
 

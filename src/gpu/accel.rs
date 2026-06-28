@@ -591,9 +591,6 @@ impl GraphicsAccelerationEngine {
 
     /// Load AMD GPU firmware
     fn load_amd_firmware(&self, _gpu_id: u32, gpu: &GPUCapabilities) -> Result<(), &'static str> {
-        // In a real implementation, this would load firmware from filesystem
-        // For now, we'll simulate firmware loading
-
         let firmware_files = match gpu.pci_device_id {
             // RDNA2 (Navi 21)
             0x73A0..=0x73AF => vec![
@@ -609,13 +606,8 @@ impl GraphicsAccelerationEngine {
         };
 
         for firmware_file in firmware_files {
-            // In production, load firmware from /lib/firmware/
-            // For now, we'll just validate the firmware path exists
             if !self.validate_firmware_path(firmware_file) {
-                crate::println!(
-                    "Warning: Firmware {} not found, using fallback",
-                    firmware_file
-                );
+                return Err("Required AMD GPU firmware file not found in /lib/firmware/");
             }
         }
 
@@ -741,28 +733,28 @@ impl GraphicsAccelerationEngine {
 
     /// Test Intel GPU command submission
     fn test_intel_command_submission(&self, _gpu_id: u32) -> Result<bool, &'static str> {
-        // Submit a NOP command to Intel GPU
-        // In production, this would submit actual commands through the ring buffer
-        Ok(true)
+        // Intel GPU command submission requires mapping the GPU's MMIO BAR
+        // and writing to the ring buffer registers.  Without a detected and
+        // mapped Intel GPU, we cannot test command submission.
+        Ok(false)
     }
 
-    /// Test AMD GPU command submission  
+    /// Test AMD GPU command submission
     fn test_amd_command_submission(&self, _gpu_id: u32) -> Result<bool, &'static str> {
-        // Submit a NOP packet to AMD GPU command processor
-        // In production, this would submit actual commands through the ring buffer
-        Ok(true)
+        // AMD GPU command submission requires mapping the GPU's MMIO BAR
+        // and writing to the command processor registers.  Without a detected
+        // and mapped AMD GPU, we cannot test command submission.
+        Ok(false)
     }
 
     // Helper methods for hardware access
 
     fn get_gpu_pci_address(&self, gpu_id: u32) -> Result<u32, &'static str> {
-        // In production, this would look up the actual PCI address for the GPU
-        // For now, assume GPU 0 is at bus 0, device 2, function 0
-        let bus = 0u8;
-        let device = (2 + gpu_id) as u8; // Offset device number by GPU ID
-        let function = 0u8;
-
-        Ok(((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8))
+        let display_devices = crate::pci::get_devices_by_class(crate::pci::PciClass::Display);
+        let dev = display_devices
+            .get(gpu_id as usize)
+            .ok_or("No GPU PCI device found at given index")?;
+        Ok(((dev.bus as u32) << 16) | ((dev.device as u32) << 11) | ((dev.function as u32) << 8))
     }
 
     fn read_pci_config(&self, pci_address: u32, offset: u8) -> Result<u32, &'static str> {
@@ -795,16 +787,13 @@ impl GraphicsAccelerationEngine {
     fn map_physical_to_virtual(
         &self,
         physical_addr: u64,
-        _size: usize,
+        size: usize,
     ) -> Result<u64, &'static str> {
-        // In production, this would use the memory manager to map physical to virtual
-        // For now, return a direct mapping (assuming identity mapping in kernel space)
-        if physical_addr < 0x100000000 {
-            // Below 4GB
-            Ok(physical_addr | 0xFFFF800000000000) // Kernel direct mapping
-        } else {
-            Err("Physical address above 4GB not supported in direct mapping")
-        }
+        // Use the kernel memory manager's direct physical mapping offset
+        // rather than a hardcoded constant.  The memory manager establishes
+        // a direct map of all physical memory at a known virtual offset.
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        Ok(phys_offset + physical_addr)
     }
 
     fn allocate_gpu_memory(&self, gpu_id: u32, size: usize) -> Result<u64, &'static str> {
@@ -814,10 +803,9 @@ impl GraphicsAccelerationEngine {
         Ok(alloc_id as u64)
     }
 
-    fn validate_firmware_path(&self, _firmware_path: &str) -> bool {
-        // In production, this would check if firmware file exists in /lib/firmware/
-        // For now, always return true to avoid blocking initialization
-        true
+    fn validate_firmware_path(&self, firmware_path: &str) -> bool {
+        let full_path = alloc::format!("/lib/firmware/{}", firmware_path);
+        crate::fs::vfs().stat(&full_path).is_ok()
     }
 
     /// Check if GPU supports acceleration features
@@ -969,7 +957,6 @@ impl GraphicsAccelerationEngine {
         let shader_id = self.next_shader_id;
         self.next_shader_id += 1;
 
-        // Compile shader (simplified simulation)
         let bytecode = self.compile_shader(shader_type, source_code)?;
 
         let shader = ShaderProgram {
@@ -1478,30 +1465,27 @@ impl GraphicsAccelerationEngine {
     fn execute_vertex_stage(
         &mut self,
         _vertex_start: u32,
-        vertex_count: u32,
+        _vertex_count: u32,
     ) -> Result<(), &'static str> {
-        // Simulate vertex processing
-        let execution_time = vertex_count as u64 * 50; // 50ns per vertex
-        self.performance_counters.shader_execution_time_ns += execution_time;
-        Ok(())
+        // Vertex processing requires a GPU with mapped MMIO and a command queue.
+        // Without a detected GPU, vertex execution is not possible.
+        Err("No GPU available for vertex stage execution")
     }
 
     fn execute_rasterization(
         &mut self,
         _primitive_type: PrimitiveType,
-        vertex_count: u32,
+        _vertex_count: u32,
     ) -> Result<u32, &'static str> {
-        // Simulate rasterization and return pixel count
-        let pixel_count = vertex_count * 100; // Simplified estimation
-        Ok(pixel_count)
+        // Rasterization requires GPU hardware with a configured rendering pipeline.
+        // Without a detected GPU, rasterization is not possible.
+        Err("No GPU available for rasterization")
     }
 
-    fn execute_fragment_stage(&mut self, pixel_count: u32) -> Result<(), &'static str> {
-        // Simulate fragment processing
-        self.performance_counters.pixels_shaded += pixel_count as u64;
-        let execution_time = pixel_count as u64 * 20; // 20ns per pixel
-        self.performance_counters.shader_execution_time_ns += execution_time;
-        Ok(())
+    fn execute_fragment_stage(&mut self, _pixel_count: u32) -> Result<(), &'static str> {
+        // Fragment shading requires GPU shader cores with mapped MMIO.
+        // Without a detected GPU, fragment execution is not possible.
+        Err("No GPU available for fragment stage execution")
     }
 
     fn execute_indexed_rendering(
@@ -1625,38 +1609,27 @@ impl GraphicsAccelerationEngine {
 
     /// Write command data to GPU command buffer
     fn write_gpu_command_buffer(&mut self, command_data: &[u8]) -> Result<(), &'static str> {
-        // In a real implementation, this would write to mapped GPU memory
-        // For now, validate command structure and prepare for execution
         if command_data.is_empty() {
             return Err("Empty command data");
         }
-
-        // Command buffer management
-        Ok(())
+        // Writing to the GPU command buffer requires a mapped GPU MMIO BAR.
+        // Without a detected GPU, there is no command buffer to write to.
+        Err("No GPU command buffer available — GPU MMIO not mapped")
     }
 
     /// Trigger GPU execution of queued commands
     fn trigger_gpu_execution(&mut self) -> Result<(), &'static str> {
-        // Real GPU execution trigger via hardware registers
-        // This would typically involve writing to GPU control registers
-        Ok(())
+        // Triggering GPU execution requires writing to GPU control registers
+        // via mapped MMIO.  Without a detected GPU, this is not possible.
+        Err("No GPU available to trigger execution")
     }
 
     /// Wait for compute shader completion
-    fn wait_for_compute_completion(&mut self, thread_count: u32) -> Result<u64, &'static str> {
-        // Real GPU synchronization and completion detection
-
-        // Estimate execution time based on GPU capabilities and thread count
-        let base_time_per_thread = 10; // nanoseconds per thread
-        let gpu_parallel_factor = 1024; // GPU can execute many threads in parallel
-
-        let parallel_groups = (thread_count + gpu_parallel_factor - 1) / gpu_parallel_factor;
-        let execution_time = parallel_groups as u64 * base_time_per_thread;
-
-        // In real implementation, would poll GPU status registers
-        // or use GPU completion interrupts
-
-        Ok(execution_time)
+    fn wait_for_compute_completion(&mut self, _thread_count: u32) -> Result<u64, &'static str> {
+        // GPU synchronization requires polling GPU status registers or using
+        // GPU completion interrupts.  Without a detected GPU, we cannot wait
+        // for completion of any real compute work.
+        Err("No GPU available for compute completion synchronization")
     }
 
     /// Set up GPU work group size
@@ -1677,16 +1650,16 @@ impl GraphicsAccelerationEngine {
 
     /// Bind compute shader resources
     fn bind_compute_resources(&mut self) -> Result<(), &'static str> {
-        // Bind buffers, textures, and other resources to compute pipeline
-        // Real implementation would set up GPU resource binding tables
-        Ok(())
+        // Resource binding requires GPU binding tables in mapped MMIO space.
+        // Without a detected GPU, there are no binding tables to configure.
+        Err("No GPU available for resource binding")
     }
 
     /// Set up memory barriers for compute operations
     fn setup_compute_memory_barriers(&mut self) -> Result<(), &'static str> {
-        // Set up GPU memory barriers to ensure data consistency
-        // Real implementation would configure GPU cache and memory systems
-        Ok(())
+        // GPU memory barriers require writing to GPU cache control registers.
+        // Without a detected GPU, we cannot configure memory barriers.
+        Err("No GPU available for memory barrier setup")
     }
 
     fn execute_ray_tracing(
@@ -1771,98 +1744,75 @@ impl GraphicsAccelerationEngine {
     }
 
     /// Wait for ray tracing completion and measure performance
-    fn wait_for_ray_tracing_completion(&mut self, ray_count: u64) -> Result<u64, &'static str> {
-        // Real ray tracing performance measurement
-
-        // Ray tracing is more expensive than regular compute
-        let base_time_per_ray = 100; // nanoseconds per ray
-        let rt_parallel_factor = 256; // RT cores can process rays in parallel
-
-        let parallel_groups = (ray_count + rt_parallel_factor - 1) / rt_parallel_factor;
-        let execution_time = parallel_groups * base_time_per_ray;
-
-        // In real implementation, would monitor RT unit completion status
-
-        Ok(execution_time)
+    fn wait_for_ray_tracing_completion(&mut self, _ray_count: u64) -> Result<u64, &'static str> {
+        // GPU synchronization requires polling GPU status registers or using
+        // GPU completion interrupts.  Without a detected GPU, we cannot wait
+        // for completion of any real ray tracing work.
+        Err("No GPU available for ray tracing completion synchronization")
     }
 
     /// Bind ray generation shader
     fn bind_ray_generation_shader(&mut self) -> Result<(), &'static str> {
-        // Bind ray generation shader to GPU RT pipeline
-        // Real implementation would set up RT shader table
-        Ok(())
+        // Binding ray generation shaders requires a GPU with RT cores and
+        // mapped MMIO.  Without a detected GPU, this is not possible.
+        Err("No GPU available for ray generation shader binding")
     }
 
     /// Set up acceleration structures for ray tracing
     fn setup_acceleration_structures(&mut self) -> Result<(), &'static str> {
-        // Configure GPU acceleration structures (BLAS/TLAS)
-        // Real implementation would build and bind acceleration structures
-        Ok(())
+        // Building acceleration structures (BLAS/TLAS) requires a GPU with
+        // RT cores and mapped MMIO.  Without a detected GPU, this is not possible.
+        Err("No GPU available for acceleration structure setup")
     }
 
     /// Set up ray tracing output buffer
     fn setup_ray_tracing_output(
         &mut self,
-        width: u32,
-        height: u32,
-        depth: u32,
+        _width: u32,
+        _height: u32,
+        _depth: u32,
     ) -> Result<(), &'static str> {
-        // Configure output buffer for ray tracing results
-        let _output_size = width * height * depth * 4; // RGBA output
-
-        // Real implementation would allocate and bind output buffer
-        Ok(())
+        // Allocating and binding ray tracing output buffers requires a GPU
+        // with RT cores and mapped MMIO.  Without a detected GPU, this is not possible.
+        Err("No GPU available for ray tracing output buffer setup")
     }
 
     /// Configure ray tracing pipeline state
     fn configure_ray_tracing_state(&mut self) -> Result<(), &'static str> {
-        // Set up ray tracing pipeline configuration
-        // Real implementation would configure RT pipeline parameters
-        Ok(())
+        // Configuring RT pipeline state requires writing to GPU control
+        // registers via mapped MMIO.  Without a detected GPU, this is not possible.
+        Err("No GPU available for ray tracing pipeline configuration")
     }
 
     /// Measure actual GPU execution time for compute operations
-    fn measure_gpu_execution_time(&self, work_groups: u32) -> u64 {
-        // Read GPU performance counters to get actual execution time
-        // This would typically read from GPU performance monitoring units (PMU)
-        let base_cycles_per_group = 1000; // Base cycles per work group
-        let gpu_frequency_mhz = 1500; // Typical GPU frequency in MHz
-
-        let total_cycles = work_groups as u64 * base_cycles_per_group;
-        // Convert cycles to nanoseconds
-        (total_cycles * 1000) / gpu_frequency_mhz
+    fn measure_gpu_execution_time(&self, _work_groups: u32) -> u64 {
+        // Reading GPU performance counters requires a mapped GPU MMIO BAR.
+        // Without a detected GPU, there are no counters to read.
+        0
     }
 
     /// Measure ray tracing performance from hardware counters
-    fn measure_raytracing_performance(&self, ray_count: u64) -> u64 {
-        // Read actual ray tracing performance counters
-        let rays_per_second = 100_000_000; // 100M rays/sec typical performance
-        let nanoseconds_per_second = 1_000_000_000;
-
-        // Calculate execution time based on ray count and GPU capability
-        (ray_count * nanoseconds_per_second) / rays_per_second
+    fn measure_raytracing_performance(&self, _ray_count: u64) -> u64 {
+        // Reading GPU RT performance counters requires a mapped GPU MMIO BAR.
+        // Without a detected GPU, there are no counters to read.
+        0
     }
 
     /// Measure frame presentation time from display hardware
     fn measure_frame_presentation_time(&self) -> u64 {
-        // Read actual display timing from hardware
-        // This would typically read VBLANK timing registers
-        let display_refresh_hz = 60; // Display refresh rate
-        let nanoseconds_per_second = 1_000_000_000;
-
-        nanoseconds_per_second / display_refresh_hz
+        // Reading display timing registers requires a mapped GPU MMIO BAR.
+        // Without a detected GPU, return 0 to indicate no hardware timing info.
+        0
     }
 
     /// Write to GPU control/status register
     fn write_gpu_csr(&mut self, register_offset: u32, _value: u32) -> Result<(), &'static str> {
-        // In a real implementation, this would write to memory-mapped GPU registers
-        // For now, validate register access bounds
         if register_offset > 0x10000 {
             return Err("Invalid GPU register offset");
         }
-
-        // Would typically be: unsafe { ptr::write_volatile(gpu_base + offset, value) }
-        Ok(())
+        // Writing to GPU CSR registers requires a mapped GPU MMIO BAR.
+        // Without a detected GPU, there are no registers to write to.
+        Err("No GPU MMIO mapped — cannot write CSR register")
     }
 }
 

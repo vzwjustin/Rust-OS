@@ -30,11 +30,23 @@ static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_SIGNALFD_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Initialize special fd subsystem.
-pub fn init_special_fd() {}
+///
+/// Clears all per-fd state tables and resets the ID counters so the
+/// subsystem starts from a known empty state. This is idempotent and safe
+/// to call during both early boot and subsystem restart.
+pub fn init_special_fd() {
+    EVENTFD_BY_ID.write().clear();
+    TIMERFD_BY_ID.write().clear();
+    EPOLL_BY_ID.write().clear();
+    SIGNALFD_BY_ID.write().clear();
+    NEXT_EVENT_ID.store(1, Ordering::SeqCst);
+    NEXT_TIMER_ID.store(1, Ordering::SeqCst);
+    NEXT_EPOLL_ID.store(1, Ordering::SeqCst);
+    NEXT_SIGNALFD_ID.store(1, Ordering::SeqCst);
+}
 
 struct EventFdState {
     value: AtomicU64,
-    #[allow(dead_code)]
     flags: i32,
 }
 
@@ -375,7 +387,7 @@ pub fn poll(fds: *mut PollFd, nfds: u64, timeout_ms: i32) -> LinuxResult<i32> {
 }
 
 /// epoll_create1 - create epoll instance
-pub fn epoll_create1(_flags: i32) -> LinuxResult<i32> {
+pub fn epoll_create1(flags: i32) -> LinuxResult<i32> {
     let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::SeqCst);
     EPOLL_BY_ID.write().insert(
         id,
@@ -383,7 +395,12 @@ pub fn epoll_create1(_flags: i32) -> LinuxResult<i32> {
             entries: Vec::new(),
         },
     );
-    register_special(FdKind::Epoll(id), OpenFlags::RDONLY)
+    let mut fd_flags: u32 = OpenFlags::RDONLY;
+    if (flags & 0o2000000) != 0 {
+        // EPOLL_CLOEXEC
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    register_special(FdKind::Epoll(id), fd_flags)
 }
 
 /// epoll_ctl - modify interest list
@@ -507,9 +524,25 @@ pub fn pipe(pipefd: *mut [i32; 2]) -> LinuxResult<i32> {
     Ok(0)
 }
 
-/// pipe2 - create pipe (flags ignored for now)
-pub fn pipe2(pipefd: *mut [i32; 2], _flags: i32) -> LinuxResult<i32> {
-    pipe(pipefd)
+/// pipe2 - create pipe with flags
+pub fn pipe2(pipefd: *mut [i32; 2], flags: i32) -> LinuxResult<i32> {
+    pipe(pipefd)?;
+    // Apply O_CLOEXEC / O_NONBLOCK to both pipe ends.
+    let pipefd_ref = unsafe { &*pipefd };
+    let mut fd_flags: u32 = 0;
+    if (flags & 0o2000000) != 0 {
+        // O_CLOEXEC
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    if (flags & 0o20000) != 0 {
+        // O_NONBLOCK
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    if fd_flags != 0 {
+        let _ = vfs::vfs_set_fd_flags(pipefd_ref[0], fd_flags);
+        let _ = vfs::vfs_set_fd_flags(pipefd_ref[1], fd_flags);
+    }
+    Ok(0)
 }
 
 /// eventfd2 - create eventfd as VFS fd
@@ -522,7 +555,16 @@ pub fn eventfd2(initval: u32, flags: i32) -> LinuxResult<i32> {
             flags,
         },
     );
-    register_special(FdKind::EventFd(id), OpenFlags::RDWR)
+    let mut fd_flags: u32 = OpenFlags::RDWR;
+    if (flags & 0o2000000) != 0 {
+        // EFD_CLOEXEC
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    if (flags & 0o20000) != 0 {
+        // EFD_NONBLOCK
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    register_special(FdKind::EventFd(id), fd_flags)
 }
 
 /// timerfd_create - create timerfd as VFS fd
@@ -540,8 +582,16 @@ pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
             armed: AtomicU64::new(0),
         },
     );
-    let _ = flags;
-    register_special(FdKind::TimerFd(id), OpenFlags::RDWR)
+    let mut fd_flags: u32 = vfs::OpenFlags::RDWR;
+    if (flags & 0o2000000) != 0 {
+        // TFD_CLOEXEC
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    if (flags & 0o20000) != 0 {
+        // TFD_NONBLOCK
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    register_special(FdKind::TimerFd(id), fd_flags)
 }
 
 /// signalfd - create or update a signalfd
@@ -549,7 +599,7 @@ pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
 /// Creates a new signalfd watching the signals in `mask`, or updates
 /// the mask of an existing signalfd if `fd` is valid (>= 0). The mask
 /// is a 64-bit signal set where bit N-1 corresponds to signal N.
-pub fn signalfd(fd: i32, mask: u64, _flags: i32) -> LinuxResult<i32> {
+pub fn signalfd(fd: i32, mask: u64, flags: i32) -> LinuxResult<i32> {
     // If fd is valid, update the existing signalfd's mask
     if fd >= 0 {
         let kind = vfs::vfs_fd_kind(fd).map_err(|_| LinuxError::EBADF)?;
@@ -575,7 +625,16 @@ pub fn signalfd(fd: i32, mask: u64, _flags: i32) -> LinuxResult<i32> {
             pid,
         },
     );
-    register_special(FdKind::Signalfd(id), OpenFlags::RDWR)
+    let mut fd_flags: u32 = OpenFlags::RDWR;
+    if (flags & 0o2000000) != 0 {
+        // SFD_CLOEXEC
+        fd_flags |= vfs::OpenFlags::CLOEXEC;
+    }
+    if (flags & 0o20000) != 0 {
+        // SFD_NONBLOCK
+        fd_flags |= vfs::OpenFlags::NONBLOCK;
+    }
+    register_special(FdKind::Signalfd(id), fd_flags)
 }
 
 #[repr(C)]
@@ -590,7 +649,7 @@ struct ITimerSpec {
 /// timerfd_settime - arm timer
 pub fn timerfd_settime(
     fd: i32,
-    _flags: i32,
+    flags: i32,
     new_value: *const u8,
     old_value: *mut u8,
 ) -> LinuxResult<i32> {
@@ -621,9 +680,14 @@ pub fn timerfd_settime(
     if value_ns == 0 {
         timer.armed.store(0, Ordering::SeqCst);
     } else {
-        timer
-            .expires_ns
-            .store(time::uptime_ns() + value_ns, Ordering::SeqCst);
+        // TFD_TIMER_ABSTIME (1): value is an absolute time on the
+        // clock; otherwise it is relative to now.
+        let expires = if (flags & 1) != 0 {
+            value_ns
+        } else {
+            time::uptime_ns() + value_ns
+        };
+        timer.expires_ns.store(expires, Ordering::SeqCst);
         timer.armed.store(1, Ordering::SeqCst);
     }
     Ok(0)

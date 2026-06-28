@@ -155,6 +155,7 @@ pub struct DRMCompatLayer {
     pub connectors: BTreeMap<u32, DRMConnector>,
     pub planes: BTreeMap<u32, DRMPlane>,
     pub properties: BTreeMap<u32, DRMProperty>,
+    pub dumb_buffers: BTreeMap<u32, DumbBuffer>,
     pub next_object_id: u32,
 }
 
@@ -184,6 +185,7 @@ impl DRMCompatLayer {
             connectors: BTreeMap::new(),
             planes: BTreeMap::new(),
             properties: BTreeMap::new(),
+            dumb_buffers: BTreeMap::new(),
             next_object_id: 1,
         }
     }
@@ -389,7 +391,13 @@ impl DRMCompatLayer {
         let pitch = width * ((bpp + 7) / 8);
         let size = pitch * height;
 
-        // In real implementation, would allocate actual memory
+        // Allocate kernel heap memory for the dumb buffer backing store.
+        let backing = vec![0u8; size as usize];
+        let kernel_addr = backing.as_ptr() as u64;
+        // Leak the backing store so it persists until the buffer is destroyed.
+        // A full implementation would track and free it on destroy_dumb_buffer.
+        core::mem::forget(backing);
+
         let dumb_buffer = DumbBuffer {
             handle,
             pitch,
@@ -397,16 +405,26 @@ impl DRMCompatLayer {
             width,
             height,
             bpp,
+            kernel_addr,
         };
+
+        self.dumb_buffers.insert(handle, dumb_buffer.clone());
 
         Ok(dumb_buffer)
     }
 
     /// Map a dumb buffer
+    ///
+    /// Returns the kernel virtual address of the dumb buffer's backing
+    /// storage so the caller can read/write pixels directly.  The buffer
+    /// was allocated from the kernel heap in `create_dumb_buffer`, so we
+    /// look it up and return its address.
     pub fn map_dumb_buffer(&self, handle: u32) -> Result<u64, &'static str> {
-        // Return a fake offset for mapping
-        // In real implementation, would return actual mmap offset
-        Ok(handle as u64 * 0x1000)
+        let buf = self
+            .dumb_buffers
+            .get(&handle)
+            .ok_or("Invalid dumb buffer handle")?;
+        Ok(buf.kernel_addr)
     }
 
     /// Get connector information
@@ -450,8 +468,14 @@ impl DRMCompatLayer {
             return Err("Invalid CRTC ID");
         }
 
-        // Simulate vblank wait
-        // In real implementation, would wait for actual vblank interrupt
+        // Without a real display controller interrupt there is no hardware
+        // vblank to wait for.  Return the next sequence number so callers
+        // can proceed; on real hardware this would block until the vblank
+        // IRQ fires and return the actual scanout sequence.
+        crate::serial_println!(
+            "drm: wait_vblank on crtc {} seq {} — no vblank IRQ, returning next seq",
+            crtc_id, sequence
+        );
         Ok(sequence + 1)
     }
 
@@ -527,13 +551,14 @@ pub struct DumbBuffer {
     pub width: u32,
     pub height: u32,
     pub bpp: u32,
+    pub kernel_addr: u64,
 }
 
-/// DRM ioctl simulation
+/// DRM ioctl interface
 pub struct DRMIoctl;
 
 impl DRMIoctl {
-    /// Simulate DRM version ioctl
+    /// Get DRM version information
     pub fn version() -> DRMVersion {
         DRMVersion {
             version_major: 1,
@@ -545,7 +570,7 @@ impl DRMIoctl {
         }
     }
 
-    /// Simulate getting resources
+    /// Get DRM mode resources
     pub fn get_resources(drm: &DRMCompatLayer) -> DRMResources {
         DRMResources {
             fbs: drm.framebuffers.keys().copied().collect(),
@@ -559,7 +584,7 @@ impl DRMIoctl {
         }
     }
 
-    /// Simulate getting plane resources
+    /// Get DRM plane resources
     pub fn get_plane_resources(drm: &DRMCompatLayer) -> DRMPlaneResources {
         DRMPlaneResources {
             planes: drm.get_planes(),

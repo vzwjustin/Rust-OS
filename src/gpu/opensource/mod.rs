@@ -1385,8 +1385,9 @@ impl OpensourceDriverRegistry {
         };
 
         for firmware_file in firmware_files {
-            // In production, this would load actual firmware from filesystem
-            // For now, just validate the firmware would be available
+            // Validate that the firmware file exists in /lib/firmware/.
+            // Actual firmware upload to the GPU happens in the hardware-specific
+            // driver once the MMIO registers are mapped.
             if !self.validate_firmware_availability(firmware_file) {
                 crate::println!(
                     "Warning: Firmware {} not available for GPU {}",
@@ -1508,9 +1509,7 @@ impl OpensourceDriverRegistry {
     }
 
     /// Map GPU registers to virtual memory
-    fn map_gpu_registers(&self, physical_addr: u64, _size: usize) -> Result<u64, &'static str> {
-        // In production, this would use the memory manager to map physical to virtual
-        // For now, assume direct mapping in kernel space
+    fn map_gpu_registers(&self, physical_addr: u64, size: usize) -> Result<u64, &'static str> {
         if physical_addr == 0 {
             return Err("Invalid physical address for GPU registers");
         }
@@ -1521,8 +1520,10 @@ impl OpensourceDriverRegistry {
             return Err("GPU register address outside expected range");
         }
 
-        // Return virtual address (simplified direct mapping using higher-half kernel addressing)
-        Ok(physical_addr | 0xFFFF800000000000)
+        // Use the kernel memory manager to map the MMIO region with
+        // device-nocache flags so writes reach the hardware immediately.
+        let virt = crate::memory::map_mmio_region(physical_addr as usize, size)?;
+        Ok(virt as u64)
     }
 
     /// Read PCI configuration dword using I/O ports
@@ -1572,19 +1573,8 @@ impl OpensourceDriverRegistry {
 
     /// Validate firmware availability in the firmware store
     fn validate_firmware_availability(&self, firmware_path: &str) -> bool {
-        // In production, this would check if firmware exists in /lib/firmware/
-        // For now, simulate firmware availability based on common firmware files
-        matches!(
-            firmware_path,
-            "amdgpu/navi21_pfp.bin"
-                | "amdgpu/navi21_me.bin"
-                | "amdgpu/navi21_ce.bin"
-                | "amdgpu/navi10_pfp.bin"
-                | "amdgpu/navi10_me.bin"
-                | "amdgpu/navi10_ce.bin"
-                | "amdgpu/vega10_pfp.bin"
-                | "amdgpu/vega10_me.bin"
-                | "amdgpu/vega10_ce.bin"
-        )
+        // Check whether the firmware file exists in the VFS at /lib/firmware/.
+        let full_path = alloc::format!("/lib/firmware/{}", firmware_path);
+        crate::vfs::vfs_stat(&full_path).is_ok()
     }
 }

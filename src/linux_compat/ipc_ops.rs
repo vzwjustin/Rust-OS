@@ -3,7 +3,8 @@
 //! This module implements Linux-compatible IPC operations including
 //! message queues, semaphores, shared memory, and event file descriptors.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
@@ -15,6 +16,51 @@ use crate::process::ipc::{get_ipc_manager, IpcId, SharedMemoryPermissions};
 
 /// Operation counter for statistics
 static IPC_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
+static NEXT_MQ_DESC: AtomicU32 = AtomicU32::new(10_000);
+
+const O_CREAT: i32 = 0o100;
+const O_EXCL: i32 = 0o200;
+const O_NONBLOCK: i32 = 0o4000;
+const DEFAULT_MQ_MAXMSG: i64 = 10;
+const DEFAULT_MQ_MSGSIZE: i64 = 8192;
+const MAX_MQ_MAXMSG: i64 = 1024;
+const MAX_MQ_MSGSIZE: i64 = 64 * 1024;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MqAttr {
+    pub mq_flags: i64,
+    pub mq_maxmsg: i64,
+    pub mq_msgsize: i64,
+    pub mq_curmsgs: i64,
+}
+
+#[derive(Clone)]
+struct MqMessage {
+    priority: u32,
+    data: Vec<u8>,
+    sequence: u64,
+}
+
+struct PosixMessageQueue {
+    name: String,
+    attr: MqAttr,
+    messages: VecDeque<MqMessage>,
+    unlinked: bool,
+    notify_pid: Option<i32>,
+}
+
+#[derive(Clone)]
+struct MqDescriptor {
+    queue_id: u32,
+    flags: i32,
+}
+
+static NEXT_MQ_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_MQ_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static MQ_BY_NAME: RwLock<BTreeMap<String, u32>> = RwLock::new(BTreeMap::new());
+static MQ_QUEUES: RwLock<BTreeMap<u32, PosixMessageQueue>> = RwLock::new(BTreeMap::new());
+static MQ_DESCRIPTORS: RwLock<BTreeMap<i32, MqDescriptor>> = RwLock::new(BTreeMap::new());
 
 /// Initialize IPC operations subsystem
 pub fn init_ipc_operations() {
@@ -24,6 +70,72 @@ pub fn init_ipc_operations() {
 /// Get number of IPC operations performed
 pub fn get_operation_count() -> u64 {
     IPC_OPS_COUNT.load(Ordering::Relaxed)
+}
+
+fn read_c_string(ptr: *const u8, max_len: usize) -> LinuxResult<String> {
+    if ptr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut bytes = Vec::new();
+    for offset in 0..max_len {
+        let byte = unsafe { *ptr.add(offset) };
+        if byte == 0 {
+            return String::from_utf8(bytes).map_err(|_| LinuxError::EINVAL);
+        }
+        bytes.push(byte);
+    }
+    Err(LinuxError::EINVAL)
+}
+
+fn normalize_mq_name(name: *const u8) -> LinuxResult<String> {
+    let raw = read_c_string(name, 255)?;
+    if raw.is_empty() || !raw.starts_with('/') || raw.len() == 1 || raw[1..].contains('/') {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(raw)
+}
+
+fn mq_attr_from_user(attr: *const MqAttr, oflag: i32) -> LinuxResult<MqAttr> {
+    let mut out = if attr.is_null() {
+        MqAttr {
+            mq_flags: (oflag & O_NONBLOCK) as i64,
+            mq_maxmsg: DEFAULT_MQ_MAXMSG,
+            mq_msgsize: DEFAULT_MQ_MSGSIZE,
+            mq_curmsgs: 0,
+        }
+    } else {
+        unsafe { *attr }
+    };
+
+    if out.mq_maxmsg <= 0
+        || out.mq_maxmsg > MAX_MQ_MAXMSG
+        || out.mq_msgsize <= 0
+        || out.mq_msgsize > MAX_MQ_MSGSIZE
+    {
+        return Err(LinuxError::EINVAL);
+    }
+    out.mq_flags = (oflag & O_NONBLOCK) as i64;
+    out.mq_curmsgs = 0;
+    Ok(out)
+}
+
+fn mq_descriptor(mqd: i32) -> LinuxResult<MqDescriptor> {
+    MQ_DESCRIPTORS
+        .read()
+        .get(&mqd)
+        .cloned()
+        .ok_or(LinuxError::EBADF)
+}
+
+fn copy_mq_attr_to_user(attr: *mut MqAttr, value: MqAttr) -> LinuxResult<()> {
+    if attr.is_null() {
+        return Ok(());
+    }
+    unsafe {
+        *attr = value;
+    }
+    Ok(())
 }
 
 /// Increment operation counter
@@ -115,6 +227,60 @@ fn key_to_id(key: Key, resource_type: IpcResourceType, create: bool) -> LinuxRes
 
 /// IPC key type
 pub type Key = i32;
+
+/// Simplified `struct msqid_ds` for `IPC_STAT`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct MsqidDs {
+    msg_perm_key: i32,
+    msg_perm_uid: u32,
+    msg_perm_gid: u32,
+    msg_perm_cuid: u32,
+    msg_perm_cgid: u32,
+    msg_perm_mode: u16,
+    msg_stime: u64,
+    msg_rtime: u64,
+    msg_ctime: u64,
+    msg_cbytes: u64,
+    msg_qnum: u64,
+    msg_qbytes: u64,
+    msg_lspid: u32,
+    msg_lrpid: u32,
+}
+
+/// Simplified `struct semid_ds` for `IPC_STAT`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct SemidDs {
+    sem_perm_key: i32,
+    sem_perm_uid: u32,
+    sem_perm_gid: u32,
+    sem_perm_cuid: u32,
+    sem_perm_cgid: u32,
+    sem_perm_mode: u16,
+    sem_otime: u64,
+    sem_ctime: u64,
+    sem_nsems: u64,
+}
+
+/// Simplified `struct shmid_ds` for `IPC_STAT`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct ShmidDs {
+    shm_perm_key: i32,
+    shm_perm_uid: u32,
+    shm_perm_gid: u32,
+    shm_perm_cuid: u32,
+    shm_perm_cgid: u32,
+    shm_perm_mode: u16,
+    shm_segsz: u64,
+    shm_atime: u64,
+    shm_dtime: u64,
+    shm_ctime: u64,
+    shm_cpid: u32,
+    shm_lpid: u32,
+    shm_nattch: u64,
+}
 
 /// Message queue ID type
 pub type MsqId = i32;
@@ -242,7 +408,7 @@ pub fn msgrcv(
 }
 
 /// msgctl - message queue control operations
-pub fn msgctl(msqid: MsqId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
+pub fn msgctl(msqid: MsqId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Command constants
@@ -252,12 +418,38 @@ pub fn msgctl(msqid: MsqId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
 
     match cmd {
         IPC_STAT => {
-            // Return message queue statistics
-            // For now, just return success
+            if buf.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            // Look up the key for this msqid.
+            let key_table = IPC_KEY_TABLE.read();
+            let key = key_table
+                .iter()
+                .find(|(_, (rtype, id))| {
+                    *rtype == IpcResourceType::MessageQueue && *id == msqid as IpcId
+                })
+                .map(|(k, _)| *k)
+                .unwrap_or(0);
+
+            let ds = MsqidDs {
+                msg_perm_key: key,
+                msg_perm_uid: current_pid(),
+                msg_perm_gid: 0,
+                msg_perm_cuid: current_pid(),
+                msg_perm_cgid: 0,
+                msg_perm_mode: 0o666,
+                msg_qbytes: MSG_MAX_SIZE as u64,
+                ..MsqidDs::default()
+            };
+            unsafe {
+                *(buf as *mut MsqidDs) = ds;
+            }
             Ok(0)
         }
         IPC_SET => {
-            // Set message queue parameters
+            // IPC_SET updates queue parameters from buf.  Our message
+            // queues are managed by the IPC manager with fixed limits,
+            // so we accept but ignore the update.
             Ok(0)
         }
         IPC_RMID => {
@@ -406,11 +598,37 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
 
     match cmd {
         IPC_STAT => {
-            // Return semaphore set statistics
+            let buf = arg as *mut u8;
+            if buf.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            let sem_table = SEMAPHORE_TABLE.read();
+            let sem_set = sem_table.get(&(semid as IpcId)).ok_or(LinuxError::EINVAL)?;
+
+            let key_table = IPC_KEY_TABLE.read();
+            let key = key_table
+                .iter()
+                .find(|(_, (rtype, id))| {
+                    *rtype == IpcResourceType::Semaphore && *id == semid as IpcId
+                })
+                .map(|(k, _)| *k)
+                .unwrap_or(0);
+
+            let ds = SemidDs {
+                sem_perm_key: key,
+                sem_perm_uid: sem_set.owner_pid,
+                sem_perm_cuid: sem_set.owner_pid,
+                sem_nsems: sem_set.semaphores.len() as u64,
+                ..SemidDs::default()
+            };
+            unsafe {
+                *(buf as *mut SemidDs) = ds;
+            }
             Ok(0)
         }
         IPC_SET => {
-            // Set semaphore set parameters
+            // IPC_SET updates semaphore permissions.  We accept but
+            // ignore since our permission model is minimal.
             Ok(0)
         }
         IPC_RMID => {
@@ -461,6 +679,21 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
         }
         _ => Err(LinuxError::EINVAL),
     }
+}
+
+/// semtimedop - semaphore operations with timeout
+///
+/// Timeout is ignored on this system because semaphore operations never block.
+/// The semtimedop ABI takes an array of sembuf operations (the old Linux
+/// syscall passes a fourth timeout argument, which is accepted but ignored).
+pub fn semtimedop(
+    semid: SemId,
+    sops: *mut u8,
+    nsops: usize,
+    _timeout: *const u8,
+) -> LinuxResult<i32> {
+    inc_ops();
+    semop(semid, sops, nsops)
 }
 
 /// shmget - get shared memory segment identifier
@@ -558,7 +791,7 @@ pub fn shmdt(shmaddr: *const u8) -> LinuxResult<i32> {
 }
 
 /// shmctl - shared memory control operations
-pub fn shmctl(shmid: ShmId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
+pub fn shmctl(shmid: ShmId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
     inc_ops();
 
     // Command constants
@@ -568,12 +801,41 @@ pub fn shmctl(shmid: ShmId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
 
     match cmd {
         IPC_STAT => {
-            // Return shared memory segment statistics
-            // For now, just return success
+            if buf.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            let key_table = IPC_KEY_TABLE.read();
+            let key = key_table
+                .iter()
+                .find(|(_, (rtype, id))| {
+                    *rtype == IpcResourceType::SharedMemory && *id == shmid as IpcId
+                })
+                .map(|(k, _)| *k)
+                .unwrap_or(0);
+
+            // Count attachments for this segment.
+            let attach_table = SHM_ATTACH_TABLE.read();
+            let nattch = attach_table
+                .values()
+                .filter(|id| **id == shmid as IpcId)
+                .count() as u64;
+
+            let ds = ShmidDs {
+                shm_perm_key: key,
+                shm_perm_uid: current_pid(),
+                shm_perm_cuid: current_pid(),
+                shm_perm_mode: 0o666,
+                shm_nattch: nattch,
+                ..ShmidDs::default()
+            };
+            unsafe {
+                *(buf as *mut ShmidDs) = ds;
+            }
             Ok(0)
         }
         IPC_SET => {
-            // Set shared memory segment parameters
+            // IPC_SET updates segment permissions.  We accept but
+            // ignore since our permission model is minimal.
             Ok(0)
         }
         IPC_RMID => {
@@ -598,6 +860,169 @@ pub fn shmctl(shmid: ShmId, cmd: i32, _buf: *mut u8) -> LinuxResult<i32> {
         }
         _ => Err(LinuxError::EINVAL),
     }
+}
+
+pub fn mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const MqAttr) -> LinuxResult<i32> {
+    inc_ops();
+    let name = normalize_mq_name(name)?;
+    let mut names = MQ_BY_NAME.write();
+    let mut queues = MQ_QUEUES.write();
+
+    let queue_id = if let Some(existing) = names.get(&name).copied() {
+        if (oflag & O_CREAT) != 0 && (oflag & O_EXCL) != 0 {
+            return Err(LinuxError::EEXIST);
+        }
+        existing
+    } else {
+        if (oflag & O_CREAT) == 0 {
+            return Err(LinuxError::ENOENT);
+        }
+        let queue_id = NEXT_MQ_ID.fetch_add(1, Ordering::Relaxed);
+        let attr = mq_attr_from_user(attr, oflag)?;
+        queues.insert(
+            queue_id,
+            PosixMessageQueue {
+                name: name.clone(),
+                attr,
+                messages: VecDeque::new(),
+                unlinked: false,
+                notify_pid: None,
+            },
+        );
+        names.insert(name, queue_id);
+        queue_id
+    };
+
+    let desc = NEXT_MQ_DESC.fetch_add(1, Ordering::Relaxed) as i32;
+    MQ_DESCRIPTORS.write().insert(
+        desc,
+        MqDescriptor {
+            queue_id,
+            flags: oflag,
+        },
+    );
+    Ok(desc)
+}
+
+pub fn mq_unlink(name: *const u8) -> LinuxResult<i32> {
+    inc_ops();
+    let name = normalize_mq_name(name)?;
+    let queue_id = MQ_BY_NAME.write().remove(&name).ok_or(LinuxError::ENOENT)?;
+    if let Some(queue) = MQ_QUEUES.write().get_mut(&queue_id) {
+        queue.unlinked = true;
+    }
+    Ok(0)
+}
+
+pub fn mq_timedsend(
+    mqd: i32,
+    msg_ptr: *const u8,
+    msg_len: usize,
+    msg_prio: u32,
+    _abs_timeout: *const super::types::TimeSpec,
+) -> LinuxResult<i32> {
+    inc_ops();
+    if msg_ptr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let desc = mq_descriptor(mqd)?;
+    let mut queues = MQ_QUEUES.write();
+    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    if msg_len > queue.attr.mq_msgsize as usize {
+        return Err(LinuxError::EINVAL);
+    }
+    if queue.messages.len() >= queue.attr.mq_maxmsg as usize {
+        return Err(LinuxError::EAGAIN);
+    }
+
+    let mut data = Vec::with_capacity(msg_len);
+    for i in 0..msg_len {
+        data.push(unsafe { *msg_ptr.add(i) });
+    }
+    let sequence = NEXT_MQ_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let insert_at = queue
+        .messages
+        .iter()
+        .position(|msg| msg.priority < msg_prio)
+        .unwrap_or(queue.messages.len());
+    queue.messages.insert(
+        insert_at,
+        MqMessage {
+            priority: msg_prio,
+            data,
+            sequence,
+        },
+    );
+    queue.attr.mq_curmsgs = queue.messages.len() as i64;
+    Ok(0)
+}
+
+pub fn mq_timedreceive(
+    mqd: i32,
+    msg_ptr: *mut u8,
+    msg_len: usize,
+    msg_prio: *mut u32,
+    _abs_timeout: *const super::types::TimeSpec,
+) -> LinuxResult<isize> {
+    inc_ops();
+    if msg_ptr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let desc = mq_descriptor(mqd)?;
+    let mut queues = MQ_QUEUES.write();
+    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    if msg_len < queue.attr.mq_msgsize as usize {
+        return Err(LinuxError::EINVAL);
+    }
+    let msg = queue.messages.pop_front().ok_or(LinuxError::EAGAIN)?;
+    for (i, byte) in msg.data.iter().enumerate() {
+        unsafe {
+            *msg_ptr.add(i) = *byte;
+        }
+    }
+    if !msg_prio.is_null() {
+        unsafe {
+            *msg_prio = msg.priority;
+        }
+    }
+    queue.attr.mq_curmsgs = queue.messages.len() as i64;
+    Ok(msg.data.len() as isize)
+}
+
+pub fn mq_notify(mqd: i32, sevp: *const u8) -> LinuxResult<i32> {
+    inc_ops();
+    let desc = mq_descriptor(mqd)?;
+    let mut queues = MQ_QUEUES.write();
+    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    if sevp.is_null() {
+        queue.notify_pid = None;
+    } else if queue.notify_pid.is_some() {
+        return Err(LinuxError::EBUSY);
+    } else {
+        queue.notify_pid = Some(current_pid() as i32);
+    }
+    Ok(0)
+}
+
+pub fn mq_getsetattr(mqd: i32, newattr: *const MqAttr, oldattr: *mut MqAttr) -> LinuxResult<i32> {
+    inc_ops();
+    let desc = mq_descriptor(mqd)?;
+    let mut queues = MQ_QUEUES.write();
+    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    let mut current = queue.attr;
+    current.mq_flags = (desc.flags & O_NONBLOCK) as i64;
+    current.mq_curmsgs = queue.messages.len() as i64;
+    copy_mq_attr_to_user(oldattr, current)?;
+
+    if !newattr.is_null() {
+        let new_flags = unsafe { (*newattr).mq_flags } as i32;
+        if let Some(desc) = MQ_DESCRIPTORS.write().get_mut(&mqd) {
+            desc.flags = (desc.flags & !O_NONBLOCK) | (new_flags & O_NONBLOCK);
+        }
+    }
+    Ok(0)
 }
 
 /// pipe - create pipe (returns read and write file descriptors)

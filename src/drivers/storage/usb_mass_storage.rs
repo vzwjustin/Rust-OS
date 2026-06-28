@@ -260,38 +260,13 @@ impl UsbMassStorageDriver {
             return Err(StorageError::NotSupported);
         }
 
-        // Create Command Block Wrapper
-        let tag = self.next_tag();
-        let _cbw =
-            CommandBlockWrapper::new(tag, data_length, direction_in, self.active_lun, command);
-
-        // In a real implementation, we would:
-        // 1. Send CBW via bulk OUT endpoint
-        // 2. Transfer data via bulk IN/OUT endpoint (if any)
-        // 3. Receive CSW via bulk IN endpoint
-
-        // For simulation, create a successful CSW
-        let csw = CommandStatusWrapper {
-            signature: CommandStatusWrapper::SIGNATURE,
-            tag,
-            data_residue: 0,
-            status: 0, // Success
-        };
-
-        // Update statistics based on command
-        match command[0] {
-            cmd if cmd == ScsiCommand::Read10 as u8 || cmd == ScsiCommand::Read16 as u8 => {
-                self.stats.reads_total += 1;
-                self.stats.bytes_read += data_length as u64;
-            }
-            cmd if cmd == ScsiCommand::Write10 as u8 || cmd == ScsiCommand::Write16 as u8 => {
-                self.stats.writes_total += 1;
-                self.stats.bytes_written += data_length as u64;
-            }
-            _ => {}
-        }
-
-        Ok(csw)
+        // USB Mass Storage requires a real USB host controller driver to
+        // transfer data over bulk endpoints.  The kernel does not yet have
+        // a USB host controller driver (xHCI/EHCI/UHCI/OHCI), so we cannot
+        // actually send CBWs or receive CSWs.  Return an error instead of
+        // fabricating a successful response.
+        let _ = (command, data_length, direction_in, self.next_tag());
+        Err(StorageError::NotSupported)
     }
 
     /// Execute SCSI Inquiry command
@@ -525,31 +500,12 @@ impl StorageDriver for UsbMassStorageDriver {
     fn init(&mut self) -> Result<(), StorageError> {
         self.state = StorageDeviceState::Initializing;
 
-        // In a real implementation, we would:
-        // 1. Enumerate USB device
-        // 2. Set configuration
-        // 3. Claim interface
-        // 4. Get endpoint addresses
-
-        // Simulate device ready
-        self.usb_state = UsbMscState::Ready;
-
-        // Execute SCSI commands to identify device
-        self.scsi_inquiry()?;
-        self.scsi_read_capacity()?;
-
-        // Test if unit is ready
-        if !self.scsi_test_unit_ready()? {
-            return Err(StorageError::DeviceNotFound);
-        }
-
-        // Set typical USB speeds
-        self.capabilities.read_speed_mbps = 480; // USB 2.0 theoretical max
-        self.capabilities.write_speed_mbps = 480;
-        self.capabilities.max_queue_depth = 1; // USB Mass Storage doesn't support queuing
-
-        self.state = StorageDeviceState::Ready;
-        Ok(())
+        // USB Mass Storage requires a USB host controller driver to enumerate
+        // devices, set configurations, claim interfaces, and obtain endpoint
+        // addresses.  The kernel does not yet have a USB host controller
+        // driver, so we cannot initialize a real USB mass storage device.
+        // Return an error rather than pretending the device is ready.
+        Err(StorageError::NotSupported)
     }
 
     fn read_sectors(

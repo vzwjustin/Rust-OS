@@ -3510,51 +3510,24 @@ impl GPUSystem {
                 return;
             };
 
-        // Simulate realistic performance data based on GPU tier
-        let base_utilization = match gpu_tier {
-            GPUTier::Entry => 15,
-            GPUTier::Budget => 25,
-            GPUTier::Mainstream => 35,
-            GPUTier::Performance => 45,
-            GPUTier::HighEnd => 55,
-            GPUTier::Enthusiast => 65,
-        };
+        // Reading GPU performance counters (utilization, temperature, fan speed,
+        // power) requires mapping the GPU's MMIO BAR and reading vendor-specific
+        // status registers.  Without a detected and mapped GPU, we cannot read
+        // real hardware counters.  Use the GPU's nominal clock values and report
+        // zero utilization/temperature since there is no hardware feedback.
+        self.performance_stats.utilization_percentage = 0;
+        self.performance_stats.temperature_celsius = 0;
+        self.performance_stats.fan_speed_percentage = 0;
+        self.performance_stats.power_consumption_watts = 0;
 
-        // Add some variation to make it realistic
-        let variation = (core::ptr::addr_of!(self.status) as usize % 20) as u8;
-        self.performance_stats.utilization_percentage = (base_utilization + variation).min(100);
-
-        // Update temperature based on utilization
-        self.performance_stats.temperature_celsius =
-            30 + (self.performance_stats.utilization_percentage / 2);
-
-        // Update fan speed based on temperature
-        self.performance_stats.fan_speed_percentage =
-            if self.performance_stats.temperature_celsius > 70 {
-                ((self.performance_stats.temperature_celsius - 30) * 2).min(100)
-            } else {
-                30
-            };
-
-        // Update power consumption
-        self.performance_stats.power_consumption_watts = match gpu_tier {
-            GPUTier::Entry => 15 + (self.performance_stats.utilization_percentage as u16 / 4),
-            GPUTier::Budget => 50 + (self.performance_stats.utilization_percentage as u16 / 2),
-            GPUTier::Mainstream => 120 + self.performance_stats.utilization_percentage as u16,
-            GPUTier::Performance => {
-                180 + (self.performance_stats.utilization_percentage as u16 * 3 / 2)
-            }
-            GPUTier::HighEnd => 250 + (self.performance_stats.utilization_percentage as u16 * 2),
-            GPUTier::Enthusiast => 350 + (self.performance_stats.utilization_percentage as u16 * 3),
-        };
-
-        // Update clock speeds (simplified simulation)
-        self.performance_stats.clock_speeds.core_clock_mhz = base_clock
-            + (boost_clock - base_clock) * self.performance_stats.utilization_percentage as u32
-                / 100;
+        // Use nominal (base) clock speeds from GPU capabilities
+        self.performance_stats.clock_speeds.core_clock_mhz = base_clock;
         self.performance_stats.clock_speeds.memory_clock_mhz = memory_clock;
-        self.performance_stats.clock_speeds.shader_clock_mhz =
-            self.performance_stats.clock_speeds.core_clock_mhz;
+        self.performance_stats.clock_speeds.shader_clock_mhz = base_clock;
+
+        // Suppress unused-variable warning for boost_clock and gpu_tier which
+        // would be used when MMIO-based performance monitoring is available.
+        let _ = (boost_clock, gpu_tier);
     }
 
     /// Set GPU power state
@@ -3598,10 +3571,14 @@ impl GPUSystem {
         if self.status != GPUStatus::Ready {
             return Err("GPU system not ready");
         }
-        // Hardware GPU setup is not yet implemented, but we allow the
-        // operation to succeed so the software fallback paths in
-        // clear_framebuffer/fill_rectangle can be used uniformly.
-        Ok(())
+        if self.active_gpu_index.is_none() {
+            return Err("No active GPU detected — cannot initialize hardware acceleration");
+        }
+        // A GPU was detected but the hardware-specific driver (DMA buffer
+        // setup, command queue mapping) is not yet implemented.  Return an
+        // error so callers fall back to software rendering rather than
+        // silently succeeding.
+        Err("GPU acceleration not yet implemented for detected hardware")
     }
 
     /// Clear framebuffer using GPU acceleration, falling back to a CPU blit.
@@ -3817,10 +3794,18 @@ pub fn set_power_state(state: GPUPowerState) -> Result<(), &'static str> {
     gpu_system.set_power_state(state)
 }
 
-/// Get GPU manager instance (stub for compatibility)
+/// Get GPU manager instance
 ///
-/// Returns None as the GPU manager is not yet implemented.
-/// This function exists to satisfy dependencies in the graphics subsystem.
+/// Returns None when no GPU has been detected or initialized.
+/// Callers should check the return value and fall back to software rendering.
 pub fn get_gpu_manager() -> Option<&'static GPUSystem> {
-    None
+    let gpu_system = GPU_SYSTEM.lock();
+    if gpu_system.get_status() == GPUStatus::Ready {
+        // Cannot return a reference through a Mutex guard without leaking.
+        // This function is unused — callers should use the module-level
+        // functions (get_status, get_active_gpu, etc.) instead.
+        None
+    } else {
+        None
+    }
 }

@@ -180,6 +180,10 @@ pub fn route_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
 
     // Route to appropriate subsystem based on syscall type
     match syscall {
+        crate::syscall::SyscallNumber::Signalfd4 => {
+            linux_compat::special_fd::signalfd(args[0] as i32, args[1] as u64, args[2] as i32)
+                .map(|v| v as u64)
+        }
         // File operations
         crate::syscall::SyscallNumber::Read
         | crate::syscall::SyscallNumber::Write
@@ -303,6 +307,904 @@ pub fn route_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             stats.memory_operations += 1;
             route_memory_syscall(syscall_number, args)
         }
+        _ => route_misc_syscall(syscall_number, args),
+    }
+}
+
+/// Route known Linux syscalls that RustOS does not provide as full subsystems.
+fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
+    let syscall = crate::syscall::SyscallNumber::from_u64(syscall_number);
+    match syscall {
+        crate::syscall::SyscallNumber::Futimesat => linux_compat::file_ops::utimes(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *const [linux_compat::TimeVal; 2],
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Personality => {
+            linux_compat::process_ops::personality(args[0] as u32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::IoprioSet => {
+            linux_compat::resource_ops::ioprio_set(args[0] as i32, args[1] as i32, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::IoprioGet => {
+            linux_compat::resource_ops::ioprio_get(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::CloseRange => {
+            linux_compat::file_ops::close_range(args[0] as u32, args[1] as u32, args[2] as u32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::PkeyAlloc => {
+            linux_compat::memory_ops::pkey_alloc(args[0] as u32, args[1] as u32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::PkeyFree => {
+            linux_compat::memory_ops::pkey_free(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::PkeyMprotect => linux_compat::memory_ops::pkey_mprotect(
+            args[0] as *mut u8,
+            args[1] as usize,
+            args[2] as i32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::MqOpen => linux_compat::ipc_ops::mq_open(
+            args[0] as *const u8,
+            args[1] as i32,
+            args[2] as u32,
+            args[3] as *const linux_compat::ipc_ops::MqAttr,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::MqUnlink => {
+            linux_compat::ipc_ops::mq_unlink(args[0] as *const u8).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::MqTimedsend => linux_compat::ipc_ops::mq_timedsend(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as usize,
+            args[3] as u32,
+            args[4] as *const linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::MqTimedreceive => linux_compat::ipc_ops::mq_timedreceive(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as usize,
+            args[3] as *mut u32,
+            args[4] as *const linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::MqNotify => {
+            linux_compat::ipc_ops::mq_notify(args[0] as i32, args[1] as *const u8).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::MqGetsetattr => linux_compat::ipc_ops::mq_getsetattr(
+            args[0] as i32,
+            args[1] as *const linux_compat::ipc_ops::MqAttr,
+            args[2] as *mut linux_compat::ipc_ops::MqAttr,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Accept4 => linux_compat::socket_ops::accept4(
+            args[0] as i32,
+            args[1] as *mut linux_compat::SockAddr,
+            args[2] as *mut u32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Alarm => {
+            linux_compat::process_ops::alarm(args[0] as u32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::ArchPrctl => {
+            linux_compat::thread_ops::arch_prctl(args[0] as i32, args[1] as u64).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::ClockGetres => linux_compat::time_ops::clock_getres(
+            args[0] as i32,
+            args[1] as *mut linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::ClockGettime => linux_compat::time_ops::clock_gettime(
+            args[0] as i32,
+            args[1] as *mut linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::ClockNanosleep => linux_compat::time_ops::clock_nanosleep(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *const linux_compat::TimeSpec,
+            args[3] as *mut linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::ClockSettime => linux_compat::time_ops::clock_settime(
+            args[0] as i32,
+            args[1] as *const linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Clone3 => linux_compat::thread_ops::clone3(
+            args[0] as *const linux_compat::CloneArgs,
+            args[1] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::CopyFileRange => linux_compat::advanced_io::copy_file_range(
+            args[0] as i32,
+            args[1] as *mut linux_compat::Off,
+            args[2] as i32,
+            args[3] as *mut linux_compat::Off,
+            args[4] as usize,
+            args[5] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Dup3 => {
+            linux_compat::file_ops::dup3(args[0] as i32, args[1] as i32, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::EpollCreate1 => {
+            linux_compat::socket_ops::epoll_create1(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::EpollCtl => linux_compat::socket_ops::epoll_ctl(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as i32,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::EpollPwait => linux_compat::socket_ops::epoll_pwait(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as i32,
+            args[3] as i32,
+            args[4] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::EpollPwait2 => linux_compat::socket_ops::epoll_pwait2(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as i32,
+            args[3] as *const u8,
+            args[4] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::EpollWait => linux_compat::socket_ops::epoll_wait(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as i32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Eventfd => {
+            linux_compat::ipc_ops::eventfd(args[0] as u32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Eventfd2 => {
+            linux_compat::ipc_ops::eventfd2(args[0] as u32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Execveat => linux_compat::process_ops::execveat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *const *const u8,
+            args[3] as *const *const u8,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Faccessat => linux_compat::file_ops::faccessat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Faccessat2 => linux_compat::file_ops::faccessat2(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Fadvise64 => linux_compat::advanced_io::fadvise64(
+            args[0] as i32,
+            args[1] as i64,
+            args[2] as i64,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Fallocate => linux_compat::file_ops::fallocate(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as linux_compat::Off,
+            args[3] as linux_compat::Off,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Fchmodat => linux_compat::file_ops::fchmodat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Fchownat => linux_compat::file_ops::fchownat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Fcntl => {
+            linux_compat::ioctl_ops::fcntl(args[0] as i32, args[1] as i32, args[2] as u64)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Fgetxattr => linux_compat::advanced_io::fgetxattr(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+            args[3] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Flistxattr => linux_compat::advanced_io::flistxattr(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Flock => {
+            linux_compat::file_ops::flock(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Fremovexattr => {
+            linux_compat::advanced_io::fremovexattr(args[0] as i32, args[1] as *const u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Fsetxattr => linux_compat::advanced_io::fsetxattr(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3] as usize,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Fstatfs => linux_compat::fs_ops::fstatfs(
+            args[0] as i32,
+            args[1] as *mut linux_compat::fs_ops::StatFs,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Futex => linux_compat::thread_ops::futex(
+            args[0] as *mut i32,
+            args[1] as i32,
+            args[2] as i32,
+            args[3] as *const linux_compat::TimeSpec,
+            args[4] as *mut i32,
+            args[5] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::GetMempolicy => linux_compat::memory_ops::get_mempolicy(
+            args[0] as *mut i32,
+            args[1] as *mut u64,
+            args[2] as u64,
+            args[3] as *mut u8,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::GetRobustList => linux_compat::thread_ops::get_robust_list(
+            args[0] as i32,
+            args[1] as *mut *mut linux_compat::thread_ops::RobustListHead,
+            args[2] as *mut usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Getcpu => linux_compat::thread_ops::getcpu(
+            args[0] as *mut u32,
+            args[1] as *mut u32,
+            args[2] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Getitimer => {
+            linux_compat::process_ops::getitimer(args[0] as i32, args[1] as *mut u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Getpriority => {
+            linux_compat::process_ops::getpriority(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Getrandom => linux_compat::sysinfo_ops::getrandom(
+            args[0] as *mut u8,
+            args[1] as usize,
+            args[2] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Gettimeofday => linux_compat::time_ops::gettimeofday(
+            args[0] as *mut linux_compat::TimeVal,
+            args[1] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Getxattr => linux_compat::advanced_io::getxattr(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+            args[3] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::InotifyAddWatch => linux_compat::fs_ops::inotify_add_watch(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::InotifyInit => {
+            linux_compat::fs_ops::inotify_init().map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::InotifyInit1 => {
+            linux_compat::fs_ops::inotify_init1(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::InotifyRmWatch => {
+            linux_compat::fs_ops::inotify_rm_watch(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Ioctl => {
+            linux_compat::ioctl_ops::ioctl(args[0] as i32, args[1] as u64, args[2] as u64)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Kill => {
+            linux_compat::signal_ops::kill(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Lgetxattr => linux_compat::advanced_io::lgetxattr(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+            args[3] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Linkat => linux_compat::file_ops::linkat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as *const u8,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Listxattr => linux_compat::advanced_io::listxattr(
+            args[0] as *const u8,
+            args[1] as *mut u8,
+            args[2] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Llistxattr => linux_compat::advanced_io::llistxattr(
+            args[0] as *const u8,
+            args[1] as *mut u8,
+            args[2] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Lremovexattr => {
+            linux_compat::advanced_io::lremovexattr(args[0] as *const u8, args[1] as *const u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Lsetxattr => linux_compat::advanced_io::lsetxattr(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3] as usize,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Mbind => linux_compat::memory_ops::mbind(
+            args[0] as *mut u8,
+            args[1] as usize,
+            args[2] as i32,
+            args[3] as *const u64,
+            args[4] as u64,
+            args[5] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Membarrier => {
+            linux_compat::thread_ops::membarrier(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::MemfdCreate => {
+            linux_compat::memory_ops::memfd_create(args[0] as *const u8, args[1] as u32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::MigratePages => linux_compat::memory_ops::migrate_pages(
+            args[0] as i32,
+            args[1] as u64,
+            args[2] as *const u64,
+            args[3] as *const u64,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Mkdirat => {
+            linux_compat::file_ops::mkdirat(args[0] as i32, args[1] as *const u8, args[2] as u32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Mlock => {
+            linux_compat::memory_ops::mlock(args[0] as *const u8, args[1] as usize)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Mlock2 => {
+            linux_compat::memory_ops::mlock2(args[0] as *const u8, args[1] as usize, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Mlockall => {
+            linux_compat::memory_ops::mlockall(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Mount => linux_compat::fs_ops::mount(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3] as u64,
+            args[4] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::MovePages => linux_compat::memory_ops::move_pages(
+            args[0] as i32,
+            args[1] as u64,
+            args[2] as *const *mut u8,
+            args[3] as *const i32,
+            args[4] as *mut i32,
+            args[5] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Msgctl => linux_compat::ipc_ops::msgctl(
+            args[0] as linux_compat::ipc_ops::MsqId,
+            args[1] as i32,
+            args[2] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Msgget => {
+            linux_compat::ipc_ops::msgget(args[0] as linux_compat::ipc_ops::Key, args[1] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Msgrcv => linux_compat::ipc_ops::msgrcv(
+            args[0] as linux_compat::ipc_ops::MsqId,
+            args[1] as *mut u8,
+            args[2] as usize,
+            args[3] as i64,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Msgsnd => linux_compat::ipc_ops::msgsnd(
+            args[0] as linux_compat::ipc_ops::MsqId,
+            args[1] as *const u8,
+            args[2] as usize,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Munlock => {
+            linux_compat::memory_ops::munlock(args[0] as *const u8, args[1] as usize)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Munlockall => {
+            linux_compat::memory_ops::munlockall().map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Nanosleep => linux_compat::time_ops::nanosleep(
+            args[0] as *const linux_compat::TimeSpec,
+            args[1] as *mut linux_compat::TimeSpec,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Openat2 => Err(LinuxError::ENOSYS),
+        crate::syscall::SyscallNumber::Pause => linux_compat::signal_ops::pause().map(|v| v as u64),
+        crate::syscall::SyscallNumber::Pipe2 => {
+            linux_compat::ipc_ops::pipe2(args[0] as *mut [i32; 2], args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::PivotRoot => {
+            linux_compat::fs_ops::pivot_root(args[0] as *const u8, args[1] as *const u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::PkgInfo => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::PkgInstall => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::PkgList => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::PkgRemove => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::PkgSearch => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::PkgUpdate => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::PkgUpgrade => route_package_syscall(syscall_number, args),
+        crate::syscall::SyscallNumber::Poll => linux_compat::socket_ops::poll(
+            args[0] as *mut linux_compat::PollFd,
+            args[1] as u64,
+            args[2] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Ppoll => linux_compat::socket_ops::ppoll(
+            args[0] as *mut linux_compat::PollFd,
+            args[1] as u64,
+            args[2] as *const linux_compat::TimeSpec,
+            args[3] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Preadv => linux_compat::advanced_io::preadv(
+            args[0] as i32,
+            args[1] as *const linux_compat::advanced_io::IoVec,
+            args[2] as i32,
+            args[3] as linux_compat::Off,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Preadv2 => linux_compat::advanced_io::preadv2(
+            args[0] as i32,
+            args[1] as *const linux_compat::advanced_io::IoVec,
+            args[2] as i32,
+            args[3] as linux_compat::Off,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Pwritev => linux_compat::advanced_io::pwritev(
+            args[0] as i32,
+            args[1] as *const linux_compat::advanced_io::IoVec,
+            args[2] as i32,
+            args[3] as linux_compat::Off,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Pwritev2 => linux_compat::advanced_io::pwritev2(
+            args[0] as i32,
+            args[1] as *const linux_compat::advanced_io::IoVec,
+            args[2] as i32,
+            args[3] as linux_compat::Off,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Readahead => {
+            linux_compat::advanced_io::readahead(args[0] as i32, args[1] as i64, args[2] as usize)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Readlinkat => linux_compat::file_ops::readlinkat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+            args[3] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Reboot => linux_compat::sysinfo_ops::reboot(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as u32,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Recvmmsg => linux_compat::socket_ops::recvmmsg(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as u32,
+            args[3] as i32,
+            args[4] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Removexattr => {
+            linux_compat::advanced_io::removexattr(args[0] as *const u8, args[1] as *const u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Renameat => linux_compat::file_ops::renameat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Renameat2 => linux_compat::file_ops::renameat2(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as *const u8,
+            args[4] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::RtSigpending => linux_compat::signal_ops::rt_sigpending(
+            args[0] as *mut linux_compat::SigSet,
+            args[1] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::RtSigsuspend => linux_compat::signal_ops::rt_sigsuspend(
+            args[0] as *const linux_compat::SigSet,
+            args[1] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SchedGetPriorityMax => {
+            linux_compat::resource_ops::sched_get_priority_max(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::SchedGetPriorityMin => {
+            linux_compat::resource_ops::sched_get_priority_min(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::SchedGetparam => linux_compat::resource_ops::sched_getparam(
+            args[0] as i32,
+            args[1] as *mut linux_compat::resource_ops::SchedParam,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SchedGetscheduler => {
+            linux_compat::resource_ops::sched_getscheduler(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::SchedRrGetInterval => {
+            linux_compat::resource_ops::sched_rr_get_interval(
+                args[0] as i32,
+                args[1] as *mut linux_compat::TimeSpec,
+            )
+            .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::SchedSetparam => linux_compat::resource_ops::sched_setparam(
+            args[0] as i32,
+            args[1] as *const linux_compat::resource_ops::SchedParam,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SchedSetscheduler => {
+            linux_compat::resource_ops::sched_setscheduler(
+                args[0] as i32,
+                args[1] as i32,
+                args[2] as *const linux_compat::resource_ops::SchedParam,
+            )
+            .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Select => linux_compat::socket_ops::select(
+            args[0] as i32,
+            args[1] as *mut u64,
+            args[2] as *mut u64,
+            args[3] as *mut u64,
+            args[4] as *mut linux_compat::TimeVal,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Semget => linux_compat::ipc_ops::semget(
+            args[0] as linux_compat::ipc_ops::Key,
+            args[1] as i32,
+            args[2] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Sendfile => linux_compat::advanced_io::sendfile(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *mut linux_compat::Off,
+            args[3] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Sendmmsg => linux_compat::socket_ops::sendmmsg(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as u32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SetMempolicy => linux_compat::memory_ops::set_mempolicy(
+            args[0] as i32,
+            args[1] as *const u64,
+            args[2] as u64,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SetRobustList => linux_compat::thread_ops::set_robust_list(
+            args[0] as *mut linux_compat::thread_ops::RobustListHead,
+            args[1] as usize,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SetThreadArea => {
+            linux_compat::thread_ops::set_thread_area(args[0] as *mut u8).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::SetTidAddress => {
+            Ok(linux_compat::thread_ops::set_tid_address(args[0] as *mut i32) as u64)
+        }
+        crate::syscall::SyscallNumber::Setdomainname => {
+            linux_compat::sysinfo_ops::setdomainname(args[0] as *const u8, args[1] as usize)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Sethostname => {
+            linux_compat::sysinfo_ops::sethostname(args[0] as *const u8, args[1] as usize)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Setitimer => linux_compat::process_ops::setitimer(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Setns => {
+            linux_compat::fs_ops::setns(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Setpriority => {
+            linux_compat::process_ops::setpriority(args[0] as i32, args[1] as i32, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Settimeofday => linux_compat::time_ops::settimeofday(
+            args[0] as *const linux_compat::TimeVal,
+            args[1] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Setxattr => linux_compat::advanced_io::setxattr(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3] as usize,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Shmdt => {
+            linux_compat::ipc_ops::shmdt(args[0] as *const u8).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Shmget => linux_compat::ipc_ops::shmget(
+            args[0] as linux_compat::ipc_ops::Key,
+            args[1] as usize,
+            args[2] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Sigaltstack => {
+            linux_compat::signal_ops::sigaltstack(args[0] as *const u8, args[1] as *mut u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Signalfd => linux_compat::ipc_ops::signalfd(
+            args[0] as i32,
+            args[1] as *const linux_compat::SigSet,
+            args[2] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Splice => linux_compat::advanced_io::splice(
+            args[0] as i32,
+            args[1] as *mut linux_compat::Off,
+            args[2] as i32,
+            args[3] as *mut linux_compat::Off,
+            args[4] as usize,
+            args[5] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Statfs => linux_compat::fs_ops::statfs(
+            args[0] as *const u8,
+            args[1] as *mut linux_compat::fs_ops::StatFs,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Swapoff => {
+            linux_compat::fs_ops::swapoff(args[0] as *const u8).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Swapon => {
+            linux_compat::fs_ops::swapon(args[0] as *const u8, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Symlinkat => linux_compat::file_ops::symlinkat(
+            args[0] as *const u8,
+            args[1] as i32,
+            args[2] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::SyncFileRange => linux_compat::advanced_io::sync_file_range(
+            args[0] as i32,
+            args[1] as i64,
+            args[2] as i64,
+            args[3] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Syncfs => {
+            linux_compat::fs_ops::syncfs(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Syslog => {
+            linux_compat::sysinfo_ops::syslog(args[0] as i32, args[1] as *mut u8, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Tee => linux_compat::advanced_io::tee(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as usize,
+            args[3] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Tgkill => {
+            linux_compat::thread_ops::tgkill(args[0] as i32, args[1] as i32, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::TimerCreate => linux_compat::time_ops::timer_create(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *mut linux_compat::time_ops::TimerId,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::TimerDelete => {
+            linux_compat::time_ops::timer_delete(args[0] as linux_compat::time_ops::TimerId)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::TimerGetoverrun => {
+            linux_compat::time_ops::timer_getoverrun(args[0] as linux_compat::time_ops::TimerId)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::TimerfdCreate => {
+            linux_compat::ipc_ops::timerfd_create(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::TimerfdGettime => {
+            linux_compat::ipc_ops::timerfd_gettime(args[0] as i32, args[1] as *mut u8)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::TimerfdSettime => linux_compat::ipc_ops::timerfd_settime(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *const u8,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Tkill => {
+            linux_compat::thread_ops::tkill(args[0] as i32, args[1] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Unlinkat => {
+            linux_compat::file_ops::unlinkat(args[0] as i32, args[1] as *const u8, args[2] as i32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Unshare => {
+            linux_compat::fs_ops::unshare(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Utimensat => linux_compat::file_ops::utimensat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *const [linux_compat::TimeSpec; 2],
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Utimes => linux_compat::file_ops::utimes(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *const [linux_compat::TimeVal; 2],
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Vfork => {
+            linux_compat::process_ops::vfork().map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Acct
+        | crate::syscall::SyscallNumber::AddKey
+        | crate::syscall::SyscallNumber::Bpf
+        | crate::syscall::SyscallNumber::DeleteModule
+        | crate::syscall::SyscallNumber::FinitModule
+        | crate::syscall::SyscallNumber::Fsconfig
+        | crate::syscall::SyscallNumber::Fsmount
+        | crate::syscall::SyscallNumber::Fsopen
+        | crate::syscall::SyscallNumber::Fspick
+        | crate::syscall::SyscallNumber::InitModule
+        | crate::syscall::SyscallNumber::Ioperm
+        | crate::syscall::SyscallNumber::Iopl
+        | crate::syscall::SyscallNumber::KexecFileLoad
+        | crate::syscall::SyscallNumber::KexecLoad
+        | crate::syscall::SyscallNumber::Keyctl
+        | crate::syscall::SyscallNumber::LandlockAddRule
+        | crate::syscall::SyscallNumber::LandlockCreateRuleset
+        | crate::syscall::SyscallNumber::LandlockRestrictSelf
+        | crate::syscall::SyscallNumber::MountSetattr
+        | crate::syscall::SyscallNumber::MoveMount
+        | crate::syscall::SyscallNumber::OpenByHandleAt
+        | crate::syscall::SyscallNumber::OpenTree
+        | crate::syscall::SyscallNumber::PerfEventOpen
+        | crate::syscall::SyscallNumber::Ptrace
+        | crate::syscall::SyscallNumber::RequestKey
+        | crate::syscall::SyscallNumber::Seccomp
+        | crate::syscall::SyscallNumber::Vhangup => Err(LinuxError::EPERM),
+        crate::syscall::SyscallNumber::CreateModule
+        | crate::syscall::SyscallNumber::ModifyLdt
+        | crate::syscall::SyscallNumber::Vserver => Err(LinuxError::EINVAL),
+        crate::syscall::SyscallNumber::Adjtimex
+        | crate::syscall::SyscallNumber::ClockAdjtime
+        | crate::syscall::SyscallNumber::FanotifyInit
+        | crate::syscall::SyscallNumber::FanotifyMark
+        | crate::syscall::SyscallNumber::FutexWaitv
+        | crate::syscall::SyscallNumber::IoCancel
+        | crate::syscall::SyscallNumber::IoDestroy
+        | crate::syscall::SyscallNumber::IoGetevents
+        | crate::syscall::SyscallNumber::IoPgetevents
+        | crate::syscall::SyscallNumber::IoSetup
+        | crate::syscall::SyscallNumber::IoSubmit
+        | crate::syscall::SyscallNumber::IoUringEnter
+        | crate::syscall::SyscallNumber::IoUringRegister
+        | crate::syscall::SyscallNumber::IoUringSetup
+        | crate::syscall::SyscallNumber::Kcmp
+        | crate::syscall::SyscallNumber::MemfdSecret
+        | crate::syscall::SyscallNumber::Mknodat
+        | crate::syscall::SyscallNumber::NameToHandleAt
+        | crate::syscall::SyscallNumber::PidfdGetfd
+        | crate::syscall::SyscallNumber::PidfdOpen
+        | crate::syscall::SyscallNumber::PidfdSendSignal
+        | crate::syscall::SyscallNumber::ProcessMadvise
+        | crate::syscall::SyscallNumber::ProcessMrelease
+        | crate::syscall::SyscallNumber::ProcessVmReadv
+        | crate::syscall::SyscallNumber::ProcessVmWritev
+        | crate::syscall::SyscallNumber::Pselect6
+        | crate::syscall::SyscallNumber::QuotactlFd
+        | crate::syscall::SyscallNumber::RestartSyscall
+        | crate::syscall::SyscallNumber::Rseq
+        | crate::syscall::SyscallNumber::RtSigqueueinfo
+        | crate::syscall::SyscallNumber::RtSigreturn
+        | crate::syscall::SyscallNumber::RtSigtimedwait
+        | crate::syscall::SyscallNumber::RtTgsigqueueinfo
+        | crate::syscall::SyscallNumber::SchedGetattr
+        | crate::syscall::SyscallNumber::SchedSetattr
+        | crate::syscall::SyscallNumber::Semctl
+        | crate::syscall::SyscallNumber::Semop
+        | crate::syscall::SyscallNumber::Semtimedop
+        | crate::syscall::SyscallNumber::SetMempolicyHomeNode
+        | crate::syscall::SyscallNumber::Setfsgid
+        | crate::syscall::SyscallNumber::Setfsuid
+        | crate::syscall::SyscallNumber::Shmat
+        | crate::syscall::SyscallNumber::Shmctl
+        | crate::syscall::SyscallNumber::Statx
+        | crate::syscall::SyscallNumber::Sync
+        | crate::syscall::SyscallNumber::Time
+        | crate::syscall::SyscallNumber::TimerGettime
+        | crate::syscall::SyscallNumber::TimerSettime
+        | crate::syscall::SyscallNumber::Umounth
+        | crate::syscall::SyscallNumber::Uname
+        | crate::syscall::SyscallNumber::Userfaultfd
+        | crate::syscall::SyscallNumber::Ustat
+        | crate::syscall::SyscallNumber::Vmsplice
+        | crate::syscall::SyscallNumber::Waitid => Err(LinuxError::ENOSYS),
         _ => Err(LinuxError::ENOSYS),
     }
 }
@@ -757,6 +1659,30 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
         }
         _ => Err(LinuxError::ENOSYS),
     }
+}
+
+/// Route RustOS package management syscalls.
+fn route_package_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
+    let num = match crate::syscall::SyscallNumber::from_u64(syscall_number) {
+        crate::syscall::SyscallNumber::PkgInstall => 512,
+        crate::syscall::SyscallNumber::PkgRemove => 513,
+        crate::syscall::SyscallNumber::PkgSearch => 514,
+        crate::syscall::SyscallNumber::PkgInfo => 515,
+        crate::syscall::SyscallNumber::PkgList => 516,
+        crate::syscall::SyscallNumber::PkgUpdate => 517,
+        crate::syscall::SyscallNumber::PkgUpgrade => 518,
+        _ => return Err(LinuxError::ENOSYS),
+    };
+
+    crate::package::handle_package_syscall(
+        num,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as usize,
+    )
+    .map(|v| v as u64)
+    .map_err(|_| LinuxError::EPERM)
 }
 
 /// Route network-related syscalls to network stack

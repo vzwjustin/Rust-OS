@@ -338,99 +338,40 @@ impl VbeDriver {
 
     /// Initialize the VBE driver and detect available modes
     pub fn init(&mut self) -> Result<(), &'static str> {
-        // Get VBE controller information
-        let controller_info = self.get_controller_info()?;
-
-        // Validate VBE signature
-        if &controller_info.signature != b"VESA" {
-            return Err("Invalid VBE signature");
-        }
-
-        // Check VBE version (require at least 2.0 for linear framebuffer support)
-        if controller_info.version < 0x0200 {
-            return Err("VBE 2.0 or higher required");
-        }
-
-        self.controller_info = Some(controller_info);
-
-        // Enumerate available video modes
-        self.enumerate_modes()?;
-
-        self.initialized = true;
-        Ok(())
+        // VBE BIOS calls (int 0x10) are not callable from 64-bit long mode.
+        // A real implementation would require either:
+        //   1. A bootloader that passes VBE info to the kernel, or
+        //   2. Switching to real mode temporarily (complex and fragile).
+        // The kernel currently relies on the bootloader for framebuffer info
+        // and does not use VBE directly.  Return an error so callers know
+        // VBE is unavailable and can fall back to other graphics init paths.
+        Err("VBE BIOS calls not available in 64-bit long mode")
     }
 
     /// Get VBE controller information
     fn get_controller_info(&self) -> Result<VbeInfoBlock, &'static str> {
-        let mut info = VbeInfoBlock::default();
-
-        // In a real implementation, this would make a BIOS call
-        // For now, we'll simulate typical VBE controller info
-        info.signature = *b"VESA";
-        info.version = 0x0300; // VBE 3.0
-        info.capabilities = 0x00000001; // DAC can be switched to 8-bit mode
-        info.total_memory = 256; // 16MB in 64KB blocks (256 * 64KB = 16MB)
-        info.oem_software_rev = 0x0001;
-
-        // Simulate BIOS interrupt call
-        let status = self.bios_call(
-            VbeFunction::GetControllerInfo,
-            &mut info as *mut _ as u32,
-            0,
-            0,
-            0,
-        );
-
-        if !status.is_success() {
-            return Err("Failed to get VBE controller information");
-        }
-
-        Ok(info)
+        // VBE controller info is obtained via BIOS int 0x10, which is not
+        // callable from 64-bit long mode.  The bootloader should collect VBE
+        // info before entering long mode and pass it to the kernel.
+        Err("VBE BIOS calls not available in 64-bit long mode")
     }
 
     /// Enumerate available video modes
     fn enumerate_modes(&mut self) -> Result<(), &'static str> {
-        // Get the mode list pointer from controller info
-        let _controller_info = self
-            .controller_info
-            .as_ref()
-            .ok_or("Controller info not available")?;
-
-        // In a real implementation, we would read the mode list from the pointer
-        // For now, we'll add some common video modes
-        self.add_common_modes()?;
-
-        Ok(())
+        // Mode enumeration requires reading the mode list pointer from the
+        // VBE controller info block, which is obtained via BIOS int 0x10.
+        // Since BIOS calls are not available in 64-bit long mode, we cannot
+        // enumerate modes.
+        Err("VBE mode enumeration not available in 64-bit long mode")
     }
 
     /// Add common video modes for testing/simulation
     fn add_common_modes(&mut self) -> Result<(), &'static str> {
-        let common_modes = [
-            (0x0112, 640, 480, 24),   // 640x480x24
-            (0x0114, 800, 600, 16),   // 800x600x16
-            (0x0115, 800, 600, 24),   // 800x600x24
-            (0x0117, 1024, 768, 16),  // 1024x768x16
-            (0x0118, 1024, 768, 24),  // 1024x768x24
-            (0x011A, 1280, 1024, 16), // 1280x1024x16
-            (0x011B, 1280, 1024, 24), // 1280x1024x24
-            (0x011C, 1600, 1200, 16), // 1600x1200x16
-            (0x011D, 1600, 1200, 24), // 1600x1200x24
-            (0x013C, 1920, 1080, 32), // 1920x1080x32 (Full HD)
-            (0x0143, 2560, 1440, 32), // 2560x1440x32 (QHD)
-            (0x0193, 3840, 2160, 32), // 3840x2160x32 (4K)
-        ];
+        // Common video modes would be enumerated from the VBE controller info.
+        // Since BIOS calls are not available in 64-bit long mode, there are no
+        // modes to add.
+        Err("VBE mode enumeration not available in 64-bit long mode")
 
-        for (mode_num, width, height, bpp) in common_modes.iter() {
-            let mode_info = self.create_mode_info(*width, *height, *bpp);
-
-            if let Some(video_mode) = VideoMode::from_mode_info(*mode_num, &mode_info) {
-                if self.available_modes.push(video_mode).is_err() {
-                    break; // Vec is full
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Create mode info structure for a given resolution and bit depth
@@ -481,8 +422,10 @@ impl VbeDriver {
             _ => {}
         }
 
-        // Simulate framebuffer address (0xE0000000 is common for many GPUs)
-        info.phys_base_ptr = 0xE0000000;
+        // Framebuffer physical address would be obtained from the VBE mode info
+        // returned by BIOS int 0x10.  Since BIOS calls are not available in
+        // 64-bit long mode, leave it as zero.
+        info.phys_base_ptr = 0;
 
         info
     }
@@ -604,53 +547,19 @@ impl VbeDriver {
             .map(|info| info.total_memory as u32 * 64 * 1024)
     }
 
-    /// Simulate BIOS interrupt call
+    /// BIOS interrupt call — not available in 64-bit long mode.
     fn bios_call(
         &self,
-        function: VbeFunction,
-        ebx: u32,
+        _function: VbeFunction,
+        _ebx: u32,
         _ecx: u32,
         _edx: u32,
-        edi: u32,
+        _edi: u32,
     ) -> VbeStatus {
-        // BIOS interrupts (int 0x10) are not callable from 64-bit long mode.
-        // A real implementation would need to:
-        //   1. Save CPU state and switch to real mode (or 16-bit protected
-        //      mode with a compatible IDT/GDT)
-        //   2. Set up a real-mode stack and the VBE buffer in low memory
-        //   3. Execute int 0x10 with AX=0x4F00/0x4F01/0x4F02 etc.
-        //   4. Switch back to long mode and restore state
-        //
-        // This is extremely complex and fragile in a 64-bit kernel. In
-        // practice, VBE information is collected by the bootloader before
-        // it enters long mode and passed to the kernel via boot info
-        // structures. The kernel should use that pre-collected data
-        // instead of making BIOS calls itself.
-        //
-        // For now, we simulate success for GetControllerInfo and SetMode
-        // since the caller has already filled in the info block with
-        // simulated data. For other functions, we return unsupported.
-        match function {
-            VbeFunction::GetControllerInfo => {
-                // The caller (get_controller_info) has already filled the
-                // VbeInfoBlock with simulated data. Return success.
-                VbeStatus::Success
-            }
-            VbeFunction::GetModeInfo => {
-                // Mode info is filled by create_mode_info in the caller.
-                VbeStatus::Success
-            }
-            VbeFunction::SetMode => {
-                // Mode setting would require writing to VGA registers
-                // and/or the framebuffer aperture. The actual mode
-                // switch is done by the bootloader. Accept the mode
-                // number from EBX.
-                let _mode_number = ebx & 0x3FFF;
-                let _use_linear = (ebx & 0x4000) != 0;
-                VbeStatus::Success
-            }
-            _ => VbeStatus::NotSupported,
-        }
+        // BIOS interrupts (int 0x10) cannot be called from 64-bit long mode.
+        // VBE information must be collected by the bootloader before entering
+        // long mode and passed to the kernel via boot info structures.
+        VbeStatus::NotSupported
     }
 }
 

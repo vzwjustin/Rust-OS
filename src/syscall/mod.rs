@@ -244,6 +244,7 @@ pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
             context.args[1] as i64,
             context.args[2] as i32,
         ),
+        SyscallNumber::Pipe => sys_pipe(context.args[0]),
 
         // Memory management
         SyscallNumber::Brk => sys_brk(context.args[0]),
@@ -262,7 +263,10 @@ pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
 
         // Time and scheduling
         SyscallNumber::Nanosleep => sys_nanosleep(context.args[0]),
-        SyscallNumber::Gettimeofday | SyscallNumber::ClockGettime => sys_gettime(),
+        SyscallNumber::Gettimeofday => sys_gettimeofday(context.args[0]),
+        SyscallNumber::ClockGettime => {
+            sys_clock_gettime(context.args[0], context.args[1])
+        }
         SyscallNumber::Setpriority => sys_setpriority(context.args[0] as i32),
         SyscallNumber::Getpriority => sys_getpriority(),
 
@@ -529,42 +533,38 @@ fn sys_getppid() -> SyscallResult {
     }
 }
 
+/// SchedYield - Yield CPU
+fn sys_yield() -> SyscallResult {
+    crate::scheduler::yield_cpu();
+    Ok(0)
+}
+
 /// Send signal to process with enhanced privilege checking
 fn sys_kill(pid: Pid, signal: i32) -> SyscallResult {
-    // Security validation
     SecurityValidator::validate_pid(pid)?;
 
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
-    // Check if target process exists
     if process_manager.get_process(pid).is_none() {
         return Err(SyscallError::NotFound);
     }
 
-    // Enhanced privilege checking for kill operation
     if !crate::security::check_permission(current_pid, "kill") {
         return Err(SyscallError::PermissionDenied);
     }
 
-    // Additional validation for specific signals
     match signal {
         9 => {
-            // SIGKILL - terminate process immediately
             if pid == current_pid {
-                // Don't allow process to kill itself with SIGKILL
                 return Err(SyscallError::InvalidArgument);
             }
 
-            // Check if current process can kill the target
             if let Some(current_ctx) = crate::security::get_context(current_pid) {
                 if let Some(target_ctx) = crate::security::get_context(pid) {
-                    // Non-root users can only kill their own processes
                     if !current_ctx.is_root() && current_ctx.uid != target_ctx.uid {
                         return Err(SyscallError::PermissionDenied);
                     }
-
-                    // Cannot kill processes with higher privilege
                     if target_ctx.level < current_ctx.level {
                         return Err(SyscallError::PermissionDenied);
                     }
@@ -577,7 +577,6 @@ fn sys_kill(pid: Pid, signal: i32) -> SyscallResult {
             }
         }
         0 => {
-            // Signal 0 - just check if process exists and can be signaled
             if let Some(current_ctx) = crate::security::get_context(current_pid) {
                 if let Some(target_ctx) = crate::security::get_context(pid) {
                     if !current_ctx.is_root() && current_ctx.uid != target_ctx.uid {
@@ -588,24 +587,58 @@ fn sys_kill(pid: Pid, signal: i32) -> SyscallResult {
             Ok(0)
         }
         _ => {
-            // Other signals require capability checking
-            if !crate::security::check_capability_with_inheritance(current_pid, "cap_kill") {
-                return Err(SyscallError::PermissionDenied);
+            use crate::process::ipc::{self, Signal};
+            let signal = match signal {
+                1 => Signal::SIGHUP,
+                2 => Signal::SIGINT,
+                3 => Signal::SIGQUIT,
+                4 => Signal::SIGILL,
+                5 => Signal::SIGTRAP,
+                6 => Signal::SIGABRT,
+                7 => Signal::SIGBUS,
+                8 => Signal::SIGFPE,
+                10 => Signal::SIGUSR1,
+                11 => Signal::SIGSEGV,
+                12 => Signal::SIGUSR2,
+                13 => Signal::SIGPIPE,
+                14 => Signal::SIGALRM,
+                15 => Signal::SIGTERM,
+                17 => Signal::SIGCHLD,
+                18 => Signal::SIGCONT,
+                19 => Signal::SIGSTOP,
+                20 => Signal::SIGTSTP,
+                _ => return Err(SyscallError::InvalidArgument),
+            };
+
+            match signal {
+                Signal::SIGSTOP => {
+                    process_manager.with_process_mut(pid, |pcb| {
+                        pcb.set_state(crate::process::ProcessState::Blocked);
+                    });
+                }
+                Signal::SIGCONT => {
+                    process_manager.with_process_mut(pid, |pcb| {
+                        if pcb.state == crate::process::ProcessState::Blocked {
+                            pcb.set_state(crate::process::ProcessState::Ready);
+                        }
+                    });
+                }
+                Signal::SIGTERM | Signal::SIGINT | Signal::SIGHUP | Signal::SIGQUIT => {
+                    return match process_manager.terminate_process(pid, signal as i32) {
+                        Ok(()) => Ok(0),
+                        Err(_) => Err(SyscallError::NotPermitted),
+                    };
+                }
+                _ => {}
             }
 
-            // Other signals not yet implemented
-            Err(SyscallError::NotSupported)
+            ipc::send_signal(pid, signal, current_pid).map_err(|_| SyscallError::NotFound)?;
+            Ok(0)
         }
     }
 }
 
-/// Yield CPU to other processes
-fn sys_yield() -> SyscallResult {
-    crate::scheduler::schedule();
-    Ok(0)
-}
-
-/// Open a file
+/// Open file with enhanced security checks
 fn sys_open(pathname: u64, flags: u32) -> SyscallResult {
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
@@ -798,200 +831,209 @@ fn check_file_permissions(
 }
 
 /// Close a file descriptor
+///
+/// Closes the underlying VFS handle for regular files, removes pipe entries, and
+/// drops the process-local descriptor.
 fn sys_close(fd: i32) -> SyscallResult {
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
-    // Validate current process exists
     if current_pid == 0 {
         return Err(SyscallError::InvalidSyscall);
     }
 
-    // Read-only snapshot for the existence check; the removal is applied to the
-    // live process via `with_process_mut` so it actually persists.
-    let process = match process_manager.get_process(current_pid) {
-        Some(p) => p,
-        None => return Err(SyscallError::InvalidSyscall),
-    };
-
-    // Security validation
     SecurityValidator::validate_fd(fd)?;
-
-    // Don't allow closing standard descriptors
     if fd <= 2 {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Check if file descriptor exists in process table
-    if !process.file_descriptors.contains_key(&(fd as u32)) {
-        return Err(SyscallError::BadFileDescriptor);
+    let fd_record = process_manager.with_process_mut(current_pid, |p| {
+        p.file_descriptors.remove(&(fd as u32))
+    });
+
+    let fd_record = fd_record.flatten().ok_or(SyscallError::BadFileDescriptor)?;
+
+    // Close underlying VFS handle if this is a regular file.
+    if let crate::process::FileDescriptorType::VfsHandle { vfs_fd } = &fd_record.fd_type {
+        let _ = crate::fs::vfs().close(*vfs_fd);
     }
 
-    // Close through VFS
-    match crate::fs::vfs().close(fd as i32) {
-        Ok(()) => {
-            // Remove from the REAL process file descriptor table (a clone would
-            // be discarded, leaking the fd entry).
-            process_manager.with_process_mut(current_pid, |p| {
-                p.file_descriptors.remove(&(fd as u32));
-                p.file_offsets.remove(&(fd as u32));
-            });
-            Ok(0)
-        }
-        Err(fs_error) => {
-            let syscall_error = match fs_error {
-                crate::fs::FsError::BadFileDescriptor => SyscallError::BadFileDescriptor,
-                _ => SyscallError::IoError,
-            };
-            Err(syscall_error)
-        }
+    process_manager.with_process_mut(current_pid, |p| {
+        p.file_offsets.remove(&(fd as u32));
+    });
+
+    Ok(0)
+}
+
+/// Convert a filesystem error to a syscall error.
+fn fs_error_to_syscall_error(fs_error: crate::fs::FsError) -> SyscallError {
+    match fs_error {
+        crate::fs::FsError::NotFound => SyscallError::NotFound,
+        crate::fs::FsError::PermissionDenied => SyscallError::PermissionDenied,
+        crate::fs::FsError::AlreadyExists => SyscallError::AlreadyExists,
+        crate::fs::FsError::NotADirectory => SyscallError::NotDirectory,
+        crate::fs::FsError::IsADirectory => SyscallError::IsDirectory,
+        crate::fs::FsError::InvalidArgument => SyscallError::InvalidArgument,
+        crate::fs::FsError::NoSpaceLeft => SyscallError::NoSpace,
+        crate::fs::FsError::ReadOnly => SyscallError::ReadOnly,
+        crate::fs::FsError::BadFileDescriptor => SyscallError::BadFileDescriptor,
+        _ => SyscallError::IoError,
     }
 }
 
 /// Read from file descriptor
+///
+/// Reads through the process-local `FileDescriptor` so that stdin, VFS inodes,
+/// and VFS handles are all handled correctly. The per-process offset is kept in
+/// sync with the legacy `file_offsets` map.
 fn sys_read(fd: i32, buf: u64, count: u64) -> SyscallResult {
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
-    // Validate current process exists
     if current_pid == 0 {
         return Err(SyscallError::InvalidSyscall);
     }
 
-    // Read-only snapshot for the existence check; the offset update is applied to
-    // the live process via `with_process_mut`.
-    let process = match process_manager.get_process(current_pid) {
-        Some(p) => p,
-        None => return Err(SyscallError::InvalidSyscall),
-    };
-
-    // Security validation
     SecurityValidator::validate_fd(fd)?;
     SecurityValidator::validate_user_ptr(buf, count, true)?;
 
-    // Limit read size to prevent abuse
     let read_count = core::cmp::min(count, 1024 * 1024) as usize; // Max 1MB
+    let mut buffer = vec![0u8; read_count];
 
-    // Handle special file descriptors
-    match fd {
-        0 => {
-            // stdin - for now, return empty read
-            Ok(0)
-        }
-        1 | 2 => {
-            // stdout/stderr - not readable
-            Err(SyscallError::InvalidArgument)
-        }
-        _ => {
-            // Check if file descriptor exists in process table
-            if !process.file_descriptors.contains_key(&(fd as u32)) {
-                return Err(SyscallError::BadFileDescriptor);
-            }
+    let result = process_manager.with_process_mut(current_pid, |p| {
+        let fd_entry = p.file_descriptors.get_mut(&(fd as u32))?;
+        Some(fd_entry.read(&mut buffer).map(|n| (fd_entry.offset(), n)))
+    });
+    let (new_offset, bytes_read) = result
+        .flatten()
+        .ok_or(SyscallError::BadFileDescriptor)?
+        .map_err(fs_error_to_syscall_error)?;
 
-            // Regular file descriptor
-            let mut buffer = vec![0u8; read_count];
+    process_manager.with_process_mut(current_pid, |p| {
+        p.file_offsets.insert(fd as u32, new_offset as usize);
+    });
 
-            match crate::fs::vfs().read(fd as i32, &mut buffer) {
-                Ok(bytes_read) => {
-                    // Update file offset on the REAL process (a clone would be
-                    // discarded, so the offset would never advance across reads).
-                    process_manager.with_process_mut(current_pid, |p| {
-                        let current_offset = p.file_offsets.get(&(fd as u32)).copied().unwrap_or(0);
-                        p.file_offsets
-                            .insert(fd as u32, current_offset + bytes_read);
-                    });
-
-                    // Copy data to user space
-                    if bytes_read > 0 {
-                        SecurityValidator::copy_to_user(buf, &buffer[..bytes_read])?;
-                    }
-                    Ok(bytes_read as u64)
-                }
-                Err(fs_error) => {
-                    let syscall_error = match fs_error {
-                        crate::fs::FsError::BadFileDescriptor => SyscallError::BadFileDescriptor,
-                        crate::fs::FsError::PermissionDenied => SyscallError::PermissionDenied,
-                        _ => SyscallError::IoError,
-                    };
-                    Err(syscall_error)
-                }
-            }
-        }
+    if bytes_read > 0 {
+        SecurityValidator::copy_to_user(buf, &buffer[..bytes_read])?;
     }
+    Ok(bytes_read as u64)
 }
 
 /// Write to file descriptor
+///
+/// Writes through the process-local `FileDescriptor` so that stdout/stderr,
+/// VFS inodes, and VFS handles are handled correctly.
 fn sys_write(fd: i32, buf: u64, count: u64) -> SyscallResult {
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
-    // Validate current process exists
     if current_pid == 0 {
         return Err(SyscallError::InvalidSyscall);
     }
 
-    // Read-only snapshot for the existence check; the offset update is applied to
-    // the live process via `with_process_mut`.
-    let process = match process_manager.get_process(current_pid) {
-        Some(p) => p,
-        None => return Err(SyscallError::InvalidSyscall),
-    };
-
-    // Security validation
     SecurityValidator::validate_fd(fd)?;
     SecurityValidator::validate_user_ptr(buf, count, false)?;
 
-    // Limit write size to prevent abuse
     let write_count = core::cmp::min(count, 1024 * 1024) as usize; // Max 1MB
-
-    // Copy data from user space
     let data = SecurityValidator::copy_from_user(buf, write_count)?;
 
-    // Handle special file descriptors
-    match fd {
-        0 => {
-            // stdin - not writable
-            Err(SyscallError::InvalidArgument)
-        }
-        1 | 2 => {
-            // stdout/stderr - write to console
-            for &byte in &data {
-                crate::print!("{}", byte as char);
-            }
-            Ok(write_count as u64)
-        }
-        _ => {
-            // Check if file descriptor exists in process table
-            if !process.file_descriptors.contains_key(&(fd as u32)) {
-                return Err(SyscallError::BadFileDescriptor);
-            }
+    let result = process_manager.with_process_mut(current_pid, |p| {
+        let fd_entry = p.file_descriptors.get_mut(&(fd as u32))?;
+        Some(fd_entry.write(&data).map(|n| (fd_entry.offset(), n)))
+    });
+    let (new_offset, bytes_written) = result
+        .flatten()
+        .ok_or(SyscallError::BadFileDescriptor)?
+        .map_err(fs_error_to_syscall_error)?;
 
-            // Regular file descriptor
-            match crate::fs::vfs().write(fd as i32, &data) {
-                Ok(bytes_written) => {
-                    // Update file offset on the REAL process (a clone would be
-                    // discarded, so the offset would never advance across writes).
-                    process_manager.with_process_mut(current_pid, |p| {
-                        let current_offset = p.file_offsets.get(&(fd as u32)).copied().unwrap_or(0);
-                        p.file_offsets
-                            .insert(fd as u32, current_offset + bytes_written);
-                    });
+    process_manager.with_process_mut(current_pid, |p| {
+        p.file_offsets.insert(fd as u32, new_offset as usize);
+    });
 
-                    Ok(bytes_written as u64)
-                }
-                Err(fs_error) => {
-                    let syscall_error = match fs_error {
-                        crate::fs::FsError::BadFileDescriptor => SyscallError::BadFileDescriptor,
-                        crate::fs::FsError::PermissionDenied => SyscallError::PermissionDenied,
-                        crate::fs::FsError::NoSpaceLeft => SyscallError::NoSpace,
-                        crate::fs::FsError::ReadOnly => SyscallError::ReadOnly,
-                        _ => SyscallError::IoError,
-                    };
-                    Err(syscall_error)
-                }
-            }
-        }
+    Ok(bytes_written as u64)
+}
+
+/// pipe(pipefd) - Create a pipe and return two file descriptors.
+///
+/// Writes `[read_fd, write_fd]` as two `i32` values into the user-supplied
+/// buffer. The pipe is created through the process IPC manager.
+fn sys_pipe(pipefd_ptr: u64) -> SyscallResult {
+    if pipefd_ptr == 0 {
+        return Err(SyscallError::InvalidArgument);
     }
+
+    let process_manager = crate::process::get_process_manager();
+    let current_pid = process_manager.current_process();
+
+    if current_pid == 0 {
+        return Err(SyscallError::InvalidSyscall);
+    }
+
+    let (read_fd, write_fd) = match process_manager.with_process_mut(current_pid, |p| {
+        if p.file_descriptors.len() + 2 > 1024 {
+            return None;
+        }
+
+        let (read_pipe_id, write_pipe_id) = match process_manager.create_pipe() {
+            Ok(ids) => ids,
+            Err(_) => return None,
+        };
+
+        let mut read_fd = None;
+        let mut write_fd = None;
+        let mut next_fd = 3;
+        while next_fd <= 65535 {
+            if !p.file_descriptors.contains_key(&next_fd) {
+                if read_fd.is_none() {
+                    read_fd = Some(next_fd);
+                } else {
+                    write_fd = Some(next_fd);
+                    break;
+                }
+            }
+            next_fd += 1;
+        }
+
+        let read_fd = read_fd?;
+        let write_fd = write_fd?;
+
+        p.file_descriptors.insert(
+            read_fd,
+            crate::process::FileDescriptor {
+                fd_type: crate::process::FileDescriptorType::Pipe {
+                    pipe_id: read_pipe_id,
+                },
+                flags: 0,
+                offset: 0,
+            },
+        );
+        p.file_offsets.insert(read_fd, 0);
+
+        p.file_descriptors.insert(
+            write_fd,
+            crate::process::FileDescriptor {
+                fd_type: crate::process::FileDescriptorType::Pipe {
+                    pipe_id: write_pipe_id,
+                },
+                flags: 0,
+                offset: 0,
+            },
+        );
+        p.file_offsets.insert(write_fd, 0);
+
+        Some((read_fd, write_fd))
+    }) {
+        Some(Some(fds)) => fds,
+        _ => return Err(SyscallError::OutOfMemory),
+    };
+
+    let pipefds = [read_fd as i32, write_fd as i32];
+    let mut buf = [0u8; 8];
+    buf[0..4].copy_from_slice(&pipefds[0].to_le_bytes());
+    buf[4..8].copy_from_slice(&pipefds[1].to_le_bytes());
+
+    SecurityValidator::copy_to_user(pipefd_ptr, &buf)?;
+    Ok(0)
 }
 
 /// Change program break (heap management)
@@ -1148,11 +1190,16 @@ fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64
         // File-backed mapping.
         //
         // We allocate an anonymous region (temporarily writable so we can fill
-        // it), copy the file contents into it in page-sized chunks, zero-fill
-        // any remainder when the file is shorter than the requested length, and
-        // finally re-protect the region to the caller-requested permissions.
+        // it), copy the file contents into it in page-sized chunks through the
+        // process-local FileDescriptor, zero-fill any remainder when the file is
+        // shorter than the requested length, and finally re-protect the region.
 
-        // (a) Allocate an anonymous region, forced writable for filling.
+        let process_manager = crate::process::get_process_manager();
+        let current_pid = process_manager.current_process();
+        if current_pid == 0 {
+            return Err(SyscallError::InvalidSyscall);
+        }
+
         let fill_protection = crate::memory::MemoryProtection {
             readable: true,
             writable: true,
@@ -1180,58 +1227,55 @@ fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64
             }
         };
 
-        // Helper to roll back the allocation on error.
         let free_and_fail = |err: SyscallError| -> SyscallResult {
             let _ = crate::memory::deallocate_memory(virt_addr);
             Err(err)
         };
 
-        // (b) Determine the file size via the VFS by seeking to end.
-        let file_size = match crate::fs::vfs().seek(fd, crate::fs::SeekFrom::End(0)) {
-            Ok(size) => size as usize,
-            Err(_) => return free_and_fail(SyscallError::InvalidArgument),
-        };
-        // Restore the file position to the requested offset before reading.
-        if let Err(_) = crate::fs::vfs().seek(fd, crate::fs::SeekFrom::Start(offset)) {
-            return free_and_fail(SyscallError::InvalidArgument);
-        }
-
-        // Bytes available in the file starting from `offset`.
-        let available = if (offset as usize) >= file_size {
-            0
-        } else {
-            file_size - offset as usize
-        };
-        // Only map up to `length` bytes from the file.
-        let to_read = core::cmp::min(available, length as usize);
-
-        // (c) Read file contents into the allocated region in page-sized chunks.
         const PAGE_SIZE: usize = 4096;
         let base_ptr = virt_addr.as_u64() as *mut u8;
-        let mut copied: usize = 0;
-        while copied < to_read {
-            let chunk_len = core::cmp::min(PAGE_SIZE, to_read - copied);
-            // SAFETY: `base_ptr` points to a freshly-allocated, mapped,
-            // writable region of `length` bytes. `copied + chunk_len <= to_read
-            // <= length`, so this slice stays within the mapping.
-            let dst = unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
-            match crate::fs::vfs().read(fd, dst) {
-                Ok(0) => break, // EOF reached early
-                Ok(n) => copied += n,
-                Err(_) => return free_and_fail(SyscallError::InvalidArgument),
-            }
-        }
 
-        // Zero-fill the remainder when the file is smaller than the mapping.
+        // Read through the live FileDescriptor so VfsHandle and VfsFile are
+        // both handled correctly. Preserve the descriptor's offset.
+        let copied = match process_manager.with_process_mut(current_pid, |p| {
+            let fd_entry = p.file_descriptors.get_mut(&(fd as u32))?;
+            let file_size = fd_entry.size().ok()? as usize;
+            let available = if (offset as usize) >= file_size {
+                0
+            } else {
+                file_size - offset as usize
+            };
+            let to_read = core::cmp::min(available, length as usize);
+
+            let original_offset = fd_entry.offset();
+            fd_entry.set_offset(offset);
+
+            let mut copied = 0usize;
+            while copied < to_read {
+                let chunk_len = core::cmp::min(PAGE_SIZE, to_read - copied);
+                let dst = unsafe {
+                    core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len)
+                };
+                match fd_entry.read(dst) {
+                    Ok(0) => break,
+                    Ok(n) => copied += n,
+                    Err(_) => return None,
+                }
+            }
+
+            fd_entry.set_offset(original_offset);
+            Some(copied)
+        }).flatten() {
+            Some(c) => c,
+            None => return free_and_fail(SyscallError::InvalidArgument),
+        };
+
         if copied < length as usize {
-            // SAFETY: `copied < length`, and `base_ptr` points to a mapped
-            // writable region of `length` bytes, so the tail is valid to zero.
             unsafe {
                 core::ptr::write_bytes(base_ptr.add(copied), 0u8, length as usize - copied);
             }
         }
 
-        // (d) Re-protect the region to the caller-requested permissions.
         if let Err(_) = crate::memory::protect_memory(virt_addr, length as usize, protection) {
             return free_and_fail(SyscallError::OutOfMemory);
         }
@@ -1257,7 +1301,8 @@ fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64
             }
         }
     } else {
-        Err(SyscallError::NotSupported)
+        // Non-anonymous mapping without a valid fd
+        Err(SyscallError::InvalidArgument)
     }
 }
 
@@ -1325,42 +1370,51 @@ fn sys_wait4(pid: i32, status_ptr: u64) -> SyscallResult {
 }
 
 /// lseek(fd, offset, whence)
+///
+/// Supports SEEK_SET (0), SEEK_CUR (1), and SEEK_END (2). The file size is
+/// obtained from the `FileDescriptor` so it works for both VFS inodes and VFS
+/// handles.
 fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
     SecurityValidator::validate_fd(fd)?;
 
-    if whence == 2 {
-        return Err(SyscallError::NotSupported);
-    }
-    if whence != 0 && whence != 1 {
+    if whence != 0 && whence != 1 && whence != 2 {
         return Err(SyscallError::InvalidArgument);
     }
 
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
-    let current = process_manager
-        .get_process(current_pid)
-        .and_then(|p| p.file_offsets.get(&(fd as u32)).copied())
-        .ok_or(SyscallError::BadFileDescriptor)? as i64;
+    let result = process_manager.with_process_mut(current_pid, |p| {
+        let fd_entry = p.file_descriptors.get_mut(&(fd as u32))?;
+        let current = fd_entry.offset() as i64;
+        let file_size = match whence {
+            2 => fd_entry.size().ok()? as i64,
+            _ => 0,
+        };
+        let new_offset = match whence {
+            0 => offset,
+            1 => current.checked_add(offset)?,
+            2 => file_size.checked_add(offset)?,
+            _ => return None,
+        };
+        if new_offset < 0 {
+            return None;
+        }
+        fd_entry.set_offset(new_offset as u64);
+        Some(new_offset as u64)
+    });
 
-    let new_offset = match whence {
-        0 => offset,
-        1 => current + offset,
-        _ => unreachable!(),
-    };
-
-    if new_offset < 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
+    let new_offset = result
+        .flatten()
+        .ok_or(SyscallError::InvalidArgument)?;
 
     process_manager.with_process_mut(current_pid, |p| {
         p.file_offsets.insert(fd as u32, new_offset as usize);
     });
 
-    Ok(new_offset as u64)
+    Ok(new_offset)
 }
 
-/// mprotect(addr, len, prot)
 fn sys_mprotect(addr: u64, length: u64, prot: i32) -> SyscallResult {
     if length == 0 {
         return Err(SyscallError::InvalidArgument);
@@ -1437,11 +1491,47 @@ fn sys_sleep(microseconds: u64) -> SyscallResult {
     Ok(0)
 }
 
-/// Get current time
-fn sys_gettime() -> SyscallResult {
-    // Use production time module
-    let uptime_us = crate::time::uptime_us();
-    Ok(uptime_us)
+/// gettimeofday(tv_ptr, tz_ptr)
+///
+/// Writes the current wall-clock time as a Linux `timeval` (seconds +
+/// microseconds) to the user-supplied buffer. The timezone pointer is ignored
+/// per modern Linux behavior.
+fn sys_gettimeofday(tv_ptr: u64) -> SyscallResult {
+    if tv_ptr == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let now_us = crate::time::get_system_time_ms() * 1000;
+    let sec = now_us / 1_000_000;
+    let usec = now_us % 1_000_000;
+
+    let mut buf = [0u8; 16];
+    buf[0..8].copy_from_slice(&sec.to_le_bytes());
+    buf[8..16].copy_from_slice(&usec.to_le_bytes());
+
+    SecurityValidator::copy_to_user(tv_ptr, &buf)?;
+    Ok(0)
+}
+
+/// clock_gettime(clockid, tp_ptr)
+///
+/// Writes the current wall-clock time as a Linux `timespec` (seconds +
+/// nanoseconds) to the user-supplied buffer.
+fn sys_clock_gettime(_clockid: u64, tp_ptr: u64) -> SyscallResult {
+    if tp_ptr == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let now_ms = crate::time::get_system_time_ms();
+    let sec = now_ms / 1000;
+    let nsec = (now_ms % 1000) * 1_000_000;
+
+    let mut buf = [0u8; 16];
+    buf[0..8].copy_from_slice(&sec.to_le_bytes());
+    buf[8..16].copy_from_slice(&nsec.to_le_bytes());
+
+    SecurityValidator::copy_to_user(tp_ptr, &buf)?;
+    Ok(0)
 }
 
 /// Set process priority with privilege validation

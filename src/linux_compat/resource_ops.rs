@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
@@ -13,6 +14,7 @@ use crate::process::{self, Priority, ResourceLimit};
 
 /// Operation counter for statistics
 static RESOURCE_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
+static IO_PRIORITIES: spin::RwLock<BTreeMap<i32, i32>> = spin::RwLock::new(BTreeMap::new());
 
 /// Initialize resource operations subsystem
 pub fn init_resource_operations() {
@@ -700,4 +702,31 @@ mod tests {
         );
         assert_eq!(sched_get_priority_min(sched_policy::SCHED_FIFO).unwrap(), 1);
     }
+}
+
+pub fn ioprio_set(which: i32, who: i32, ioprio: i32) -> LinuxResult<i32> {
+    inc_ops();
+    if which < 1 || which > 3 {
+        return Err(LinuxError::EINVAL);
+    }
+    let key = if who == 0 {
+        crate::process::current_pid() as i32
+    } else {
+        who
+    };
+    IO_PRIORITIES.write().insert(key, ioprio);
+    Ok(0)
+}
+
+pub fn ioprio_get(which: i32, who: i32) -> LinuxResult<i32> {
+    inc_ops();
+    if which < 1 || which > 3 {
+        return Err(LinuxError::EINVAL);
+    }
+    let key = if who == 0 {
+        crate::process::current_pid() as i32
+    } else {
+        who
+    };
+    Ok(*IO_PRIORITIES.read().get(&key).unwrap_or(&0))
 }

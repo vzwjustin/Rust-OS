@@ -5,6 +5,7 @@
 //!
 //! Integrated with RustOS process manager, scheduler, and ELF loader.
 
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -22,6 +23,7 @@ use crate::process::Pid as KernelPid;
 use crate::process::{self};
 /// Operation counter for statistics
 static PROCESS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
+static PERSONALITIES: spin::RwLock<BTreeMap<i32, u32>> = spin::RwLock::new(BTreeMap::new());
 
 /// Initialize process operations subsystem
 pub fn init_process_operations() {
@@ -1905,4 +1907,15 @@ mod tests {
         let sid = getsid(0);
         assert!(sid.is_ok());
     }
+}
+
+pub fn personality(persona: u32) -> LinuxResult<i32> {
+    inc_ops();
+    let pid = process::current_pid() as i32;
+    let mut table = PERSONALITIES.write();
+    let old = *table.get(&pid).unwrap_or(&0);
+    if persona != u32::MAX {
+        table.insert(pid, persona);
+    }
+    Ok(old as i32)
 }

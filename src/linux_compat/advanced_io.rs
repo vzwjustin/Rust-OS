@@ -245,6 +245,59 @@ pub fn pwritev(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResu
     Ok(total)
 }
 
+/// preadv2 - read data into multiple buffers from given offset
+///
+/// Supports offset == -1 to read from the current file position (like readv).
+/// Flags are currently ignored because the underlying filesystem does not
+/// implement RWF_HIPRI/RWF_NOWAIT semantics.
+pub fn preadv2(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off, _flags: i32) -> LinuxResult<isize> {
+    inc_ops();
+
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    if iov.is_null() || iovcnt <= 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if offset == -1 {
+        return readv(fd, iov, iovcnt);
+    }
+
+    if offset < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    preadv(fd, iov, iovcnt, offset)
+}
+
+/// pwritev2 - write data from multiple buffers to given offset
+///
+/// Supports offset == -1 to write at the current file position (like writev).
+/// Flags are currently ignored for the same reason as preadv2.
+pub fn pwritev2(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off, _flags: i32) -> LinuxResult<isize> {
+    inc_ops();
+
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    if iov.is_null() || iovcnt <= 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if offset == -1 {
+        return writev(fd, iov, iovcnt);
+    }
+
+    if offset < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    pwritev(fd, iov, iovcnt, offset)
+}
+
 // ============================================================================
 // Vectored I/O (readv/writev)
 // ============================================================================
@@ -532,6 +585,62 @@ pub fn copy_file_range(
         }
     }
     Ok(total as isize)
+}
+
+/// fadvise64 - predeclare file access patterns
+///
+/// Advisory only on this system; accepts the standard POSIX_FADV_* constants
+/// and returns success without changing kernel behavior.
+pub fn fadvise64(fd: Fd, _offset: i64, _len: i64, advice: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    const POSIX_FADV_NORMAL: i32 = 0;
+    const POSIX_FADV_SEQUENTIAL: i32 = 2;
+    const POSIX_FADV_RANDOM: i32 = 1;
+    const POSIX_FADV_NOREUSE: i32 = 5;
+    const POSIX_FADV_WILLNEED: i32 = 3;
+    const POSIX_FADV_DONTNEED: i32 = 4;
+
+    let valid = advice == POSIX_FADV_NORMAL
+        || advice == POSIX_FADV_SEQUENTIAL
+        || advice == POSIX_FADV_RANDOM
+        || advice == POSIX_FADV_NOREUSE
+        || advice == POSIX_FADV_WILLNEED
+        || advice == POSIX_FADV_DONTNEED;
+    if !valid {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(0)
+}
+
+/// readahead - initiate file readahead into page cache
+///
+/// No-op because there is no demand-paging page cache to warm up.
+pub fn readahead(fd: Fd, _offset: i64, _count: usize) -> LinuxResult<i32> {
+    inc_ops();
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+    Ok(0)
+}
+
+/// sync_file_range - sync a file segment with storage
+///
+/// No-op because all filesystems currently in use are in-memory.
+pub fn sync_file_range(fd: Fd, _offset: i64, _nbytes: i64, flags: u32) -> LinuxResult<i32> {
+    inc_ops();
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+    const VALID_FLAGS: u32 = 0x1 | 0x2 | 0x4; // SYNC_FILE_RANGE_WAIT_BEFORE, WRITE, WAIT_AFTER
+    if flags & !VALID_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(0)
 }
 
 // ============================================================================

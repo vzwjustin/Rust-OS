@@ -78,25 +78,63 @@ pub fn create_security_test_suite() -> TestSuite {
 
 // Setup and teardown functions
 fn setup_all_security_tests() {
-    // Initialize security testing environment
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_memory_controller().reset();
 }
 
 fn teardown_all_security_tests() {
-    // Clean up security testing environment
+    crate::testing_framework::get_test_framework().disable_mocks();
 }
 
-fn setup_security_tests() {}
-fn teardown_security_tests() {}
-fn setup_memory_security_tests() {}
-fn teardown_memory_security_tests() {}
-fn setup_syscall_security_tests() {}
-fn teardown_syscall_security_tests() {}
-fn setup_buffer_security_tests() {}
-fn teardown_buffer_security_tests() {}
-fn setup_access_control_tests() {}
-fn teardown_access_control_tests() {}
-fn setup_crypto_security_tests() {}
-fn teardown_crypto_security_tests() {}
+fn setup_security_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_security_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_memory_security_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_memory_controller().reset();
+}
+
+fn teardown_memory_security_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_syscall_security_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_syscall_security_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_buffer_security_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::mocks::get_mock_memory_controller().reset();
+}
+
+fn teardown_buffer_security_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_access_control_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_access_control_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
+
+fn setup_crypto_security_tests() {
+    crate::testing_framework::get_test_framework().enable_mocks();
+}
+
+fn teardown_crypto_security_tests() {
+    crate::testing_framework::get_test_framework().disable_mocks();
+}
 
 // Security test implementations
 

@@ -604,18 +604,24 @@ impl SyscallDispatcher {
 
         match vfs.open(&path, open_flags, mode) {
             Ok(inode) => {
-                // Allocate file descriptor
-                if let Some(mut process) = process_manager.get_process(current_pid) {
+                // Allocate file descriptor on the live process, not a clone.
+                let next_fd = process_manager.with_process_mut(current_pid, |p| {
                     let mut next_fd = 3; // Start after stdin/stdout/stderr
-                    while process.file_descriptors.contains_key(&next_fd) {
+                    while p.file_descriptors.contains_key(&next_fd) {
                         next_fd += 1;
+                        if next_fd > 65535 {
+                            return None;
+                        }
                     }
-                    // Create FileDescriptor from the VFS Inode
                     let fd = super::FileDescriptor::from_inode(inode, flags);
-                    process.file_descriptors.insert(next_fd, fd);
-                    SyscallResult::Success(next_fd as u64)
-                } else {
-                    SyscallResult::Error(SyscallError::ProcessNotFound)
+                    p.file_descriptors.insert(next_fd, fd);
+                    p.file_offsets.insert(next_fd, 0);
+                    Some(next_fd)
+                });
+
+                match next_fd {
+                    Some(Some(fd)) => SyscallResult::Success(fd as u64),
+                    _ => SyscallResult::Error(SyscallError::ProcessNotFound),
                 }
             }
             Err(_) => SyscallResult::Error(SyscallError::FileNotFound),
@@ -631,15 +637,18 @@ impl SyscallDispatcher {
     ) -> SyscallResult {
         let fd = args.get(0).copied().unwrap_or(0) as u32;
 
-        // Get process and close file descriptor
-        if let Some(mut process) = process_manager.get_process(current_pid) {
-            if process.file_descriptors.remove(&fd).is_some() {
-                SyscallResult::Success(0)
-            } else {
-                SyscallResult::Error(SyscallError::InvalidFileDescriptor)
+        let removed = process_manager.with_process_mut(current_pid, |p| {
+            let removed = p.file_descriptors.remove(&fd).is_some();
+            if removed {
+                p.file_offsets.remove(&fd);
             }
+            removed
+        });
+
+        if removed.unwrap_or(false) {
+            SyscallResult::Success(0)
         } else {
-            SyscallResult::Error(SyscallError::ProcessNotFound)
+            SyscallResult::Error(SyscallError::InvalidFileDescriptor)
         }
     }
 
@@ -654,42 +663,25 @@ impl SyscallDispatcher {
         let buffer_ptr = args.get(1).copied().unwrap_or(0);
         let count = args.get(2).copied().unwrap_or(0) as usize;
 
-        // Get process and file descriptor
-        if let Some(mut process) = process_manager.get_process(current_pid) {
-            // Handle standard input
-            if fd == 0 {
-                // Read from console
-                use crate::keyboard::read_line;
-                let mut buffer = vec![0u8; count];
-                let bytes_read = read_line(&mut buffer);
+        let mut buffer = vec![0u8; count];
+        let result = process_manager.with_process_mut(current_pid, |p| {
+            let fd_entry = p.file_descriptors.get_mut(&fd)?;
+            Some(fd_entry.read(&mut buffer).map(|n| (fd_entry.offset(), n)))
+        });
+        let (new_offset, bytes_read) = match result {
+            Some(Some(Ok((offset, n)))) => (offset, n),
+            Some(Some(Err(_))) => return SyscallResult::Error(SyscallError::IoError),
+            _ => return SyscallResult::Error(SyscallError::InvalidFileDescriptor),
+        };
 
-                // Copy to user buffer
-                if self.copy_to_user(buffer_ptr, &buffer[..bytes_read]).is_ok() {
-                    return SyscallResult::Success(bytes_read as u64);
-                } else {
-                    return SyscallResult::Error(SyscallError::InvalidAddress);
-                }
-            }
+        process_manager.with_process_mut(current_pid, |p| {
+            p.file_offsets.insert(fd, new_offset as usize);
+        });
 
-            // Handle regular files
-            if let Some(file_desc) = process.file_descriptors.get_mut(&fd) {
-                let mut buffer = vec![0u8; count];
-                match file_desc.read(&mut buffer) {
-                    Ok(bytes_read) => {
-                        // Copy to user buffer
-                        if self.copy_to_user(buffer_ptr, &buffer[..bytes_read]).is_ok() {
-                            SyscallResult::Success(bytes_read as u64)
-                        } else {
-                            SyscallResult::Error(SyscallError::InvalidAddress)
-                        }
-                    }
-                    Err(_) => SyscallResult::Error(SyscallError::IoError),
-                }
-            } else {
-                SyscallResult::Error(SyscallError::InvalidFileDescriptor)
-            }
+        if self.copy_to_user(buffer_ptr, &buffer[..bytes_read]).is_ok() {
+            SyscallResult::Success(bytes_read as u64)
         } else {
-            SyscallResult::Error(SyscallError::ProcessNotFound)
+            SyscallResult::Error(SyscallError::InvalidAddress)
         }
     }
 
@@ -704,40 +696,26 @@ impl SyscallDispatcher {
         let buffer_ptr = args.get(1).copied().unwrap_or(0);
         let count = args.get(2).copied().unwrap_or(0) as usize;
 
-        // Get process
-        if let Some(mut process) = process_manager.get_process(current_pid) {
-            // Handle standard output/error
-            if fd == 1 || fd == 2 {
-                // Copy from user buffer
-                let mut buffer = vec![0u8; count];
-                if self.copy_from_user(buffer_ptr, &mut buffer).is_err() {
-                    return SyscallResult::Error(SyscallError::InvalidAddress);
-                }
-
-                // Write to console
-                use crate::vga_buffer::print_bytes;
-                print_bytes(&buffer);
-                return SyscallResult::Success(count as u64);
-            }
-
-            // Handle regular files
-            if let Some(file_desc) = process.file_descriptors.get_mut(&fd) {
-                // Copy from user buffer
-                let mut buffer = vec![0u8; count];
-                if self.copy_from_user(buffer_ptr, &mut buffer).is_err() {
-                    return SyscallResult::Error(SyscallError::InvalidAddress);
-                }
-
-                match file_desc.write(&buffer) {
-                    Ok(bytes_written) => SyscallResult::Success(bytes_written as u64),
-                    Err(_) => SyscallResult::Error(SyscallError::IoError),
-                }
-            } else {
-                SyscallResult::Error(SyscallError::InvalidFileDescriptor)
-            }
-        } else {
-            SyscallResult::Error(SyscallError::ProcessNotFound)
+        let mut buffer = vec![0u8; count];
+        if self.copy_from_user(buffer_ptr, &mut buffer).is_err() {
+            return SyscallResult::Error(SyscallError::InvalidAddress);
         }
+
+        let result = process_manager.with_process_mut(current_pid, |p| {
+            let fd_entry = p.file_descriptors.get_mut(&fd)?;
+            Some(fd_entry.write(&buffer).map(|n| (fd_entry.offset(), n)))
+        });
+        let (new_offset, bytes_written) = match result {
+            Some(Some(Ok((offset, n)))) => (offset, n),
+            Some(Some(Err(_))) => return SyscallResult::Error(SyscallError::IoError),
+            _ => return SyscallResult::Error(SyscallError::InvalidFileDescriptor),
+        };
+
+        process_manager.with_process_mut(current_pid, |p| {
+            p.file_offsets.insert(fd, new_offset as usize);
+        });
+
+        SyscallResult::Success(bytes_written as u64)
     }
 
     /// sys_seek - Seek in a file
@@ -751,37 +729,40 @@ impl SyscallDispatcher {
         let offset = args.get(1).copied().unwrap_or(0) as i64;
         let whence = args.get(2).copied().unwrap_or(0) as u32;
 
-        if let Some(mut process) = process_manager.get_process(current_pid) {
-            if let Some(file_desc) = process.file_descriptors.get(&fd) {
-                // Get file size from the inode if this is a VFS file
-                let file_size = match file_desc.inode() {
-                    Some(inode) => inode.size() as i64,
-                    None => 0, // For non-VFS files (stdin/stdout/stderr), size is 0
-                };
-                let current_offset = file_desc.offset() as i64;
-
-                let new_offset = match whence {
-                    0 => offset,                  // SEEK_SET
-                    1 => current_offset + offset, // SEEK_CUR
-                    2 => file_size + offset,      // SEEK_END
-                    _ => return SyscallResult::Error(SyscallError::InvalidArgument),
-                };
-
-                if new_offset < 0 {
-                    return SyscallResult::Error(SyscallError::InvalidArgument);
-                }
-
-                // Update the file descriptor's offset
-                if let Some(file_desc) = process.file_descriptors.get_mut(&fd) {
-                    file_desc.set_offset(new_offset as u64);
-                }
-                SyscallResult::Success(new_offset as u64)
-            } else {
-                SyscallResult::Error(SyscallError::InvalidFileDescriptor)
-            }
-        } else {
-            SyscallResult::Error(SyscallError::ProcessNotFound)
+        if whence > 2 {
+            return SyscallResult::Error(SyscallError::InvalidArgument);
         }
+
+        let result = process_manager.with_process_mut(current_pid, |p| {
+            let fd_entry = p.file_descriptors.get_mut(&fd)?;
+            let current = fd_entry.offset() as i64;
+            let file_size = fd_entry.size().ok()? as i64;
+
+            let new_offset = match whence {
+                0 => offset,
+                1 => current + offset,
+                2 => file_size + offset,
+                _ => return Some(Err(SyscallError::InvalidArgument)),
+            };
+
+            if new_offset < 0 {
+                return Some(Err(SyscallError::InvalidArgument));
+            }
+
+            fd_entry.set_offset(new_offset as u64);
+            Some(Ok(new_offset as u64))
+        });
+
+        let new_offset = match result {
+            Some(Some(Ok(offset))) => offset,
+            Some(Some(Err(e))) => return SyscallResult::Error(e),
+            _ => return SyscallResult::Error(SyscallError::InvalidFileDescriptor),
+        };
+
+        process_manager.with_process_mut(current_pid, |p| {
+            p.file_offsets.insert(fd, new_offset as usize);
+        });
+        SyscallResult::Success(new_offset)
     }
 
     /// sys_stat - Get file status
@@ -864,31 +845,25 @@ impl SyscallDispatcher {
     fn sys_mmap(
         &self,
         args: &[u64],
-        _process_manager: &ProcessManager,
-        _current_pid: Pid,
+        process_manager: &ProcessManager,
+        current_pid: Pid,
     ) -> SyscallResult {
-        use crate::memory::{allocate_memory, MemoryProtection, MemoryRegionType};
+        use crate::memory::{allocate_memory, deallocate_memory, MemoryProtection, MemoryRegionType};
 
-        let _addr = args.get(0).copied().unwrap_or(0);
         let length = args.get(1).copied().unwrap_or(0);
         let prot = args.get(2).copied().unwrap_or(0);
-        let _flags = args.get(3).copied().unwrap_or(0);
-        let fd = args.get(4).copied().unwrap_or(0) as i32;
-        let _offset = args.get(5).copied().unwrap_or(0);
+        let flags = args.get(3).copied().unwrap_or(0);
+        let fd = args.get(4).copied().unwrap_or(u64::MAX) as i32;
+        let offset = args.get(5).copied().unwrap_or(0);
 
         if length == 0 {
             return SyscallResult::Error(SyscallError::InvalidArgument);
         }
 
-        // Parse protection flags
-        let readable = (prot & 0x1) != 0;
-        let writable = (prot & 0x2) != 0;
-        let executable = (prot & 0x4) != 0;
-
         let protection = MemoryProtection {
-            readable,
-            writable,
-            executable,
+            readable: (prot & 0x1) != 0,
+            writable: (prot & 0x2) != 0,
+            executable: (prot & 0x4) != 0,
             user_accessible: true,
             cache_disabled: false,
             write_through: false,
@@ -896,20 +871,81 @@ impl SyscallDispatcher {
             guard_page: false,
         };
 
-        // Determine memory region type
-        let region_type = if fd == -1 {
-            // Anonymous mapping
-            if executable {
-                MemoryRegionType::UserCode
-            } else {
-                MemoryRegionType::UserData
+        let is_anonymous = (flags & 0x20) != 0 || fd < 0;
+
+        if !is_anonymous {
+            if (flags & 0x01) != 0 {
+                return SyscallResult::Error(SyscallError::OperationNotSupported);
             }
+
+            match crate::vfs::vfs_fd_kind(fd) {
+                Ok(crate::vfs::FdKind::Regular) => {}
+                Ok(_) => return SyscallResult::Error(SyscallError::InvalidFileDescriptor),
+                Err(_) => return SyscallResult::Error(SyscallError::InvalidFileDescriptor),
+            }
+
+            let fill_protection = MemoryProtection {
+                readable: true,
+                writable: true,
+                executable: false,
+                user_accessible: true,
+                cache_disabled: false,
+                write_through: false,
+                copy_on_write: false,
+                guard_page: false,
+            };
+
+            let virt_addr = match allocate_memory(
+                length as usize,
+                MemoryRegionType::UserHeap,
+                fill_protection,
+            ) {
+                Ok(addr) => addr,
+                Err(_) => return SyscallResult::Error(SyscallError::OutOfMemory),
+            };
+
+            let free_and_fail = |err: SyscallError| -> SyscallResult {
+                let _ = deallocate_memory(virt_addr);
+                SyscallResult::Error(err)
+            };
+
+            let file_size = match crate::vfs::vfs_fstat(fd) {
+                Ok(stat) => stat.size,
+                Err(_) => return free_and_fail(SyscallError::InvalidFileDescriptor),
+            };
+            let available = file_size.saturating_sub(offset);
+            let to_read = core::cmp::min(available, length) as usize;
+            let base_ptr = virt_addr.as_u64() as *mut u8;
+
+            let mut copied = 0usize;
+            while copied < to_read {
+                let chunk_len = core::cmp::min(4096, to_read - copied);
+                let dst = unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
+                match crate::vfs::vfs_pread(fd, dst, offset + copied as u64) {
+                    Ok(0) => break,
+                    Ok(n) => copied += n,
+                    Err(_) => return free_and_fail(SyscallError::IoError),
+                }
+            }
+            if copied < length as usize {
+                unsafe {
+                    core::ptr::write_bytes(base_ptr.add(copied), 0u8, length as usize - copied);
+                }
+            }
+
+            if crate::memory::protect_memory(virt_addr, length as usize, protection).is_err() {
+                return free_and_fail(SyscallError::OutOfMemory);
+            }
+
+            return SyscallResult::Success(virt_addr.as_u64());
+        }
+
+        let region_type = if protection.executable {
+            MemoryRegionType::UserCode
         } else {
-            // File mapping (not implemented)
-            return SyscallResult::Error(SyscallError::OperationNotSupported);
+            MemoryRegionType::UserData
         };
 
-        // Allocate memory
         match allocate_memory(length as usize, region_type, protection) {
             Ok(virt_addr) => SyscallResult::Success(virt_addr.as_u64()),
             Err(_) => SyscallResult::Error(SyscallError::OutOfMemory),
@@ -1064,8 +1100,8 @@ impl SyscallDispatcher {
     fn sys_pipe(
         &self,
         args: &[u64],
-        _process_manager: &ProcessManager,
-        _current_pid: Pid,
+        process_manager: &ProcessManager,
+        current_pid: Pid,
     ) -> SyscallResult {
         let pipefd_ptr = args.get(0).copied().unwrap_or(0);
 
@@ -1073,15 +1109,70 @@ impl SyscallDispatcher {
             return SyscallResult::Error(SyscallError::InvalidArgument);
         }
 
-        // Use production IPC pipe creation
-        match crate::ipc::create_pipe(4096) {
-            // 4KB pipe buffer
-            Ok(pipe_id) => {
-                // In real implementation, would write pipe FDs to user memory
-                // Return pipe ID for now
-                SyscallResult::Success(pipe_id as u64)
+        let (read_fd, write_fd) = match process_manager.with_process_mut(current_pid, |p| {
+            if p.file_descriptors.len() + 2 > 1024 {
+                return None;
             }
-            Err(_) => SyscallResult::Error(SyscallError::OperationNotSupported),
+
+            let (read_pipe_id, write_pipe_id) = process_manager.create_pipe().ok()?;
+
+            let mut read_fd = None;
+            let mut write_fd = None;
+            let mut next_fd = 3;
+            while next_fd <= 65535 {
+                if !p.file_descriptors.contains_key(&next_fd) {
+                    if read_fd.is_none() {
+                        read_fd = Some(next_fd);
+                    } else {
+                        write_fd = Some(next_fd);
+                        break;
+                    }
+                }
+                next_fd += 1;
+            }
+
+            let read_fd = read_fd?;
+            let write_fd = write_fd?;
+
+            p.file_descriptors.insert(
+                read_fd,
+                super::FileDescriptor {
+                    fd_type: super::FileDescriptorType::Pipe {
+                        pipe_id: read_pipe_id,
+                    },
+                    flags: 0,
+                    offset: 0,
+                },
+            );
+            p.file_offsets.insert(read_fd, 0);
+
+            p.file_descriptors.insert(
+                write_fd,
+                super::FileDescriptor {
+                    fd_type: super::FileDescriptorType::Pipe {
+                        pipe_id: write_pipe_id,
+                    },
+                    flags: 0,
+                    offset: 0,
+                },
+            );
+            p.file_offsets.insert(write_fd, 0);
+
+            Some((read_fd, write_fd))
+        }) {
+            Some(Some(fds)) => fds,
+            _ => return SyscallResult::Error(SyscallError::OutOfMemory),
+        };
+
+        let pipefds = [read_fd as i32, write_fd as i32];
+        let mut buf = [0u8; 8];
+        buf[0..4].copy_from_slice(&pipefds[0].to_le_bytes());
+        buf[4..8].copy_from_slice(&pipefds[1].to_le_bytes());
+
+        if self.copy_to_user(pipefd_ptr, &buf).is_ok() {
+            SyscallResult::Success(0)
+        } else {
+            SyscallResult::Error(SyscallError::InvalidAddress)
         }
     }
 
