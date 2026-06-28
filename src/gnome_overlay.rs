@@ -40,6 +40,7 @@ pub fn install(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     }
 
     let run = ensure_directory(&root, "run", 0o755)?;
+    let _dbus_dir = ensure_directory(&run, "dbus", 0o755)?;
     let user = ensure_directory(&run, "user", 0o755)?;
     let runtime = ensure_directory(&user, "0", 0o700)?;
 
