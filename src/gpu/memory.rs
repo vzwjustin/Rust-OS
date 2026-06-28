@@ -715,9 +715,51 @@ impl GPUMemoryManager {
     }
 
     fn merge_free_blocks(&mut self, address: u64, size: usize) {
-        // This is a simplified implementation
-        // In a real implementation, we would check for adjacent blocks and merge them
-        self.add_to_free_blocks(address, size);
+        // Try to merge with the block immediately before (address == prev_end)
+        // and the block immediately after (address + size == next_start).
+        let mut merged_address = address;
+        let mut merged_size = size;
+
+        // Look for a preceding block whose end == our start
+        // We need to scan all size groups since the preceding block
+        // could be any size.
+        let mut found_prev: Option<(usize, u64)> = None;
+        for (&block_size, addresses) in self.free_blocks.iter_mut() {
+            if let Some(idx) = addresses
+                .iter()
+                .position(|&addr| addr + block_size as u64 == address)
+            {
+                found_prev = Some((block_size, addresses.remove(idx)));
+                if addresses.is_empty() {
+                    // Will be cleaned up below
+                }
+                break;
+            }
+        }
+
+        if let Some((prev_size, prev_addr)) = found_prev {
+            // Remove the empty entry if the vec is now empty
+            self.free_blocks.retain(|_, v| !v.is_empty());
+            merged_address = prev_addr;
+            merged_size += prev_size;
+        }
+
+        // Look for a following block whose start == our end
+        let end = merged_address + merged_size as u64;
+        let mut found_next: Option<(usize, u64)> = None;
+        for (&block_size, addresses) in self.free_blocks.iter_mut() {
+            if let Some(idx) = addresses.iter().position(|&addr| addr == end) {
+                found_next = Some((block_size, addresses.remove(idx)));
+                break;
+            }
+        }
+
+        if let Some((next_size, _next_addr)) = found_next {
+            self.free_blocks.retain(|_, v| !v.is_empty());
+            merged_size += next_size;
+        }
+
+        self.add_to_free_blocks(merged_address, merged_size);
     }
 
     fn update_page_table(
@@ -870,21 +912,67 @@ impl GPUMemoryManager {
 
     /// Check if a range of physical memory is free
     fn check_contiguous_free(&self, start_addr: usize, size: usize) -> bool {
-        // In production, this would check the physical memory allocator
-        // For now, assume memory above 16MB is available
-        start_addr >= 0x1000000 && start_addr + size < 0x40000000
+        // Without a per-frame "is allocated" query on the buddy allocator,
+        // we verify that the memory manager has enough free frames in the
+        // relevant zone and that the range is within valid physical memory.
+        if let Some(mm) = crate::memory::get_memory_manager() {
+            let page_size = 4096;
+            let pages = (size + page_size - 1) / page_size;
+            let zone = if start_addr < 0x100_0000 {
+                crate::memory::MemoryZone::Dma
+            } else {
+                crate::memory::MemoryZone::Normal
+            };
+            let stats = mm.get_zone_stats();
+            let zone_stats = &stats[zone as usize];
+            let free_frames = zone_stats.total_frames.saturating_sub(zone_stats.allocated_frames);
+            // Check that the zone has enough free frames
+            if free_frames < pages {
+                return false;
+            }
+            // Range must be within valid physical memory bounds
+            start_addr >= 0x1000000 && (start_addr + size) < 0x4000_0000
+        } else {
+            start_addr >= 0x1000000 && start_addr + size < 0x40000000
+        }
     }
 
-    /// Allocate a specific physical frame
-    fn allocate_physical_frame(&self, _frame: PhysFrame) -> bool {
-        // In production, this would mark the frame as allocated
-        // For now, always succeed
-        true
+    /// Allocate a specific physical frame from the buddy allocator
+    fn allocate_physical_frame(&self, frame: PhysFrame) -> bool {
+        if let Some(mm) = crate::memory::get_memory_manager() {
+            // Try to allocate from the DMA zone (below 16 MB) or normal zone
+            let zone = if frame.start_address().as_u64() < 0x100_0000 {
+                crate::memory::MemoryZone::Dma
+            } else {
+                crate::memory::MemoryZone::Normal
+            };
+            // The buddy allocator doesn't support allocating a specific
+            // frame, so we allocate any frame and check if it matches.
+            // If it doesn't match, we free it and return false.
+            if let Some(allocated) = mm.allocate_frame_in_zone(zone) {
+                if allocated.start_address() == frame.start_address() {
+                    return true;
+                }
+                // Wrong frame — free it and report failure
+                mm.deallocate_frame(allocated, zone);
+                return false;
+            }
+            false
+        } else {
+            false
+        }
     }
 
-    /// Deallocate a physical frame
-    fn deallocate_physical_frame(&self, _frame: PhysFrame) {
-        // In production, this would mark the frame as free
+    /// Deallocate a physical frame back to the buddy allocator
+    fn deallocate_physical_frame(&self, frame: PhysFrame) {
+        if let Some(mm) = crate::memory::get_memory_manager() {
+            let zone = if frame.start_address().as_u64() < 0x100_0000 {
+                crate::memory::MemoryZone::Dma
+            } else {
+                crate::memory::MemoryZone::Normal
+            };
+            mm.deallocate_frame(frame, zone);
+        }
     }
 
     /// Map GPU coherent memory with appropriate caching flags

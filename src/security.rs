@@ -2265,9 +2265,10 @@ fn aes_inv_mix_columns(state: &mut [u8; 16]) {
 
 /// GCM state for authenticated encryption
 struct GcmState {
-    h: [u8; 16],           // Hash subkey
-    ghash_state: [u8; 16], // GHASH accumulator
-    j0: [u8; 16],          // Initial counter block
+    h: [u8; 16],              // Hash subkey (preserved, never modified)
+    ghash_state: [u8; 16],    // GHASH accumulator
+    j0: [u8; 16],             // Initial counter block
+    round_keys: AesRoundKeys, // Key schedule for encrypting J0 in finalize
 }
 
 impl GcmState {
@@ -2278,21 +2279,45 @@ impl GcmState {
         let h = aes256_encrypt_block(round_keys, &zero_block);
 
         // Generate initial counter block J0
-        let mut j0 = [0u8; 16];
-        if nonce.len() == 12 {
-            j0[..12].copy_from_slice(nonce);
-            j0[15] = 1; // Counter starts at 1 for J0
+        let j0 = if nonce.len() == 12 {
+            // 96-bit nonce: J0 = nonce || 0^31 || 1
+            let mut j = [0u8; 16];
+            j[..12].copy_from_slice(nonce);
+            j[15] = 1;
+            j
         } else {
-            // For non-96-bit nonces, use GHASH
-            // Simplified: just copy nonce and pad
-            let copy_len = core::cmp::min(nonce.len(), 16);
-            j0[..copy_len].copy_from_slice(&nonce[..copy_len]);
-        }
+            // Non-96-bit nonce: J0 = GHASH_H(nonce || 0^s || len(nonce))
+            // where s pads nonce to a multiple of 128 bits, and len is
+            // a 128-bit big-endian value with the bit length in the low 64.
+            let mut ghash_acc = [0u8; 16];
+
+            // GHASH nonce blocks
+            for chunk in nonce.chunks(16) {
+                let mut block = [0u8; 16];
+                block[..chunk.len()].copy_from_slice(chunk);
+                for i in 0..16 {
+                    ghash_acc[i] ^= block[i];
+                }
+                ghash_acc = ghash_mul(&ghash_acc, &h);
+            }
+
+            // Length block: 64-bit 0 || 64-bit nonce bit length (BE)
+            let mut length_block = [0u8; 16];
+            let nonce_bits = (nonce.len() as u64) * 8;
+            length_block[8..].copy_from_slice(&nonce_bits.to_be_bytes());
+            for i in 0..16 {
+                ghash_acc[i] ^= length_block[i];
+            }
+            ghash_acc = ghash_mul(&ghash_acc, &h);
+
+            ghash_acc
+        };
 
         Self {
             h,
             ghash_state: [0u8; 16],
             j0,
+            round_keys: *round_keys,
         }
     }
 
@@ -2308,36 +2333,8 @@ impl GcmState {
             }
 
             // Multiply by H in GF(2^128)
-            self.ghash_multiply();
+            self.ghash_state = ghash_mul(&self.ghash_state, &self.h);
         }
-    }
-
-    /// Multiply GHASH state by H in GF(2^128)
-    fn ghash_multiply(&mut self) {
-        let mut result = [0u8; 16];
-
-        for i in 0..128 {
-            if (self.ghash_state[i / 8] >> (7 - (i % 8))) & 1 != 0 {
-                for j in 0..16 {
-                    result[j] ^= self.h[j];
-                }
-            }
-
-            // Shift H right by 1 bit
-            let mut carry = 0;
-            for j in 0..16 {
-                let new_carry = self.h[j] & 1;
-                self.h[j] = (self.h[j] >> 1) | (carry << 7);
-                carry = new_carry;
-            }
-
-            // If we shifted out a 1, XOR with the reduction polynomial
-            if carry != 0 {
-                self.h[0] ^= 0xe1;
-            }
-        }
-
-        self.ghash_state = result;
     }
 
     /// Finalize GCM and generate authentication tag
@@ -2350,12 +2347,46 @@ impl GcmState {
         for i in 0..16 {
             self.ghash_state[i] ^= length_block[i];
         }
-        self.ghash_multiply();
+        self.ghash_state = ghash_mul(&self.ghash_state, &self.h);
 
-        // XOR with encrypted J0 to get final tag
-        // For now, return GHASH state as tag (simplified)
-        self.ghash_state.to_vec()
+        // Tag = GHASH_final XOR E_K(J0)
+        let encrypted_j0 = aes256_encrypt_block(&self.round_keys, &self.j0);
+        let mut tag = [0u8; 16];
+        for i in 0..16 {
+            tag[i] = self.ghash_state[i] ^ encrypted_j0[i];
+        }
+        tag.to_vec()
     }
+}
+
+/// GHASH multiplication in GF(2^128) with the GCM reduction polynomial.
+/// Returns X * H without modifying H.
+fn ghash_mul(x: &[u8; 16], h: &[u8; 16]) -> [u8; 16] {
+    let mut result = [0u8; 16];
+    let mut v = *h; // Local copy of H — shifted, but original preserved
+
+    for i in 0..128 {
+        if (x[i / 8] >> (7 - (i % 8))) & 1 != 0 {
+            for j in 0..16 {
+                result[j] ^= v[j];
+            }
+        }
+
+        // Shift V right by 1 bit
+        let mut carry = 0;
+        for j in 0..16 {
+            let new_carry = v[j] & 1;
+            v[j] = (v[j] >> 1) | (carry << 7);
+            carry = new_carry;
+        }
+
+        // If we shifted out a 1, XOR with the reduction polynomial
+        if carry != 0 {
+            v[0] ^= 0xe1;
+        }
+    }
+
+    result
 }
 
 // =============================================================================

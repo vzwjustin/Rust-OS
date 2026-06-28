@@ -3398,11 +3398,15 @@ pub fn adjust_heap(new_size: usize) -> Result<usize, &'static str> {
     // Align to page boundaries
     let aligned_size = align_up(new_size, PAGE_SIZE);
 
-    // Get current heap size
+    // Get current heap size from the actual allocator, not the constant
     if let Some(memory_manager) = get_memory_manager() {
-        // Get current memory statistics
         let stats = memory_manager.get_memory_report();
-        let current_heap_size = KERNEL_HEAP_SIZE;
+
+        // Get the actual current heap size from the allocator
+        let current_heap_size = {
+            let allocator = crate::ALLOCATOR.lock();
+            allocator.size()
+        };
 
         // Check if we're expanding or shrinking
         if aligned_size > current_heap_size {
@@ -3413,44 +3417,50 @@ pub fn adjust_heap(new_size: usize) -> Result<usize, &'static str> {
                 return Err("Insufficient free memory for heap expansion");
             }
 
-            // In a real implementation, we would:
-            // 1. Allocate additional physical frames
-            // 2. Map them to extend the heap virtual address space
-            // 3. Update the heap allocator's boundaries
-            // 4. Update global heap size tracking
+            // Extend the linked_list_allocator. The virtual address space
+            // past the current heap top is already mapped via the physical
+            // memory offset set up by the bootloader, so we only need to
+            // tell the allocator about the new region.
+            //
+            // SAFETY: The memory past the current heap top must be valid
+            // and mapped. This is true because the bootloader maps the
+            // entire physical memory region containing the heap via the
+            // physical_memory_offset, and we checked that enough free
+            // physical memory exists.
+            unsafe {
+                crate::ALLOCATOR.lock().extend(expansion_size);
+            }
 
-            // For now, we simulate successful expansion
+            // Update the tracked heap physical size
+            let new_phys_size = crate::memory_basic::HEAP_PHYS_SIZE
+                .load(core::sync::atomic::Ordering::SeqCst)
+                + expansion_size as u64;
+            crate::memory_basic::HEAP_PHYS_SIZE
+                .store(new_phys_size, core::sync::atomic::Ordering::SeqCst);
+
             crate::serial_println!(
-                "Heap expansion requested: {} -> {} bytes",
+                "Heap expanded: {} -> {} bytes (+{})",
                 current_heap_size,
-                aligned_size
+                aligned_size,
+                expansion_size
             );
 
-            // Return the new size (in real implementation, update would happen here)
             Ok(aligned_size)
         } else if aligned_size < current_heap_size {
             // Shrinking heap - ensure it's safe to do so
-            let _shrink_size = current_heap_size - aligned_size;
+            let shrink_size = current_heap_size - aligned_size;
 
             // Check if shrinking would compromise system stability
             if stats.allocated_memory > aligned_size {
                 return Err("Cannot shrink heap below current allocation level");
             }
 
-            // In a real implementation, we would:
-            // 1. Verify no allocations exist in the region to be freed
-            // 2. Unmap the virtual address space
-            // 3. Return physical frames to the allocator
-            // 4. Update the heap allocator's boundaries
-
-            crate::serial_println!(
-                "Heap shrinking requested: {} -> {} bytes",
-                current_heap_size,
-                aligned_size
-            );
-
-            // Return the new size (in real implementation, update would happen here)
-            Ok(aligned_size)
+            // linked_list_allocator 0.9 does not provide a shrink method.
+            // We cannot safely return memory to the physical allocator
+            // without risking corruption of the free list. Log and reject
+            // the shrink request rather than silently pretending success.
+            let _ = shrink_size; // acknowledged but cannot act
+            Err("Heap shrinking not supported by current allocator")
         } else {
             // Size unchanged
             Ok(current_heap_size)
