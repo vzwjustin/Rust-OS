@@ -418,6 +418,8 @@ pub struct Surface {
     pub height: i32,
     pub committed: bool,
     pub frame_callback: Option<ObjectId>,
+    /// Output object this surface has received wl_surface.enter for.
+    pub entered_output: Option<ObjectId>,
 }
 
 impl Surface {
@@ -436,6 +438,7 @@ impl Surface {
             height: 0,
             committed: false,
             frame_callback: None,
+            entered_output: None,
         }
     }
 
@@ -740,20 +743,6 @@ impl Compositor {
         self.outputs.insert(output.id, output);
 
         self.initialized = true;
-        if let Err(e) = server::smoke_check() {
-            unsafe {
-                crate::early_serial_write_str("RustOS: Wayland handshake smoke FAILED: ");
-                crate::early_serial_write_str(e);
-                crate::early_serial_write_str("\r\n");
-            }
-        } else {
-            unsafe {
-                crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
-            }
-        }
-        unsafe {
-            crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
-        }
         Ok(())
     }
 
@@ -854,8 +843,29 @@ static COMPOSITOR: RwLock<Compositor> = RwLock::new(Compositor::new());
 
 /// Initialize the Wayland compositor.
 pub fn init() -> Result<(), &'static str> {
-    let mut comp = COMPOSITOR.write();
-    comp.init()
+    crate::interrupts::without_interrupts(|| {
+        {
+            let mut comp = COMPOSITOR.write();
+            comp.init()?;
+        }
+
+        if let Err(e) = server::smoke_check() {
+            unsafe {
+                crate::early_serial_write_str("RustOS: Wayland handshake smoke FAILED: ");
+                crate::early_serial_write_str(e);
+                crate::early_serial_write_str("\r\n");
+            }
+        } else {
+            unsafe {
+                crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
+            }
+        }
+
+        unsafe {
+            crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
+        }
+        Ok(())
+    })
 }
 
 /// Get a read reference to the global compositor.
@@ -866,6 +876,11 @@ pub fn compositor() -> spin::rwlock::RwLockReadGuard<'static, Compositor> {
 /// Get a write reference to the global compositor.
 pub fn compositor_mut() -> spin::rwlock::RwLockWriteGuard<'static, Compositor> {
     COMPOSITOR.write()
+}
+
+/// Try to acquire the compositor write lock without blocking (IRQ-safe).
+pub fn try_compositor_mut() -> Option<spin::rwlock::RwLockWriteGuard<'static, Compositor>> {
+    COMPOSITOR.try_write()
 }
 
 /// Check if the Wayland compositor is initialized.

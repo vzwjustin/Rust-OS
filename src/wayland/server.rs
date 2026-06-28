@@ -36,7 +36,7 @@ pub fn attach_connection(pipe_id: u32) -> Result<(), &'static str> {
     }
 
     if !compositor().is_initialized() {
-        compositor_mut().init()?;
+        return Err("Wayland compositor is not initialized");
     }
 
     let client_id = compositor_mut().connect_client();
@@ -113,15 +113,18 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
     }
 
     let client_id = *PIPE_CLIENTS.lock().get(&pipe_id)?;
-    let comp = compositor();
-    let client = comp.get_client(client_id)?;
-    let object = client.objects.get(&header.object_id)?;
+    let interface = {
+        let comp = compositor();
+        let client = comp.get_client(client_id)?;
+        let object = client.objects.get(&header.object_id)?;
+        object.interface
+    };
 
-    if object.interface == interfaces::WL_REGISTRY && header.opcode == 0 {
+    if interface == interfaces::WL_REGISTRY && header.opcode == 0 {
         return Some(vec![ArgType::UInt, ArgType::NewId, ArgType::UInt]);
     }
 
-    match object.interface {
+    match interface {
         interfaces::WL_COMPOSITOR if header.opcode == 0 => Some(vec![ArgType::NewId]),
         interfaces::WL_SURFACE => match header.opcode {
             0 | 3 => Some(Vec::new()),
@@ -431,12 +434,18 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
                 surface.commit();
             }
 
-            let mut events = if let Some(surface) = client.surfaces.get(&surface_id) {
+            let (mut events, entered_output) = if let Some(surface) = client.surfaces.get(&surface_id) {
                 super::render::render_surface(client, surface);
                 super::render::surface_commit_events(client, surface)
             } else {
-                Vec::new()
+                (Vec::new(), None)
             };
+
+            if let (Some(surface), Some(output_id)) =
+                (client.surfaces.get_mut(&surface_id), entered_output)
+            {
+                surface.entered_output = Some(output_id);
+            }
 
             events.extend(super::input::surface_post_commit_events(client, surface_id));
 
@@ -638,9 +647,13 @@ pub fn smoke_check() -> Result<(), &'static str> {
 
 /// Forward queued kernel input events to connected Wayland clients.
 pub fn poll_kernel_input() {
-    use crate::drivers::input_manager::{self, InputEvent, MouseButton};
+    use crate::drivers::input_manager::{self, InputEvent};
     use crate::keyboard::KeyEvent;
     use crate::process::ipc::get_ipc_manager;
+
+    let Some(mut comp) = super::try_compositor_mut() else {
+        return;
+    };
 
     loop {
         let event = match input_manager::get_event() {
@@ -655,7 +668,6 @@ pub fn poll_kernel_input() {
                 None => continue,
             };
 
-            let mut comp = compositor_mut();
             let client = match comp.get_client_mut(client_id) {
                 Some(client) => client,
                 None => continue,

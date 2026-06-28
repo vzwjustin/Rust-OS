@@ -860,6 +860,10 @@ pub fn init_logging_and_debugging() {
     log_debug!("system", "Debug logging test");
     log_trace!("system", "Trace logging test");
 
-    // Initialize debug console
-    debug::debug_console();
+    // Interactive debug console blocks boot waiting for keyboard input.
+    if crate::boot_ui::boot_config().interactive_debug_console {
+        debug::debug_console();
+    } else {
+        log_info!("system", "Debug console available (non-interactive boot)");
+    }
 }

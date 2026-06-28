@@ -150,9 +150,15 @@ fn shm_pixel_to_color(pixel: u32, format: u32) -> Color {
     }
 }
 
-/// Build wl_buffer.release and related post-commit events.
-pub fn surface_commit_events(client: &ClientConnection, surface: &Surface) -> Vec<u8> {
+/// Build wl_buffer.release and wl_surface.enter post-commit events.
+///
+/// Returns reply bytes and, when a new `wl_surface.enter` was emitted, the output id.
+pub fn surface_commit_events(
+    client: &ClientConnection,
+    surface: &Surface,
+) -> (Vec<u8>, Option<super::ObjectId>) {
     let mut out = Vec::new();
+    let mut entered = None;
 
     if let Some(buffer_id) = surface.buffer {
         if client.buffers.contains_key(&buffer_id) {
@@ -160,7 +166,22 @@ pub fn surface_commit_events(client: &ClientConnection, surface: &Surface) -> Ve
         }
     }
 
-    out
+    let output_id = client
+        .objects
+        .iter()
+        .find(|(_, obj)| obj.interface == super::interfaces::WL_OUTPUT)
+        .map(|(id, _)| *id);
+
+    if let Some(output_id) = output_id {
+        if surface.entered_output != Some(output_id) {
+            out.extend_from_slice(
+                &super::event_surface_enter(surface.id, output_id).encode(),
+            );
+            entered = Some(output_id);
+        }
+    }
+
+    (out, entered)
 }
 
 /// Smoke-test compositing by blitting a synthetic SHM buffer.

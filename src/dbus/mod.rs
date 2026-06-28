@@ -38,6 +38,18 @@ pub const PROPERTIES_IFACE: &str = "org.freedesktop.DBus.Properties";
 /// Standard D-Bus introspection interface
 pub const INTROSPECTABLE_IFACE: &str = "org.freedesktop.DBus.Introspectable";
 
+/// GNOME Shell well-known bus name
+pub const GNOME_SHELL_NAME: &str = "org.gnome.Shell";
+
+/// GNOME Shell object path
+pub const GNOME_SHELL_PATH: &str = "/org/gnome/Shell";
+
+/// RustOS GNOME readiness service
+pub const GNOME_READINESS_NAME: &str = "org.rustos.GnomeReadiness";
+
+/// RustOS GNOME readiness object path
+pub const GNOME_READINESS_PATH: &str = "/org/rustos/GnomeReadiness";
+
 // ── Endianness ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1226,6 +1238,33 @@ impl MessageBus {
     pub fn list_names(&self) -> Vec<String> {
         self.name_registry.keys().cloned().collect()
     }
+
+    /// Return whether a well-known or unique name is currently owned.
+    pub fn name_has_owner(&self, name: &str) -> bool {
+        if name.starts_with(':') {
+            if let Ok(id) = name[1..].parse::<u32>() {
+                return self.connections.contains_key(&id);
+            }
+            return false;
+        }
+        self.name_registry.contains_key(name)
+    }
+
+    /// Return the unique connection name that owns `name`.
+    pub fn get_name_owner(&self, name: &str) -> Option<String> {
+        if name.starts_with(':') {
+            if let Ok(id) = name[1..].parse::<u32>() {
+                return self
+                    .connections
+                    .get(&id)
+                    .map(|conn| conn.unique_name.clone());
+            }
+            return None;
+        }
+        self.name_registry
+            .get(name)
+            .and_then(|&id| self.connections.get(&id).map(|conn| conn.unique_name.clone()))
+    }
 }
 
 // ── Global Bus Instance ─────────────────────────────────────────────────
@@ -1357,6 +1396,17 @@ const BUS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D
       <arg name="name" type="s" direction="in"/>
       <arg name="reply" type="u" direction="out"/>
     </method>
+    <method name="NameHasOwner">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="has_owner" type="b" direction="out"/>
+    </method>
+    <method name="GetNameOwner">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="name" type="s" direction="out"/>
+    </method>
+    <method name="GetConnectionUniqueName">
+      <arg name="name" type="s" direction="out"/>
+    </method>
     <method name="ListNames">
       <arg name="names" type="as" direction="out"/>
     </method>
@@ -1371,13 +1421,161 @@ const BUS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D
   </interface>
 </node>"#;
 
+const GNOME_SHELL_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.DBus.Properties">
+    <method name="Get">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <method name="GetAll">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="properties" type="a{sv}" direction="out"/>
+    </method>
+    <method name="Set">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="in"/>
+    </method>
+  </interface>
+  <interface name="org.gnome.Shell">
+    <property name="ShellVersion" type="s" access="read"/>
+    <property name="Mode" type="s" access="read"/>
+    <property name="GnomeShellReady" type="b" access="read"/>
+  </interface>
+</node>"#;
+
+const GNOME_READINESS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.DBus.Properties">
+    <method name="Get">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <method name="GetAll">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="properties" type="a{sv}" direction="out"/>
+    </method>
+    <method name="Set">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="in"/>
+    </method>
+  </interface>
+  <interface name="org.rustos.GnomeReadiness">
+    <property name="FoundationReady" type="b" access="read"/>
+    <property name="ShellReady" type="b" access="read"/>
+  </interface>
+</node>"#;
+
 fn introspect_xml(path: &str) -> &'static str {
-    if path == BUS_PATH {
-        BUS_INTROSPECT_XML
-    } else {
-        r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+    match path {
+        BUS_PATH => BUS_INTROSPECT_XML,
+        GNOME_SHELL_PATH => GNOME_SHELL_INTROSPECT_XML,
+        GNOME_READINESS_PATH => GNOME_READINESS_INTROSPECT_XML,
+        _ => {
+            r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
 "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node/>"#
+        }
+    }
+}
+
+fn gnome_shell_property(iface: &str, prop: &str) -> Result<Value, &'static str> {
+    if iface != "org.gnome.Shell" {
+        return Err("org.freedesktop.DBus.Error.UnknownInterface");
+    }
+    let readiness = crate::gnome::probe();
+    match prop {
+        "ShellVersion" => Ok(Value::String("46.0-rustos".to_string())),
+        "Mode" => Ok(Value::String("wayland".to_string())),
+        "GnomeShellReady" => Ok(Value::Bool(readiness.gnome_shell_ready())),
+        _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
+    }
+}
+
+fn gnome_readiness_property(iface: &str, prop: &str) -> Result<Value, &'static str> {
+    if iface != "org.rustos.GnomeReadiness" {
+        return Err("org.freedesktop.DBus.Error.UnknownInterface");
+    }
+    let readiness = crate::gnome::probe();
+    match prop {
+        "FoundationReady" => Ok(Value::Bool(readiness.foundation_ready())),
+        "ShellReady" => Ok(Value::Bool(readiness.gnome_shell_ready())),
+        _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
+    }
+}
+
+fn session_property_get(path: &str, iface: &str, prop: &str) -> Result<Value, &'static str> {
+    match path {
+        GNOME_SHELL_PATH => gnome_shell_property(iface, prop),
+        GNOME_READINESS_PATH => gnome_readiness_property(iface, prop),
+        _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
+    }
+}
+
+fn session_property_get_all(path: &str, iface: &str) -> Vec<Value> {
+    match path {
+        GNOME_SHELL_PATH if iface == "org.gnome.Shell" => {
+            let readiness = crate::gnome::probe();
+            vec![
+                Value::DictEntry(
+                    Box::new(Value::String("ShellVersion".to_string())),
+                    Box::new(Value::Variant(Box::new(Variant {
+                        signature: "s".to_string(),
+                        value: Value::String("46.0-rustos".to_string()),
+                    }))),
+                ),
+                Value::DictEntry(
+                    Box::new(Value::String("Mode".to_string())),
+                    Box::new(Value::Variant(Box::new(Variant {
+                        signature: "s".to_string(),
+                        value: Value::String("wayland".to_string()),
+                    }))),
+                ),
+                Value::DictEntry(
+                    Box::new(Value::String("GnomeShellReady".to_string())),
+                    Box::new(Value::Variant(Box::new(Variant {
+                        signature: "b".to_string(),
+                        value: Value::Bool(readiness.gnome_shell_ready()),
+                    }))),
+                ),
+            ]
+        }
+        GNOME_READINESS_PATH if iface == "org.rustos.GnomeReadiness" => {
+            let readiness = crate::gnome::probe();
+            vec![
+                Value::DictEntry(
+                    Box::new(Value::String("FoundationReady".to_string())),
+                    Box::new(Value::Variant(Box::new(Variant {
+                        signature: "b".to_string(),
+                        value: Value::Bool(readiness.foundation_ready()),
+                    }))),
+                ),
+                Value::DictEntry(
+                    Box::new(Value::String("ShellReady".to_string())),
+                    Box::new(Value::Variant(Box::new(Variant {
+                        signature: "b".to_string(),
+                        value: Value::Bool(readiness.gnome_shell_ready()),
+                    }))),
+                ),
+            ]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1452,7 +1650,7 @@ fn property_get(path: &str, iface: &str, prop: &str) -> Result<Value, &'static s
             _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
         };
     }
-    Err("org.freedesktop.DBus.Error.UnknownProperty")
+    session_property_get(path, iface, prop)
 }
 
 fn property_get_all(path: &str, iface: &str) -> Vec<Value> {
@@ -1480,7 +1678,7 @@ fn property_get_all(path: &str, iface: &str) -> Vec<Value> {
             ),
         ];
     }
-    Vec::new()
+    session_property_get_all(path, iface)
 }
 
 fn dispatch_properties(
@@ -1564,8 +1762,23 @@ fn dispatch_properties(
 
 // ── Wire Request Dispatch ───────────────────────────────────────────────
 
-/// Next connection id handed out by the in-kernel session bus.
-static NEXT_CONN_ID: AtomicU32 = AtomicU32::new(2);
+fn connection_id_from_sender(sender: &str) -> ConnectionId {
+    if sender.starts_with(':') {
+        return sender[1..].parse().unwrap_or(0);
+    }
+    BUS.read()
+        .name_registry
+        .get(sender)
+        .copied()
+        .unwrap_or(0)
+}
+
+fn parse_string_arg(body: &[Value]) -> Option<&str> {
+    match body.first()? {
+        Value::String(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
 
 /// Process a D-Bus wire-format request and return a serialized reply.
 ///
@@ -1639,12 +1852,9 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
                 unmarshaler.parse_body(signature).ok()?
             };
 
-            let requested_name = match body.first() {
-                Some(Value::String(name)) => name.as_str(),
-                _ => return None,
-            };
+            let requested_name = parse_string_arg(&body)?;
+            let conn_id = connection_id_from_sender(sender);
 
-            let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
             let status = match BUS.write().request_name(conn_id, requested_name) {
                 Ok(()) => 1u32, // DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER
                 Err(_) => 3u32, // DBUS_REQUEST_NAME_REPLY_EXISTS
@@ -1659,6 +1869,112 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
                 .header
                 .with_field(HeaderField::Signature, Value::Signature("u".to_string()));
             reply.body = vec![Value::UInt32(status)];
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "ReleaseName") => {
+            let signature = header.signature().unwrap_or("");
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+
+            let requested_name = parse_string_arg(&body)?;
+            let conn_id = connection_id_from_sender(sender);
+
+            let status = {
+                let mut bus = BUS.write();
+                match bus.release_name(conn_id, requested_name) {
+                    Ok(()) => 1u32, // DBUS_RELEASE_NAME_REPLY_RELEASED
+                    Err("Name not owned by this connection") => 3u32, // NOT_OWNER
+                    Err("Name not found") => 2u32,                    // NON_EXISTENT
+                    Err(_) => 2u32,
+                }
+            };
+
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("u".to_string()));
+            reply.body = vec![Value::UInt32(status)];
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "NameHasOwner") => {
+            let signature = header.signature().unwrap_or("");
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+
+            let name = parse_string_arg(&body)?;
+            let has_owner = BUS.read().name_has_owner(name);
+
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("b".to_string()));
+            reply.body = vec![Value::Bool(has_owner)];
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "GetNameOwner") => {
+            let signature = header.signature().unwrap_or("");
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+
+            let name = parse_string_arg(&body)?;
+            let bus = BUS.read();
+            if let Some(owner) = bus.get_name_owner(name) {
+                let mut reply = Message::new_method_return(
+                    bus.next_bus_serial(),
+                    serial,
+                    header.sender().unwrap_or(":1"),
+                );
+                reply.header = reply.header.with_field(
+                    HeaderField::Signature,
+                    Value::Signature("s".to_string()),
+                );
+                reply.body = vec![Value::String(owner)];
+                Some(marshal_message(&reply))
+            } else {
+                Some(marshal_message(&Message::new_error(
+                    bus.next_bus_serial(),
+                    serial,
+                    header.sender().unwrap_or(":1"),
+                    "org.freedesktop.DBus.Error.NameHasNoOwner",
+                    "Name has no owner",
+                )))
+            }
+        }
+        (BUS_NAME, "GetConnectionUniqueName") => {
+            let unique = if sender.starts_with(':') {
+                sender.to_string()
+            } else {
+                BUS.read()
+                    .get_name_owner(sender)
+                    .unwrap_or_else(|| sender.to_string())
+            };
+
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
+            reply.body = vec![Value::String(unique)];
             Some(marshal_message(&reply))
         }
         (BUS_NAME, "AddMatch") | (BUS_NAME, "RemoveMatch") => {
@@ -1784,6 +2100,25 @@ pub fn smoke_check() -> Result<(), &'static str> {
         .ok_or("Introspect dispatch produced no reply")?;
     if introspect_reply.is_empty() {
         return Err("Introspect reply was empty");
+    }
+
+    let name_has_owner = Message::new_method_call(
+        45,
+        BUS_NAME,
+        BUS_PATH,
+        BUS_NAME,
+        "NameHasOwner",
+    );
+    let mut name_has_owner_msg = name_has_owner;
+    name_has_owner_msg.header = name_has_owner_msg.header.with_field(
+        HeaderField::Signature,
+        Value::Signature("s".to_string()),
+    );
+    name_has_owner_msg.body = vec![Value::String(BUS_NAME.to_string())];
+    let name_has_owner_reply = process_wire_request(&marshal_message(&name_has_owner_msg))
+        .ok_or("NameHasOwner dispatch produced no reply")?;
+    if name_has_owner_reply.is_empty() {
+        return Err("NameHasOwner reply was empty");
     }
 
     // Test connection
