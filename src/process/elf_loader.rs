@@ -541,6 +541,44 @@ impl ElfLoader {
             program_headers,
         })
     }
+
+    /// Load a shared library (ET_DYN) into memory at the given base address.
+    ///
+    /// Returns the load base, total mapped size, and program headers for dynamic linking.
+    pub fn load_shared_library(
+        &self,
+        binary_data: &[u8],
+        load_base: VirtAddr,
+    ) -> Result<(VirtAddr, usize, Vec<Elf64ProgramHeader>), ElfLoaderError> {
+        let elf_header = self.parse_elf_header(binary_data)?;
+        self.validate_elf_header(&elf_header)?;
+
+        if elf_header.e_type != elf_constants::ET_DYN {
+            return Err(ElfLoaderError::InvalidFileType);
+        }
+
+        let program_headers = self.parse_program_headers(binary_data, &elf_header)?;
+        self.validate_program_headers(&program_headers, binary_data.len())?;
+
+        let mut total_size = 0usize;
+        for phdr in program_headers.iter() {
+            if phdr.p_type != elf_constants::PT_LOAD {
+                continue;
+            }
+
+            let _region = self.load_segment(phdr, binary_data, load_base)?;
+            let segment_end = phdr.p_vaddr.saturating_add(phdr.p_memsz);
+            if segment_end as usize > total_size {
+                total_size = segment_end as usize;
+            }
+        }
+
+        Ok((
+            load_base,
+            align_up(total_size, PAGE_SIZE),
+            program_headers,
+        ))
+    }
 }
 
 // Expose generate_aslr_offset from memory module
