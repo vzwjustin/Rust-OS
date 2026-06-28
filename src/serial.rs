@@ -2,6 +2,7 @@
 //!
 //! Basic serial port driver for COM1 and COM2 using UART 16550.
 
+use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use uart_16550::SerialPort;
@@ -20,32 +21,62 @@ lazy_static! {
         serial_port.init();
         Mutex::new(serial_port)
     };
+
+    /// Receive buffer for COM1
+    static ref SERIAL1_RX: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    /// Receive buffer for COM2
+    static ref SERIAL2_RX: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+}
+
+/// Read one byte from the serial port and buffer it.
+///
+/// The UART 16550 interrupt fires when data is available. We read one
+/// byte per interrupt call to clear the interrupt. If the FIFO has
+/// more data, another interrupt will fire immediately.
+fn read_and_buffer(serial: &mut SerialPort, buf: &mut Vec<u8>) {
+    let byte = serial.receive();
+    buf.push(byte);
 }
 
 /// Handle serial port 1 interrupt
-pub fn handle_port1_interrupt() {
-    // Read any available data from COM1
-    let mut serial = SERIAL1.lock();
 
-    // Read and discard available data
-    // uart_16550 receive() returns u8 directly, not Option
-    // Try to receive - if no data available, this will fail
-    let _byte = serial.receive();
-    // In a full implementation, we would buffer this data.
-    // For now, just consume one byte to clear the interrupt.
+pub fn handle_port1_interrupt() {
+    let mut serial = SERIAL1.lock();
+    let mut rx = SERIAL1_RX.lock();
+    read_and_buffer(&mut serial, &mut rx);
 }
 
 /// Handle serial port 2 interrupt
 pub fn handle_port2_interrupt() {
-    // Read any available data from COM2
     let mut serial = SERIAL2.lock();
+    let mut rx = SERIAL2_RX.lock();
+    read_and_buffer(&mut serial, &mut rx);
+}
 
-    // Read and discard available data
-    // uart_16550 receive() returns u8 directly, not Option
-    // Try to receive - if no data available, this will fail
-    let _byte = serial.receive();
-    // In a full implementation, we would buffer this data.
-    // For now, just consume one byte to clear the interrupt.
+/// Read buffered bytes from COM1
+pub fn read_serial1_buffer() -> Vec<u8> {
+    let mut rx = SERIAL1_RX.lock();
+    let data = rx.clone();
+    rx.clear();
+    data
+}
+
+/// Read buffered bytes from COM2
+pub fn read_serial2_buffer() -> Vec<u8> {
+    let mut rx = SERIAL2_RX.lock();
+    let data = rx.clone();
+    rx.clear();
+    data
+}
+
+/// Check if COM1 has buffered data
+pub fn serial1_has_data() -> bool {
+    !SERIAL1_RX.lock().is_empty()
+}
+
+/// Check if COM2 has buffered data
+pub fn serial2_has_data() -> bool {
+    !SERIAL2_RX.lock().is_empty()
 }
 
 /// Write formatted arguments to serial port 1

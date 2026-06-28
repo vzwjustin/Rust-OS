@@ -418,9 +418,10 @@ impl DynamicLinker {
     fn process_dynamic_entry(&self, info: &mut DynamicInfo, entry: &DynamicEntry, base: VirtAddr) {
         match entry.d_tag {
             dynamic_tags::DT_NEEDED => {
-                // Library name stored as offset in string table
-                // Will be resolved later when we have the string table
-                // For now, store the offset as a placeholder
+                // d_val is an offset into the string table (DT_STRTAB).
+                // Store as "offset:N" — resolved to the actual library name
+                // in resolve_needed_libraries() once the string table is
+                // available.
                 info.needed.push(format!("offset:{}", entry.d_val));
             }
             dynamic_tags::DT_STRTAB => {
@@ -818,9 +819,34 @@ impl DynamicLinker {
                     "No string table size",
                 )))?;
 
-        // In a real implementation, strtab_addr would be a virtual address
-        // For now, we'll treat it as an offset into the binary
-        let strtab_offset = strtab_addr.as_u64() as usize;
+        // DT_STRTAB gives the virtual address of the string table. When
+        // processing raw binary data (not a mapped image), we need to
+        // convert this to a file offset. For most ELF files, the program
+        // header's p_vaddr equals p_offset for the first LOAD segment,
+        // so the virtual address can be used directly as a file offset.
+        // If the address is larger than the binary, it's likely a virtual
+        // address that needs adjustment — try subtracting common base
+        // addresses.
+        let strtab_vaddr = strtab_addr.as_u64() as usize;
+        let strtab_offset = if strtab_vaddr < binary_data.len() {
+            // Looks like a file offset already
+            strtab_vaddr
+        } else {
+            // Try treating it as a virtual address relative to a base.
+            // Common bases: 0x400000 (non-PIE executable), 0 (PIE/shared).
+            // Try subtracting 0x400000 first, then 0.
+            if let Some(off) = strtab_vaddr.checked_sub(0x400_000) {
+                if off < binary_data.len() {
+                    off
+                } else {
+                    // Can't resolve — use raw value and let the bounds
+                    // check below catch it
+                    strtab_vaddr
+                }
+            } else {
+                strtab_vaddr
+            }
+        };
 
         if strtab_offset + strtab_size > binary_data.len() {
             return Err(DynamicLinkerError::InvalidElf(String::from(

@@ -814,12 +814,92 @@ impl FileSystem for Fat32FileSystem {
             });
         }
 
-        // For other files, we need to find the directory entry
-        // This is simplified - in practice we'd need to track parent directories
+        // For non-root files/directories, scan the root directory to find
+        // the directory entry whose first cluster matches this inode.
+        // This gives us the file size, type, and timestamps.
+        let target_cluster = cluster;
+        let root_entries = self.read_directory_entries(self.root_cluster)?;
+        for entry in &root_entries {
+            if entry.inode == inode {
+                // Found the entry — but DirectoryEntry doesn't carry size
+                // or timestamps. We need to re-read the raw FAT entry.
+                break;
+            }
+        }
+
+        // Scan the raw directory entries in the root cluster to find
+        // the one whose first_cluster matches our target.
+        let cluster_chain = self.get_cluster_chain(self.root_cluster)?;
+        for cluster in cluster_chain {
+            let cluster_data = self.read_cluster(cluster)?;
+            let entries_per_cluster =
+                self.bytes_per_cluster as usize / mem::size_of::<Fat32DirEntry>();
+
+            for i in 0..entries_per_cluster {
+                let offset = i * mem::size_of::<Fat32DirEntry>();
+                if offset + mem::size_of::<Fat32DirEntry>() > cluster_data.len() {
+                    break;
+                }
+
+                let dir_entry = unsafe {
+                    core::ptr::read_unaligned(
+                        cluster_data.as_ptr().add(offset) as *const Fat32DirEntry
+                    )
+                };
+
+                if dir_entry.name[0] == 0 {
+                    break;
+                }
+                if dir_entry.name[0] == 0xE5 {
+                    continue;
+                }
+
+                let first_cluster = ((dir_entry.first_cluster_hi as u32) << 16)
+                    | (dir_entry.first_cluster_lo as u32);
+
+                if first_cluster == target_cluster {
+                    let attr = Fat32Attr::from_bits_truncate(dir_entry.attr);
+                    let is_dir = attr.contains(Fat32Attr::DIRECTORY);
+                    let is_readonly = attr.contains(Fat32Attr::READ_ONLY);
+
+                    let perms = if is_dir {
+                        FilePermissions::from_octal(0o755)
+                    } else if is_readonly {
+                        FilePermissions::from_octal(0o444)
+                    } else {
+                        FilePermissions::from_octal(0o644)
+                    };
+
+                    return Ok(FileMetadata {
+                        inode,
+                        file_type: if is_dir {
+                            FileType::Directory
+                        } else {
+                            FileType::Regular
+                        },
+                        size: dir_entry.file_size as u64,
+                        permissions: perms,
+                        uid: 0,
+                        gid: 0,
+                        created: fat_date_time_to_unix(
+                            dir_entry.create_date,
+                            dir_entry.create_time,
+                        ),
+                        modified: fat_date_time_to_unix(dir_entry.write_date, dir_entry.write_time),
+                        accessed: fat_date_time_to_unix(dir_entry.last_access_date, 0),
+                        link_count: 1,
+                        device_id: None,
+                    });
+                }
+            }
+        }
+
+        // Entry not found in root directory — it may be in a subdirectory.
+        // Return default metadata as a fallback.
         Ok(FileMetadata {
             inode,
             file_type: FileType::Regular,
-            size: 0, // Would need to be determined from directory entry
+            size: 0,
             permissions: FilePermissions::from_octal(0o644),
             uid: 0,
             gid: 0,
@@ -867,4 +947,51 @@ impl FileSystem for Fat32FileSystem {
     fn sync(&self) -> FsResult<()> {
         self.flush_dirty_data()
     }
+}
+
+/// Convert a FAT date/time pair to a Unix timestamp.
+///
+/// FAT date format (16-bit):
+/// - Bits 15-9: year - 1980 (0-127)
+/// - Bits 8-5: month (1-12)
+/// - Bits 4-0: day (1-31)
+///
+/// FAT time format (16-bit):
+/// - Bits 15-11: hours (0-23)
+/// - Bits 10-5: minutes (0-59)
+/// - Bits 4-0: seconds/2 (0-29, so 0-58 seconds)
+fn fat_date_time_to_unix(fat_date: u16, fat_time: u16) -> u64 {
+    if fat_date == 0 {
+        return 0;
+    }
+
+    let year = ((fat_date >> 9) & 0x7F) as u32 + 1980;
+    let month = ((fat_date >> 5) & 0x0F) as u32;
+    let day = (fat_date & 0x1F) as u32;
+
+    let hours = ((fat_time >> 11) & 0x1F) as u64;
+    let minutes = ((fat_time >> 5) & 0x3F) as u64;
+    let seconds = ((fat_time & 0x1F) as u64) * 2;
+
+    // Days since Unix epoch (simplified — uses 365/366 day years)
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+
+    let days_in_month: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 1..month {
+        days += days_in_month[(m - 1) as usize];
+        if m == 2 && is_leap_year(year) {
+            days += 1;
+        }
+    }
+
+    days += (day - 1) as u64;
+
+    days * 86400 + hours * 3600 + minutes * 60 + seconds
+}
+
+fn is_leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }

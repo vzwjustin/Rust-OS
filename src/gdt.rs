@@ -273,9 +273,14 @@ pub fn set_kernel_stack(stack_ptr: VirtAddr) {
 }
 
 /// Set user stack pointer (for task switching)
-pub fn set_user_stack(_stack_ptr: VirtAddr) {
-    // In a full implementation, this would be used during privilege level changes
-    // User stack pointer set
+///
+/// Writes the stack pointer into the TSS privilege stack table entry 0
+/// (RSP0). When a user-mode process transitions to kernel mode via
+/// an interrupt or syscall, the CPU loads RSP from this entry.
+pub fn set_user_stack(stack_ptr: VirtAddr) {
+    unsafe {
+        TSS.privilege_stack_table[0] = stack_ptr;
+    }
 }
 
 /// Memory segment information
@@ -291,58 +296,70 @@ pub struct SegmentInfo {
     pub is_writable: bool,
 }
 
-/// Get information about a segment selector
+/// Get information about a segment selector by reading the actual GDT entry.
+///
+/// Uses the SGDT instruction to locate the GDT in memory, then reads and
+/// parses the 8-byte segment descriptor at the index specified by the
+/// selector. In long mode, all segment descriptors are 64-bit with a
+/// flat base of 0 and a limit of 0xFFFFF (granularity=4KiB → 4GB).
 pub fn get_segment_info(selector: GdtSegmentSelector) -> Option<SegmentInfo> {
-    // This is a simplified implementation
-    // In a real system, you'd read the actual GDT entry
-
-    if selector == GDT.1.kernel_code_selector {
-        Some(SegmentInfo {
-            selector: selector.0,
-            base: 0,
-            limit: 0xFFFFFFFF,
-            privilege_level: PrivilegeLevel::Ring0,
-            is_code: true,
-            is_executable: true,
-            is_readable: true,
-            is_writable: false,
-        })
-    } else if selector == GDT.1.kernel_data_selector {
-        Some(SegmentInfo {
-            selector: selector.0,
-            base: 0,
-            limit: 0xFFFFFFFF,
-            privilege_level: PrivilegeLevel::Ring0,
-            is_code: false,
-            is_executable: false,
-            is_readable: true,
-            is_writable: true,
-        })
-    } else if selector == GDT.1.user_code_selector {
-        Some(SegmentInfo {
-            selector: selector.0,
-            base: 0,
-            limit: 0xFFFFFFFF,
-            privilege_level: PrivilegeLevel::Ring3,
-            is_code: true,
-            is_executable: true,
-            is_readable: true,
-            is_writable: false,
-        })
-    } else if selector == GDT.1.user_data_selector {
-        Some(SegmentInfo {
-            selector: selector.0,
-            base: 0,
-            limit: 0xFFFFFFFF,
-            privilege_level: PrivilegeLevel::Ring3,
-            is_code: false,
-            is_executable: false,
-            is_readable: true,
-            is_writable: true,
-        })
-    } else {
-        None
+    // Get the GDT base address and limit via SGDT
+    let (gdt_base, _gdt_limit): (*const u8, u16);
+    unsafe {
+        // SGDT stores a 10-byte pseudo-descriptor: 2-byte limit + 8-byte base.
+        // On x86-64 the base is 64-bit and the structure is naturally aligned.
+        #[repr(C, packed)]
+        struct GdtrPseudo {
+            limit: u16,
+            base: u64,
+        }
+        let mut gdtr: GdtrPseudo = GdtrPseudo { limit: 0, base: 0 };
+        core::arch::asm!(
+            "sgdt [{}]",
+            in(reg) &mut gdtr,
+            options(nostack, preserves_flags),
+        );
+        gdt_base = gdtr.base as *const u8;
+        _gdt_limit = gdtr.limit;
     }
+
+    // The selector index points to the descriptor (index * 8 bytes)
+    let index = (selector.0 >> 3) as usize;
+    let entry_ptr = unsafe { gdt_base.add(index * 8) };
+    let entry: u64 = unsafe { core::ptr::read(entry_ptr as *const u64) };
+
+    // A null descriptor (all zeros) is not a valid segment
+    if entry == 0 {
+        return None;
+    }
+
+    // Parse the 64-bit segment descriptor (long-mode format)
+    // Bit 44: descriptor type (0 = system, 1 = code/data)
+    // Bit 43: executable (1 = code, 0 = data)
+    // Bit 41: readable (for code) / writable (for data)
+    // Bits 46-47: DPL (privilege level)
+    let is_code = (entry >> 43) & 1 == 1;
+    let dpl = ((entry >> 45) & 3) as u8;
+    let access_rw = (entry >> 41) & 1 == 1;
+
+    let privilege_level = match dpl {
+        0 => PrivilegeLevel::Ring0,
+        1 => PrivilegeLevel::Ring1,
+        2 => PrivilegeLevel::Ring2,
+        3 => PrivilegeLevel::Ring3,
+        _ => return None,
+    };
+
+    Some(SegmentInfo {
+        selector: selector.0,
+        base: 0,           // Long-mode segments have a flat base
+        limit: 0xFFFFFFFF, // Granularity=1, limit=0xFFFFF → 4GB
+        privilege_level,
+        is_code,
+        is_executable: is_code,
+        is_readable: if is_code { access_rw } else { true },
+        is_writable: if !is_code { access_rw } else { false },
+    })
 }
 
 /// Production GDT - no debug output (security sensitive)

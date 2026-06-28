@@ -707,19 +707,24 @@ pub fn mincore(addr: *mut u8, length: usize, vec: *mut u8) -> LinuxResult<i32> {
     // Calculate number of pages
     let pages = (length + 0xFFF) >> 12;
 
-    // Check page residency
-    // In RustOS without swap, all mapped pages are resident
-    // We need to check if pages are actually mapped
+    // Check page residency by walking the page table via the memory
+    // manager's translate_addr. A page is resident (bit 0 = 1) if it
+    // has a valid physical mapping; otherwise it's not resident (0).
     unsafe {
         for i in 0..pages {
-            let _page_addr = addr_val + (i << 12);
+            let page_addr = addr_val + (i << 12);
+            let virt = x86_64::VirtAddr::new(page_addr as u64);
 
-            // Try to determine if page is mapped
-            // In a real implementation, would check page tables
-            // For now, assume mapped pages are resident (bit 0 = 1)
-            // Bit 0: page is resident in memory
-            // Other bits: reserved
-            *vec.add(i) = 1;
+            // Check if the page is mapped by translating the virtual
+            // address to a physical address. If translation succeeds,
+            // the page is resident in memory.
+            let resident = if let Some(_phys) = crate::memory::translate_addr(virt) {
+                1u8
+            } else {
+                0u8
+            };
+
+            *vec.add(i) = resident;
         }
     }
 
@@ -797,8 +802,12 @@ pub fn mremap(
         )
         .map_err(vm_error_to_linux)?;
 
-        // Copy old contents (would need actual memory copy implementation)
-        // In real implementation: memcpy from old to new
+        // Copy old contents to new location
+        unsafe {
+            let src = old_addr_val as *const u8;
+            let dst = new_addr_val as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, aligned_old_size);
+        }
 
         // Unmap old region
         vm_munmap(old_addr_val, aligned_old_size).map_err(vm_error_to_linux)?;
@@ -807,7 +816,32 @@ pub fn mremap(
     }
 
     if (flags & MREMAP_MAYMOVE) != 0 {
-        // Try to expand in place first, or allocate new region
+        // Try to expand in place first by mapping the additional
+        // pages right after the current mapping.
+        let expand_size = aligned_new_size - aligned_old_size;
+        let expand_addr = old_addr_val + aligned_old_size;
+
+        // Attempt to map the expansion region in place
+        match vm_mmap(
+            expand_addr,
+            expand_size,
+            ProtectionFlags::READ_WRITE,
+            MmapFlags {
+                fixed: true,
+                shared: false,
+                private: true,
+                anonymous: true,
+            },
+        ) {
+            Ok(_) => {
+                // In-place expansion succeeded
+                return Ok(old_addr);
+            }
+            Err(_) => {
+                // In-place expansion failed — fall through to move
+            }
+        }
+
         // Allocate new region with new size
         let result = vm_mmap(
             0,
@@ -817,8 +851,12 @@ pub fn mremap(
         )
         .map_err(vm_error_to_linux)?;
 
-        // Copy old contents
-        // In real implementation: memcpy from old to new
+        // Copy old contents to new location
+        unsafe {
+            let src = old_addr_val as *const u8;
+            let dst = result as usize as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, aligned_old_size);
+        }
 
         // Unmap old region
         vm_munmap(old_addr_val, aligned_old_size).map_err(vm_error_to_linux)?;
@@ -827,9 +865,23 @@ pub fn mremap(
     }
 
     // Try to expand in place (no MAYMOVE flag)
-    // Check if there's space after current mapping
-    // For now, return error if can't expand in place
-    Err(LinuxError::ENOMEM)
+    let expand_size = aligned_new_size - aligned_old_size;
+    let expand_addr = old_addr_val + aligned_old_size;
+
+    match vm_mmap(
+        expand_addr,
+        expand_size,
+        ProtectionFlags::READ_WRITE,
+        MmapFlags {
+            fixed: true,
+            shared: false,
+            private: true,
+            anonymous: true,
+        },
+    ) {
+        Ok(_) => Ok(old_addr),
+        Err(_) => Err(LinuxError::ENOMEM),
+    }
 }
 
 /// mmap2 - map files or devices into memory (with page offset)
