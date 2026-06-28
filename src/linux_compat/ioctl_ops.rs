@@ -259,13 +259,59 @@ pub fn fcntl(fd: Fd, cmd: i32, arg: u64) -> LinuxResult<i32> {
             if arg == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            Err(LinuxError::ENOSYS)
+            // Check for a conflicting lock. If none, set l_type to F_UNLCK.
+            // struct flock: l_type(2), l_whence(2), l_start(8), l_len(8), l_pid(4)
+            let mut fl = [0u8; 24];
+            unsafe {
+                core::ptr::copy_nonoverlapping(arg as *const u8, fl.as_mut_ptr(), 24);
+            }
+            let l_type = i16::from_ne_bytes([fl[0], fl[1]]);
+            let l_start =
+                i64::from_ne_bytes([fl[4], fl[5], fl[6], fl[7], fl[8], fl[9], fl[10], fl[11]]);
+            let l_len = i64::from_ne_bytes([
+                fl[12], fl[13], fl[14], fl[15], fl[16], fl[17], fl[18], fl[19],
+            ]);
+
+            // F_UNLCK = 2, F_RDLCK = 0, F_WRLCK = 1
+            if l_type == 2 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let pid = process::current_pid();
+            let conflict = check_posix_lock_conflict(pid, fd, l_type, l_start, l_len);
+            if let Some(conflict_pid) = conflict {
+                // Report the conflicting lock
+                fl[0..2].copy_from_slice(&1i16.to_ne_bytes()); // F_WRLCK
+                fl[20..24].copy_from_slice(&(conflict_pid as i32).to_ne_bytes());
+            } else {
+                // No conflict — set F_UNLCK
+                fl[0..2].copy_from_slice(&2i16.to_ne_bytes()); // F_UNLCK
+                fl[20..24].copy_from_slice(&0i32.to_ne_bytes());
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(fl.as_ptr(), arg as *mut u8, 24);
+            }
+            Ok(0)
         }
         fcntl_cmd::F_SETLK | fcntl_cmd::F_SETLKW => {
             if arg == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            Err(LinuxError::ENOSYS)
+            let mut fl = [0u8; 24];
+            unsafe {
+                core::ptr::copy_nonoverlapping(arg as *const u8, fl.as_mut_ptr(), 24);
+            }
+            let l_type = i16::from_ne_bytes([fl[0], fl[1]]);
+            let l_start =
+                i64::from_ne_bytes([fl[4], fl[5], fl[6], fl[7], fl[8], fl[9], fl[10], fl[11]]);
+            let l_len = i64::from_ne_bytes([
+                fl[12], fl[13], fl[14], fl[15], fl[16], fl[17], fl[18], fl[19],
+            ]);
+
+            let pid = process::current_pid();
+            let blocking = cmd == fcntl_cmd::F_SETLKW;
+
+            apply_posix_lock(pid, fd, l_type, l_start, l_len, blocking)
         }
         fcntl_cmd::F_GETOWN => {
             validate_fd(fd)?;
@@ -276,6 +322,96 @@ pub fn fcntl(fd: Fd, cmd: i32, arg: u64) -> LinuxResult<i32> {
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
+    }
+}
+
+// =============================================================================
+// POSIX record locks (fcntl F_SETLK / F_SETLKW / F_GETLK)
+// =============================================================================
+
+/// A POSIX (advisory) record lock entry.
+#[derive(Clone, Copy)]
+struct PosixLock {
+    pid: u32,
+    fd: i32,
+    l_type: i16, // 0 = F_RDLCK, 1 = F_WRLCK
+    start: i64,
+    len: i64, // 0 means "to end of file"
+}
+
+/// Global table of POSIX record locks.
+static POSIX_LOCKS: spin::Mutex<alloc::vec::Vec<PosixLock>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+/// Check if a requested lock conflicts with an existing lock held by
+/// another process. Returns the conflicting pid if there is a conflict.
+fn check_posix_lock_conflict(pid: u32, fd: i32, l_type: i16, start: i64, len: i64) -> Option<u32> {
+    let locks = POSIX_LOCKS.lock();
+    for lock in locks.iter() {
+        if lock.pid == pid && lock.fd == fd {
+            continue; // same process, no conflict
+        }
+        if lock.fd != fd {
+            continue; // different file
+        }
+        // Check byte-range overlap
+        let lock_end = if lock.len == 0 {
+            i64::MAX
+        } else {
+            lock.start + lock.len
+        };
+        let req_end = if len == 0 { i64::MAX } else { start + len };
+        if lock.start < req_end && start < lock_end {
+            // Overlapping ranges: conflict if either is exclusive
+            if l_type == 1 || lock.l_type == 1 {
+                return Some(lock.pid);
+            }
+        }
+    }
+    None
+}
+
+/// Apply a POSIX record lock (set, unlock, or get). For F_SETLKW,
+/// retries on conflict with a short sleep.
+fn apply_posix_lock(
+    pid: u32,
+    fd: i32,
+    l_type: i16,
+    start: i64,
+    len: i64,
+    blocking: bool,
+) -> LinuxResult<i32> {
+    // F_UNLCK = 2: remove matching locks
+    if l_type == 2 {
+        let mut locks = POSIX_LOCKS.lock();
+        locks.retain(|l| !(l.pid == pid && l.fd == fd && l.start == start && l.len == len));
+        return Ok(0);
+    }
+
+    // F_RDLCK = 0 or F_WRLCK = 1: set a lock
+    loop {
+        if let Some(conflict_pid) = check_posix_lock_conflict(pid, fd, l_type, start, len) {
+            if !blocking {
+                return Err(super::EWOULDBLOCK);
+            }
+            // Blocking: sleep and retry
+            let _ = conflict_pid;
+            crate::time::sleep_us(1_000);
+            continue;
+        }
+
+        // Remove any existing lock from this process on this fd+range,
+        // then insert the new lock.
+        let mut locks = POSIX_LOCKS.lock();
+        locks.retain(|l| !(l.pid == pid && l.fd == fd && l.start == start && l.len == len));
+        locks.push(PosixLock {
+            pid,
+            fd,
+            l_type,
+            start,
+            len,
+        });
+        return Ok(0);
     }
 }
 

@@ -365,6 +365,13 @@ fn read_program(path: &str) -> Result<Vec<u8>, SpawnError> {
     }
     let _ = vfs::vfs_close(fd);
     data.truncate(offset);
+
+    // Validate ELF magic (0x7f 'E' 'L' 'F') before attempting exec.
+    // Non-ELF files should return Noexec, matching glib's behaviour.
+    if data.len() < 4 || &data[..4] != b"\x7fELF" {
+        return Err(SpawnError::Noexec);
+    }
+
     Ok(data)
 }
 

@@ -6,7 +6,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::RwLock;
 
@@ -239,8 +238,7 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         }
         let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
         let mut data = vec![0u8; copy_len];
-        UserSpaceMemory::copy_from_user(buf as u64, &mut data)
-            .map_err(|_| LinuxError::EFAULT)?;
+        UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
         let ipc = get_ipc_manager();
         let _ = flags;
         match ipc.pipe_write(unix_end.pipe_id, &data) {
@@ -988,11 +986,8 @@ pub fn bind(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i32>
         }
         let path_len = (addrlen as usize - 2).min(108);
         let mut path_buf = [0u8; 108];
-        UserSpaceMemory::copy_from_user(
-            (addr as u64) + 2,
-            &mut path_buf[..path_len],
-        )
-        .map_err(|_| LinuxError::EFAULT)?;
+        UserSpaceMemory::copy_from_user((addr as u64) + 2, &mut path_buf[..path_len])
+            .map_err(|_| LinuxError::EFAULT)?;
 
         // Convert to string (null-terminated)
         let path_str = String::from(
@@ -1061,11 +1056,8 @@ pub fn connect(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i
         }
         let path_len = (addrlen as usize - 2).min(108);
         let mut path_buf = [0u8; 108];
-        UserSpaceMemory::copy_from_user(
-            (addr as u64) + 2,
-            &mut path_buf[..path_len],
-        )
-        .map_err(|_| LinuxError::EFAULT)?;
+        UserSpaceMemory::copy_from_user((addr as u64) + 2, &mut path_buf[..path_len])
+            .map_err(|_| LinuxError::EFAULT)?;
 
         let path_str = String::from(
             core::str::from_utf8(&path_buf[..path_len])

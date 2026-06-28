@@ -347,7 +347,16 @@ pub fn mount(
             })?;
             Ok(0)
         }
-        "proc" | "sysfs" | "devtmpfs" | "devpts" => Err(LinuxError::ENOSYS),
+        "proc" | "sysfs" | "devtmpfs" | "devpts" => {
+            // These pseudo-filesystems are already installed by the VFS
+            // init (see vfs::procfs::install_proc).  Accept the mount
+            // syscall as a no-op remount so userspace mount(2) calls
+            // succeed instead of failing with ENOSYS.
+            if !source.is_null() {
+                // Source is ignored for pseudo-filesystems
+            }
+            Ok(0)
+        }
         _ => {
             if source.is_null() {
                 return Err(LinuxError::ENODEV);
