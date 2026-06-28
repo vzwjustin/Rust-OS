@@ -18,8 +18,6 @@ pub use super::types::{Rusage, TimeVal};
 // Import process management infrastructure
 use crate::process::Pid as KernelPid;
 use crate::process::{self};
-use crate::process_manager;
-
 /// Operation counter for statistics
 static PROCESS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -172,15 +170,7 @@ pub fn exec(program: &[u8], args: &[&str]) -> LinuxResult<i32> {
     inc_ops();
 
     let pid = process::current_pid();
-    let process_mgr = process_manager::get_process_manager();
-
-    // Use process_manager exec which handles:
-    // - ELF loading via elf_loader
-    // - Memory replacement
-    // - Argument setup
-    // - Context initialization
-    process_mgr
-        .exec(pid, program, args, &[])
+    process::exec::exec_elf_binary(pid, program, args, &[])
         .map_err(|_| LinuxError::ENOEXEC)?;
 
     Ok(0)
@@ -668,18 +658,8 @@ pub fn exit(status: i32) -> ! {
     inc_ops();
 
     let pid = process::current_pid();
-    let process_mgr = process_manager::get_process_manager();
+    let _ = process::get_process_manager().terminate_process(pid, status);
 
-    // Use process_manager exit which handles:
-    // - State transition to Zombie
-    // - Resource cleanup
-    // - Child reparenting
-    // - Parent notification
-    // - Scheduler removal
-    let _ = process_mgr.exit(pid, status);
-    let _ = crate::process::get_process_manager().terminate_process(pid as u32, status);
-
-    // Should never return, but if it does, halt
     loop {
         x86_64::instructions::hlt();
     }

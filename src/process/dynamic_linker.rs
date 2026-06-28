@@ -44,6 +44,9 @@ pub struct DynamicLinker {
     /// Library search paths (e.g., /lib, /usr/lib, /lib64)
     search_paths: Vec<String>,
 
+    /// Paths from `LD_LIBRARY_PATH` for the current link operation
+    library_path_env: Vec<String>,
+
     /// Cache of loaded shared libraries
     loaded_libraries: BTreeMap<String, LoadedLibrary>,
 
@@ -117,6 +120,12 @@ pub struct DynamicInfo {
 
     /// Fini function address (DT_FINI)
     pub fini: Option<VirtAddr>,
+
+    /// Library search path from DT_RPATH (deprecated)
+    pub rpath: Option<String>,
+
+    /// Library search path from DT_RUNPATH
+    pub runpath: Option<String>,
 }
 
 /// Relocation entry (RELA format)
@@ -302,6 +311,7 @@ impl DynamicLinker {
 
         Self {
             search_paths,
+            library_path_env: Vec::new(),
             loaded_libraries: BTreeMap::new(),
             symbol_table: BTreeMap::new(),
             symbol_index_table: Vec::new(),
@@ -314,6 +324,17 @@ impl DynamicLinker {
     pub fn add_search_path(&mut self, path: String) {
         if !self.search_paths.contains(&path) {
             self.search_paths.push(path);
+        }
+    }
+
+    /// Parse `LD_LIBRARY_PATH` (colon-separated) into transient search paths.
+    pub fn set_ld_library_path(&mut self, value: &str) {
+        self.library_path_env.clear();
+        for component in value.split(':') {
+            if component.is_empty() {
+                continue;
+            }
+            self.library_path_env.push(String::from(component));
         }
     }
 
@@ -438,6 +459,12 @@ impl DynamicLinker {
             dynamic_tags::DT_FINI => {
                 info.fini = Some(VirtAddr::new(base.as_u64() + entry.d_val));
             }
+            dynamic_tags::DT_RPATH => {
+                info.rpath = Some(format!("offset:{}", entry.d_val));
+            }
+            dynamic_tags::DT_RUNPATH => {
+                info.runpath = Some(format!("offset:{}", entry.d_val));
+            }
             _ => {
                 // Ignore other tags for now
             }
@@ -505,7 +532,25 @@ impl DynamicLinker {
             .collect();
         self.load_dependencies(&nested)?;
 
-        self.load_symbols_from_binary(data, &dynamic_info, loaded_base)?;
+        self.build_symbol_index_table(data, &dynamic_info, loaded_base)?;
+        let relocations = self.parse_relocations(data, &dynamic_info)?;
+        self.apply_relocations(&relocations, loaded_base)?;
+
+        for (name, addr) in self
+            .symbol_index_table
+            .iter()
+            .filter(|(name, addr)| !name.is_empty() && addr.as_u64() != 0)
+            .map(|(name, addr)| (name.clone(), *addr))
+            .collect::<Vec<_>>()
+        {
+            self.add_symbol(name, addr);
+        }
+
+        if let Some(runpath) = dynamic_info.runpath.clone() {
+            self.add_runpath_entries(&runpath);
+        } else if let Some(rpath) = dynamic_info.rpath.clone() {
+            self.add_runpath_entries(&rpath);
+        }
 
         let library = LoadedLibrary {
             name: name.to_string(),
@@ -523,14 +568,29 @@ impl DynamicLinker {
 
     /// Search for a library in search paths
     fn find_library(&self, name: &str) -> Option<String> {
+        for path in &self.library_path_env {
+            let full_path = format!("{}/{}", path, name);
+            if self.check_file_exists(&full_path) {
+                return Some(full_path);
+            }
+        }
+
         for path in &self.search_paths {
             let full_path = format!("{}/{}", path, name);
-            // Check if file exists via VFS
             if self.check_file_exists(&full_path) {
                 return Some(full_path);
             }
         }
         None
+    }
+
+    fn add_runpath_entries(&mut self, path_list: &str) {
+        for path in path_list.split(':') {
+            if path.is_empty() {
+                continue;
+            }
+            self.add_search_path(String::from(path));
+        }
     }
 
     /// Check if a file exists in the filesystem
@@ -713,6 +773,12 @@ impl DynamicLinker {
         // Step 2: Resolve library names from string table
         self.resolve_library_names(binary_data, &mut dynamic_info)?;
 
+        if let Some(runpath) = dynamic_info.runpath.clone() {
+            self.add_runpath_entries(&runpath);
+        } else if let Some(rpath) = dynamic_info.rpath.clone() {
+            self.add_runpath_entries(&rpath);
+        }
+
         // Step 3: Load required dependencies
         let _loaded_libs = self.load_dependencies(&dynamic_info.needed)?;
 
@@ -788,7 +854,29 @@ impl DynamicLinker {
         }
 
         dynamic_info.needed = resolved_names;
+
+        if let Some(rpath_ref) = &dynamic_info.rpath {
+            if let Some(path) = self.resolve_dynamic_string(strtab, rpath_ref) {
+                dynamic_info.rpath = Some(path);
+            }
+        }
+        if let Some(runpath_ref) = &dynamic_info.runpath {
+            if let Some(path) = self.resolve_dynamic_string(strtab, runpath_ref) {
+                dynamic_info.runpath = Some(path);
+            }
+        }
+
         Ok(())
+    }
+
+    fn resolve_dynamic_string(&self, strtab: &[u8], value: &str) -> Option<String> {
+        if value.starts_with("offset:") {
+            let offset_str = &value[7..];
+            if let Ok(offset) = offset_str.parse::<usize>() {
+                return self.read_string_from_table(strtab, offset);
+            }
+        }
+        Some(String::from(value))
     }
 
     /// Read a null-terminated string from the string table

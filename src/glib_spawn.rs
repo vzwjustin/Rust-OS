@@ -3,8 +3,6 @@
 //! Reads executables from the syscall VFS, forks via `process_manager`, and loads
 //! ELF images with `crate::process::elf_loader`.
 
-use crate::process::{self, ProcessControlBlock, ProcessState};
-use crate::process_manager::pcb::{ProcessControlBlock as PmPcb, ProcessState as PmState};
 use crate::vfs::{self, InodeType, OpenFlags, VfsError};
 use alloc::format;
 use alloc::string::String;
@@ -221,10 +219,7 @@ fn spawn_child_async_with_stdio(
     let env_slice = envp.unwrap_or(&[]);
 
     match pm.exec(child_pid, &program, exec_argv, env_slice) {
-        Ok(()) => {
-            register_spawned_child(child_pid);
-            Ok(child_pid as Pid)
-        }
+        Ok(()) => Ok(child_pid as Pid),
         Err(err) => {
             let _ = pm.exit(child_pid, 1);
             Err(map_exec_error(err))
@@ -404,45 +399,6 @@ fn map_exec_error(err: &str) -> SpawnError {
     }
 }
 
-fn register_spawned_child(child_pid: u32) {
-    let pm = crate::process_manager::get_process_manager();
-    let Some(pm_pcb) = pm.get_process(child_pid) else {
-        return;
-    };
-
-    let kernel_pcb = pm_pcb_to_kernel_pcb(&pm_pcb);
-    let kernel_pm = process::get_process_manager();
-    let _ = kernel_pm.adopt_spawned_process(kernel_pcb);
-}
-
-fn pm_pcb_to_kernel_pcb(pm_pcb: &PmPcb) -> ProcessControlBlock {
-    let mut pcb = ProcessControlBlock::new(pm_pcb.pid, pm_pcb.parent_pid, pm_pcb.name_str());
-    pcb.state = map_pm_state(pm_pcb.state);
-    pcb.priority = pm_pcb.priority;
-    pcb.context = pm_pcb.context;
-    pcb.memory = pm_pcb.memory.clone();
-    pcb.name = pm_pcb.name;
-    pcb.cpu_time = pm_pcb.cpu_time;
-    pcb.creation_time = pm_pcb.creation_time;
-    pcb.exit_status = pm_pcb.exit_status;
-    pcb.exit_code = pm_pcb.exit_status;
-    pcb.entry_point = pm_pcb.entry_point;
-    pcb.cwd = pm_pcb.cwd.clone();
-    pcb
-}
-
-fn map_pm_state(state: PmState) -> ProcessState {
-    match state {
-        PmState::Ready => ProcessState::Ready,
-        PmState::Running => ProcessState::Running,
-        PmState::Blocked => ProcessState::Blocked,
-        PmState::Sleeping => ProcessState::Sleeping,
-        PmState::Terminated => ProcessState::Terminated,
-        PmState::Zombie => ProcessState::Zombie,
-        PmState::Dead => ProcessState::Dead,
-    }
-}
-
 fn reap_spawn_child(child_pid: u32) -> Result<i32, SpawnError> {
     let parent_pid = crate::process::current_pid();
     let pm = crate::process_manager::get_process_manager();
@@ -450,18 +406,11 @@ fn reap_spawn_child(child_pid: u32) -> Result<i32, SpawnError> {
     let _ = pm.exit(child_pid, 0);
     for _ in 0..SPAWN_KERNEL_REAP_AFTER {
         if let Ok(status) = pm.waitpid(parent_pid, child_pid) {
-            sync_kernel_child_exit(child_pid, status);
             return Ok(status);
         }
     }
 
-    sync_kernel_child_exit(child_pid, 0);
     Ok(0)
-}
-
-fn sync_kernel_child_exit(child_pid: u32, status: i32) {
-    let kernel_pm = crate::process::get_process_manager();
-    let _ = kernel_pm.terminate_process(child_pid, status);
 }
 
 fn drain_ipc_pipe(pipe_id: u32) -> Vec<u8> {

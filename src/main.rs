@@ -814,7 +814,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     match process_manager::init() {
         Ok(()) => {
-            process_manager::get_process_manager().set_current_pid(process::current_pid());
             crate::glib_spawn::mark_spawn_runtime_ready();
             unsafe {
                 early_serial_write_str("RustOS: POSIX process manager initialized\r\n");

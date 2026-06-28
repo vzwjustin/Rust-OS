@@ -542,7 +542,7 @@ pub fn getxattr(
     let name = unsafe { xattr_name_from_ptr(name)? };
 
     match vfs::vfs_getxattr(&path, &name) {
-        Ok(data) => Ok(copy_xattr_value(&data, value, size)),
+        Ok(data) => copy_xattr_value(&data, value, size),
         Err(e) => Err(xattr_vfs_error(e)),
     }
 }
@@ -574,7 +574,7 @@ pub fn fgetxattr(fd: Fd, name: *const u8, value: *mut u8, size: usize) -> LinuxR
     let name = unsafe { xattr_name_from_ptr(name)? };
 
     match vfs::vfs_fgetxattr(fd, &name) {
-        Ok(data) => Ok(copy_xattr_value(&data, value, size)),
+        Ok(data) => copy_xattr_value(&data, value, size),
         Err(e) => Err(xattr_vfs_error(e)),
     }
 }
@@ -677,7 +677,7 @@ pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isi
     let path = unsafe { c_str_to_string(path)? };
 
     match vfs::vfs_listxattr(&path) {
-        Ok(data) => Ok(copy_xattr_value(&data, list, size)),
+        Ok(data) => copy_xattr_value(&data, list, size),
         Err(e) => Err(xattr_vfs_error(e)),
     }
 }
@@ -702,7 +702,7 @@ pub fn flistxattr(fd: Fd, list: *mut u8, size: usize) -> LinuxResult<isize> {
     }
 
     match vfs::vfs_flistxattr(fd) {
-        Ok(data) => Ok(copy_xattr_value(&data, list, size)),
+        Ok(data) => copy_xattr_value(&data, list, size),
         Err(e) => Err(xattr_vfs_error(e)),
     }
 }

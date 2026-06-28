@@ -12,6 +12,7 @@ use spin::{Mutex, RwLock};
 pub mod context;
 pub mod dynamic_linker;
 pub mod elf_loader;
+pub mod exec;
 pub mod integration;
 pub mod ipc;
 pub mod scheduler;
