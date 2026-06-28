@@ -902,6 +902,287 @@ pub fn getpgrp() -> Pid {
     current_pcb().map(|pcb| pcb.pgid as i32).unwrap_or(0)
 }
 
+/// umask - set file creation mask
+///
+/// Sets the process file creation mask to `mask & 0o777` and returns
+/// the previous mask. The umask is used by open(2), creat(2), mkdir(2)
+/// and similar calls to mask out permission bits.
+pub fn umask(mask: u32) -> LinuxResult<u32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let new_mask = mask & 0o777;
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            let old = pcb.umask;
+            pcb.umask = new_mask;
+            old
+        })
+        .ok_or(LinuxError::ESRCH)
+}
+
+/// chroot - change root directory
+///
+/// Changes the root directory of the calling process to `path`. The
+/// caller must have the CAP_SYS_CHROOT capability (simplified: must be
+/// root). The current working directory is left unchanged.
+pub fn chroot(path: *const u8) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Only root may chroot
+    let pcb = current_pcb()?;
+    if pcb.uid != 0 && pcb.euid != 0 {
+        return Err(LinuxError::EPERM);
+    }
+
+    let path_str = crate::linux_compat::file_ops::c_str_to_string(path)?;
+
+    // Verify the path exists and is a directory
+    match crate::vfs::vfs_stat(&path_str) {
+        Ok(stat) => {
+            if stat.inode_type != crate::vfs::InodeType::Directory {
+                return Err(LinuxError::ENOTDIR);
+            }
+            let pid = process::current_pid();
+            if process::get_process_manager()
+                .with_process_mut(pid, |pcb| {
+                    pcb.root_dir = path_str.clone();
+                })
+                .is_some()
+            {
+                Ok(0)
+            } else {
+                Err(LinuxError::ESRCH)
+            }
+        }
+        Err(e) => Err(crate::linux_compat::file_ops::vfs_error_to_linux(e)),
+    }
+}
+
+// =============================================================================
+// Interval timers (alarm, getitimer, setitimer)
+// =============================================================================
+
+/// ITIMER_REAL constant (the only itimer we support).
+const ITIMER_REAL: i32 = 0;
+
+/// Convert seconds to uptime milliseconds.
+fn secs_to_ms(secs: u32) -> u64 {
+    secs as u64 * 1000
+}
+
+/// Convert uptime milliseconds to seconds (truncated).
+fn ms_to_secs(ms: u64) -> u32 {
+    (ms / 1000) as u32
+}
+
+/// alarm - set an ITIMER_REAL alarm in seconds
+///
+/// Sets a real-time alarm that will deliver SIGALRM to the calling
+/// process after `seconds` seconds. If `seconds` is 0, any pending
+/// alarm is cancelled. Returns the number of seconds remaining until
+/// the previously scheduled alarm, or 0 if there was none.
+pub fn alarm(seconds: u32) -> LinuxResult<u32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let now_ms = crate::time::uptime_ms();
+    let process_mgr = process::get_process_manager();
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            // Compute remaining time on the previous alarm
+            let prev_remaining = if pcb.alarm_deadline > now_ms {
+                ms_to_secs(pcb.alarm_deadline - now_ms)
+            } else {
+                0
+            };
+
+            if seconds == 0 {
+                pcb.alarm_deadline = 0;
+                pcb.alarm_interval = 0;
+            } else {
+                pcb.alarm_deadline = now_ms + secs_to_ms(seconds);
+                pcb.alarm_interval = 0; // alarm() is one-shot
+            }
+
+            prev_remaining
+        })
+        .ok_or(LinuxError::ESRCH)
+}
+
+/// Check all processes for expired ITIMER_REAL alarms and deliver SIGALRM.
+///
+/// Called from the timer tick to fire any alarms whose deadline has
+/// passed. This bridges the per-process alarm state to signal delivery.
+pub fn fire_expired_alarms() {
+    let now_ms = crate::time::uptime_ms();
+    let process_mgr = process::get_process_manager();
+
+    // Collect pids that need SIGALRM delivery along with their new deadline.
+    let to_fire = process_mgr.collect_expired_alarms(now_ms);
+
+    for (pid, next_deadline) in to_fire {
+        // Update the deadline (re-arm for interval timers, clear for one-shot).
+        let _ = process_mgr.with_process_mut(pid, |pcb| {
+            pcb.alarm_deadline = next_deadline;
+        });
+        // Deliver SIGALRM (signal 14).
+        let _ = process_mgr.send_signal(pid, process::ipc::Signal::SIGALRM, 0);
+    }
+}
+
+/// setitimer - set or get an interval timer
+///
+/// Supports ITIMER_REAL. The new value's `it_value` is the initial
+/// expiration and `it_interval` is the reload interval, both in
+/// seconds+microseconds. If `old_value` is non-null, the previous
+/// timer value is written there.
+pub fn setitimer(
+    which: i32,
+    new_value: *const u8,
+    old_value: *mut u8,
+) -> LinuxResult<i32> {
+    inc_ops();
+
+    if which != ITIMER_REAL {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if new_value.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // struct itimerval { struct timeval it_interval; struct timeval it_value; }
+    // struct timeval { time_t tv_sec; suseconds_t tv_usec; }
+    // Both fields are i64 on x86_64 Linux, so each timeval is 16 bytes and
+    // itimerval is 32 bytes.
+    #[repr(C)]
+    struct Timeval {
+        tv_sec: i64,
+        tv_usec: i64,
+    }
+    #[repr(C)]
+    struct Itimerval {
+        it_interval: Timeval,
+        it_value: Timeval,
+    }
+
+    let new = unsafe { &*(new_value as *const Itimerval) };
+    if new.it_value.tv_sec < 0
+        || new.it_value.tv_usec < 0
+        || new.it_value.tv_usec >= 1_000_000
+        || new.it_interval.tv_sec < 0
+        || new.it_interval.tv_usec < 0
+        || new.it_interval.tv_usec >= 1_000_000
+    {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let pid = process::current_pid();
+    let now_ms = crate::time::uptime_ms();
+    let process_mgr = process::get_process_manager();
+
+    let (old_secs, old_interval_secs) = process_mgr
+        .with_process_mut(pid, |pcb| {
+            // Capture the previous timer value
+            let old_secs = if pcb.alarm_deadline > now_ms {
+                ms_to_secs(pcb.alarm_deadline - now_ms)
+            } else {
+                0
+            };
+            let old_interval_secs = ms_to_secs(pcb.alarm_interval);
+
+            // Arm the new timer
+            let initial_ms = secs_to_ms(new.it_value.tv_sec as u32)
+                + (new.it_value.tv_usec as u64 / 1000);
+            let interval_ms = secs_to_ms(new.it_interval.tv_sec as u32)
+                + (new.it_interval.tv_usec as u64 / 1000);
+
+            if initial_ms == 0 {
+                pcb.alarm_deadline = 0;
+                pcb.alarm_interval = 0;
+            } else {
+                pcb.alarm_deadline = now_ms + initial_ms;
+                pcb.alarm_interval = interval_ms;
+            }
+
+            (old_secs, old_interval_secs)
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    // Write the old value if requested
+    if !old_value.is_null() {
+        unsafe {
+            let old = &mut *(old_value as *mut Itimerval);
+            old.it_interval.tv_sec = old_interval_secs as i64;
+            old.it_interval.tv_usec = 0;
+            old.it_value.tv_sec = old_secs as i64;
+            old.it_value.tv_usec = 0;
+        }
+    }
+
+    Ok(0)
+}
+
+/// getitimer - get the current value of an interval timer
+///
+/// Supports ITIMER_REAL. Writes the timer's current value (remaining
+/// time until expiration and reload interval) to `curr_value`.
+pub fn getitimer(which: i32, curr_value: *mut u8) -> LinuxResult<i32> {
+    inc_ops();
+
+    if which != ITIMER_REAL {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if curr_value.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let pid = process::current_pid();
+    let now_ms = crate::time::uptime_ms();
+    let process_mgr = process::get_process_manager();
+
+    let (remaining_ms, interval_ms) = process_mgr
+        .with_process_mut(pid, |pcb| {
+            let remaining = if pcb.alarm_deadline > now_ms {
+                pcb.alarm_deadline - now_ms
+            } else {
+                0
+            };
+            (remaining, pcb.alarm_interval)
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    #[repr(C)]
+    struct Timeval {
+        tv_sec: i64,
+        tv_usec: i64,
+    }
+    #[repr(C)]
+    struct Itimerval {
+        it_interval: Timeval,
+        it_value: Timeval,
+    }
+
+    unsafe {
+        let curr = &mut *(curr_value as *mut Itimerval);
+        curr.it_interval.tv_sec = (interval_ms / 1000) as i64;
+        curr.it_interval.tv_usec = ((interval_ms % 1000) * 1000) as i64;
+        curr.it_value.tv_sec = (remaining_ms / 1000) as i64;
+        curr.it_value.tv_usec = ((remaining_ms % 1000) * 1000) as i64;
+    }
+
+    Ok(0)
+}
+
 //
 // Scheduling and Priority Operations
 //

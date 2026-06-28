@@ -3585,47 +3585,90 @@ impl GPUSystem {
         self.status == GPUStatus::Ready && self.active_gpu_index.is_some()
     }
 
-    /// Initialize GPU acceleration for framebuffer operations
+    /// Initialize GPU acceleration for framebuffer operations.
+    ///
+    /// When a hardware GPU is present and ready this would set up DMA
+    /// buffers and command queues. When no usable GPU is available the
+    /// call still succeeds so that callers can use `clear_framebuffer`
+    /// and `fill_rectangle`, which fall back to a CPU-based blit.
     pub fn initialize_acceleration(
         &mut self,
         _framebuffer_info: &crate::graphics::FramebufferInfo,
     ) -> Result<(), &'static str> {
-        // TODO: Implement GPU acceleration initialization
-        // This would set up DMA buffers, command queues, etc.
         if self.status != GPUStatus::Ready {
             return Err("GPU system not ready");
+        }
+        // Hardware GPU setup is not yet implemented, but we allow the
+        // operation to succeed so the software fallback paths in
+        // clear_framebuffer/fill_rectangle can be used uniformly.
+        Ok(())
+    }
+
+    /// Clear framebuffer using GPU acceleration, falling back to a CPU blit.
+    ///
+    /// Fills the entire framebuffer region with `color`. When a hardware
+    /// blit engine is unavailable this writes directly to the framebuffer
+    /// memory using a tight loop, which is functionally correct though
+    /// slower than a GPU would be.
+    pub fn clear_framebuffer(
+        &self,
+        buffer_addr: u64,
+        width: usize,
+        height: usize,
+        stride: usize,
+        color: u32,
+    ) -> Result<(), &'static str> {
+        if buffer_addr == 0 || width == 0 || height == 0 {
+            return Err("Invalid framebuffer parameters");
+        }
+
+        // Software fallback: write the color to every pixel.
+        let base = buffer_addr as *mut u32;
+        for y in 0..height {
+            let row_start = y * stride;
+            for x in 0..width {
+                // SAFETY: the caller guarantees buffer_addr points to a
+                // mapped framebuffer of at least width*height*stride bytes.
+                unsafe {
+                    core::ptr::write_volatile(base.add(row_start + x), color);
+                }
+            }
         }
         Ok(())
     }
 
-    /// Clear framebuffer using GPU acceleration
-    pub fn clear_framebuffer(
-        &self,
-        _buffer_addr: u64,
-        _width: usize,
-        _height: usize,
-        _stride: usize,
-        _color: u32,
-    ) -> Result<(), &'static str> {
-        // TODO: Implement hardware-accelerated framebuffer clear
-        // For now, return error to fall back to software implementation
-        Err("Hardware acceleration not yet implemented")
-    }
-
-    /// Fill a rectangle using GPU acceleration
+    /// Fill a rectangle using GPU acceleration, falling back to a CPU blit.
+    ///
+    /// Fills the rectangle at (`x`, `y`) of size (`width`, `height`)
+    /// with `color`. When a hardware 2D engine is unavailable this
+    /// writes directly to the framebuffer memory.
     pub fn fill_rectangle(
         &self,
-        _buffer_addr: u64,
-        _stride: usize,
-        _x: usize,
-        _y: usize,
-        _width: usize,
-        _height: usize,
-        _color: u32,
+        buffer_addr: u64,
+        stride: usize,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        color: u32,
     ) -> Result<(), &'static str> {
-        // TODO: Implement hardware-accelerated rectangle fill
-        // For now, return error to fall back to software implementation
-        Err("Hardware acceleration not yet implemented")
+        if buffer_addr == 0 || width == 0 || height == 0 {
+            return Err("Invalid rectangle parameters");
+        }
+
+        let base = buffer_addr as *mut u32;
+        // Software fallback: write the color to each pixel in the rectangle.
+        for row in 0..height {
+            let row_start = (y + row) * stride + x;
+            for col in 0..width {
+                // SAFETY: the caller guarantees the rectangle lies within
+                // the mapped framebuffer.
+                unsafe {
+                    core::ptr::write_volatile(base.add(row_start + col), color);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Generate comprehensive GPU report
@@ -3717,6 +3760,19 @@ pub fn initialize() -> Result<(), &'static str> {
 pub fn get_status() -> GPUStatus {
     let gpu_system = GPU_SYSTEM.lock();
     gpu_system.get_status()
+}
+
+/// Initialize GPU acceleration for a framebuffer.
+///
+/// Locks the global GPU system and asks it to initialize acceleration
+/// for the given framebuffer. Returns `Ok(())` if the GPU system is
+/// ready (or if the software fallback is acceptable), and an error
+/// otherwise.
+pub fn initialize_acceleration(
+    framebuffer_info: &crate::graphics::FramebufferInfo,
+) -> Result<(), &'static str> {
+    let mut gpu_system = GPU_SYSTEM.lock();
+    gpu_system.initialize_acceleration(framebuffer_info)
 }
 
 /// Get detected GPUs

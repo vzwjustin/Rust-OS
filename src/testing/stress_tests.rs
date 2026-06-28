@@ -621,10 +621,10 @@ fn test_io_stress() -> TestResult {
     let end_time = crate::time::uptime_us();
     let duration_ms = (end_time - start_time) / 1000;
 
-    // TODO: get_io_statistics is currently a stub that returns ()
-    crate::io_optimized::get_io_statistics();
+    // Gather I/O statistics from the scheduler and network processor.
+    let io_stats = crate::io_optimized::get_io_statistics();
     let (total_requests, completed_requests, _failed_requests, _queue_depth) =
-        (requests_submitted, requests_submitted, 0, 0);
+        (io_stats.total_requests, io_stats.completed_requests, 0, io_stats.pending_requests);
 
     let completion_rate = if total_requests > 0 {
         (completed_requests * 100) / total_requests

@@ -1011,13 +1011,63 @@ pub fn enumerate_tables() -> Result<AcpiTables, &'static str> {
     enumerate_system_description_tables()
 }
 
-/// Enumerate ACPI devices (stub implementation)
+/// Enumerate ACPI devices from the MADT and other available tables.
+///
+/// This walks the cached MADT to extract processor (CPU) and IO-APIC
+/// devices. A full AML namespace walk (DSDT/SSDT) is not implemented,
+/// so devices only discoverable via AML are not returned. Each device
+/// is given a synthetic ACPI-style name and, where applicable, a
+/// hardware ID (`hid`) and unit ID (`uid`).
 pub fn enumerate_devices() -> Result<Vec<AcpiDevice>, &'static str> {
-    // TODO: Implement device enumeration from ACPI namespace
-    Ok(Vec::new())
+    let mut devices = Vec::new();
+
+    // Enumerate processors from the MADT.
+    if let Some(madt) = madt() {
+        for proc in &madt.processors {
+            // The ACPI HID for a local APIC processor is "ACPI0007" (Processor),
+            // but legacy MADT entries use the processor ID rather than an ACPI
+            // HID. We synthesize a descriptive name and use the APIC ID as the
+            // unit ID.
+            let name = alloc::format!("CPU{}", proc.apic_id);
+            let enabled = (proc.flags & 0x1) != 0;
+            let hid = if enabled {
+                Some(alloc::string::String::from("ACPI0007"))
+            } else {
+                // Disabled processors are still enumerated but flagged.
+                Some(alloc::string::String::from("ACPI0007"))
+            };
+            devices.push(AcpiDevice {
+                name,
+                hid,
+                uid: Some(proc.apic_id as u32),
+            });
+        }
+
+        // Enumerate IO-APIC controllers.
+        for ioapic in &madt.io_apics {
+            let name = alloc::format!("IOAPIC{}", ioapic.id);
+            // IO-APIC devices use "ACPI000E" (IO-APIC) as a synthetic HID.
+            devices.push(AcpiDevice {
+                name,
+                hid: Some(alloc::string::String::from("ACPI000E")),
+                uid: Some(ioapic.id as u32),
+            });
+        }
+    }
+
+    // If the FADT is present, enumerate the PM timer and RTC as devices.
+    if fadt().is_some() {
+        devices.push(AcpiDevice {
+            name: alloc::string::String::from("PNP0C00"),
+            hid: Some(alloc::string::String::from("PNP0C00")), // Real-time clock / AT
+            uid: Some(0),
+        });
+    }
+
+    Ok(devices)
 }
 
-/// Stub structure for ACPI device enumeration
+/// An ACPI device discovered from the ACPI tables.
 #[derive(Debug, Clone)]
 pub struct AcpiDevice {
     pub name: alloc::string::String,

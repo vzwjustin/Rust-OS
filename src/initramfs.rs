@@ -296,16 +296,40 @@ pub unsafe fn try_exec_init() -> ! {
 
 /// Load initramfs at kernel boot
 pub fn init_initramfs() -> Result<(), InitramfsError> {
-    // Skip initramfs extraction for now to avoid decompression issues
-    // TODO: Fix gzip decompression for large files
     if INITRAMFS_DATA.is_empty() {
         return Err(InitramfsError::NoInitramfs);
     }
 
-    // Return success without actually extracting
-    // The system will use minimal filesystem instead
-    crate::serial_println!("initramfs: Skipping extraction (3.3MB compressed)");
-    Ok(())
+    // Decompress (if needed) and extract the CPIO archive into the VFS.
+    // decompress_gzip streams the payload through miniz_oxide in 32 KiB
+    // chunks so multi-megabyte archives do not require a monolithic
+    // intermediate buffer.
+    crate::serial_println!(
+        "initramfs: Extracting {} bytes",
+        INITRAMFS_DATA.len()
+    );
+    match extract_initramfs() {
+        Ok(info) => {
+            crate::serial_println!(
+                "initramfs: Extracted {:?} ({} bytes source)",
+                info.format,
+                info.size
+            );
+            Ok(())
+        }
+        Err(InitramfsError::DecompressionFailed) => {
+            // Decompression failed — fall back to the minimal filesystem
+            // rather than halting boot. The caller can retry later.
+            crate::serial_println!(
+                "initramfs: Decompression failed, using minimal filesystem"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            crate::serial_println!("initramfs: Extraction failed: {:?}", e);
+            Err(e)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

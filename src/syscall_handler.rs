@@ -27,6 +27,7 @@ pub fn dispatch_syscall(
     arg5: u64,
     arg6: u64,
 ) -> i64 {
+    crate::performance_monitor::record_syscall();
     let result = match SyscallNumber::from_u64(syscall_num) {
         // File operations
         SyscallNumber::Read => syscall_read(arg1 as i32, arg2 as *mut u8, arg3 as usize),
@@ -522,7 +523,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Fallocate => {
             syscall_fallocate(arg1 as i32, arg2 as i32, arg3 as i64, arg4 as i64)
         }
-        SyscallNumber::Flock => 0, // stub - no file locking yet
+        SyscallNumber::Flock => syscall_flock(arg1 as i32, arg2 as i32),
         SyscallNumber::Pause => syscall_pause(),
         SyscallNumber::Alarm => syscall_alarm(arg1 as u32),
         SyscallNumber::Getitimer => syscall_getitimer(arg1 as i32, arg2 as *mut u8),
@@ -1065,12 +1066,18 @@ fn syscall_getsid(pid: i32) -> i64 {
         Err(e) => -(e as i64),
     }
 }
-fn syscall_umask(_mask: u32) -> i64 {
-    0o022
-} // return previous umask (stub)
-fn syscall_chroot(_path: *const u8) -> i64 {
-    0
-} // stub
+fn syscall_umask(mask: u32) -> i64 {
+    match crate::linux_compat::process_ops::umask(mask) {
+        Ok(old) => old as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_chroot(path: *const u8) -> i64 {
+    match crate::linux_compat::process_ops::chroot(path) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
 
 // ── Resource limit syscalls ──
 
@@ -2145,18 +2152,36 @@ fn syscall_fallocate(fd: i32, mode: i32, offset: i64, len: i64) -> i64 {
         Err(e) => -(e as i64),
     }
 }
+fn syscall_flock(fd: i32, operation: i32) -> i64 {
+    match crate::linux_compat::file_ops::flock(fd, operation) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
 fn syscall_pause() -> i64 {
-    0
-} // stub - would block until signal
-fn syscall_alarm(_seconds: u32) -> i64 {
-    0
-} // stub
-fn syscall_getitimer(_which: i32, _curr_value: *mut u8) -> i64 {
-    0
-} // stub
-fn syscall_setitimer(_which: i32, _new_value: *const u8, _old_value: *mut u8) -> i64 {
-    0
-} // stub
+    // pause() blocks until a signal is delivered. Without a wait queue we
+    // return EINTR (4) to indicate the call was interrupted, matching the
+    // behavior when no signal handler is installed.
+    -4 // EINTR
+}
+fn syscall_alarm(seconds: u32) -> i64 {
+    match crate::linux_compat::process_ops::alarm(seconds) {
+        Ok(prev) => prev as i64,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_getitimer(which: i32, curr_value: *mut u8) -> i64 {
+    match crate::linux_compat::process_ops::getitimer(which, curr_value) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
+fn syscall_setitimer(which: i32, new_value: *const u8, old_value: *mut u8) -> i64 {
+    match crate::linux_compat::process_ops::setitimer(which, new_value, old_value) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
 
 /// INT 0x80 handler entry point
 ///

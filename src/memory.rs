@@ -3606,7 +3606,7 @@ pub fn unmap_page(addr: usize) -> Result<(), &'static str> {
 pub fn check_memory_access(
     addr: usize,
     size: usize,
-    _write: bool,
+    write: bool,
     privilege_level: u8,
 ) -> Result<bool, &'static str> {
     // Basic validation
@@ -3625,25 +3625,31 @@ pub fn check_memory_access(
         }
     }
 
-    // TODO: Check page table entries to verify actual permissions
-    // For now, we'll do basic range checking
-
     // Check if the memory manager is initialized
     if let Some(memory_manager) = get_memory_manager() {
         let page_table_manager = memory_manager.page_table_manager.lock();
 
-        // Check if the pages are mapped
+        // Check if the pages are mapped and have the required permissions
         for offset in (0..size).step_by(4096) {
             let check_addr = addr + offset;
             let virt_addr = VirtAddr::new(check_addr as u64);
             let page: Page<Size4KiB> = Page::containing_address(virt_addr);
 
-            // Check if page is mapped
-            if page_table_manager.mapper.translate_page(page).is_err() {
+            // Check if page is mapped and retrieve its flags
+            let flags = match page_table_manager.get_flags(page) {
+                Some(f) => f,
+                None => return Ok(false),
+            };
+
+            // Verify write permission if this is a write access
+            if write && !flags.contains(PageTableFlags::WRITABLE) {
                 return Ok(false);
             }
 
-            // TODO: Check page table flags for write permissions if write == true
+            // Verify user-accessible permission for user-mode access
+            if privilege_level == 3 && !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return Ok(false);
+            }
         }
 
         Ok(true)

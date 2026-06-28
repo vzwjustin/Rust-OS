@@ -119,7 +119,7 @@ fn inc_ops() {
 }
 
 /// Convert VFS error to Linux error code
-fn vfs_error_to_linux(err: VfsError) -> LinuxError {
+pub(crate) fn vfs_error_to_linux(err: VfsError) -> LinuxError {
     match err {
         VfsError::NotFound => LinuxError::ENOENT,
         VfsError::PermissionDenied => LinuxError::EACCES,
@@ -175,7 +175,7 @@ fn linux_flags_to_vfs(flags: i32) -> u32 {
 }
 
 /// Helper to convert null-terminated C string to Rust string
-fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
+pub(crate) fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
@@ -1290,6 +1290,99 @@ pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
 
     let _ = mode;
     Ok(0)
+}
+
+// =============================================================================
+// Advisory file locking (flock)
+// =============================================================================
+
+/// flock(2) operation flags
+const LOCK_SH: i32 = 1; // Shared lock
+const LOCK_EX: i32 = 2; // Exclusive lock
+const LOCK_NB: i32 = 4; // Non-blocking
+const LOCK_UN: i32 = 8; // Unlock
+
+use alloc::collections::BTreeMap;
+use spin::Mutex;
+
+/// Global advisory lock table keyed by (pid, fd).
+///
+/// Each entry records the lock mode held by a process on a file
+/// descriptor. Conflicts are detected by scanning for overlapping
+/// locks from *other* processes. This is a simplified flock
+/// implementation: it tracks per-(pid,fd) state and enforces mutual
+/// exclusion between independent processes but does not track the
+/// underlying inode, so locks on the same file via different fds in
+/// the same process are not reconciled (matching minimal flock
+/// semantics).
+static FLOCK_TABLE: Mutex<BTreeMap<(i32, i32), i32>> = Mutex::new(BTreeMap::new());
+
+/// flock - apply or remove an advisory lock on an open file
+///
+/// # Arguments
+/// * `fd` - Open file descriptor
+/// * `operation` - One of LOCK_SH, LOCK_EX, LOCK_UN, optionally ORed with LOCK_NB
+///
+/// # Returns
+/// * `Ok(0)` on success
+/// * `Err(EWOULDBLOCK)` if LOCK_NB was requested and the lock would block
+/// * `Err(EBADF)` if `fd` is negative
+/// * `Err(EINVAL)` if `operation` is invalid
+pub fn flock(fd: Fd, operation: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if fd < 0 {
+        return Err(LinuxError::EBADF);
+    }
+
+    let pid = process::current_pid() as i32;
+    let mode = operation & !LOCK_NB;
+    let non_blocking = (operation & LOCK_NB) != 0;
+
+    match mode {
+        LOCK_UN => {
+            FLOCK_TABLE.lock().remove(&(pid, fd));
+            Ok(0)
+        }
+        LOCK_SH | LOCK_EX => {
+            let mut table = FLOCK_TABLE.lock();
+
+            // Check for conflicts with locks held by other processes.
+            // A shared lock conflicts with any exclusive lock from another pid.
+            // An exclusive lock conflicts with any lock (shared or exclusive)
+            // from another pid.
+            for (&(holder_pid, holder_fd), &holder_mode) in table.iter() {
+                if holder_pid == pid && holder_fd == fd {
+                    continue; // our own lock — we'll replace it
+                }
+                // Without inode tracking we conservatively treat any other
+                // lock on the same fd number as a potential conflict. In
+                // practice fd numbers are per-process so collisions across
+                // processes on the same file are not detected here; this is
+                // a known limitation of this minimal implementation.
+                let conflict = match (mode, holder_mode) {
+                    (LOCK_EX, _) => true,
+                    (LOCK_SH, LOCK_EX) => true,
+                    _ => false,
+                };
+                if conflict {
+                    if non_blocking {
+                        return Err(super::EWOULDBLOCK);
+                    }
+                    // Blocking flock would wait until the lock is released.
+                    // We do not have a wait queue here, so return EWOULDBLOCK
+                    // to avoid an infinite spin. Callers that truly need
+                    // blocking behavior should retry.
+                    return Err(super::EWOULDBLOCK);
+                }
+            }
+
+            // Grant the lock (replacing any existing lock we hold on this fd).
+            table.insert((pid, fd), mode);
+            Ok(0)
+        }
+        _ => Err(LinuxError::EINVAL),
+    }
 }
 
 #[cfg(any())]

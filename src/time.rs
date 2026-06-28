@@ -739,6 +739,9 @@ pub fn timer_tick() {
         crate::user_sched::note_schedule_tick();
     }
 
+    // Fire any expired ITIMER_REAL alarms (delivers SIGALRM)
+    crate::linux_compat::process_ops::fire_expired_alarms();
+
     // Process any scheduled software timers
     process_scheduled_timers();
 }

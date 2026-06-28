@@ -874,10 +874,7 @@ fn enable_hardware_acceleration(info: &FramebufferInfo) -> Result<(), &'static s
         initialize_2d_engine()?;
 
         // Initialize 3D acceleration if available
-        // TODO: Implement mutable GPU manager access
-        // if let Some(gpu_manager) = crate::gpu::get_gpu_manager() {
-        //     gpu_manager.initialize_acceleration(info)?;
-        // }
+        let _ = crate::gpu::initialize_acceleration(info);
     }
 
     Ok(())
