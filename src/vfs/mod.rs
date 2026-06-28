@@ -19,6 +19,7 @@ pub mod drmfs;
 pub mod file_descriptor;
 pub mod procfs;
 pub mod ramfs;
+pub mod sockfs;
 
 #[cfg(test)]
 pub mod examples;
@@ -356,6 +357,7 @@ impl Vfs {
         let _ = devfs::install_dev(Arc::clone(&root));
         let dev_root = root.lookup("dev").unwrap_or_else(|_| Arc::clone(&root));
         let _ = drmfs::install_drm_dev(&dev_root);
+        let _ = crate::gnome_overlay::install(Arc::clone(&root));
 
         Ok(())
     }

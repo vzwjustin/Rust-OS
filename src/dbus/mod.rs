@@ -1306,6 +1306,111 @@ pub mod bus_methods {
     }
 }
 
+// ── Wire Request Dispatch ───────────────────────────────────────────────
+
+/// Next connection id handed out by the in-kernel session bus.
+static NEXT_CONN_ID: AtomicU32 = AtomicU32::new(2);
+
+/// Process a D-Bus wire-format request and return a serialized reply.
+///
+/// Used by the GNOME overlay's pre-bound session bus socket. Returns `None`
+/// when the buffer does not contain a complete or recognized message.
+pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
+    let mut unmarshaler = Unmarshaler::new(data).ok()?;
+    let header = unmarshaler.parse_header().ok()?;
+
+    if header.msg_type != MessageType::MethodCall {
+        return None;
+    }
+
+    let iface = header.interface()?;
+    let member = header.member()?;
+    let serial = header.serial;
+    let destination = header.destination().unwrap_or(BUS_NAME);
+
+    if destination != BUS_NAME {
+        return None;
+    }
+
+    match (iface, member) {
+        (BUS_NAME, "Hello") => {
+            let mut bus = BUS.write();
+            let name = bus.connect().ok()?;
+            let mut reply = Message::new_method_return(
+                bus.next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
+            reply.body = vec![Value::String(name.clone())];
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "ListNames") => {
+            let names = bus_methods::list_names();
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("as".to_string()));
+            reply.body = vec![Value::Array(
+                "s".to_string(),
+                names.into_iter().map(Value::String).collect(),
+            )];
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "RequestName") => {
+            let signature = header.signature().unwrap_or("");
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+
+            let requested_name = match body.first() {
+                Some(Value::String(name)) => name.as_str(),
+                _ => return None,
+            };
+
+            let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+            let status = match BUS.write().request_name(conn_id, requested_name) {
+                Ok(()) => 1u32, // DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER
+                Err(_) => 3u32, // DBUS_REQUEST_NAME_REPLY_EXISTS
+            };
+
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("u".to_string()));
+            reply.body = vec![Value::UInt32(status)];
+            Some(marshal_message(&reply))
+        }
+        (BUS_NAME, "AddMatch") | (BUS_NAME, "RemoveMatch") => {
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            Some(marshal_message(&reply))
+        }
+        _ => None,
+    }
+}
+
+fn marshal_message(msg: &Message) -> Vec<u8> {
+    let mut marshaler = Marshaler::new(Endianness::Little);
+    marshaler.marshal_message(msg);
+    marshaler.buf
+}
+
 // ── Smoke Test ──────────────────────────────────────────────────────────
 
 /// Verify D-Bus marshaling round-trip works.
@@ -1351,10 +1456,32 @@ pub fn smoke_check() -> Result<(), &'static str> {
     }
 
     // Test bus initialization
+    init()?;
     let mut bus = MessageBus::new();
     bus.init();
     if !bus.is_initialized() {
         return Err("Bus failed to initialize");
+    }
+
+    // Test in-kernel wire dispatch for Hello
+    let hello = Message::new_method_call(
+        42,
+        BUS_NAME,
+        BUS_PATH,
+        BUS_NAME,
+        "Hello",
+    );
+    let hello_bytes = marshal_message(&hello);
+    let reply = process_wire_request(&hello_bytes).ok_or("Hello dispatch produced no reply")?;
+    if reply.is_empty() {
+        return Err("Hello reply was empty");
+    }
+    let mut reply_unmarshaler = Unmarshaler::new(&reply).map_err(|_| "Hello reply parse failed")?;
+    let reply_header = reply_unmarshaler
+        .parse_header()
+        .map_err(|_| "Hello reply header parse failed")?;
+    if reply_header.msg_type != MessageType::MethodReturn {
+        return Err("Hello reply was not a method return");
     }
 
     // Test connection

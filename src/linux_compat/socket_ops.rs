@@ -5,9 +5,11 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
-use core::sync::atomic::{AtomicU64, Ordering};
-use spin::RwLock;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::{Mutex, RwLock};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
@@ -26,22 +28,125 @@ const MAX_SOCKET_IOV: usize = 1024;
 // AF_UNIX (Unix domain socket) support
 // =============================================================================
 
-/// Global registry of bound AF_UNIX socket paths to pipe IDs.
-/// When a process binds a Unix socket to a path, we create an IPC pipe
-/// and register the listening end here. Connecting processes look up
-/// the path and get the other end of the pipe.
-static UNIX_SOCKET_REGISTRY: RwLock<BTreeMap<String, u32>> = RwLock::new(BTreeMap::new());
+/// Role of a pre-bound runtime socket used by the GNOME overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnixSocketRole {
+    Generic,
+    DbusSession,
+    WaylandDisplay,
+}
+
+/// Global registry of bound AF_UNIX socket paths to listener state.
+static UNIX_SOCKET_REGISTRY: RwLock<BTreeMap<String, Arc<UnixPathListener>>> =
+    RwLock::new(BTreeMap::new());
 
 /// Per-fd Unix socket state: the pipe ID used for data transport and
 /// whether this end is the listener or connector.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct UnixSocketEnd {
     pipe_id: u32,
     is_listener: bool,
+    path: Option<String>,
+    role: UnixSocketRole,
+}
+
+/// Listener state for a bound Unix domain socket path.
+struct UnixPathListener {
+    path: String,
+    role: UnixSocketRole,
+    listening: AtomicBool,
+    pending: Mutex<Vec<u32>>,
+}
+
+impl UnixPathListener {
+    fn new(path: String, role: UnixSocketRole, listening: bool) -> Arc<Self> {
+        Arc::new(Self {
+            path,
+            role,
+            listening: AtomicBool::new(listening),
+            pending: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn is_listening(&self) -> bool {
+        self.listening.load(Ordering::Acquire)
+    }
+
+    fn set_listening(&self, listening: bool) {
+        self.listening.store(listening, Ordering::Release);
+    }
+
+    fn push_pending(&self, pipe_id: u32) {
+        self.pending.lock().push(pipe_id);
+    }
+
+    fn pop_pending(&self) -> Option<u32> {
+        let mut pending = self.pending.lock();
+        if pending.is_empty() {
+            None
+        } else {
+            Some(pending.remove(0))
+        }
+    }
 }
 
 /// Map fd → Unix socket endpoint state
 static UNIX_SOCKET_FDS: RwLock<BTreeMap<i32, UnixSocketEnd>> = RwLock::new(BTreeMap::new());
+
+/// Map listener fd → bound path (for accept/listen)
+static UNIX_LISTENER_FDS: RwLock<BTreeMap<i32, String>> = RwLock::new(BTreeMap::new());
+
+/// Pre-bind a Unix socket path for kernel-provided services (D-Bus, Wayland).
+pub fn prebind_unix_socket(path: &str, role: UnixSocketRole) -> Result<(), &'static str> {
+    if path.is_empty() {
+        return Err("Unix socket path must not be empty");
+    }
+
+    let mut registry = UNIX_SOCKET_REGISTRY.write();
+    if registry.contains_key(path) {
+        return Ok(());
+    }
+
+    registry.insert(
+        String::from(path),
+        UnixPathListener::new(String::from(path), role, true),
+    );
+    Ok(())
+}
+
+/// Returns true when a path has been pre-bound or bound by userspace.
+pub fn is_prebound(path: &str) -> bool {
+    UNIX_SOCKET_REGISTRY.read().contains_key(path)
+}
+
+fn lookup_listener(path: &str) -> Option<Arc<UnixPathListener>> {
+    UNIX_SOCKET_REGISTRY.read().get(path).cloned()
+}
+
+fn allocate_connection_pipe() -> Result<u32, LinuxError> {
+    let ipc = get_ipc_manager();
+    let (pipe_id, _) = ipc.create_pipe().map_err(|_| LinuxError::EMFILE)?;
+    Ok(pipe_id)
+}
+
+fn register_connector(sockfd: Fd, pipe_id: u32, path: &str, role: UnixSocketRole) {
+    UNIX_SOCKET_FDS.write().insert(
+        sockfd,
+        UnixSocketEnd {
+            pipe_id,
+            is_listener: false,
+            path: Some(String::from(path)),
+            role,
+        },
+    );
+}
+
+fn maybe_dispatch_dbus_request(data: &[u8], pipe_id: u32) {
+    if let Some(reply) = crate::dbus::process_wire_request(data) {
+        let ipc = get_ipc_manager();
+        let _ = ipc.pipe_write(pipe_id, &reply);
+    }
+}
 
 /// Initialize socket operations subsystem
 pub fn init_socket_operations() {
@@ -232,7 +337,7 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
     }
 
     // Check for AF_UNIX socket
-    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).copied() {
+    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
         if len == 0 {
             return Ok(0);
         }
@@ -242,7 +347,12 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         let ipc = get_ipc_manager();
         let _ = flags;
         match ipc.pipe_write(unix_end.pipe_id, &data) {
-            Ok(n) => return Ok(n as isize),
+            Ok(n) => {
+                if unix_end.role == UnixSocketRole::DbusSession {
+                    maybe_dispatch_dbus_request(&data[..n], unix_end.pipe_id);
+                }
+                return Ok(n as isize);
+            }
             Err(_) => return Err(LinuxError::EPIPE),
         }
     }
@@ -366,7 +476,7 @@ pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isi
     }
 
     // Check for AF_UNIX socket
-    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).copied() {
+    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
         if len == 0 {
             return Ok(0);
         }
@@ -1005,21 +1115,21 @@ pub fn bind(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i32>
             return Err(LinuxError::EADDRINUSE);
         }
 
-        // Create an IPC pipe for the listener
-        let ipc = get_ipc_manager();
-        let (pipe_id, _) = ipc.create_pipe().map_err(|_| LinuxError::EMFILE)?;
+        let listener = UnixPathListener::new(path_str.clone(), UnixSocketRole::Generic, false);
+        UNIX_SOCKET_REGISTRY
+            .write()
+            .insert(path_str.clone(), listener);
 
-        // Register the path → pipe_id mapping
-        UNIX_SOCKET_REGISTRY.write().insert(path_str, pipe_id);
-
-        // Track this fd as a Unix socket listener
         UNIX_SOCKET_FDS.write().insert(
             sockfd,
             UnixSocketEnd {
-                pipe_id,
+                pipe_id: 0,
                 is_listener: true,
+                path: Some(path_str.clone()),
+                role: UnixSocketRole::Generic,
             },
         );
+        UNIX_LISTENER_FDS.write().insert(sockfd, path_str);
 
         return Ok(0);
     }
@@ -1065,20 +1175,23 @@ pub fn connect(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i
                 .trim_end_matches('\0'),
         );
 
-        // Look up the bound socket
-        let pipe_id = {
+        // Look up the bound socket listener
+        let listener = {
             let registry = UNIX_SOCKET_REGISTRY.read();
-            *registry.get(&path_str).ok_or(LinuxError::ECONNREFUSED)?
+            registry
+                .get(&path_str)
+                .cloned()
+                .ok_or(LinuxError::ECONNREFUSED)?
         };
 
-        // Track this fd as a Unix socket connector
-        UNIX_SOCKET_FDS.write().insert(
-            sockfd,
-            UnixSocketEnd {
-                pipe_id,
-                is_listener: false,
-            },
-        );
+        if !listener.is_listening() {
+            return Err(LinuxError::ECONNREFUSED);
+        }
+
+        let pipe_id = allocate_connection_pipe()?;
+        listener.push_pending(pipe_id);
+
+        register_connector(sockfd, pipe_id, &path_str, listener.role);
 
         return Ok(0);
     }
@@ -1102,6 +1215,15 @@ pub fn listen(sockfd: Fd, backlog: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
+    if let Some(path) = UNIX_LISTENER_FDS.read().get(&sockfd).cloned() {
+        if let Some(listener) = lookup_listener(&path) {
+            listener.set_listening(true);
+            let _ = backlog;
+            return Ok(0);
+        }
+        return Err(LinuxError::EINVAL);
+    }
+
     let socket_id = fd_to_socket_id(sockfd)?;
     let mut sock = net::network_stack()
         .get_socket(socket_id)
@@ -1114,6 +1236,25 @@ pub fn listen(sockfd: Fd, backlog: i32) -> LinuxResult<i32> {
 /// accept - accept a connection on a socket
 pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult<Fd> {
     inc_ops();
+
+    if let Some(path) = UNIX_LISTENER_FDS.read().get(&sockfd).cloned() {
+        let listener = lookup_listener(&path).ok_or(LinuxError::EINVAL)?;
+        let pipe_id = listener.pop_pending().ok_or(LinuxError::EAGAIN)?;
+
+        let inode = crate::vfs::get_vfs()
+            .lookup("/")
+            .map_err(|_| LinuxError::ENOMEM)?;
+        let client_fd = crate::vfs::vfs_open_special(inode, 0, FdKind::Regular)
+            .map_err(|_| LinuxError::EMFILE)?;
+
+        register_connector(client_fd, pipe_id, &path, listener.role);
+
+        if !addr.is_null() && !addrlen.is_null() {
+            let _ = (addr, addrlen);
+        }
+
+        return Ok(client_fd);
+    }
 
     let socket_id = fd_to_socket_id(sockfd)?;
     let mut sock = net::network_stack()

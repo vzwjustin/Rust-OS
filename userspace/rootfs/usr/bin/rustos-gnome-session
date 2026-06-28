@@ -67,6 +67,11 @@ start_session_bus() {
         return 0
     fi
 
+    if [ -e "$bus_path" ]; then
+        status "ready: D-Bus session bus path present ($bus_path)"
+        return 0
+    fi
+
     if have_command dbus-daemon; then
         dbus-daemon --session --fork --address="$DBUS_SESSION_BUS_ADDRESS" >/dev/null 2>&1 || true
         if [ -S "$bus_path" ]; then

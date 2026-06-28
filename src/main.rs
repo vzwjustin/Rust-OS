@@ -143,6 +143,7 @@ mod glib;
 mod glib_platform;
 mod glib_spawn;
 mod gnome;
+mod gnome_overlay;
 // Include GNOME foundation subsystems
 mod dbus;
 mod user_sched;

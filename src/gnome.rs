@@ -107,10 +107,12 @@ pub fn probe() -> GnomeReadiness {
         } else {
             GnomeCapabilityState::Blocked("Linux userspace ABI is not initialized")
         },
-        dbus: if crate::dbus::is_ready() {
+        dbus: if crate::dbus::is_ready() && crate::gnome_overlay::is_ready() {
             GnomeCapabilityState::Ready
-        } else {
+        } else if !crate::dbus::is_ready() {
             GnomeCapabilityState::Blocked("D-Bus message bus is not initialized")
+        } else {
+            GnomeCapabilityState::Blocked("GNOME runtime overlay is not installed")
         },
         wayland: if crate::wayland::is_ready() {
             GnomeCapabilityState::Ready
