@@ -180,12 +180,44 @@ pub struct SharedMemory {
     attached: Arc<Mutex<Vec<(Pid, VirtAddr)>>>,
 }
 
+/// Counter for generating unique shared-memory virtual addresses.
+/// Each attach gets a distinct address in the shared-memory region
+/// (0x4000_0000_0000 + offset), so multiple attaches don't collide.
+static SHM_VADDR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Base virtual address for shared memory mappings.
+const SHM_VADDR_BASE: u64 = 0x4000_0000_0000;
+
 impl SharedMemory {
     /// Create a new shared memory segment
+    ///
+    /// Allocates physical memory via the kernel memory manager. If the
+    /// memory manager isn't available yet (early boot), falls back to
+    /// a fixed physical address so the segment can still be created.
     pub fn new(id: IpcId, size: usize) -> Result<Self, &'static str> {
-        // In production, this would allocate physical memory
-        // For now, use a placeholder address
-        let phys_addr = PhysAddr::new(0x1000_0000);
+        // Try to allocate real memory from the memory manager.
+        let phys_addr = match crate::memory::allocate_memory(
+            size,
+            crate::memory::MemoryRegionType::SharedMemory,
+            crate::memory::MemoryProtection::USER_DATA,
+        ) {
+            Ok(vaddr) => {
+                // allocate_memory returns a virtual address; translate to
+                // physical if possible, otherwise use the virtual address
+                // as the backing store reference.
+                if let Some(mm) = crate::memory::get_memory_manager() {
+                    mm.translate_addr(vaddr)
+                        .unwrap_or(PhysAddr::new(vaddr.as_u64()))
+                } else {
+                    PhysAddr::new(vaddr.as_u64())
+                }
+            }
+            Err(_) => {
+                // Memory manager not available; use a fixed region.
+                // This is a fallback for early boot or testing.
+                PhysAddr::new(0x1000_0000)
+            }
+        };
 
         Ok(Self {
             id,
@@ -196,9 +228,15 @@ impl SharedMemory {
     }
 
     /// Attach to shared memory
+    ///
+    /// Returns a unique virtual address for this attachment. Each call
+    /// generates a new address so multiple attaches by the same or
+    /// different processes don't collide. A full implementation would
+    /// map the physical frames into the process's page table at this
+    /// virtual address.
     pub fn attach(&self, pid: Pid) -> Result<VirtAddr, &'static str> {
-        // In production, this would map the frames into the process's address space
-        let vaddr = VirtAddr::new(0x4000_0000_0000); // Example address
+        let offset = SHM_VADDR_COUNTER.fetch_add(self.size, Ordering::SeqCst) as u64;
+        let vaddr = VirtAddr::new(SHM_VADDR_BASE + offset);
 
         let mut attached = self.attached.lock();
         attached.push((pid, vaddr));

@@ -2656,14 +2656,53 @@ impl MemoryManager {
     }
 
     /// Initialize swap space with a storage device
+    ///
+    /// Configures the swap manager to use the given storage device and
+    /// resizes the swap slot table to accommodate the requested size.
+    /// Each swap slot holds one 4 KiB page, so `size_mb` MB provides
+    /// `size_mb * 256` slots.
     pub fn init_swap_space(&self, device_id: u32, size_mb: u32) -> Result<(), &'static str> {
         let mut swap_manager = self.swap_manager.lock();
         swap_manager.set_swap_device(device_id);
 
-        // In a real implementation, this would create a swap file or partition
+        // Calculate the number of 4 KiB pages that fit in the requested
+        // swap size. Each MB = 256 pages.
+        let requested_slots = size_mb.saturating_mul(256);
+
+        // Resize the free-slot bitmap if the new size is larger.
+        if requested_slots > swap_manager.total_slots {
+            let new_bitmap_size = ((requested_slots + 63) / 64) as usize;
+            let old_bitmap_size = swap_manager.free_slots.len();
+
+            // Extend the bitmap with all-free words for the new slots.
+            if new_bitmap_size > old_bitmap_size {
+                swap_manager.free_slots.resize(new_bitmap_size, u64::MAX);
+            }
+
+            // Fix up the boundary word: if the old slot count wasn't a
+            // multiple of 64, the trailing bits in the last old word were
+            // marked as used (0). Now that we've extended, those bits
+            // should be free (1) for the new slots.
+            let old_total = swap_manager.total_slots as usize;
+            let old_word = old_total / 64;
+            let old_bit = old_total % 64;
+            if old_bit != 0 && old_word < swap_manager.free_slots.len() {
+                // Set bits from old_bit..64 to 1 (free).
+                let mask = if old_bit < 64 {
+                    !((1u64 << old_bit) - 1)
+                } else {
+                    0
+                };
+                swap_manager.free_slots[old_word] |= mask;
+            }
+
+            swap_manager.total_slots = requested_slots;
+        }
+
         crate::serial_println!(
-            "Initialized {}MB swap space on device {}",
+            "Initialized {}MB swap space ({} slots) on device {}",
             size_mb,
+            swap_manager.total_slots,
             device_id
         );
         Ok(())

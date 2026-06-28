@@ -42,6 +42,7 @@
 
 ## Agent-Specific Notes
 - If using automated tools, align with `CLAUDE.md` for build/test expectations and architecture context.
+- **Code reading**: When reading files for reasoning about stubs or code changes, use 30-40 lines of context above and below the target area. Wider context windows keep the agent grounded and make RTK's compressed output more useful.
 
 
 <!-- headroom:rtk-instructions -->
