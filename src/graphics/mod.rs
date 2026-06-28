@@ -12,6 +12,43 @@ pub use framebuffer::{
 
 use spin::{Mutex, Once};
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+/// FPS tracking state.
+///
+/// `record_frame` is called once per rendered frame. The counter is reset
+/// every second by comparing against the timestamp of the last reset; the
+/// most recent completed second's count is reported as the FPS value.
+static FPS_FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
+static FPS_LAST_RESET_MS: AtomicU64 = AtomicU64::new(0);
+static FPS_CURRENT: AtomicU32 = AtomicU32::new(0);
+
+/// Record a rendered frame for FPS calculation.
+///
+/// Should be called once per frame from the render loop. When at least
+/// 1000 ms have elapsed since the last reset, the accumulated frame count
+/// becomes the new FPS value and the counter restarts.
+pub fn record_frame() {
+    let now = crate::time::get_system_time_ms();
+    let last_reset = FPS_LAST_RESET_MS.load(Ordering::Relaxed);
+
+    if last_reset == 0 {
+        FPS_LAST_RESET_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+
+    FPS_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let elapsed = now.saturating_sub(last_reset);
+    if elapsed >= 1000 {
+        let frames = FPS_FRAME_COUNT.swap(0, Ordering::Relaxed);
+        // Scale to per-second rate in case the interval wasn't exactly 1s.
+        let fps = (frames as u64 * 1000 / elapsed) as u32;
+        FPS_CURRENT.store(fps, Ordering::Relaxed);
+        FPS_LAST_RESET_MS.store(now, Ordering::Relaxed);
+    }
+}
+
 /// Graphics system status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsStatus {
@@ -380,6 +417,9 @@ pub mod debug {
 
     /// Draw a performance overlay showing FPS and system info
     pub fn draw_performance_overlay(_frame_count: usize, x: usize, y: usize) {
+        // Record this frame for FPS calculation.
+        record_frame();
+
         let overlay_rect = Rect::new(x, y, 200, 100);
 
         // Semi-transparent background
@@ -788,8 +828,13 @@ pub fn get_text_height(font: &BitmapFont) -> usize {
 
 /// Helper functions for system information display
 fn get_fps() -> u32 {
-    // In a real implementation, this would track frame rate
-    60 // Placeholder
+    let fps = FPS_CURRENT.load(Ordering::Relaxed);
+    if fps == 0 {
+        // No frames recorded yet; report a safe default.
+        60
+    } else {
+        fps
+    }
 }
 
 fn get_memory_usage_mb() -> (u32, u32) {
