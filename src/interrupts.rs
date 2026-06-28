@@ -105,9 +105,10 @@ pub struct InterruptStats {
     pub missed_interrupts: u64,
 }
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // Thread-safe interrupt statistics using atomic operations
+static APIC_EOI_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TIMER_COUNT: AtomicU64 = AtomicU64::new(0);
 static KEYBOARD_COUNT: AtomicU64 = AtomicU64::new(0);
 static MOUSE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -136,15 +137,18 @@ pub fn init() {
                 Ok(()) => {
                     crate::serial_println!("Using APIC for interrupt handling");
                     disable_legacy_pic();
+                    APIC_EOI_ACTIVE.store(true, Ordering::Release);
                 }
                 Err(e) => {
                     crate::serial_println!("APIC configuration failed: {}, falling back to PIC", e);
+                    APIC_EOI_ACTIVE.store(false, Ordering::Release);
                     init_legacy_pic();
                 }
             }
         }
         Err(e) => {
             crate::serial_println!("APIC initialization failed: {}, using legacy PIC", e);
+            APIC_EOI_ACTIVE.store(false, Ordering::Release);
             init_legacy_pic();
         }
     }
@@ -221,6 +225,28 @@ fn disable_legacy_pic() {
 
         pic1_data.write(0xFF);
         pic2_data.write(0xFF);
+    }
+}
+
+fn notify_irq_eoi(index: InterruptIndex) {
+    unsafe {
+        if APIC_EOI_ACTIVE.load(Ordering::Acquire) {
+            if let Some(mut apic) = crate::apic::apic_system().try_lock() {
+                if apic.is_initialized() {
+                    apic.end_of_interrupt();
+                    return;
+                }
+            } else {
+                MISSED_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        if let Some(mut pics) = PICS.try_lock() {
+            pics.notify_end_of_interrupt(index.as_u8());
+        } else {
+            MISSED_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -714,15 +740,12 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Minimal keyboard handler - read scancode and send EOI using only assembly
-    unsafe {
-        core::arch::asm!(
-            "in al, 0x60",  // Read scancode from keyboard port
-            "mov al, 0x20", // EOI command
-            "out 0x20, al", // Send EOI to PIC
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    // Read scancode and forward to keyboard driver for processing
+    crate::keyboard::handle_keyboard_interrupt();
+
+    KEYBOARD_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    notify_irq_eoi(InterruptIndex::Keyboard);
 }
 
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -738,22 +761,7 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFr
 
     MOUSE_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    unsafe {
-        // Send EOI - use try_lock to avoid deadlocks in interrupt context
-        if let Some(apic) = crate::apic::apic_system().try_lock() {
-            let initialized = apic.is_initialized();
-            drop(apic);
-            if initialized {
-                crate::apic::end_of_interrupt();
-            } else {
-                PICS.lock()
-                    .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
-            }
-        } else {
-            PICS.lock()
-                .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
-        }
-    }
+    notify_irq_eoi(InterruptIndex::Mouse);
 }
 
 extern "x86-interrupt" fn serial_port1_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -763,22 +771,7 @@ extern "x86-interrupt" fn serial_port1_interrupt_handler(_stack_frame: Interrupt
     // Process any available serial data
     crate::serial::handle_port1_interrupt();
 
-    unsafe {
-        // Send EOI - use try_lock to avoid deadlocks in interrupt context
-        if let Some(apic) = crate::apic::apic_system().try_lock() {
-            let initialized = apic.is_initialized();
-            drop(apic);
-            if initialized {
-                crate::apic::end_of_interrupt();
-            } else {
-                PICS.lock()
-                    .notify_end_of_interrupt(InterruptIndex::SerialPort1.as_u8());
-            }
-        } else {
-            PICS.lock()
-                .notify_end_of_interrupt(InterruptIndex::SerialPort1.as_u8());
-        }
-    }
+    notify_irq_eoi(InterruptIndex::SerialPort1);
 }
 
 extern "x86-interrupt" fn serial_port2_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -788,22 +781,7 @@ extern "x86-interrupt" fn serial_port2_interrupt_handler(_stack_frame: Interrupt
     // Process any available serial data
     crate::serial::handle_port2_interrupt();
 
-    unsafe {
-        // Send EOI - use try_lock to avoid deadlocks in interrupt context
-        if let Some(apic) = crate::apic::apic_system().try_lock() {
-            let initialized = apic.is_initialized();
-            drop(apic);
-            if initialized {
-                crate::apic::end_of_interrupt();
-            } else {
-                PICS.lock()
-                    .notify_end_of_interrupt(InterruptIndex::SerialPort2.as_u8());
-            }
-        } else {
-            PICS.lock()
-                .notify_end_of_interrupt(InterruptIndex::SerialPort2.as_u8());
-        }
-    }
+    notify_irq_eoi(InterruptIndex::SerialPort2);
 }
 
 extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {

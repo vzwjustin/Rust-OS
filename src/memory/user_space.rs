@@ -1252,7 +1252,6 @@ mod tests {
 
     #[test_case]
     fn test_memory_operation_types() {
-        assert_eq!(MemoryOperation::CopyFromUser, MemoryOperation::CopyFromUser);
         assert_ne!(MemoryOperation::CopyFromUser, MemoryOperation::CopyToUser);
     }
 

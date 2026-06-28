@@ -36,13 +36,25 @@ unsafe fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, Linux
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let mut len = 0;
-    while *ptr.add(len) != 0 {
-        len += 1;
+
+    const MAX_C_STRING_LEN: usize = 4096;
+    let mut bytes = alloc::vec::Vec::new();
+    for offset in 0..MAX_C_STRING_LEN {
+        let mut byte = [0u8; 1];
+        crate::memory::user_space::UserSpaceMemory::copy_from_user(
+            ptr as u64 + offset as u64,
+            &mut byte,
+        )
+        .map_err(|_| LinuxError::EFAULT)?;
+
+        if byte[0] == 0 {
+            return alloc::string::String::from_utf8(bytes).map_err(|_| LinuxError::EINVAL);
+        }
+
+        bytes.push(byte[0]);
     }
-    let slice = core::slice::from_raw_parts(ptr, len);
-    alloc::string::String::from_utf8(slice.iter().copied().collect())
-        .map_err(|_| LinuxError::EINVAL)
+
+    Err(LinuxError::ENAMETOOLONG)
 }
 
 /// Operation counter for statistics
@@ -70,6 +82,42 @@ pub struct IoVec {
     pub iov_len: usize,
 }
 
+fn copy_iov_from_user(iov: *const IoVec, index: i32) -> LinuxResult<IoVec> {
+    let offset = (index as usize)
+        .checked_mul(core::mem::size_of::<IoVec>())
+        .ok_or(LinuxError::EFAULT)?;
+    let user_ptr = (iov as u64)
+        .checked_add(offset as u64)
+        .ok_or(LinuxError::EFAULT)?;
+    let mut entry = IoVec {
+        iov_base: core::ptr::null_mut(),
+        iov_len: 0,
+    };
+    let entry_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            (&mut entry as *mut IoVec).cast::<u8>(),
+            core::mem::size_of::<IoVec>(),
+        )
+    };
+
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(user_ptr, entry_bytes)
+        .map_err(|_| LinuxError::EFAULT)?;
+    Ok(entry)
+}
+
+fn copy_buffer_from_user(ptr: *const u8, len: usize) -> LinuxResult<alloc::vec::Vec<u8>> {
+    let mut data = alloc::vec::Vec::new();
+    data.resize(len, 0);
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(ptr as u64, &mut data)
+        .map_err(|_| LinuxError::EFAULT)?;
+    Ok(data)
+}
+
+fn copy_buffer_to_user(ptr: *mut u8, data: &[u8]) -> LinuxResult<()> {
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(ptr as u64, data)
+        .map_err(|_| LinuxError::EFAULT)
+}
+
 // ============================================================================
 // Positional I/O (pread/pwrite)
 // ============================================================================
@@ -90,10 +138,14 @@ pub fn pread(fd: Fd, buf: *mut u8, count: usize, offset: Off) -> LinuxResult<isi
         return Err(LinuxError::EINVAL);
     }
 
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, count) };
-    vfs::vfs_pread(fd, buffer, offset as u64)
-        .map(|n| n as isize)
-        .map_err(vfs_error_to_linux)
+    let mut buffer = alloc::vec::Vec::new();
+    buffer.resize(count, 0);
+
+    let bytes_read = vfs::vfs_pread(fd, &mut buffer, offset as u64).map_err(vfs_error_to_linux)?;
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(buf as u64, &buffer[..bytes_read])
+        .map_err(|_| LinuxError::EFAULT)?;
+
+    Ok(bytes_read as isize)
 }
 
 /// pwrite - write to file at given offset without changing file position
@@ -112,8 +164,12 @@ pub fn pwrite(fd: Fd, buf: *const u8, count: usize, offset: Off) -> LinuxResult<
         return Err(LinuxError::EINVAL);
     }
 
-    let data = unsafe { core::slice::from_raw_parts(buf, count) };
-    vfs::vfs_pwrite(fd, data, offset as u64)
+    let mut data = alloc::vec::Vec::new();
+    data.resize(count, 0);
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(buf as u64, &mut data)
+        .map_err(|_| LinuxError::EFAULT)?;
+
+    vfs::vfs_pwrite(fd, &data, offset as u64)
         .map(|n| n as isize)
         .map_err(vfs_error_to_linux)
 }
@@ -137,12 +193,14 @@ pub fn preadv(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResul
     let mut total = 0isize;
     let mut cur_offset = offset as u64;
     for i in 0..iovcnt as isize {
-        let iov = unsafe { &*iov.offset(i) };
+        let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
-        let buf = unsafe { core::slice::from_raw_parts_mut(iov.iov_base, iov.iov_len) };
-        let n = vfs::vfs_pread(fd, buf, cur_offset).map_err(vfs_error_to_linux)?;
+        let mut buf = alloc::vec::Vec::new();
+        buf.resize(iov.iov_len, 0);
+        let n = vfs::vfs_pread(fd, &mut buf, cur_offset).map_err(vfs_error_to_linux)?;
+        copy_buffer_to_user(iov.iov_base, &buf[..n])?;
         total += n as isize;
         cur_offset += n as u64;
         if n < iov.iov_len {
@@ -171,12 +229,12 @@ pub fn pwritev(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResu
     let mut total = 0isize;
     let mut cur_offset = offset as u64;
     for i in 0..iovcnt as isize {
-        let iov = unsafe { &*iov.offset(i) };
+        let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
-        let data = unsafe { core::slice::from_raw_parts(iov.iov_base, iov.iov_len) };
-        let n = vfs::vfs_pwrite(fd, data, cur_offset).map_err(vfs_error_to_linux)?;
+        let data = copy_buffer_from_user(iov.iov_base, iov.iov_len)?;
+        let n = vfs::vfs_pwrite(fd, &data, cur_offset).map_err(vfs_error_to_linux)?;
         total += n as isize;
         cur_offset += n as u64;
         if n < iov.iov_len {
@@ -204,12 +262,14 @@ pub fn readv(fd: Fd, iov: *const IoVec, iovcnt: i32) -> LinuxResult<isize> {
 
     let mut total = 0isize;
     for i in 0..iovcnt as isize {
-        let iov = unsafe { &*iov.offset(i) };
+        let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
-        let buf = unsafe { core::slice::from_raw_parts_mut(iov.iov_base, iov.iov_len) };
-        let n = vfs::vfs_read(fd, buf).map_err(vfs_error_to_linux)?;
+        let mut buf = alloc::vec::Vec::new();
+        buf.resize(iov.iov_len, 0);
+        let n = vfs::vfs_read(fd, &mut buf).map_err(vfs_error_to_linux)?;
+        copy_buffer_to_user(iov.iov_base, &buf[..n])?;
         total += n as isize;
         if n < iov.iov_len {
             break;
@@ -232,12 +292,12 @@ pub fn writev(fd: Fd, iov: *const IoVec, iovcnt: i32) -> LinuxResult<isize> {
 
     let mut total: isize = 0;
     for i in 0..iovcnt as isize {
-        let iov = unsafe { &*iov.offset(i) };
+        let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
-        let data = unsafe { core::slice::from_raw_parts(iov.iov_base, iov.iov_len) };
-        let n = vfs::vfs_write(fd, data).map_err(vfs_error_to_linux)?;
+        let data = copy_buffer_from_user(iov.iov_base, iov.iov_len)?;
+        let n = vfs::vfs_write(fd, &data).map_err(vfs_error_to_linux)?;
         total += n as isize;
         if n < iov.iov_len {
             break;
@@ -602,7 +662,7 @@ pub fn setxattr(
 
     let path = unsafe { c_str_to_string(path)? };
     let name = unsafe { xattr_name_from_ptr(name)? };
-    let data = unsafe { core::slice::from_raw_parts(value, size) };
+    let data = copy_buffer_from_user(value, size)?;
 
     let create = flags & XATTR_CREATE != 0;
     let replace = flags & XATTR_REPLACE != 0;
@@ -610,7 +670,7 @@ pub fn setxattr(
         return Err(LinuxError::EINVAL);
     }
 
-    vfs::vfs_setxattr(&path, &name, data, create)
+    vfs::vfs_setxattr(&path, &name, &data, create)
         .map(|_| 0)
         .map_err(xattr_vfs_error)
 }
@@ -658,10 +718,10 @@ pub fn fsetxattr(
     }
 
     let name = unsafe { xattr_name_from_ptr(name)? };
-    let data = unsafe { core::slice::from_raw_parts(value, size) };
+    let data = copy_buffer_from_user(value, size)?;
     let create = flags & XATTR_CREATE != 0;
 
-    vfs::vfs_fsetxattr(fd, &name, data, create)
+    vfs::vfs_fsetxattr(fd, &name, &data, create)
         .map(|_| 0)
         .map_err(xattr_vfs_error)
 }

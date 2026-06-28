@@ -358,11 +358,7 @@ pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
 
     match which {
         PRIO_PROCESS => {
-            let target_pid = if who == 0 {
-                current_pid()
-            } else {
-                who as u32
-            };
+            let target_pid = if who == 0 { current_pid() } else { who as u32 };
             process::scheduler::get_process_priority(target_pid)
                 .map(priority_to_nice)
                 .ok_or(LinuxError::ESRCH)
@@ -384,11 +380,7 @@ pub fn getpriority(which: i32, who: i32) -> LinuxResult<i32> {
                 .ok_or(LinuxError::ESRCH)
         }
         PRIO_USER => {
-            let uid = if who == 0 {
-                current_euid()
-            } else {
-                who as u32
-            };
+            let uid = if who == 0 { current_euid() } else { who as u32 };
             process::get_process_manager()
                 .find_processes(|pcb| pcb.uid == uid)
                 .into_iter()
@@ -421,11 +413,7 @@ pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
 
     match which {
         PRIO_PROCESS => {
-            let target_pid = if who == 0 {
-                current_pid()
-            } else {
-                who as u32
-            };
+            let target_pid = if who == 0 { current_pid() } else { who as u32 };
             process::scheduler::set_process_priority(target_pid, priority)
                 .map_err(|_| LinuxError::ESRCH)?;
             Ok(0)
@@ -454,11 +442,7 @@ pub fn setpriority(which: i32, who: i32, prio: i32) -> LinuxResult<i32> {
             Ok(0)
         }
         PRIO_USER => {
-            let uid = if who == 0 {
-                current_euid()
-            } else {
-                who as u32
-            };
+            let uid = if who == 0 { current_euid() } else { who as u32 };
             let pids: alloc::vec::Vec<u32> = process::get_process_manager()
                 .find_processes(|pcb| pcb.uid == uid)
                 .into_iter()

@@ -15,13 +15,15 @@ use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::vfs::{self, ramfs, FdKind, InodeType, VfsError};
 
 /// Operation counter for statistics
 static FS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
 lazy_static! {
-    static ref INOTIFY_INSTANCES: Mutex<BTreeMap<u32, InotifyInstance>> = Mutex::new(BTreeMap::new());
+    static ref INOTIFY_INSTANCES: Mutex<BTreeMap<u32, InotifyInstance>> =
+        Mutex::new(BTreeMap::new());
     static ref INOTIFY_FD_MAP: Mutex<BTreeMap<Fd, u32>> = Mutex::new(BTreeMap::new());
 }
 
@@ -59,19 +61,18 @@ fn inc_ops() {
 }
 
 /// Helper to convert null-terminated C string to Rust string
-unsafe fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
+fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let mut len = 0;
-    while *ptr.add(len) != 0 {
-        len += 1;
-        if len > 4096 {
-            return Err(LinuxError::ENAMETOOLONG);
-        }
+
+    let path =
+        UserSpaceMemory::copy_string_from_user(ptr as u64, 4096).map_err(|_| LinuxError::EFAULT)?;
+    if path.len() >= 4096 {
+        return Err(LinuxError::ENAMETOOLONG);
     }
-    let slice = core::slice::from_raw_parts(ptr, len);
-    String::from_utf8(slice.iter().copied().collect()).map_err(|_| LinuxError::EINVAL)
+
+    Ok(path)
 }
 
 fn vfs_error_to_linux(err: VfsError) -> LinuxError {
@@ -123,21 +124,14 @@ fn alloc_inotify_fd(flags: i32) -> LinuxResult<Fd> {
         .lock()
         .insert(id, InotifyInstance::new(flags));
 
-    let vfs_flags = if flags & 0x800 != 0 {
-        0x800
-    } else {
-        0
-    };
+    let vfs_flags = if flags & 0x800 != 0 { 0x800 } else { 0 };
 
-    let fd = vfs::vfs_open_special(
-        placeholder_inode(),
-        vfs_flags,
-        FdKind::Inotify(id),
-    )
-    .map_err(|e| match e {
-        VfsError::TooManyFiles => LinuxError::EMFILE,
-        _ => LinuxError::EMFILE,
-    })?;
+    let fd = vfs::vfs_open_special(placeholder_inode(), vfs_flags, FdKind::Inotify(id)).map_err(
+        |e| match e {
+            VfsError::TooManyFiles => LinuxError::EMFILE,
+            _ => LinuxError::EMFILE,
+        },
+    )?;
 
     INOTIFY_FD_MAP.lock().insert(fd, id);
     Ok(fd)
@@ -331,7 +325,7 @@ pub fn mount(
         return Err(LinuxError::EINVAL);
     }
 
-    let target_str = normalize_mount_path(&unsafe { c_str_to_string(target)? });
+    let target_str = normalize_mount_path(&c_str_to_string(target)?);
     validate_mount_target(&target_str)?;
 
     if mountflags & (mount_flags::MS_BIND | mount_flags::MS_MOVE | mount_flags::MS_REMOUNT) != 0 {
@@ -342,7 +336,7 @@ pub fn mount(
         return Err(LinuxError::EINVAL);
     }
 
-    let fstype = unsafe { c_str_to_string(filesystemtype)? };
+    let fstype = c_str_to_string(filesystemtype)?;
     match fstype.as_str() {
         "tmpfs" => {
             let sb = Arc::new(ramfs::RamFs::new());
@@ -358,7 +352,7 @@ pub fn mount(
             if source.is_null() {
                 return Err(LinuxError::ENODEV);
             }
-            let source_str = unsafe { c_str_to_string(source)? };
+            let source_str = c_str_to_string(source)?;
             if vfs::vfs_stat(&source_str).is_err() {
                 return Err(LinuxError::ENODEV);
             }
@@ -375,7 +369,7 @@ pub fn umount(target: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let target_str = normalize_mount_path(&unsafe { c_str_to_string(target)? });
+    let target_str = normalize_mount_path(&c_str_to_string(target)?);
     if target_str == "/" {
         return Err(LinuxError::EBUSY);
     }
@@ -420,8 +414,8 @@ pub fn pivot_root(new_root: *const u8, put_old: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let new_root_str = unsafe { c_str_to_string(new_root)? };
-    let put_old_str = unsafe { c_str_to_string(put_old)? };
+    let new_root_str = c_str_to_string(new_root)?;
+    let put_old_str = c_str_to_string(put_old)?;
 
     validate_mount_target(&new_root_str)?;
     validate_mount_target(&put_old_str)?;
@@ -441,7 +435,7 @@ pub fn statfs(path: *const u8, buf: *mut StatFs) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
     let vfs_stat = vfs::vfs_statfs(&path).map_err(|e| match e {
         VfsError::NotFound => LinuxError::ENOENT,
         _ => LinuxError::ENOSYS,
@@ -615,7 +609,7 @@ pub fn swapon(path: *const u8, _swapflags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let _ = unsafe { c_str_to_string(path)? };
+    let _ = c_str_to_string(path)?;
     Err(LinuxError::ENOSYS)
 }
 
@@ -627,7 +621,7 @@ pub fn swapoff(path: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let _ = unsafe { c_str_to_string(path)? };
+    let _ = c_str_to_string(path)?;
     Err(LinuxError::ENOSYS)
 }
 
@@ -667,7 +661,7 @@ pub fn inotify_add_watch(fd: Fd, pathname: *const u8, _mask: u32) -> LinuxResult
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(pathname)? };
+    let path = c_str_to_string(pathname)?;
     if vfs::vfs_stat(&path).is_err() {
         return Err(LinuxError::ENOENT);
     }

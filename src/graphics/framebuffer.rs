@@ -1380,7 +1380,7 @@ mod gpu_interface {
             unsafe {
                 let mut timeout = 10000;
                 while timeout > 0 {
-                    let status = core::ptr::read_volatile(blt_base.add(0x4 / 4));
+                    let status = core::ptr::read_volatile(blt_base.add(1));
                     if (status & 0x1) == 0 {
                         // Engine idle
                         return Ok(());

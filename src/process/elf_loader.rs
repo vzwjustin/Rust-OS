@@ -573,11 +573,7 @@ impl ElfLoader {
             }
         }
 
-        Ok((
-            load_base,
-            align_up(total_size, PAGE_SIZE),
-            program_headers,
-        ))
+        Ok((load_base, align_up(total_size, PAGE_SIZE), program_headers))
     }
 }
 

@@ -627,10 +627,7 @@ impl PciBusScanner {
             }
 
             // Validate bus/device/function ranges
-            if device.bus > MAX_BUS
-                || device.device >= MAX_DEVICE
-                || device.function >= MAX_FUNCTION
-            {
+            if device.device >= MAX_DEVICE || device.function >= MAX_FUNCTION {
                 return Err("Device location out of valid range");
             }
         }

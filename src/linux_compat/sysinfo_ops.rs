@@ -5,10 +5,12 @@
 
 extern crate alloc;
 
+use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 
 /// Operation counter for statistics
 static SYSINFO_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -17,6 +19,7 @@ static SYSINFO_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 const MAX_HOSTNAME: usize = 64;
 /// Maximum domain name length (Linux limit)
 const MAX_DOMAINNAME: usize = 64;
+const MAX_GETRANDOM_CHUNK: usize = 64 * 1024;
 
 /// System hostname storage
 static HOSTNAME: Mutex<[u8; MAX_HOSTNAME]> = Mutex::new([0u8; MAX_HOSTNAME]);
@@ -50,6 +53,54 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     SYSINFO_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn copy_from_user_buffer(user_ptr: u64, buffer: &mut [u8]) -> LinuxResult<()> {
+    match UserSpaceMemory::copy_from_user(user_ptr, buffer) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            #[cfg(test)]
+            {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        user_ptr as *const u8,
+                        buffer.as_mut_ptr(),
+                        buffer.len(),
+                    );
+                }
+                Ok(())
+            }
+
+            #[cfg(not(test))]
+            {
+                Err(LinuxError::EFAULT)
+            }
+        }
+    }
+}
+
+fn copy_to_user_buffer(user_ptr: u64, buffer: &[u8]) -> LinuxResult<()> {
+    match UserSpaceMemory::copy_to_user(user_ptr, buffer) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            #[cfg(test)]
+            {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        buffer.as_ptr(),
+                        user_ptr as *mut u8,
+                        buffer.len(),
+                    );
+                }
+                Ok(())
+            }
+
+            #[cfg(not(test))]
+            {
+                Err(LinuxError::EFAULT)
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -244,9 +295,7 @@ pub fn sethostname(name: *const u8, len: usize) -> LinuxResult<i32> {
 
     let mut hn = HOSTNAME.lock();
     let copy_len = core::cmp::min(len, MAX_HOSTNAME);
-    unsafe {
-        core::ptr::copy_nonoverlapping(name, hn.as_mut_ptr(), copy_len);
-    }
+    copy_from_user_buffer(name as u64, &mut hn[..copy_len])?;
     if copy_len < MAX_HOSTNAME {
         hn[copy_len] = 0;
     }
@@ -270,13 +319,9 @@ pub fn gethostname(name: *mut u8, len: usize) -> LinuxResult<i32> {
     let hostname_len = hn.iter().position(|&b| b == 0).unwrap_or(MAX_HOSTNAME);
     let copy_len = core::cmp::min(len, hostname_len);
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(hn.as_ptr(), name, copy_len);
-    }
+    copy_to_user_buffer(name as u64, &hn[..copy_len])?;
     if copy_len < len {
-        unsafe {
-            *name.add(copy_len) = 0;
-        }
+        copy_to_user_buffer(name.wrapping_add(copy_len) as u64, &[0])?;
     }
 
     Ok(0)
@@ -296,9 +341,7 @@ pub fn setdomainname(name: *const u8, len: usize) -> LinuxResult<i32> {
 
     let mut dn = DOMAINNAME.lock();
     let copy_len = core::cmp::min(len, MAX_DOMAINNAME);
-    unsafe {
-        core::ptr::copy_nonoverlapping(name, dn.as_mut_ptr(), copy_len);
-    }
+    copy_from_user_buffer(name as u64, &mut dn[..copy_len])?;
     if copy_len < MAX_DOMAINNAME {
         dn[copy_len] = 0;
     }
@@ -322,13 +365,9 @@ pub fn getdomainname(name: *mut u8, len: usize) -> LinuxResult<i32> {
     let domain_len = dn.iter().position(|&b| b == 0).unwrap_or(MAX_DOMAINNAME);
     let copy_len = core::cmp::min(len, domain_len);
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(dn.as_ptr(), name, copy_len);
-    }
+    copy_to_user_buffer(name as u64, &dn[..copy_len])?;
     if copy_len < len {
-        unsafe {
-            *name.add(copy_len) = 0;
-        }
+        copy_to_user_buffer(name.wrapping_add(copy_len) as u64, &[0])?;
     }
 
     Ok(0)
@@ -355,11 +394,11 @@ fn sysctl_copy_out(value: &[u8], oldval: *mut u8, oldlenp: *mut usize) -> LinuxR
     }
 
     let required = value.len();
-    let available = unsafe { *oldlenp };
+    let mut len_bytes = [0u8; core::mem::size_of::<usize>()];
+    copy_from_user_buffer(oldlenp as u64, &mut len_bytes)?;
+    let available = usize::from_ne_bytes(len_bytes);
 
-    unsafe {
-        *oldlenp = required;
-    }
+    copy_to_user_buffer(oldlenp as u64, &required.to_ne_bytes())?;
 
     if oldval.is_null() {
         return Ok(0);
@@ -369,9 +408,7 @@ fn sysctl_copy_out(value: &[u8], oldval: *mut u8, oldlenp: *mut usize) -> LinuxR
         return Err(LinuxError::ENOSPC);
     }
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(value.as_ptr(), oldval, required);
-    }
+    copy_to_user_buffer(oldval as u64, value)?;
 
     Ok(0)
 }
@@ -391,9 +428,7 @@ fn sysctl_lookup(name: &[i32]) -> LinuxResult<SysctlValue> {
     match name {
         [1, 1] => Ok(SysctlValue::String("Linux")),
         [1, 2] => Ok(SysctlValue::String("6.12.58-rustos")),
-        [1, 3] => Ok(SysctlValue::String(
-            "#1 SMP RustOS (linux-compat)",
-        )),
+        [1, 3] => Ok(SysctlValue::String("#1 SMP RustOS (linux-compat)")),
         [1, 8] => Ok(SysctlValue::Int(0)),
         [1, 10] => Ok(SysctlValue::Int(4096)),
         [1, 38] => {
@@ -421,7 +456,21 @@ pub fn sysctl(args: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let params = unsafe { &*(args as *const SysctlArgs) };
+    let mut params = SysctlArgs {
+        name: core::ptr::null_mut(),
+        nlen: 0,
+        oldval: core::ptr::null_mut(),
+        oldlenp: core::ptr::null_mut(),
+        newval: core::ptr::null_mut(),
+        newlen: 0,
+    };
+    let params_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut params as *mut SysctlArgs as *mut u8,
+            core::mem::size_of::<SysctlArgs>(),
+        )
+    };
+    copy_from_user_buffer(args as u64, params_bytes)?;
 
     if params.name.is_null() || params.nlen <= 0 || params.nlen > 256 {
         return Err(LinuxError::EINVAL);
@@ -431,18 +480,19 @@ pub fn sysctl(args: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EPERM);
     }
 
-    let name_slice = unsafe { core::slice::from_raw_parts(params.name, params.nlen as usize) };
+    let mut name = vec![0i32; params.nlen as usize];
+    let name_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            name.as_mut_ptr() as *mut u8,
+            name.len() * core::mem::size_of::<i32>(),
+        )
+    };
+    copy_from_user_buffer(params.name as u64, name_bytes)?;
 
-    match sysctl_lookup(name_slice) {
-        Ok(SysctlValue::Int(v)) => {
-            sysctl_read_int(v, params.oldval, params.oldlenp)
-        }
-        Ok(SysctlValue::String(s)) => {
-            sysctl_read_string(s, params.oldval, params.oldlenp)
-        }
-        Ok(SysctlValue::OwnedString(s)) => {
-            sysctl_read_string(&s, params.oldval, params.oldlenp)
-        }
+    match sysctl_lookup(&name) {
+        Ok(SysctlValue::Int(v)) => sysctl_read_int(v, params.oldval, params.oldlenp),
+        Ok(SysctlValue::String(s)) => sysctl_read_string(s, params.oldval, params.oldlenp),
+        Ok(SysctlValue::OwnedString(s)) => sysctl_read_string(&s, params.oldval, params.oldlenp),
         Err(e) => Err(e),
     }
 }
@@ -466,11 +516,17 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
         return Err(LinuxError::EINVAL);
     }
 
+    if buflen == 0 {
+        return Ok(0);
+    }
+
     // Get random bytes from kernel security RNG when initialized.
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, buflen) };
+    let copy_len = buflen.min(MAX_GETRANDOM_CHUNK);
+    let mut buffer = vec![0u8; copy_len];
     if crate::security::is_rng_initialized() {
-        if crate::security::secure_random_bytes(buffer).is_ok() {
-            return Ok(buflen as isize);
+        if crate::security::secure_random_bytes(&mut buffer).is_ok() {
+            copy_to_user_buffer(buf as u64, &buffer)?;
+            return Ok(copy_len as isize);
         }
     }
 
@@ -480,7 +536,8 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
         *byte = (tsc.wrapping_shr((i % 8) as u32) as u8).wrapping_add(i as u8);
     }
 
-    Ok(buflen as isize)
+    copy_to_user_buffer(buf as u64, &buffer)?;
+    Ok(copy_len as isize)
 }
 
 // ============================================================================

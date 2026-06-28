@@ -66,11 +66,7 @@ fn validate_fd(fd: Fd) -> LinuxResult<()> {
 }
 
 fn fd_meta(pid: u32, fd: i32) -> FdMeta {
-    FD_META
-        .read()
-        .get(&(pid, fd))
-        .copied()
-        .unwrap_or_default()
+    FD_META.read().get(&(pid, fd)).copied().unwrap_or_default()
 }
 
 fn set_fd_meta(pid: u32, fd: i32, meta: FdMeta) {

@@ -1380,11 +1380,7 @@ impl SyscallDispatcher {
         let child_tid = args.get(3).copied().unwrap_or(0) as *mut i32;
         let tls = args.get(4).copied().unwrap_or(0);
         linux_result_i32(crate::linux_compat::thread_ops::clone(
-            flags,
-            stack,
-            parent_tid,
-            child_tid,
-            tls,
+            flags, stack, parent_tid, child_tid, tls,
         ))
     }
 
@@ -1570,7 +1566,9 @@ impl SyscallDispatcher {
         let sockfd = args.first().copied().unwrap_or(0) as i32;
         let addr = args.get(1).copied().unwrap_or(0) as *const crate::linux_compat::SockAddr;
         let addrlen = args.get(2).copied().unwrap_or(0) as u32;
-        linux_result_i32(crate::linux_compat::socket_ops::connect(sockfd, addr, addrlen))
+        linux_result_i32(crate::linux_compat::socket_ops::connect(
+            sockfd, addr, addrlen,
+        ))
     }
 
     /// sys_listen - Listen on socket
@@ -1595,7 +1593,9 @@ impl SyscallDispatcher {
         let sockfd = args.first().copied().unwrap_or(0) as i32;
         let addr = args.get(1).copied().unwrap_or(0) as *mut crate::linux_compat::SockAddr;
         let addrlen = args.get(2).copied().unwrap_or(0) as *mut u32;
-        linux_result_i32(crate::linux_compat::socket_ops::accept(sockfd, addr, addrlen))
+        linux_result_i32(crate::linux_compat::socket_ops::accept(
+            sockfd, addr, addrlen,
+        ))
     }
 
     /// sys_set_tid_address - Set thread ID address

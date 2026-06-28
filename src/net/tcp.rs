@@ -495,7 +495,7 @@ impl TcpManager {
     pub fn allocate_port(&self) -> u16 {
         let mut next_port = self.next_port.write();
         let port = *next_port;
-        *next_port = if port >= 65535 { 32768 } else { port + 1 };
+        *next_port = if port == u16::MAX { 32768 } else { port + 1 };
         port
     }
 
@@ -579,15 +579,15 @@ fn current_time_ms() -> u64 {
 
 /// Generate secure random u32 using hardware CSPRNG
 fn secure_random_u32() -> u32 {
-    // Use RDRAND (hardware CSPRNG) with TSC fallback for systems without RDRAND
-    // RDRAND is cryptographically secure when available
     let mut result: u32 = 0;
     unsafe {
-        if core::arch::x86_64::_rdrand32_step(&mut result) == 1 {
+        let rdrand_ok = {
+            let cpuid = core::arch::x86_64::__cpuid(1);
+            (cpuid.ecx & (1 << 30)) != 0
+        };
+        if rdrand_ok && core::arch::x86_64::_rdrand32_step(&mut result) == 1 {
             result
         } else {
-            // Fallback to TSC-based PRNG (not cryptographically secure, but functional)
-            // In production, this should trigger a warning or use an alternative CSPRNG
             (core::arch::x86_64::_rdtsc() as u32)
                 .wrapping_mul(1103515245)
                 .wrapping_add(12345)
