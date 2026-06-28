@@ -145,7 +145,7 @@ fn wait_child_matches(pid: Pid, caller_pgid: u32) -> impl Fn(&process::ProcessCo
             return pcb.pgid == caller_pgid;
         }
         if pid < -1 {
-            let target_pgid = (-pid) as u32;
+            let target_pgid = pid.unsigned_abs();
             return pcb.pgid == target_pgid;
         }
         pcb.pid == pid as u32
