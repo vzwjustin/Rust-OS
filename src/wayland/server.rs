@@ -121,7 +121,40 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
         return Some(vec![ArgType::UInt, ArgType::NewId, ArgType::UInt]);
     }
 
-    None
+    match object.interface {
+        interfaces::WL_COMPOSITOR if header.opcode == 0 => Some(vec![ArgType::NewId]),
+        interfaces::WL_SURFACE => match header.opcode {
+            0 | 3 => Some(Vec::new()),
+            1 => Some(vec![ArgType::Object, ArgType::Int, ArgType::Int]),
+            2 | 6 => Some(vec![
+                ArgType::Int,
+                ArgType::Int,
+                ArgType::Int,
+                ArgType::Int,
+            ]),
+            4 => Some(vec![ArgType::UInt]),
+            5 => Some(vec![ArgType::Int]),
+            _ => None,
+        },
+        interfaces::WL_SHM if header.opcode == 0 => {
+            Some(vec![ArgType::Fd, ArgType::NewId, ArgType::Int])
+        }
+        interfaces::WL_SHM_POOL => match header.opcode {
+            0 => Some(vec![
+                ArgType::Int,
+                ArgType::Int,
+                ArgType::Int,
+                ArgType::Int,
+                ArgType::UInt,
+                ArgType::NewId,
+            ]),
+            1 => Some(Vec::new()),
+            2 => Some(vec![ArgType::Int]),
+            _ => None,
+        },
+        interfaces::WL_BUFFER if header.opcode == 0 => Some(Vec::new()),
+        _ => None,
+    }
 }
 
 fn dispatch_message(_pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
@@ -160,7 +193,37 @@ fn dispatch_message(_pipe_id: u32, client_id: u32, message: &Message) -> Option<
         return handle_registry_bind(client, &globals, &outputs, message);
     }
 
-    None
+    let object_iface = comp
+        .get_client(client_id)?
+        .objects
+        .get(&message.header.object_id)
+        .map(|obj| obj.interface)
+        .unwrap_or("");
+
+    match object_iface {
+        interfaces::WL_COMPOSITOR if message.header.opcode == 0 => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_compositor_create_surface(client, message)
+        }
+        interfaces::WL_SURFACE => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_surface_request(client, message)
+        }
+        interfaces::WL_SHM if message.header.opcode == 0 => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_shm_create_pool(client, message)
+        }
+        interfaces::WL_SHM_POOL => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_shm_pool_request(client, message)
+        }
+        interfaces::WL_BUFFER if message.header.opcode == 0 => {
+            let client = comp.get_client_mut(client_id)?;
+            handle_buffer_destroy(client, message.header.object_id);
+            None
+        }
+        _ => None,
+    }
 }
 
 fn handle_display_sync(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
@@ -289,6 +352,192 @@ fn encode_error(object_id: ObjectId, code: u32, message: &str) -> Vec<u8> {
     super::event_error(object_id, code, message).encode()
 }
 
+fn handle_compositor_create_surface(
+    client: &mut ClientConnection,
+    message: &Message,
+) -> Option<Vec<u8>> {
+    let surface_id = match message.args.first() {
+        Some(Arg::NewId(id)) => *id,
+        _ => return None,
+    };
+
+    client.objects.insert(
+        surface_id,
+        super::ProtocolObject {
+            id: surface_id,
+            interface: interfaces::WL_SURFACE,
+            version: 4,
+        },
+    );
+    client.surfaces.insert(surface_id, super::Surface::new(surface_id));
+    None
+}
+
+fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let surface_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            client.destroy_object(surface_id);
+            None
+        }
+        1 => {
+            let buffer = match message.args.first() {
+                Some(Arg::Object(id)) => *id,
+                _ => None,
+            };
+            let x = match message.args.get(1) {
+                Some(Arg::Int(v)) => *v,
+                _ => 0,
+            };
+            let y = match message.args.get(2) {
+                Some(Arg::Int(v)) => *v,
+                _ => 0,
+            };
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.attach(buffer);
+                surface.x = x;
+                surface.y = y;
+            }
+            None
+        }
+        2 | 6 => {
+            let rect = super::DamageRect {
+                x: arg_i32(&message.args, 0),
+                y: arg_i32(&message.args, 1),
+                width: arg_i32(&message.args, 2),
+                height: arg_i32(&message.args, 3),
+            };
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.damage(rect);
+            }
+            None
+        }
+        3 => {
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.commit();
+            }
+
+            let events = if let Some(surface) = client.surfaces.get(&surface_id) {
+                super::render::render_surface(client, surface);
+                super::render::surface_commit_events(client, surface)
+            } else {
+                Vec::new()
+            };
+
+            if let Some(surface) = client.surfaces.get(&surface_id) {
+                if let Some(buffer_id) = surface.buffer {
+                    if let Some(buf) = client.buffers.get_mut(&buffer_id) {
+                        buf.released = true;
+                    }
+                }
+            }
+
+            if events.is_empty() {
+                None
+            } else {
+                Some(events)
+            }
+        }
+        4 => {
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.buffer_transform = arg_u32(&message.args, 0);
+            }
+            None
+        }
+        5 => {
+            if let Some(surface) = client.surfaces.get_mut(&surface_id) {
+                surface.buffer_scale = arg_i32(&message.args, 0);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_shm_create_pool(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let size = match message.args.get(2) {
+        Some(Arg::Int(v)) if *v > 0 => *v,
+        _ => return None,
+    };
+    let pool_id = match message.args.get(1) {
+        Some(Arg::NewId(id)) => *id,
+        _ => return None,
+    };
+
+    client.objects.insert(
+        pool_id,
+        super::ProtocolObject {
+            id: pool_id,
+            interface: interfaces::WL_SHM_POOL,
+            version: 1,
+        },
+    );
+    client.shm_pools.insert(pool_id, super::ShmPool::new(pool_id, size));
+    let _ = message.args.first(); // fd is out-of-band; kernel pool backs SHM
+    None
+}
+
+fn handle_shm_pool_request(client: &mut ClientConnection, message: &Message) -> Option<Vec<u8>> {
+    let pool_id = message.header.object_id;
+    match message.header.opcode {
+        0 => {
+            let offset = arg_i32(&message.args, 0);
+            let width = arg_i32(&message.args, 1);
+            let height = arg_i32(&message.args, 2);
+            let stride = arg_i32(&message.args, 3);
+            let format = arg_u32(&message.args, 4);
+            let buffer_id = match message.args.get(5) {
+                Some(Arg::NewId(id)) => *id,
+                _ => return None,
+            };
+
+            client.objects.insert(
+                buffer_id,
+                super::ProtocolObject {
+                    id: buffer_id,
+                    interface: interfaces::WL_BUFFER,
+                    version: 1,
+                },
+            );
+            client.buffers.insert(
+                buffer_id,
+                super::Buffer::new(buffer_id, pool_id, offset, width, height, stride, format),
+            );
+            None
+        }
+        1 => {
+            client.destroy_object(pool_id);
+            None
+        }
+        2 => {
+            let new_size = arg_i32(&message.args, 0);
+            if let Some(pool) = client.shm_pools.get_mut(&pool_id) {
+                pool.resize(new_size);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_buffer_destroy(client: &mut ClientConnection, buffer_id: ObjectId) {
+    client.destroy_object(buffer_id);
+}
+
+fn arg_i32(args: &[Arg], index: usize) -> i32 {
+    match args.get(index) {
+        Some(Arg::Int(v)) => *v,
+        _ => 0,
+    }
+}
+
+fn arg_u32(args: &[Arg], index: usize) -> u32 {
+    match args.get(index) {
+        Some(Arg::UInt(v)) => *v,
+        _ => 0,
+    }
+}
+
 /// Verify attach + sync + get_registry dispatch without a live socket fd.
 pub fn smoke_check() -> Result<(), &'static str> {
     const TEST_PIPE: u32 = 0x9001;
@@ -313,6 +562,8 @@ pub fn smoke_check() -> Result<(), &'static str> {
     if !is_handshake_ready() {
         return Err("Wayland handshake flag not set");
     }
+
+    super::render::smoke_check()?;
 
     detach_connection(TEST_PIPE);
     Ok(())

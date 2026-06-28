@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
+pub mod render;
 pub mod server;
 
 // ── Wire Protocol Constants ─────────────────────────────────────────────

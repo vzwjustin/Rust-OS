@@ -32,6 +32,9 @@ pub const BUS_NAME: &str = "org.freedesktop.DBus";
 /// Object path of the bus daemon
 pub const BUS_PATH: &str = "/org/freedesktop/DBus";
 
+/// Standard D-Bus property interface
+pub const PROPERTIES_IFACE: &str = "org.freedesktop.DBus.Properties";
+
 // ── Endianness ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1306,6 +1309,141 @@ pub mod bus_methods {
     }
 }
 
+
+fn dbus_features() -> Value {
+    Value::Array(
+        "s".to_string(),
+        vec![
+            Value::String("org.freedesktop.DBus.NameHasOwner".to_string()),
+            Value::String("org.freedesktop.DBus.GetConnectionUniqueName".to_string()),
+        ],
+    )
+}
+
+fn property_get(path: &str, iface: &str, prop: &str) -> Result<Value, &'static str> {
+    if path == BUS_PATH && iface == BUS_NAME {
+        return match prop {
+            "Features" => Ok(dbus_features()),
+            "Interfaces" => Ok(Value::Array(
+                "s".to_string(),
+                vec![
+                    Value::String(BUS_NAME.to_string()),
+                    Value::String(PROPERTIES_IFACE.to_string()),
+                ],
+            )),
+            _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
+        };
+    }
+    Err("org.freedesktop.DBus.Error.UnknownProperty")
+}
+
+fn property_get_all(path: &str, iface: &str) -> Vec<Value> {
+    if path == BUS_PATH && iface == BUS_NAME {
+        return vec![
+            Value::DictEntry(
+                Box::new(Value::String("Features".to_string())),
+                Box::new(Value::Variant(Box::new(Variant {
+                    signature: "as".to_string(),
+                    value: dbus_features(),
+                }))),
+            ),
+            Value::DictEntry(
+                Box::new(Value::String("Interfaces".to_string())),
+                Box::new(Value::Variant(Box::new(Variant {
+                    signature: "as".to_string(),
+                    value: Value::Array(
+                        "s".to_string(),
+                        vec![
+                            Value::String(BUS_NAME.to_string()),
+                            Value::String(PROPERTIES_IFACE.to_string()),
+                        ],
+                    ),
+                }))),
+            ),
+        ];
+    }
+    Vec::new()
+}
+
+fn dispatch_properties(
+    member: &str,
+    serial: u32,
+    sender: &str,
+    path: &str,
+    signature: &str,
+    unmarshaler: &mut Unmarshaler<'_>,
+) -> Option<Vec<u8>> {
+    match member {
+        "Get" => {
+            let body = unmarshaler.parse_body(signature).ok()?;
+            let iface = match body.first()? {
+                Value::String(s) => s.as_str(),
+                _ => return None,
+            };
+            let prop = match body.get(1)? {
+                Value::String(s) => s.as_str(),
+                _ => return None,
+            };
+
+            match property_get(path, iface, prop) {
+                Ok(value) => {
+                    let mut reply = Message::new_method_return(
+                        BUS.read().next_bus_serial(),
+                        serial,
+                        sender,
+                    );
+                    reply.header = reply.header.with_field(
+                        HeaderField::Signature,
+                        Value::Signature("v".to_string()),
+                    );
+                    reply.body = vec![Value::Variant(Box::new(Variant {
+                        signature: value.signature(),
+                        value,
+                    }))];
+                    Some(marshal_message(&reply))
+                }
+                Err(error_name) => Some(marshal_message(&Message::new_error(
+                    BUS.read().next_bus_serial(),
+                    serial,
+                    sender,
+                    error_name,
+                    "Unknown property",
+                ))),
+            }
+        }
+        "GetAll" => {
+            let body = unmarshaler.parse_body(signature).ok()?;
+            let iface = match body.first()? {
+                Value::String(s) => s.as_str(),
+                _ => return None,
+            };
+            let entries = property_get_all(path, iface);
+            let mut reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                sender,
+            );
+            reply.header = reply.header.with_field(
+                HeaderField::Signature,
+                Value::Signature("a{sv}".to_string()),
+            );
+            reply.body = vec![Value::Array("{sv}".to_string(), entries)];
+            Some(marshal_message(&reply))
+        }
+        "Set" => {
+            let _ = unmarshaler.parse_body(signature).ok()?;
+            let reply = Message::new_method_return(
+                BUS.read().next_bus_serial(),
+                serial,
+                sender,
+            );
+            Some(marshal_message(&reply))
+        }
+        _ => None,
+    }
+}
+
+
 // ── Wire Request Dispatch ───────────────────────────────────────────────
 
 /// Next connection id handed out by the in-kernel session bus.
@@ -1327,6 +1465,13 @@ pub fn process_wire_request(data: &[u8]) -> Option<Vec<u8>> {
     let member = header.member()?;
     let serial = header.serial;
     let destination = header.destination().unwrap_or(BUS_NAME);
+
+    if iface == PROPERTIES_IFACE {
+        let path = header.path().unwrap_or(BUS_PATH);
+        let sender = header.sender().unwrap_or(":1");
+        let signature = header.signature().unwrap_or("");
+        return dispatch_properties(member, serial, sender, path, signature, &mut unmarshaler);
+    }
 
     if destination != BUS_NAME {
         return None;
@@ -1482,6 +1627,26 @@ pub fn smoke_check() -> Result<(), &'static str> {
         .map_err(|_| "Hello reply header parse failed")?;
     if reply_header.msg_type != MessageType::MethodReturn {
         return Err("Hello reply was not a method return");
+    }
+
+    let get_all = Message::new_method_call(
+        43,
+        BUS_NAME,
+        BUS_PATH,
+        PROPERTIES_IFACE,
+        "GetAll",
+    );
+    let mut get_all_msg = get_all;
+    get_all_msg.header = get_all_msg.header.with_field(
+        HeaderField::Signature,
+        Value::Signature("s".to_string()),
+    );
+    get_all_msg.body = vec![Value::String(BUS_NAME.to_string())];
+    let get_all_bytes = marshal_message(&get_all_msg);
+    let get_all_reply = process_wire_request(&get_all_bytes)
+        .ok_or("Properties.GetAll dispatch produced no reply")?;
+    if get_all_reply.is_empty() {
+        return Err("Properties.GetAll reply was empty");
     }
 
     // Test connection
