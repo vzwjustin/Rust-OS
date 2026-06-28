@@ -454,8 +454,7 @@ impl SuperblockOps for RamFs {
     }
 }
 
-/// Get current time (stub implementation)
+/// Get current time as Unix seconds since epoch.
 fn get_time() -> u64 {
-    // TODO: Integrate with kernel time system
-    0
+    crate::time::system_time()
 }

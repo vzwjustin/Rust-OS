@@ -457,17 +457,24 @@ impl Vfs {
 
         // Walk the path
         if !rel_path.is_empty() {
+            let root = Arc::clone(&current);
+            let mut ancestors = Vec::new();
+
             for component in rel_path.split('/') {
                 if component.is_empty() || component == "." {
                     continue;
                 }
 
                 if component == ".." {
-                    // TODO: Handle parent directory traversal
+                    if ancestors.pop().is_some() {
+                        current = Arc::clone(ancestors.last().unwrap_or(&root));
+                    } else {
+                        current = Arc::clone(&root);
+                    }
                     continue;
                 }
 
-                // Lookup next component
+                ancestors.push(Arc::clone(&current));
                 current = current.lookup(component)?;
             }
         }
