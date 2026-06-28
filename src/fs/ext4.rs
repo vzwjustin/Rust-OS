@@ -301,7 +301,8 @@ impl Ext4FileSystem {
         let mut buffer = vec![0u8; 1024];
 
         // Superblock is at offset 1024 bytes (sector 2 for 512-byte sectors)
-        read_storage_sectors(self.device_id, self.sector_base + 2, &mut buffer).map_err(|_| FsError::IoError)?;
+        read_storage_sectors(self.device_id, self.sector_base + 2, &mut buffer)
+            .map_err(|_| FsError::IoError)?;
 
         // Parse superblock
         self.superblock =

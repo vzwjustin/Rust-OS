@@ -196,13 +196,15 @@ pub fn run_wizard() -> Result<InstallPlan, String> {
         ui::run_text_wizard(plan)
     };
 
-    result.map(|plan| {
-        with_installer(|state| state.set_progress(10, "Install plan confirmed"));
-        plan
-    }).map_err(|e| {
-        set_error(&e);
-        e
-    })
+    result
+        .map(|plan| {
+            with_installer(|state| state.set_progress(10, "Install plan confirmed"));
+            plan
+        })
+        .map_err(|e| {
+            set_error(&e);
+            e
+        })
 }
 
 /// Execute partitioning, formatting, copy, and configuration.

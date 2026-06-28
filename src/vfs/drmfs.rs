@@ -471,4 +471,3 @@ pub fn dispatch_ioctl_for_fd(fd: i32, cmd: u32, arg: u64) -> Result<usize, &'sta
     let _ = fd;
     dispatch_ioctl(cmd, arg)
 }
-

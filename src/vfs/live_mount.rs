@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::package::compression::{decompress, TarArchive};
-use crate::vfs::{get_vfs, ramfs, InodeType, VfsError, VfsResult, SuperblockOps};
+use crate::vfs::{get_vfs, ramfs, InodeType, SuperblockOps, VfsError, VfsResult};
 
 /// Mount a live rootfs image file at `target`.
 pub fn mount_live_archive(source: &str, target: &str) -> VfsResult<()> {
@@ -55,10 +55,7 @@ fn populate_ramfs_from_tar(
 ) -> VfsResult<()> {
     let archive = TarArchive::parse(payload).map_err(|_| VfsError::IoError)?;
     for entry in archive.entries() {
-        let rel = entry
-            .path
-            .trim_start_matches("./")
-            .trim_start_matches('/');
+        let rel = entry.path.trim_start_matches("./").trim_start_matches('/');
         if rel.is_empty() {
             continue;
         }
@@ -80,7 +77,9 @@ fn populate_ramfs_from_tar(
                 const O_WRONLY: u32 = 1;
                 const O_CREAT: u32 = 64;
                 const O_TRUNC: u32 = 512;
-                if let Ok(fd) = crate::vfs::vfs_open(&full, O_WRONLY | O_CREAT | O_TRUNC, entry.mode) {
+                if let Ok(fd) =
+                    crate::vfs::vfs_open(&full, O_WRONLY | O_CREAT | O_TRUNC, entry.mode)
+                {
                     let _ = crate::vfs::vfs_write(fd, &entry.data);
                     let _ = crate::vfs::vfs_close(fd);
                 }

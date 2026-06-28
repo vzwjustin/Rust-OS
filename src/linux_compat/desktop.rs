@@ -67,12 +67,18 @@ pub fn mark_session_boot(boot: SessionBoot) {
     let _ = crate::vfs::vfs_mkdir("/run/installer", 0o755);
     match boot {
         SessionBoot::Install => {
-            mark_vfs_file("/run/installer/active", b"active
-");
+            mark_vfs_file(
+                "/run/installer/active",
+                b"active
+",
+            );
         }
         SessionBoot::Live => {
-            mark_vfs_file("/run/rustos/live", b"1
-");
+            mark_vfs_file(
+                "/run/rustos/live",
+                b"1
+",
+            );
         }
         SessionBoot::Desktop => {}
     }

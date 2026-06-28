@@ -10,7 +10,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use super::{get_vfs, ramfs, InodeOps, InodeType, Stat, SuperblockOps, VfsError, VfsResult, StatFs, DirEntry};
+use super::{
+    get_vfs, ramfs, DirEntry, InodeOps, InodeType, Stat, StatFs, SuperblockOps, VfsError, VfsResult,
+};
 
 lazy_static::lazy_static! {
     static ref OVERLAY_UPPERS: Mutex<BTreeMap<String, Arc<ramfs::RamFs>>> = Mutex::new(BTreeMap::new());
@@ -47,7 +49,11 @@ impl OverlayInode {
         if self.lower == "/" {
             format!("/{}", self.rel.trim_start_matches('/'))
         } else {
-            format!("{}/{}", self.lower.trim_end_matches('/'), self.rel.trim_start_matches('/'))
+            format!(
+                "{}/{}",
+                self.lower.trim_end_matches('/'),
+                self.rel.trim_start_matches('/')
+            )
         }
     }
 
@@ -55,7 +61,11 @@ impl OverlayInode {
         if self.rel.is_empty() || self.rel == "/" {
             self.mount.clone()
         } else {
-            format!("{}/{}", self.mount.trim_end_matches('/'), self.rel.trim_start_matches('/'))
+            format!(
+                "{}/{}",
+                self.mount.trim_end_matches('/'),
+                self.rel.trim_start_matches('/')
+            )
         }
     }
 }
@@ -121,15 +131,12 @@ impl InodeOps for OverlayInode {
         }))
     }
 
-    fn create(
-        &self,
-        name: &str,
-        inode_type: InodeType,
-        mode: u32,
-    ) -> VfsResult<Arc<dyn InodeOps>> {
+    fn create(&self, name: &str, inode_type: InodeType, mode: u32) -> VfsResult<Arc<dyn InodeOps>> {
         let path = self.full_mount_for_rel(name);
         ensure_upper_parent(&path)?;
-        get_vfs().lookup(&self.full_mount())?.create(name, inode_type, mode)
+        get_vfs()
+            .lookup(&self.full_mount())?
+            .create(name, inode_type, mode)
     }
 
     fn unlink(&self, name: &str) -> VfsResult<()> {
@@ -175,11 +182,19 @@ impl InodeOps for OverlayInode {
 
 impl OverlayInode {
     fn full_lower_for_rel(&self, rel: &str) -> String {
-        format!("{}/{}", self.lower.trim_end_matches('/'), rel.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            self.lower.trim_end_matches('/'),
+            rel.trim_start_matches('/')
+        )
     }
 
     fn full_mount_for_rel(&self, rel: &str) -> String {
-        format!("{}/{}", self.mount.trim_end_matches('/'), rel.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            self.mount.trim_end_matches('/'),
+            rel.trim_start_matches('/')
+        )
     }
 }
 

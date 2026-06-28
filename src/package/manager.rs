@@ -64,7 +64,6 @@ impl PackageManager {
         self.install_from_local(package_name)
     }
 
-
     fn install_from_local(&mut self, package_name: &str) -> PackageResult<String> {
         use crate::package::adapters::{NativeAdapter, PackageAdapter};
         use crate::package::{ExtractedPackage, PackageInfo, PackageStatus};
@@ -285,18 +284,29 @@ impl PackageManager {
 fn read_vfs_package_bytes(path: &str) -> PackageResult<alloc::vec::Vec<u8>> {
     use crate::vfs::{InodeType, VfsError};
     let vfs = crate::vfs::get_vfs();
-    let inode = vfs.lookup(path).map_err(|_| PackageError::NotFound(path.into()))?;
+    let inode = vfs
+        .lookup(path)
+        .map_err(|_| PackageError::NotFound(path.into()))?;
     if inode.inode_type() != InodeType::File {
-        return Err(PackageError::InvalidFormat(format!("{} is not a file", path)));
+        return Err(PackageError::InvalidFormat(format!(
+            "{} is not a file",
+            path
+        )));
     }
-    let stat = inode.stat().map_err(|_| PackageError::IoError("stat failed".into()))?;
+    let stat = inode
+        .stat()
+        .map_err(|_| PackageError::IoError("stat failed".into()))?;
     let mut buf = alloc::vec::Vec::new();
     buf.resize(stat.size as usize, 0);
     let mut off = 0u64;
     let mut got = 0usize;
     while got < buf.len() {
-        let n = inode.read_at(off, &mut buf[got..]).map_err(|_| PackageError::IoError("read failed".into()))?;
-        if n == 0 { break; }
+        let n = inode
+            .read_at(off, &mut buf[got..])
+            .map_err(|_| PackageError::IoError("read failed".into()))?;
+        if n == 0 {
+            break;
+        }
         got += n;
         off += n as u64;
     }
@@ -321,4 +331,3 @@ fn install_package_files(extracted: &crate::package::ExtractedPackage) -> Packag
     }
     Ok(())
 }
-

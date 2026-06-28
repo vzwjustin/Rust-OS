@@ -622,13 +622,16 @@ pub fn install_block_devices() -> VfsResult<()> {
             },
             sector_size,
         )?;
-        register_block_device(&disk, BlockDevSpec {
-            device_id: device.device_id(),
-            start_sector: 0,
-            sector_count: device.total_sectors(),
-            major,
-            minor: base_minor,
-        });
+        register_block_device(
+            &disk,
+            BlockDevSpec {
+                device_id: device.device_id(),
+                start_sector: 0,
+                sector_count: device.total_sectors(),
+                major,
+                minor: base_minor,
+            },
+        );
 
         let partitions = partition_scan
             .iter()
@@ -653,13 +656,16 @@ pub fn install_block_devices() -> VfsResult<()> {
                 },
                 sector_size,
             )?;
-            register_block_device(&part_name, BlockDevSpec {
-                device_id: device.device_id(),
-                start_sector: part.start_sector,
-                sector_count: part.sector_count,
-                major,
-                minor: base_minor + part.number as u32 + 1,
-            });
+            register_block_device(
+                &part_name,
+                BlockDevSpec {
+                    device_id: device.device_id(),
+                    start_sector: part.start_sector,
+                    sector_count: part.sector_count,
+                    major,
+                    minor: base_minor + part.number as u32 + 1,
+                },
+            );
         }
     }
 

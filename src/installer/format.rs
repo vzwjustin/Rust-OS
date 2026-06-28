@@ -278,12 +278,7 @@ impl Ext4Volume {
             let chunk = &data[offset..end];
             let mut block = [0u8; 4096];
             block[..chunk.len()].copy_from_slice(chunk);
-            write_partition_blocks(
-                self.device_id,
-                self.start_sector,
-                first_block,
-                &block,
-            )?;
+            write_partition_blocks(self.device_id, self.start_sector, first_block, &block)?;
             offset = end;
             if offset < data.len() {
                 first_block = self.next_data_block;

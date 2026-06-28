@@ -14,7 +14,7 @@ use crate::fs::{
     InodeNumber, OpenFlags,
 };
 
-use super::{InodeOps, InodeType, Stat, SuperblockOps, VfsError, VfsResult, StatFs};
+use super::{InodeOps, InodeType, Stat, StatFs, SuperblockOps, VfsError, VfsResult};
 
 static NEXT_LEGACY_INO: AtomicU64 = AtomicU64::new(50_000);
 
@@ -196,7 +196,9 @@ impl InodeOps for LegacyInode {
                 Arc::clone(&self.backing),
                 self.path.clone(),
                 self.inode,
-                self.backing.metadata(self.inode).map_err(|_| VfsError::IoError)?,
+                self.backing
+                    .metadata(self.inode)
+                    .map_err(|_| VfsError::IoError)?,
             ));
         }
         if name == ".." {
@@ -206,7 +208,13 @@ impl InodeOps for LegacyInode {
                 self.path
                     .rsplit('/')
                     .nth(1)
-                    .map(|p| if p.is_empty() { "/".to_string() } else { format!("/{p}") })
+                    .map(|p| {
+                        if p.is_empty() {
+                            "/".to_string()
+                        } else {
+                            format!("/{p}")
+                        }
+                    })
                     .unwrap_or_else(|| "/".to_string())
             };
             let (ino, meta) = self

@@ -536,9 +536,7 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
         return Err(LinuxError::ENOSYS);
     }
     match syscall {
-        crate::syscall::SyscallNumber::Fork => {
-            linux_compat::process_ops::fork().map(|v| v as u64)
-        }
+        crate::syscall::SyscallNumber::Fork => linux_compat::process_ops::fork().map(|v| v as u64),
         crate::syscall::SyscallNumber::Execve => {
             let filename = args[0] as *const u8;
             let argv = args[1] as *const *const u8;
@@ -557,22 +555,17 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let rusage = args[3] as *mut linux_compat::types::Rusage;
             linux_compat::process_ops::wait4(pid, wstatus, options, rusage).map(|v| v as u64)
         }
-        crate::syscall::SyscallNumber::GetPid => {
-            Ok(linux_compat::process_ops::getpid() as u64)
-        }
-        crate::syscall::SyscallNumber::GetPpid => {
-            Ok(linux_compat::process_ops::getppid() as u64)
-        }
-        crate::syscall::SyscallNumber::Gettid => {
-            Ok(linux_compat::thread_ops::gettid() as u64)
-        }
+        crate::syscall::SyscallNumber::GetPid => Ok(linux_compat::process_ops::getpid() as u64),
+        crate::syscall::SyscallNumber::GetPpid => Ok(linux_compat::process_ops::getppid() as u64),
+        crate::syscall::SyscallNumber::Gettid => Ok(linux_compat::thread_ops::gettid() as u64),
         crate::syscall::SyscallNumber::Clone => {
             let flags = args[0];
             let child_stack = args[1] as *mut u8;
             let parent_tidptr = args[2] as *mut i32;
             let child_tidptr = args[3] as *mut i32;
             let newtls = args[4];
-            linux_compat::thread_ops::clone(flags, child_stack, parent_tidptr, child_tidptr, newtls).map(|v| v as u64)
+            linux_compat::thread_ops::clone(flags, child_stack, parent_tidptr, child_tidptr, newtls)
+                .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::RtSigaction => {
             let sig = args[0] as i32;
@@ -588,18 +581,10 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let sigsetsize = args[3] as usize;
             linux_compat::signal_ops::rt_sigprocmask(how, set, oset, sigsetsize).map(|v| v as u64)
         }
-        crate::syscall::SyscallNumber::Getuid => {
-            Ok(linux_compat::process_ops::getuid() as u64)
-        }
-        crate::syscall::SyscallNumber::Geteuid => {
-            Ok(linux_compat::process_ops::geteuid() as u64)
-        }
-        crate::syscall::SyscallNumber::Getgid => {
-            Ok(linux_compat::process_ops::getgid() as u64)
-        }
-        crate::syscall::SyscallNumber::Getegid => {
-            Ok(linux_compat::process_ops::getegid() as u64)
-        }
+        crate::syscall::SyscallNumber::Getuid => Ok(linux_compat::process_ops::getuid() as u64),
+        crate::syscall::SyscallNumber::Geteuid => Ok(linux_compat::process_ops::geteuid() as u64),
+        crate::syscall::SyscallNumber::Getgid => Ok(linux_compat::process_ops::getgid() as u64),
+        crate::syscall::SyscallNumber::Getegid => Ok(linux_compat::process_ops::getegid() as u64),
         crate::syscall::SyscallNumber::Setuid => {
             let uid = args[0] as u32;
             linux_compat::process_ops::setuid(uid).map(|v| v as u64)
@@ -690,9 +675,7 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let pid = args[0] as i32;
             linux_compat::process_ops::getpgid(pid).map(|v| v as u64)
         }
-        crate::syscall::SyscallNumber::Getpgrp => {
-            Ok(linux_compat::process_ops::getpgrp() as u64)
-        }
+        crate::syscall::SyscallNumber::Getpgrp => Ok(linux_compat::process_ops::getpgrp() as u64),
         crate::syscall::SyscallNumber::Setsid => {
             linux_compat::process_ops::setsid().map(|v| v as u64)
         }
@@ -723,7 +706,8 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let resource = args[1] as i32;
             let new_limit = args[2] as *const linux_compat::resource_ops::RLimit;
             let old_limit = args[3] as *mut linux_compat::resource_ops::RLimit;
-            linux_compat::resource_ops::prlimit(pid, resource, new_limit, old_limit).map(|v| v as u64)
+            linux_compat::resource_ops::prlimit(pid, resource, new_limit, old_limit)
+                .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Getrusage => {
             let who = args[0] as i32;
@@ -807,7 +791,8 @@ fn route_network_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let flags = args[3] as i32;
             let dest_addr = args[4] as *const linux_compat::types::SockAddr;
             let addrlen = args[5] as u32;
-            linux_compat::socket_ops::sendto(sockfd, buf, len, flags, dest_addr, addrlen).map(|v| v as u64)
+            linux_compat::socket_ops::sendto(sockfd, buf, len, flags, dest_addr, addrlen)
+                .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Recvfrom => {
             let sockfd = args[0] as i32;
@@ -816,7 +801,8 @@ fn route_network_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let flags = args[3] as i32;
             let src_addr = args[4] as *mut linux_compat::types::SockAddr;
             let addrlen = args[5] as *mut u32;
-            linux_compat::socket_ops::recvfrom(sockfd, buf, len, flags, src_addr, addrlen).map(|v| v as u64)
+            linux_compat::socket_ops::recvfrom(sockfd, buf, len, flags, src_addr, addrlen)
+                .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Sendmsg => {
             let sockfd = args[0] as i32;
@@ -871,7 +857,8 @@ fn route_network_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let optname = args[2] as i32;
             let optval = args[3] as *const u8;
             let optlen = args[4] as u32;
-            linux_compat::socket_ops::setsockopt(sockfd, level, optname, optval, optlen).map(|v| v as u64)
+            linux_compat::socket_ops::setsockopt(sockfd, level, optname, optval, optlen)
+                .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::GetSockopt => {
             let sockfd = args[0] as i32;
@@ -879,7 +866,8 @@ fn route_network_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             let optname = args[2] as i32;
             let optval = args[3] as *mut u8;
             let optlen = args[4] as *mut u32;
-            linux_compat::socket_ops::getsockopt(sockfd, level, optname, optval, optlen).map(|v| v as u64)
+            linux_compat::socket_ops::getsockopt(sockfd, level, optname, optval, optlen)
+                .map(|v| v as u64)
         }
         _ => Err(LinuxError::ENOSYS),
     }
@@ -922,7 +910,8 @@ fn route_memory_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             let new_size = args[2] as usize;
             let flags = args[3] as i32;
             let new_address = args[4] as *mut u8;
-            linux_compat::memory_ops::mremap(old_address, old_size, new_size, flags, new_address).map(|v| v as u64)
+            linux_compat::memory_ops::mremap(old_address, old_size, new_size, flags, new_address)
+                .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Msync => {
             let addr = args[0] as *mut u8;

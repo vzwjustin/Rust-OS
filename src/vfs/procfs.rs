@@ -25,7 +25,6 @@ fn init_installer_state() {
     INSTALLER_PLAN.lock().clear();
 }
 
-
 struct MountsProcInode {
     ino: u64,
     mode: u32,

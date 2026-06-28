@@ -8,8 +8,8 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use lazy_static::lazy_static;
@@ -125,8 +125,8 @@ fn cooperative_block_mount(
     match fstype {
         "overlay" => {
             let opts = mount_data.unwrap_or("");
-            let (lower, upper) = crate::vfs::overlayfs::parse_overlay_options(opts)
-                .ok_or(LinuxError::EINVAL)?;
+            let (lower, upper) =
+                crate::vfs::overlayfs::parse_overlay_options(opts).ok_or(LinuxError::EINVAL)?;
             crate::vfs::overlayfs::mount_overlay(&lower, target, &upper, "/run/overlay/work")
                 .map_err(|_| LinuxError::EIO)?;
         }
@@ -144,18 +144,18 @@ fn cooperative_block_mount(
                     let _ = fsi.mount_filesystem(device_id, part, String::from(target), None);
                 }
             }
-            crate::vfs::legacy_mount::mount_block_device(source, target, fstype)
-                .map_err(|e| match e {
+            crate::vfs::legacy_mount::mount_block_device(source, target, fstype).map_err(|e| {
+                match e {
                     VfsError::AlreadyExists => LinuxError::EBUSY,
                     VfsError::NotFound => LinuxError::ENODEV,
                     _ => LinuxError::EIO,
-                })?;
+                }
+            })?;
         }
     }
     record_mount(source, target, fstype, flags);
     Ok(0)
 }
-
 
 static NEXT_INOTIFY_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -520,7 +520,13 @@ pub fn mount(
                 return Err(LinuxError::ENODEV);
             }
             let source_str = c_str_to_string(source)?;
-            cooperative_block_mount(&source_str, &target_str, &fstype, mountflags, mount_data_ref)
+            cooperative_block_mount(
+                &source_str,
+                &target_str,
+                &fstype,
+                mountflags,
+                mount_data_ref,
+            )
         }
         _ => {
             if source.is_null() {

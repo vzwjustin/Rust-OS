@@ -9,7 +9,9 @@ use alloc::vec::Vec;
 use super::format::Ext4Volume;
 use crate::drivers::storage::StorageError;
 
-const CRITICAL_PATHS: &[&str] = &["/bin", "/usr", "/etc", "/lib", "/sbin", "/init", "/var", "/home", "/opt", "/root"];
+const CRITICAL_PATHS: &[&str] = &[
+    "/bin", "/usr", "/etc", "/lib", "/sbin", "/init", "/var", "/home", "/opt", "/root",
+];
 
 /// Copy critical rootfs paths from the live VFS onto the formatted root partition.
 pub fn copy_rootfs_to_partition(volume: &mut Ext4Volume) -> Result<usize, StorageError> {

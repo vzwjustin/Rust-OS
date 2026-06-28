@@ -17,12 +17,12 @@ use spin::{Mutex, RwLock};
 pub mod devfs;
 pub mod drmfs;
 pub mod file_descriptor;
+pub mod legacy_mount;
+pub mod live_mount;
+pub mod overlayfs;
 pub mod procfs;
 pub mod ramfs;
 pub mod sockfs;
-pub mod overlayfs;
-pub mod live_mount;
-pub mod legacy_mount;
 
 #[cfg(test)]
 pub mod examples;

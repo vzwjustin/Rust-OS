@@ -64,7 +64,11 @@ pub fn write_install_config(
     let timezone = format!("{}\n", plan.timezone);
     volume.write_file("/etc/timezone", timezone.as_bytes())?;
     let _localtime = format!("/usr/share/zoneinfo/{}", plan.timezone);
-    let swap_marker = if plan.include_swap { swap_part.as_str() } else { "" };
+    let swap_marker = if plan.include_swap {
+        swap_part.as_str()
+    } else {
+        ""
+    };
     let installed = format!(
         "installed=true\nhostname={}\nusername={}\nlanguage={}\nroot_part={}\nefi_part={}\nroot_fs=ext4\nefi_fs=vfat\nswap_part={}\n",
         plan.hostname, plan.username, plan.language, root_part, efi_part, swap_marker

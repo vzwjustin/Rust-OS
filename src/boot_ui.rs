@@ -2066,7 +2066,6 @@ pub enum BootMenuSelection {
     LiveSession,
 }
 
-
 /// Apply a boot-menu key selection (shared by text and graphical menus).
 fn apply_boot_menu_key(c: char, storage_available: bool) -> Option<BootMenuSelection> {
     match c {
@@ -2126,7 +2125,7 @@ fn poll_boot_menu_selection(timeout_iters: u32, storage_available: bool) -> Boot
 
 /// Graphical boot menu on the framebuffer (Ubuntu-style install entry).
 pub fn show_graphical_boot_menu() -> BootMenuSelection {
-    use crate::graphics::{Color, get_default_font};
+    use crate::graphics::{get_default_font, Color};
     crate::interrupts::enable_keyboard_interrupt();
     let storage_available = !crate::drivers::storage::get_storage_device_list().is_empty();
 
@@ -2142,10 +2141,28 @@ pub fn show_graphical_boot_menu() -> BootMenuSelection {
     crate::graphics::draw_text("[2] Safe Mode", 80, y0 + 52, fg, font);
     crate::graphics::draw_text("[3] Text Mode", 80, y0 + 76, fg, font);
     if storage_available {
-        crate::graphics::draw_text("[4] Install RustOS — GTK installer", 80, y0 + 100, accent, font);
+        crate::graphics::draw_text(
+            "[4] Install RustOS — GTK installer",
+            80,
+            y0 + 100,
+            accent,
+            font,
+        );
     }
-    crate::graphics::draw_text("[5] Live session — try without installing", 80, y0 + 124, fg, font);
-    crate::graphics::draw_text("Auto-boot in 3 seconds...", 80, y0 + 160, Color::rgb(180, 180, 180), font);
+    crate::graphics::draw_text(
+        "[5] Live session — try without installing",
+        80,
+        y0 + 124,
+        fg,
+        font,
+    );
+    crate::graphics::draw_text(
+        "Auto-boot in 3 seconds...",
+        80,
+        y0 + 160,
+        Color::rgb(180, 180, 180),
+        font,
+    );
 
     poll_boot_menu_selection(3_000_000, storage_available)
 }

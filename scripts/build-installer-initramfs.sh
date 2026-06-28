@@ -63,8 +63,9 @@ setup_installer_rootfs() {
     log "Setting up installer rootfs at $INSTALLER_ROOTFS"
 
     mkdir -p \
-        "$INSTALLER_ROOTFS/bin" \
-        "$INSTALLER_ROOTFS/sbin" \
+    "$INSTALLER_ROOTFS/bin" \
+    "$INSTALLER_ROOTFS/lib" \
+    "$INSTALLER_ROOTFS/sbin" \
         "$INSTALLER_ROOTFS/usr/bin" \
         "$INSTALLER_ROOTFS/etc/rustos" \
         "$INSTALLER_ROOTFS/dev" \
@@ -85,6 +86,12 @@ setup_installer_rootfs() {
         echo "Error: busybox not found at $SOURCE_ROOTFS/bin/busybox" >&2
         exit 1
     fi
+
+    for lib in ld-musl-x86_64.so.1 libc.musl-x86_64.so.1; do
+        if [ -e "$SOURCE_ROOTFS/lib/$lib" ]; then
+            cp -a "$SOURCE_ROOTFS/lib/$lib" "$INSTALLER_ROOTFS/lib/$lib"
+        fi
+    done
 
     ln -sf busybox "$INSTALLER_ROOTFS/bin/sh"
     ln -sf /usr/bin/rustos-installer-init "$INSTALLER_ROOTFS/init"
