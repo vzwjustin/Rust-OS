@@ -15,6 +15,14 @@ use super::{LinuxError, LinuxResult};
 
 static DESKTOP_SESSION_READY: AtomicBool = AtomicBool::new(false);
 
+/// Userspace session boot intent passed to PID 1 via environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionBoot {
+    Desktop,
+    Install,
+    Live,
+}
+
 /// Standard GNOME/Wayland session environment for PID 1 and session children.
 pub fn default_session_envp() -> Vec<String> {
     super::process_ops::default_session_envp()
@@ -54,10 +62,44 @@ pub fn exec_program(
 ///
 /// The init script runs as a normal Linux process: syscalls for open/read/connect/fork
 /// all route through `linux_compat` while the kernel compositor loop keeps rendering.
-pub fn spawn_session_init(path: &str) -> LinuxResult<u32> {
+/// Create VFS markers consumed by userspace `/init`.
+pub fn mark_session_boot(boot: SessionBoot) {
+    let _ = crate::vfs::vfs_mkdir("/run/installer", 0o755);
+    match boot {
+        SessionBoot::Install => {
+            mark_vfs_file("/run/installer/active", b"active
+");
+        }
+        SessionBoot::Live => {
+            mark_vfs_file("/run/rustos/live", b"1
+");
+        }
+        SessionBoot::Desktop => {}
+    }
+}
+
+fn mark_vfs_file(path: &str, contents: &[u8]) {
+    const O_WRONLY: u32 = 1;
+    const O_CREAT: u32 = 64;
+    const O_TRUNC: u32 = 512;
+    if let Ok(fd) = crate::vfs::vfs_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        let _ = crate::vfs::vfs_write(fd, contents);
+        let _ = crate::vfs::vfs_close(fd);
+    }
+}
+
+/// Prepare kernel-side session resources before spawning userspace GNOME/installer.
+pub fn prepare_userspace_session() {
+    crate::dbus::release_kernel_gnome_stubs();
+}
+
+pub fn spawn_session_init(path: &str, boot: SessionBoot) -> LinuxResult<u32> {
     if !super::is_linux_compat_ready() {
         return Err(LinuxError::ENOSYS);
     }
+
+    prepare_userspace_session();
+    mark_session_boot(boot);
 
     use crate::process::scheduler::create_process;
     use crate::process::Priority;
@@ -65,7 +107,12 @@ pub fn spawn_session_init(path: &str) -> LinuxResult<u32> {
     let pid = create_process(Some(0), Priority::Normal, "init").map_err(|_| LinuxError::EAGAIN)?;
 
     let argv: Vec<String> = Vec::from([String::from(path)]);
-    exec_program(pid, path, &argv, &[])?;
+    let extra: &[&str] = match boot {
+        SessionBoot::Install => &["RUSTOS_BOOT=install"],
+        SessionBoot::Live => &["RUSTOS_LIVE=1", "RUSTOS_BOOT=live"],
+        SessionBoot::Desktop => &[],
+    };
+    exec_program(pid, path, &argv, extra)?;
 
     crate::user_sched::queue_user_pid(pid);
     crate::serial_println!(

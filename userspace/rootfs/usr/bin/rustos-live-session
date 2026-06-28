@@ -1,0 +1,22 @@
+#!/bin/sh
+# RustOS live session ("Try RustOS") — GNOME desktop with live flag set.
+# chmod +x userspace/rootfs/usr/bin/rustos-live-session
+
+export RUSTOS_LIVE=1
+export RUSTOS_SESSION_MODE=live
+
+mkdir -p /run/rustos 2>/dev/null || true
+echo live >/run/rustos/session-mode 2>/dev/null || true
+
+if [ -f /etc/rustos/installer.conf ]; then
+    . /etc/rustos/installer.conf 2>/dev/null || true
+fi
+
+gnome_session=${session_launcher:-/usr/bin/rustos-gnome-session}
+
+echo "rustos-live-session: launching live desktop (RUSTOS_LIVE=1)"
+if [ -x "$gnome_session" ]; then
+    exec "$gnome_session" "$@"
+fi
+
+exec /usr/bin/rustos-gnome-session "$@"

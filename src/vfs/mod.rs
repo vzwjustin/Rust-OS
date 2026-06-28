@@ -20,6 +20,9 @@ pub mod file_descriptor;
 pub mod procfs;
 pub mod ramfs;
 pub mod sockfs;
+pub mod overlayfs;
+pub mod live_mount;
+pub mod legacy_mount;
 
 #[cfg(test)]
 pub mod examples;

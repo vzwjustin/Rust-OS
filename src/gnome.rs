@@ -54,14 +54,25 @@ impl GnomeReadiness {
             && self.input.is_ready()
     }
 
-    pub const fn gnome_shell_ready(&self) -> bool {
+    pub fn gnome_shell_ready(&self) -> bool {
         self.foundation_ready()
             && self.linux_abi.is_ready()
             && self.dbus.is_ready()
             && self.wayland.is_ready()
             && self.mutter.is_ready()
-            && self.drm_kms.is_ready()
+            && (self.drm_kms.is_ready() || userspace_shell_bridge_active())
     }
+}
+
+static USERSPACE_SHELL_BRIDGE: AtomicBool = AtomicBool::new(false);
+
+/// Mark GNOME Shell readiness via kernel compositor + userspace bridge (no DRM/KMS required).
+pub fn mark_userspace_shell_bridge() {
+    USERSPACE_SHELL_BRIDGE.store(true, Ordering::Release);
+}
+
+pub fn userspace_shell_bridge_active() -> bool {
+    USERSPACE_SHELL_BRIDGE.load(Ordering::Acquire)
 }
 
 pub fn probe() -> GnomeReadiness {

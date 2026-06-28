@@ -23,6 +23,9 @@ pub struct BootConfig {
     pub force_text_mode: bool,
     /// When `/bin/init` or `/init` exists on the rootfs, exec it as PID 1 instead of the kernel desktop
     pub prefer_userspace_init: bool,
+    /// Enter the kernel installer wizard instead of the desktop
+    pub install_mode: bool,
+    pub live_mode: bool,
     /// Enter the interactive PS/2 debug console after logging init (blocks boot)
     pub interactive_debug_console: bool,
 }
@@ -35,6 +38,8 @@ impl Default for BootConfig {
             verbose: false,
             force_text_mode: false,
             prefer_userspace_init: true,
+            install_mode: false,
+            live_mode: false,
             interactive_debug_console: false,
         }
     }
@@ -47,6 +52,8 @@ static mut BOOT_CONFIG: BootConfig = BootConfig {
     verbose: false,
     force_text_mode: false,
     prefer_userspace_init: true,
+    install_mode: false,
+    live_mode: false,
     interactive_debug_console: false,
 };
 
@@ -1174,7 +1181,7 @@ impl DriverLoadResult {
 
 /// Mount file systems with progress display
 pub fn filesystem_mount_progress() -> FilesystemMountResult {
-    begin_stage(BootStage::FileSystemMount, 3);
+    begin_stage(BootStage::FileSystemMount, 4);
 
     let mut result = FilesystemMountResult::new();
 
@@ -1223,6 +1230,16 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
             report_warning("Initramfs", "Using minimal filesystem");
         }
     }
+    update_substage(4, "Initializing storage filesystem interface...");
+    crate::drivers::storage::filesystem_interface::init_filesystem_interface();
+    report_success("Storage filesystem interface initialized");
+    if let Err(e) = crate::vfs::devfs::install_block_devices() {
+        let reason = format!("{:?}", e);
+        report_warning("Block device nodes", &reason);
+    } else {
+        report_success("Block device nodes registered in /dev");
+    }
+
     crate::serial_println!("filesystem_mount: calling complete_stage");
     complete_stage(BootStage::FileSystemMount);
     crate::serial_println!("filesystem_mount: calling boot_delay_short");
@@ -2045,6 +2062,92 @@ pub enum BootMenuSelection {
     NormalBoot,
     SafeMode,
     TextMode,
+    InstallRustOS,
+    LiveSession,
+}
+
+
+/// Apply a boot-menu key selection (shared by text and graphical menus).
+fn apply_boot_menu_key(c: char, storage_available: bool) -> Option<BootMenuSelection> {
+    match c {
+        '1' => Some(BootMenuSelection::NormalBoot),
+        '2' => {
+            enable_safe_mode();
+            Some(BootMenuSelection::SafeMode)
+        }
+        '3' => {
+            let mut config = boot_config().clone();
+            config.force_text_mode = true;
+            set_boot_config(config);
+            Some(BootMenuSelection::TextMode)
+        }
+        '4' if storage_available => {
+            let mut config = boot_config().clone();
+            config.install_mode = true;
+            set_boot_config(config);
+            Some(BootMenuSelection::InstallRustOS)
+        }
+        '5' => {
+            let mut config = boot_config().clone();
+            config.live_mode = true;
+            set_boot_config(config);
+            Some(BootMenuSelection::LiveSession)
+        }
+        _ => None,
+    }
+}
+
+/// Poll keyboard for boot menu selection with timeout.
+fn poll_boot_menu_selection(timeout_iters: u32, storage_available: bool) -> BootMenuSelection {
+    let segment_size: u32 = 1_000_000;
+    let mut iter: u32 = 0;
+    let mut last_second: u32 = 3;
+
+    while iter < timeout_iters {
+        if let Some(event) = crate::keyboard::get_key_event() {
+            if let crate::keyboard::KeyEvent::CharacterPress(c) = event {
+                if let Some(sel) = apply_boot_menu_key(c, storage_available) {
+                    boot_delay_short();
+                    return sel;
+                }
+            }
+        }
+        let current_second = 3 - (iter / segment_size);
+        if current_second != last_second && current_second < 3 {
+            last_second = current_second;
+        }
+        unsafe {
+            core::arch::asm!("nop");
+        }
+        iter += 1;
+    }
+    BootMenuSelection::NormalBoot
+}
+
+/// Graphical boot menu on the framebuffer (Ubuntu-style install entry).
+pub fn show_graphical_boot_menu() -> BootMenuSelection {
+    use crate::graphics::{Color, get_default_font};
+    crate::interrupts::enable_keyboard_interrupt();
+    let storage_available = !crate::drivers::storage::get_storage_device_list().is_empty();
+
+    show_graphical_splash();
+
+    let font = get_default_font();
+    let fg = Color::rgb(255, 255, 255);
+    let accent = Color::rgb(233, 84, 32);
+    let y0 = 120usize;
+
+    crate::graphics::draw_text("RustOS Boot Menu", 80, y0, fg, font);
+    crate::graphics::draw_text("[1] Normal Boot — Ubuntu desktop", 80, y0 + 28, fg, font);
+    crate::graphics::draw_text("[2] Safe Mode", 80, y0 + 52, fg, font);
+    crate::graphics::draw_text("[3] Text Mode", 80, y0 + 76, fg, font);
+    if storage_available {
+        crate::graphics::draw_text("[4] Install RustOS — GTK installer", 80, y0 + 100, accent, font);
+    }
+    crate::graphics::draw_text("[5] Live session — try without installing", 80, y0 + 124, fg, font);
+    crate::graphics::draw_text("Auto-boot in 3 seconds...", 80, y0 + 160, Color::rgb(180, 180, 180), font);
+
+    poll_boot_menu_selection(3_000_000, storage_available)
 }
 
 /// Show the boot menu and wait for user selection.
@@ -2052,6 +2155,8 @@ pub enum BootMenuSelection {
 pub fn show_boot_menu() -> BootMenuSelection {
     // Enable keyboard interrupt early for boot menu input
     crate::interrupts::enable_keyboard_interrupt();
+
+    let storage_available = !crate::drivers::storage::get_storage_device_list().is_empty();
 
     clear_screen();
 
@@ -2079,6 +2184,12 @@ pub fn show_boot_menu() -> BootMenuSelection {
     print!("  > ");
     set_color(Color::White, Color::Black);
     println!("[3] Text Mode Only  - Skip graphics init");
+    if storage_available {
+        set_color(Color::Magenta, Color::Black);
+        print!("  > ");
+        set_color(Color::White, Color::Black);
+        println!("[4] Install RustOS  - Disk installer wizard");
+    }
     println!();
 
     // Separator line
@@ -2096,43 +2207,24 @@ pub fn show_boot_menu() -> BootMenuSelection {
     // Print initial countdown
     set_color(Color::Yellow, Color::Black);
     print!(
-        "  Auto-continue in {} seconds... (press 1, 2, or 3)",
-        last_second
+        "  Auto-continue in {} seconds... (press 1, 2, 3{})",
+        last_second,
+        if storage_available { ", or 4" } else { "" }
     );
 
     while iter < timeout_iters {
         if let Some(event) = crate::keyboard::get_key_event() {
             if let crate::keyboard::KeyEvent::CharacterPress(c) = event {
                 match c {
-                    '1' => {
-                        print!("\r  ");
-                        set_color(Color::LightGreen, Color::Black);
-                        println!(">> Normal Boot selected                    ");
-                        set_color(Color::White, Color::Black);
-                        boot_delay_short();
-                        return BootMenuSelection::NormalBoot;
+                    c => {
+                        if let Some(sel) = apply_boot_menu_key(c, storage_available) {
+                            print!("\r  ");
+                            set_color(Color::LightGreen, Color::Black);
+                            println!(">> Boot option selected                  ");
+                            set_color(Color::White, Color::Black);
+                            return sel;
+                        }
                     }
-                    '2' => {
-                        print!("\r  ");
-                        set_color(Color::Yellow, Color::Black);
-                        println!(">> Safe Mode selected                      ");
-                        set_color(Color::White, Color::Black);
-                        enable_safe_mode();
-                        boot_delay_short();
-                        return BootMenuSelection::SafeMode;
-                    }
-                    '3' => {
-                        print!("\r  ");
-                        set_color(Color::LightCyan, Color::Black);
-                        println!(">> Text Mode selected                      ");
-                        set_color(Color::White, Color::Black);
-                        let mut config = boot_config().clone();
-                        config.force_text_mode = true;
-                        set_boot_config(config);
-                        boot_delay_short();
-                        return BootMenuSelection::TextMode;
-                    }
-                    _ => {}
                 }
             }
         }
@@ -2144,8 +2236,9 @@ pub fn show_boot_menu() -> BootMenuSelection {
             set_color(Color::Yellow, Color::Black);
             if current_second > 0 {
                 print!(
-                    "\r  Auto-continue in {} seconds... (press 1, 2, or 3)",
-                    current_second
+                    "\r  Auto-continue in {} seconds... (press 1, 2, 3{})",
+                    current_second,
+                    if storage_available { ", or 4" } else { "" }
                 );
             } else {
                 print!("\r  Auto-continuing...                              ");

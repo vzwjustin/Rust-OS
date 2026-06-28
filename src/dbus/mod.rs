@@ -1551,6 +1551,17 @@ pub fn bus_mut() -> spin::rwlock::RwLockWriteGuard<'static, MessageBus> {
 }
 
 /// Check if D-Bus is initialized.
+
+/// Release kernel-owned GNOME bus names so userspace gnome-shell can register.
+pub fn release_kernel_gnome_stubs() {
+    crate::gnome::mark_userspace_shell_bridge();
+    let mut bus = BUS.write();
+    bus.force_release_name(GNOME_SHELL_NAME);
+    bus.force_release_name(GNOME_READINESS_NAME);
+    KERNEL_SHELL_CONN.store(0, core::sync::atomic::Ordering::Release);
+    KERNEL_READY_CONN.store(0, core::sync::atomic::Ordering::Release);
+}
+
 pub fn is_ready() -> bool {
     BUS.read().is_initialized()
 }

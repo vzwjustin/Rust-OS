@@ -460,3 +460,15 @@ pub fn smoke_check() -> Result<(), &'static str> {
 
     Ok(())
 }
+
+/// True when `request` is in the DRM ioctl range.
+pub fn is_drm_ioctl(request: u64) -> bool {
+    ((request >> 8) & 0xFF) == 0x64
+}
+
+/// Dispatch a DRM ioctl for an open fd (userspace ABI).
+pub fn dispatch_ioctl_for_fd(fd: i32, cmd: u32, arg: u64) -> Result<usize, &'static str> {
+    let _ = fd;
+    dispatch_ioctl(cmd, arg)
+}
+

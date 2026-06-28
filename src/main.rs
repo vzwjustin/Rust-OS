@@ -144,6 +144,7 @@ mod glib_platform;
 mod glib_spawn;
 mod gnome;
 mod gnome_overlay;
+mod installer;
 mod mutter;
 // Include GNOME foundation subsystems
 mod dbus;
@@ -721,13 +722,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Boot Menu - Skip in graphical mode (auto-boot like native OS)
         // ========================================================================
         let boot_selection = if early_display_ready {
-            boot_ui::BootMenuSelection::NormalBoot
+            unsafe {
+                early_serial_write_str("RustOS: Showing boot menu (graphical)...\r\n");
+            }
+            boot_ui::show_graphical_boot_menu()
         } else {
             unsafe {
                 early_serial_write_str("RustOS: Showing boot menu (text mode)...\r\n");
             }
             boot_ui::show_boot_menu()
         };
+
+        if boot_selection == boot_ui::BootMenuSelection::InstallRustOS {
+            installer::set_install_mode(true);
+        }
         unsafe {
             early_serial_write_str("RustOS: Boot menu selection made\r\n");
         }
@@ -749,6 +757,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Starting driver loading...\r\n");
         }
         let driver_result = boot_ui::driver_loading_progress();
+        if boot_ui::boot_config().install_mode {
+            installer::init();
+        }
         // SAFETY: Debug output
         unsafe {
             early_serial_write_str("RustOS: Driver loading done\r\n");
@@ -1112,18 +1123,32 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Userspace init — spawn GNOME session bootstrap alongside kernel compositor
         // ========================================================================
         let boot_config = boot_ui::boot_config();
+        let session_boot = if installer::is_install_mode() {
+            crate::linux_compat::desktop::SessionBoot::Install
+        } else if boot_config.live_mode {
+            crate::linux_compat::desktop::SessionBoot::Live
+        } else {
+            crate::linux_compat::desktop::SessionBoot::Desktop
+        };
+
+        let mut userspace_spawned = false;
         if boot_config.prefer_userspace_init
             && !boot_config.safe_mode
             && initramfs::userspace_init_available()
         {
             unsafe {
                 early_serial_write_str(
-                    "RustOS: userspace init found, spawning GNOME session bootstrap\r\n",
+                    "RustOS: userspace init found, spawning session bootstrap\r\n",
                 );
             }
-            match initramfs::spawn_userspace_init() {
+            match initramfs::spawn_userspace_init(session_boot) {
                 Ok(pid) => {
-                    crate::serial_println!("Boot: userspace init PID {} queued", pid);
+                    userspace_spawned = true;
+                    crate::serial_println!(
+                        "Boot: userspace init PID {} queued (boot={:?})",
+                        pid,
+                        session_boot
+                    );
                 }
                 Err(e) => {
                     crate::serial_println!("Boot: userspace init spawn failed: {:?}", e);
@@ -1135,6 +1160,28 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                     "RustOS: no userspace init (or disabled), using kernel desktop only\r\n",
                 );
             }
+        }
+
+        // Kernel installer wizard is fallback when userspace GTK installer did not spawn
+        if installer::is_install_mode() && !userspace_spawned {
+            crate::serial_println!("Boot: entering kernel installer wizard (no userspace init)");
+            match installer::run_wizard() {
+                Ok(plan) => match installer::apply_plan(&plan) {
+                    Ok(()) => installer::finish_install_and_reboot(),
+                    Err(e) => {
+                        crate::serial_println!("Boot: install apply failed: {}", e);
+                        installer::finish_install_and_reboot();
+                    }
+                },
+                Err(e) => {
+                    crate::serial_println!("Boot: installer failed: {}", e);
+                    installer::finish_install_and_reboot();
+                }
+            }
+        } else if installer::is_install_mode() {
+            crate::serial_println!(
+                "Boot: install mode — userspace GTK installer + kernel compositor"
+            );
         }
 
         // Launch appropriate desktop environment

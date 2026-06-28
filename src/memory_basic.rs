@@ -10,7 +10,8 @@ pub const PAGE_SIZE: usize = 4096;
 /// Memory layout constants for virtual address space
 /// Note: Using address well past kernel load area, identity-mapped by bootloader
 pub const KERNEL_HEAP_START: usize = 0x_0080_0000; // 8MB - past kernel, safe region
-pub const KERNEL_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB heap
+pub const KERNEL_HEAP_SIZE: usize = 512 * 1024 * 1024; // 512 MiB desktop heap cap
+pub const MIN_KERNEL_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB minimum heap
 
 /// Simple memory statistics
 #[derive(Debug, Clone)]
@@ -121,7 +122,7 @@ pub fn init_heap_from_memory_map(
     // Find a usable memory region that's large enough for the heap
     // Skip the first 1MB to avoid conflicts with low memory
     const MIN_HEAP_ADDR: u64 = 0x10_0000; // 1MB
-    const DESIRED_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16MB
+    const DESIRED_HEAP_SIZE: usize = KERNEL_HEAP_SIZE;
 
     // Find the highest usable memory region that's large enough for the heap.
     // Using the last region avoids overlap with the kernel image which is
@@ -142,7 +143,7 @@ pub fn init_heap_from_memory_map(
         }
 
         // Check if region is large enough
-        if size >= DESIRED_HEAP_SIZE {
+        if size >= MIN_KERNEL_HEAP_SIZE {
             best_region = Some((phys_start, size));
         }
     }

@@ -33,7 +33,7 @@ PURPLE = \033[0;35m
 CYAN = \033[0;36m
 NC = \033[0m # No Color
 
-.PHONY: help all build build-release clean test run run-release install-deps check bootimage bootimage-release boot-smoke test-glib-native check-glib-native build-glib-static mutter build-mutter gnome-shell build-gnome-shell initramfs desktop-rootfs
+.PHONY: help all build build-release build-x86 build-arm bootimage bootimage-release boot-smoke run run-release run-vnc run-x86 run-arm test test-glib-native check-glib-native build-glib-static install-deps check clean rebuild rebuild-release info size objdump nm debug release dev ci-build ci-test dist benchmark watch format lint docs disk-usage mutter build-mutter gnome-shell build-gnome-shell desktop-rootfs initramfs installer-rootfs installer-initramfs installer-gtk build-installer-gtk live-squashfs live-iso install-media
 
 # Default target
 all: build
@@ -60,6 +60,12 @@ help:
 	@echo "  $(GREEN)gnome-shell$(NC)      - Install Alpine gnome-shell into userspace/rootfs"
 	@echo "  $(GREEN)initramfs$(NC)        - Rebuild userspace/initramfs.cpio from userspace/rootfs"
 	@echo "  $(GREEN)desktop-rootfs$(NC)   - Install gnome-shell + mutter and rebuild initramfs"
+	@echo "  $(GREEN)installer-rootfs$(NC) - Build minimal installer rootfs (~30 MB)"
+	@echo "  $(GREEN)installer-initramfs$(NC) - Pack installer initramfs cpio"
+	@echo "  $(GREEN)live-squashfs$(NC)    - Build compressed live rootfs image"
+	@echo "  $(GREEN)live-iso$(NC)         - Stage live/install ISO (kernel + initrd + squashfs)"
+	@echo "  $(GREEN)installer-gtk$(NC)      - Install zenity/GTK4 into rootfs for graphical installer"
+	@echo "  $(GREEN)install-media$(NC)    - Full live/install media pipeline"
 	@echo "  $(GREEN)check$(NC)           - Compile and link debug kernel (catches link errors)"
 	@echo "  $(GREEN)clean$(NC)           - Clean build artifacts"
 	@echo "  $(GREEN)install-deps$(NC)    - Install build dependencies"
@@ -130,7 +136,7 @@ gnome-shell build-gnome-shell:
 	@chmod +x ./scripts/build-gnome-shell.sh
 	@./scripts/build-gnome-shell.sh
 
-desktop-rootfs: gnome-shell
+desktop-rootfs: gnome-shell installer-gtk initramfs
 	@$(MAKE) mutter || echo "$(YELLOW)[WARN]$(NC) Source Mutter build skipped; using Alpine mutter from gnome-shell install"
 
 # Headless boot smoke test
@@ -154,6 +160,45 @@ initramfs:
 	@echo "$(BLUE)[INFO]$(NC) Rebuilding initramfs from rootfs..."
 	@./scripts/build_initramfs.sh userspace/rootfs userspace/initramfs.cpio
 	@echo "$(GREEN)[DONE]$(NC) initramfs rebuilt"
+
+# Minimal installer rootfs for live/install media
+installer-rootfs:
+	@echo "$(BLUE)[INFO]$(NC) Building installer rootfs..."
+	@chmod +x ./scripts/build-installer-initramfs.sh
+	@./scripts/build-installer-initramfs.sh --rootfs-only
+	@echo "$(GREEN)[DONE]$(NC) installer rootfs ready"
+
+# Pack installer initramfs cpio
+installer-initramfs: installer-rootfs
+	@echo "$(BLUE)[INFO]$(NC) Packing installer initramfs..."
+	@chmod +x ./scripts/build-installer-initramfs.sh
+	@./scripts/build-installer-initramfs.sh
+	@echo "$(GREEN)[DONE]$(NC) installer initramfs packed"
+
+# Compressed live filesystem from desktop rootfs
+live-squashfs:
+	@echo "$(BLUE)[INFO]$(NC) Building live squashfs..."
+	@chmod +x ./scripts/build-live-squashfs.sh
+	@./scripts/build-live-squashfs.sh
+	@echo "$(GREEN)[DONE]$(NC) live squashfs ready"
+
+# Live/install ISO tree (and .iso when xorriso/grub available)
+live-iso:
+	@echo "$(BLUE)[INFO]$(NC) Building live/install ISO..."
+	@chmod +x ./scripts/build-live-iso.sh
+	@./scripts/build-live-iso.sh $(if $(RELEASE),--release,)
+	@echo "$(GREEN)[DONE]$(NC) live ISO staged"
+
+# Full install media pipeline
+installer-gtk build-installer-gtk:
+	@echo "$(BLUE)[INFO]$(NC) Installing GTK/zenity for installer UI..."
+	@chmod +x ./scripts/build-installer-gtk.sh
+	@./scripts/build-installer-gtk.sh
+	@$(MAKE) initramfs
+	@echo "$(GREEN)[DONE]$(NC) GTK installer stack ready"
+
+install-media: installer-gtk installer-initramfs live-squashfs live-iso
+	@echo "$(GREEN)[DONE]$(NC) install media complete — see build/iso/ and docs/INSTALLER.md"
 
 # Run release kernel in QEMU
 run-release: bootimage-release

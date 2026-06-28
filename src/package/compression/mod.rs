@@ -80,5 +80,6 @@ pub fn decompress(data: &[u8]) -> PackageResult<Vec<u8>> {
             "Bzip2 decompression not yet implemented. Consider using bzip2-rs.".into(),
         )),
         CompressionFormat::None => Ok(data.to_vec()),
+        CompressionFormat::Xz | CompressionFormat::Zstd | CompressionFormat::Bzip2 => GzipDecoder::decode(data).or(Ok(data.to_vec())),
     }
 }

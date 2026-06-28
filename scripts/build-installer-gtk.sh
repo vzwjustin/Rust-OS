@@ -1,27 +1,18 @@
 #!/bin/bash
-# Install gnome-shell and session stack into userspace/rootfs from Alpine x86_64 packages.
-#
-# Works on macOS (arm64) and Linux — uses curl + APKINDEX dependency resolution,
-# no host apk binary required.
-
+# Install GTK3 + zenity (graphical installer UI) into userspace/rootfs from Alpine.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOTFS="$PROJECT_DIR/userspace/rootfs"
-BUILD_DIR="$PROJECT_DIR/build/gnome-shell-build"
+BUILD_DIR="$PROJECT_DIR/build/installer-gtk-build"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 ALPINE_VERSION="${ALPINE_VERSION:-v3.21}"
 ALPINE_ARCH="${ALPINE_ARCH:-x86_64}"
-
 mkdir -p "$BUILD_DIR" "$ROOTFS/usr/bin" "$ROOTFS/usr/lib"
-
 fetch_apk() {
     pkg=$1
     dest="$BUILD_DIR/${pkg}.apk"
-    if [ -f "$dest" ] && [ -s "$dest" ]; then
-        return 0
-    fi
+    if [ -f "$dest" ] && [ -s "$dest" ]; then return 0; fi
     for repo in main community; do
         URL="$ALPINE_MIRROR/$ALPINE_VERSION/$repo/$ALPINE_ARCH/"
         PKG_FILE=$(curl -fsSL "$URL" | APK_PKG="$pkg" python3 -c 'import os, re, sys
@@ -39,51 +30,25 @@ for href, label in re.findall(r"href=\"([^\"]*\.apk)\">([^<]*\.apk)<", sys.stdin
     echo "  WARNING: package not found: $pkg" >&2
     return 1
 }
-
 extract_apk() {
     pkg=$1
     dest="$BUILD_DIR/${pkg}.apk"
-    if [ ! -f "$dest" ]; then
-        return 1
-    fi
+    [ -f "$dest" ] || return 1
     tar xzf "$dest" -C "$ROOTFS" 2>/dev/null || true
 }
-
-echo "=== Resolving Alpine GNOME package dependencies ==="
+echo "=== Resolving GTK installer package dependencies ==="
 PACKAGES=$(python3 "$SCRIPT_DIR/alpine-resolve-deps.py" \
-    gnome-shell gnome-session gnome-settings-daemon \
-    gsettings-desktop-schemas adwaita-icon-theme font-cantarell mutter \
-    font-ubuntu gnome-shell-extensions \
-    zenity gtk4.0 libadwaita)
+    zenity gtk4.0 libadwaita adwaita-icon-theme font-ubuntu \
+    dbus at-spi2-core hicolor-icon-theme)
 PKG_COUNT=$(printf '%s\n' "$PACKAGES" | sed '/^$/d' | wc -l | tr -d ' ')
 echo "  ${PKG_COUNT} packages to install"
-
-echo "=== Downloading and extracting into rootfs ==="
 printf '%s\n' "$PACKAGES" | while IFS= read -r pkg; do
     [ -n "$pkg" ] || continue
     fetch_apk "$pkg" || true
     extract_apk "$pkg" || true
 done
-
-echo "=== Verifying gnome-shell ==="
-if [ ! -e "$ROOTFS/usr/bin/gnome-shell" ]; then
-    echo "ERROR: gnome-shell not installed — check network and Alpine mirror" >&2
-    exit 1
-fi
-
-ls -la "$ROOTFS/usr/bin/gnome-shell"
-file "$ROOTFS/usr/bin/gnome-shell" 2>/dev/null || true
-
-for bin in gnome-session mutter; do
-    if [ -e "$ROOTFS/usr/bin/$bin" ] || [ -L "$ROOTFS/usr/bin/$bin" ]; then
-        echo "  ready: /usr/bin/$bin"
-    fi
+for bin in zenity; do
+    [ -e "$ROOTFS/usr/bin/$bin" ] || { echo "ERROR: $bin missing" >&2; exit 1; }
 done
-
-echo "=== Rebuilding initramfs ==="
-"$SCRIPT_DIR/build_initramfs.sh" "$ROOTFS" "$PROJECT_DIR/userspace/initramfs.cpio"
-
-echo ""
-echo "=== gnome-shell install complete ==="
-echo "  Binary: $ROOTFS/usr/bin/gnome-shell"
-echo "  Next:   make bootimage && make run"
+ls -la "$ROOTFS/usr/bin/zenity"
+echo "=== GTK installer stack complete ==="

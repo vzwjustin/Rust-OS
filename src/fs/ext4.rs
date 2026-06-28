@@ -259,6 +259,7 @@ pub struct Ext4DirEntry2 {
 #[derive(Debug)]
 pub struct Ext4FileSystem {
     device_id: u32,
+    sector_base: u64,
     superblock: Ext4Superblock,
     block_size: u32,
     blocks_per_group: u32,
@@ -272,8 +273,14 @@ pub struct Ext4FileSystem {
 impl Ext4FileSystem {
     /// Create new EXT4 filesystem instance
     pub fn new(device_id: u32) -> FsResult<Self> {
+        Self::new_at(device_id, 0)
+    }
+
+    /// Open ext4 on a partition starting at `sector_base` (512-byte sectors).
+    pub fn new_at(device_id: u32, sector_base: u64) -> FsResult<Self> {
         let mut fs = Self {
             device_id,
+            sector_base,
             superblock: unsafe { mem::zeroed() },
             block_size: 0,
             blocks_per_group: 0,
@@ -294,7 +301,7 @@ impl Ext4FileSystem {
         let mut buffer = vec![0u8; 1024];
 
         // Superblock is at offset 1024 bytes (sector 2 for 512-byte sectors)
-        read_storage_sectors(self.device_id, 2, &mut buffer).map_err(|_| FsError::IoError)?;
+        read_storage_sectors(self.device_id, self.sector_base + 2, &mut buffer).map_err(|_| FsError::IoError)?;
 
         // Parse superblock
         self.superblock =
@@ -408,7 +415,7 @@ impl Ext4FileSystem {
         let start_sector = block_num * sectors_per_block as u64;
         let mut buffer = vec![0u8; self.block_size as usize];
 
-        read_storage_sectors(self.device_id, start_sector, &mut buffer)
+        read_storage_sectors(self.device_id, self.sector_base + start_sector, &mut buffer)
             .map_err(|_| FsError::IoError)?;
 
         // Cache the block
@@ -454,7 +461,7 @@ impl Ext4FileSystem {
             let sectors_per_block = self.block_size / 512;
             let start_sector = block_num * sectors_per_block as u64;
 
-            write_storage_sectors(self.device_id, start_sector, &data)
+            write_storage_sectors(self.device_id, self.sector_base + start_sector, &data)
                 .map_err(|_| FsError::IoError)?;
         }
 

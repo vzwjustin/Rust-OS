@@ -204,6 +204,7 @@ pub fn init_linux_compat() {
     sysinfo_ops::init_sysinfo_operations();
     special_fd::init_special_fd();
     desktop::init_desktop_session();
+    crate::package::init_package_manager(crate::package::PackageManagerType::Native);
     LINUX_COMPAT_READY.store(true, Ordering::Release);
 }
 
