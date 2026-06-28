@@ -104,10 +104,7 @@ pub fn complete_user_exit(status: i32) {
 
     let pm = crate::process_manager::get_process_manager();
     let _ = pm.exit(child_pid, status);
-    let kernel_pm = process::get_process_manager();
-    let _ = kernel_pm.terminate_process(child_pid, status);
-
-    kernel_pm.set_current_process(parent_pid);
+    process::get_process_manager().set_current_process(parent_pid);
     pm.set_current_pid(parent_pid);
 }
 
