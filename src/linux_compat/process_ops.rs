@@ -584,9 +584,9 @@ pub fn execve(
     let entry_point = loaded.entry_point.as_u64();
     apply_loaded_binary(pid, &loaded, rsp, prog_name)?;
 
-    if crate::usermode::in_user_mode() {
-        crate::usermode::schedule_user_entry(entry_point, rsp);
-    }
+    // INT 0x80 runs in ring 0, so in_user_mode() is always false here. Queue the
+    // new entry point for the syscall return path (see take_pending_user_entry).
+    crate::usermode::schedule_user_entry(entry_point, rsp);
 
     Ok(0)
 }

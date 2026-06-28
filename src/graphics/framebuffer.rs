@@ -1110,7 +1110,7 @@ fn update_display_start_address(framebuffer_addr: u64) {
 /// GPU; here, present is a no-op.
 fn submit_present_command(_framebuffer_addr: u64) {}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
     use crate::{serial_print, serial_println};

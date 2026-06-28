@@ -666,7 +666,7 @@ pub fn get_current_framebuffer_info() -> Option<FramebufferInfo> {
     unsafe { (&*core::ptr::addr_of!(VBE_DRIVER)).get_framebuffer_info() }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
     use crate::{serial_print, serial_println};

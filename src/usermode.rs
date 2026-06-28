@@ -462,17 +462,8 @@ pub fn test_user_mode_switch() {
 
     serial_println!("Testing user mode switch...");
 
-    // This would normally be actual user code
-    // For testing, we just verify the switch mechanism
-    let entry_point: u64 = 0x400000; // Example user space address
-    let user_stack: u64 = 0x500000; // Example user stack
-
-    // In a real test, we would:
-    // 1. Map user pages
-    // 2. Load user code
-    // 3. Switch to user mode
-    // 4. User code makes syscall
-    // 5. Return to kernel
+    // In a real test, we would map user pages, load user code, switch to
+    // user mode (e.g. entry 0x400000, stack 0x500000), and verify the syscall return path.
 
     serial_println!("User mode switch test completed");
 }

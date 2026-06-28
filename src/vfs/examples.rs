@@ -58,9 +58,7 @@ pub fn example_directory_ops() -> VfsResult<()> {
     // List directory contents
     let entries = vfs_readdir("/tmp/test")?;
     for entry in entries {
-        // Process each entry
-        let stat = vfs_stat(&format!("/tmp/test/{}", entry.name))?;
-        // Use stat information...
+        let _stat = vfs_stat(&format!("/tmp/test/{}", entry.name))?;
     }
 
     // Cleanup
@@ -318,7 +316,7 @@ pub fn example_syscall_integration() {
     // This demonstrates how VFS operations can be used to implement syscalls
 
     // sys_open implementation
-    fn sys_open_impl(path: *const u8, flags: i32, mode: u32) -> i32 {
+    fn sys_open_impl(_path: *const u8, flags: i32, mode: u32) -> i32 {
         // Convert path from C string
         let path_str = "/example.txt"; // In real code, convert from pointer
 

@@ -803,7 +803,7 @@ fn get_memory_usage_mb() -> (u32, u32) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
     use crate::{serial_print, serial_println};

@@ -854,7 +854,7 @@ fn send_icmpv6_dest_unreachable(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
 

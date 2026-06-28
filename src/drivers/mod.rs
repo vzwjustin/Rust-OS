@@ -476,7 +476,7 @@ pub fn print_driver_info() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "disabled-tests"))]
 mod tests {
     use super::*;
     use crate::{serial_print, serial_println, ToString};

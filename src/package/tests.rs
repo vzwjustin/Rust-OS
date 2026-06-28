@@ -2,13 +2,14 @@
 //!
 //! This module provides test utilities and test cases for the package management system.
 
+use crate::package::adapters::{DebAdapter, PackageAdapter};
+use crate::package::database::PackageDatabase;
 use crate::package::{
-    DebAdapter, PackageAdapter, PackageDatabase, PackageManager, PackageManagerType,
-    PackageMetadata, PackageStatus,
+    PackageManager, PackageManagerType, PackageMetadata, PackageStatus,
 };
 use crate::println;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 /// Test package database operations
@@ -226,9 +227,7 @@ pub fn run_all_tests() -> (usize, usize) {
 }
 
 /// Helper to run a test and catch panics
-fn test_with_catch<F: FnOnce() + core::panic::UnwindSafe>(test: F, name: &str) -> bool {
-    use core::panic;
-
+fn test_with_catch<F: FnOnce()>(test: F, name: &str) -> bool {
     println!("   Running test: {}", name);
 
     // Since we're in a no_std kernel, we can't use std::panic::catch_unwind
