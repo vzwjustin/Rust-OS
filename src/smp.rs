@@ -43,8 +43,11 @@ static ONLINE_CPUS: AtomicU32 = AtomicU32::new(1); // BSP is always online
 /// SMP initialized flag
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Local APIC base address
+/// Local APIC base address (physical)
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// Physical-to-virtual memory offset for MMIO access. Set during init.
+static PHYS_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 use core::sync::atomic::AtomicU64;
 
@@ -190,13 +193,28 @@ pub fn eoi() {
     }
 }
 
+/// Set the physical memory offset used for MMIO mapping.
+///
+/// Should be called once during early boot after the memory manager
+/// establishes the direct physical-memory mapping.
+pub fn set_physical_memory_offset(offset: u64) {
+    PHYS_MEMORY_OFFSET.store(offset, Ordering::Release);
+}
+
 /// Get Local APIC base address
 fn get_apic_base() -> Option<VirtAddr> {
     let phys = LOCAL_APIC_BASE.load(Ordering::Acquire);
     if phys != 0 {
-        // In production, this should be properly mapped by memory manager
-        // For now, return identity-mapped address
-        Some(VirtAddr::new(phys))
+        let offset = PHYS_MEMORY_OFFSET.load(Ordering::Acquire);
+        if offset != 0 {
+            // Use the direct physical-memory mapping established by the
+            // memory manager for MMIO access.
+            Some(VirtAddr::new(phys + offset))
+        } else {
+            // Fall back to identity mapping if the offset hasn't been set
+            // yet (early boot before memory manager init).
+            Some(VirtAddr::new(phys))
+        }
     } else {
         None
     }

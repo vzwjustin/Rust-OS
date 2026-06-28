@@ -1771,6 +1771,11 @@ impl MemoryManager {
         }
     }
 
+    /// Get the physical memory offset used for direct physical-memory mapping.
+    pub fn physical_memory_offset(&self) -> VirtAddr {
+        self.physical_memory_offset
+    }
+
     /// Map a virtual memory region to physical frames
     pub fn map_region(&self, region: &mut VirtualMemoryRegion) -> Result<(), MemoryError> {
         let mut page_table_manager = self.page_table_manager.lock();
@@ -2907,6 +2912,15 @@ pub fn get_memory_manager() -> Option<&'static MemoryManager> {
     }
 }
 
+/// Get the physical memory offset for direct physical-memory mapping.
+///
+/// Returns 0 if the memory manager has not been initialized yet.
+pub fn get_physical_memory_offset() -> u64 {
+    get_memory_manager()
+        .map(|mm| mm.physical_memory_offset().as_u64())
+        .unwrap_or(0)
+}
+
 /// High-level memory allocation interface
 pub fn allocate_memory(
     size: usize,
@@ -3630,8 +3644,10 @@ pub fn check_memory_access(
         let page_table_manager = memory_manager.page_table_manager.lock();
 
         // Check if the pages are mapped and have the required permissions
-        for offset in (0..size).step_by(4096) {
-            let check_addr = addr + offset;
+        let mut check_addr = addr & !0xfff;
+        let last_addr = (addr + size - 1) & !0xfff;
+
+        while check_addr <= last_addr {
             let virt_addr = VirtAddr::new(check_addr as u64);
             let page: Page<Size4KiB> = Page::containing_address(virt_addr);
 
@@ -3650,6 +3666,7 @@ pub fn check_memory_access(
             if privilege_level == 3 && !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
                 return Ok(false);
             }
+            check_addr += 4096;
         }
 
         Ok(true)
