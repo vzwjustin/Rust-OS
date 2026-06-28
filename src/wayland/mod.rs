@@ -17,6 +17,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
+pub mod input;
+pub mod render;
+pub mod server;
+
 // ── Wire Protocol Constants ─────────────────────────────────────────────
 
 /// Wayland wire protocol magic value for wl_display (always object 1)
@@ -413,6 +417,9 @@ pub struct Surface {
     pub width: i32,
     pub height: i32,
     pub committed: bool,
+    pub frame_callback: Option<ObjectId>,
+    /// Output object this surface has received wl_surface.enter for.
+    pub entered_output: Option<ObjectId>,
 }
 
 impl Surface {
@@ -430,6 +437,8 @@ impl Surface {
             width: 0,
             height: 0,
             committed: false,
+            frame_callback: None,
+            entered_output: None,
         }
     }
 
@@ -566,6 +575,18 @@ impl Output {
 
 // ── Client Connection ───────────────────────────────────────────────────
 
+// ── Seat / input role tracking ──────────────────────────────────────────
+
+/// Per-client wl_seat state.
+#[derive(Debug, Clone)]
+pub struct SeatRole {
+    pub seat_id: ObjectId,
+    pub pointer_id: Option<ObjectId>,
+    pub keyboard_id: Option<ObjectId>,
+    pub focused_surface: Option<ObjectId>,
+    pub serial: u32,
+}
+
 /// Wayland client connection state.
 #[derive(Debug)]
 pub struct ClientConnection {
@@ -574,8 +595,13 @@ pub struct ClientConnection {
     pub surfaces: BTreeMap<ObjectId, Surface>,
     pub buffers: BTreeMap<ObjectId, Buffer>,
     pub shm_pools: BTreeMap<ObjectId, ShmPool>,
+    pub seats: BTreeMap<ObjectId, SeatRole>,
+    pub pointers: BTreeMap<ObjectId, ObjectId>,
+    pub keyboards: BTreeMap<ObjectId, ObjectId>,
+    pub keyboard_keymap_pipes: BTreeMap<ObjectId, u32>,
     pub next_object_id: AtomicU32,
     pub display_serial: AtomicU32,
+    pub input_serial: AtomicU32,
 }
 
 impl ClientConnection {
@@ -596,8 +622,13 @@ impl ClientConnection {
             surfaces: BTreeMap::new(),
             buffers: BTreeMap::new(),
             shm_pools: BTreeMap::new(),
+            seats: BTreeMap::new(),
+            pointers: BTreeMap::new(),
+            keyboards: BTreeMap::new(),
+            keyboard_keymap_pipes: BTreeMap::new(),
             next_object_id: AtomicU32::new(2), // Start after wl_display
             display_serial: AtomicU32::new(1),
+            input_serial: AtomicU32::new(1),
         }
     }
 
@@ -663,6 +694,13 @@ impl ClientConnection {
         self.surfaces.remove(&id);
         self.buffers.remove(&id);
         self.shm_pools.remove(&id);
+        self.seats.remove(&id);
+        self.pointers.remove(&id);
+        self.keyboards.remove(&id);
+    }
+
+    pub fn next_input_serial(&self) -> u32 {
+        self.input_serial.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn next_serial(&self) -> u32 {
@@ -707,9 +745,6 @@ impl Compositor {
         self.outputs.insert(output.id, output);
 
         self.initialized = true;
-        unsafe {
-            crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
-        }
         Ok(())
     }
 
@@ -810,8 +845,29 @@ static COMPOSITOR: RwLock<Compositor> = RwLock::new(Compositor::new());
 
 /// Initialize the Wayland compositor.
 pub fn init() -> Result<(), &'static str> {
-    let mut comp = COMPOSITOR.write();
-    comp.init()
+    crate::interrupts::without_interrupts(|| {
+        {
+            let mut comp = COMPOSITOR.write();
+            comp.init()?;
+        }
+
+        if let Err(e) = server::smoke_check() {
+            unsafe {
+                crate::early_serial_write_str("RustOS: Wayland handshake smoke FAILED: ");
+                crate::early_serial_write_str(e);
+                crate::early_serial_write_str("\r\n");
+            }
+        } else {
+            unsafe {
+                crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
+            }
+        }
+
+        unsafe {
+            crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
+        }
+        Ok(())
+    })
 }
 
 /// Get a read reference to the global compositor.
@@ -824,9 +880,21 @@ pub fn compositor_mut() -> spin::rwlock::RwLockWriteGuard<'static, Compositor> {
     COMPOSITOR.write()
 }
 
+/// Try to acquire the compositor write lock without blocking (IRQ-safe).
+pub fn try_compositor_mut() -> Option<spin::rwlock::RwLockWriteGuard<'static, Compositor>> {
+    COMPOSITOR.try_write()
+}
+
 /// Check if the Wayland compositor is initialized.
 pub fn is_ready() -> bool {
     COMPOSITOR.read().is_initialized()
+}
+
+/// Drain kernel input events and forward them to Wayland clients.
+pub fn poll_input() {
+    if is_ready() {
+        server::poll_kernel_input();
+    }
 }
 
 // ── wl_display Event Constructors ───────────────────────────────────────
@@ -1017,6 +1085,8 @@ pub fn smoke_check() -> Result<(), &'static str> {
     {
         return Err("wl_compositor should be in global list");
     }
+
+    server::smoke_check()?;
 
     Ok(())
 }

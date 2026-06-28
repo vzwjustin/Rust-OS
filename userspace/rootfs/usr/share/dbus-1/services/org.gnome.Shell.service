@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.gnome.Shell
+Exec=/usr/bin/rustos-gnome-session --status
+User=root

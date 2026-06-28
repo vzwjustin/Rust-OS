@@ -23,6 +23,8 @@ pub struct BootConfig {
     pub force_text_mode: bool,
     /// When `/bin/init` or `/init` exists on the rootfs, exec it as PID 1 instead of the kernel desktop
     pub prefer_userspace_init: bool,
+    /// Enter the interactive PS/2 debug console after logging init (blocks boot)
+    pub interactive_debug_console: bool,
 }
 
 impl Default for BootConfig {
@@ -33,6 +35,7 @@ impl Default for BootConfig {
             verbose: false,
             force_text_mode: false,
             prefer_userspace_init: true,
+            interactive_debug_console: false,
         }
     }
 }
@@ -44,6 +47,7 @@ static mut BOOT_CONFIG: BootConfig = BootConfig {
     verbose: false,
     force_text_mode: false,
     prefer_userspace_init: true,
+    interactive_debug_console: false,
 };
 
 /// Set the global boot configuration

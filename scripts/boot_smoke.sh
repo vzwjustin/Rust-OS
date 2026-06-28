@@ -4,8 +4,8 @@
 set -euo pipefail
 
 BOOTIMAGE="${BOOTIMAGE_PATH:-target/x86_64-rustos/debug/bootimage-rustos.bin}"
-PATTERNS="${RUSTOS_BOOT_LOG_PATTERNS:-${RUSTOS_BOOT_LOG_PATTERN:-linux_integration: vfs ok|linux_integration: memory ok|Frame }}"
-TIMEOUT="${RUSTOS_BOOT_TIMEOUT_SEC:-60}"
+PATTERNS="${RUSTOS_BOOT_LOG_PATTERNS:-${RUSTOS_BOOT_LOG_PATTERN:-GNOME runtime overlay installed|D-Bus GNOME session names registered|D-Bus message bus ready|Wayland compositor ready|display: ready 800x600x32}}"
+TIMEOUT="${RUSTOS_BOOT_TIMEOUT_SEC:-180}"
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     echo "Error: qemu-system-x86_64 not found. Install QEMU (brew install qemu)."

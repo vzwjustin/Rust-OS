@@ -201,11 +201,15 @@ pub struct RustOsDBusAddressPlatform;
 
 impl DBusAddressPlatform for RustOsDBusAddressPlatform {
     fn get_session_bus_address(&self) -> Option<String> {
-        Some(String::from("loopback:"))
+        if crate::gnome_overlay::is_ready() {
+            Some(String::from(crate::gnome_overlay::DBUS_SESSION_ADDRESS))
+        } else {
+            Some(String::from("loopback:"))
+        }
     }
 
     fn get_system_bus_address(&self) -> Option<String> {
-        Some(String::from("loopback:"))
+        Some(String::from("unix:path=/run/dbus/system_bus_socket"))
     }
 }
 

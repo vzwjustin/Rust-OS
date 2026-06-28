@@ -33,6 +33,7 @@ pub struct GnomeReadiness {
     pub linux_abi: GnomeCapabilityState,
     pub dbus: GnomeCapabilityState,
     pub wayland: GnomeCapabilityState,
+    pub mutter: GnomeCapabilityState,
     pub drm_kms: GnomeCapabilityState,
 }
 
@@ -58,6 +59,7 @@ impl GnomeReadiness {
             && self.linux_abi.is_ready()
             && self.dbus.is_ready()
             && self.wayland.is_ready()
+            && self.mutter.is_ready()
             && self.drm_kms.is_ready()
     }
 }
@@ -107,15 +109,26 @@ pub fn probe() -> GnomeReadiness {
         } else {
             GnomeCapabilityState::Blocked("Linux userspace ABI is not initialized")
         },
-        dbus: if crate::dbus::is_ready() {
+        dbus: if crate::dbus::is_ready() && crate::gnome_overlay::is_ready() {
             GnomeCapabilityState::Ready
-        } else {
+        } else if !crate::dbus::is_ready() {
             GnomeCapabilityState::Blocked("D-Bus message bus is not initialized")
+        } else {
+            GnomeCapabilityState::Blocked("GNOME runtime overlay is not installed")
         },
         wayland: if crate::wayland::is_ready() {
             GnomeCapabilityState::Ready
         } else {
             GnomeCapabilityState::Blocked("Wayland compositor is not initialized")
+        },
+        mutter: if crate::mutter::is_ready() {
+            GnomeCapabilityState::Ready
+        } else if !crate::gnome_overlay::is_ready() {
+            GnomeCapabilityState::Blocked("GNOME runtime overlay is not installed")
+        } else if !crate::wayland::is_ready() {
+            GnomeCapabilityState::Blocked("Wayland compositor is not initialized")
+        } else {
+            GnomeCapabilityState::Blocked("Mutter Wayland handshake is not ready")
         },
         drm_kms: if crate::vfs::drmfs::smoke_check().is_ok() {
             GnomeCapabilityState::Ready
@@ -157,6 +170,7 @@ pub fn log_boot_readiness() {
         log_capability("Linux ABI", readiness.linux_abi);
         log_capability("D-Bus", readiness.dbus);
         log_capability("Wayland", readiness.wayland);
+        log_capability("Mutter", readiness.mutter);
         log_capability("DRM/KMS", readiness.drm_kms);
 
         if readiness.gnome_shell_ready() {
