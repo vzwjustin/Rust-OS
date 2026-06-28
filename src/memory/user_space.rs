@@ -101,7 +101,9 @@ const MAX_COPY_SIZE: usize = 64 * 1024 * 1024; // 64MB
 /// Page fault handling context for user space memory operations
 struct PageFaultContext {
     /// Previous page fault handler state
-    previous_handler: Option<fn(VirtAddr, u64) -> Result<(), SyscallError>>,
+    previous_handler: Option<
+        fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>,
+    >,
     /// Recovery context for the current operation
     recovery_context: PageFaultRecoveryContext,
 }
@@ -139,11 +141,13 @@ impl PageFaultContext {
             bytes_processed: 0,
         };
 
-        // Set up page fault handling for the current operation
-        // In a real implementation, this would install a temporary handler
-        // that can recover from page faults during user space operations
+        // Install a temporary page fault handler that can recover from
+        // faults during user space copy operations. The previous handler
+        // is saved so it can be restored when this context is dropped.
+        let previous_handler = crate::interrupts::install_page_fault_handler(page_fault_trampoline);
+
         Self {
-            previous_handler: None, // Note: Handler chaining requires interrupt manager integration
+            previous_handler,
             recovery_context,
         }
     }
@@ -188,15 +192,27 @@ impl PageFaultContext {
 
 impl Drop for PageFaultContext {
     fn drop(&mut self) {
-        // Restore previous exception handler state
-        // This ensures that page fault handling is properly cleaned up
-        // even if the operation fails or panics
-        if let Some(_previous_handler) = self.previous_handler {
-            // Note: Handler restoration requires interrupt manager integration.
-            // Future implementation will restore the IDT entry or handler chain
-            // to maintain proper interrupt handling hierarchy.
-        }
+        // Restore the previous page fault handler
+        crate::interrupts::restore_page_fault_handler(self.previous_handler);
     }
+}
+
+/// Page fault trampoline for user space memory operations.
+///
+/// This function is installed as the page fault handler during
+/// copy_to_user/copy_from_user operations. It returns Ok if the
+/// fault can be recovered (e.g., demand paging), or Err to let
+/// the normal page fault handler deal with it.
+fn page_fault_trampoline(
+    _addr: VirtAddr,
+    _error_code: x86_64::structures::idt::PageFaultErrorCode,
+) -> Result<(), ()> {
+    // For now, we don't recover from faults in the trampoline.
+    // The actual fault handling logic would check if the faulting
+    // address is within the current PageFaultRecoveryContext range
+    // and attempt demand paging or COW. If not recoverable, return
+    // Err to let the normal handler process it.
+    Err(())
 }
 
 /// User space memory validation and copying operations

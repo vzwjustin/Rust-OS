@@ -118,6 +118,37 @@ static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPURIOUS_COUNT: AtomicU64 = AtomicU64::new(0);
 static MISSED_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 
+/// Optional user-installed page fault handler.
+///
+/// When set, the main page fault handler calls this before attempting
+/// its own recovery. If the handler returns `Ok(())`, the fault is
+/// considered handled and execution resumes. If it returns `Err`, the
+/// normal fault handling proceeds.
+static USER_PAGE_FAULT_HANDLER: spin::Mutex<
+    Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>>,
+> = spin::Mutex::new(None);
+
+/// Install a user page fault handler. Returns the previous handler.
+pub fn install_page_fault_handler(
+    handler: fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>,
+) -> Option<fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>>
+{
+    let mut slot = USER_PAGE_FAULT_HANDLER.lock();
+    let old = *slot;
+    *slot = Some(handler);
+    old
+}
+
+/// Restore a previous page fault handler (or clear if None).
+pub fn restore_page_fault_handler(
+    prev: Option<
+        fn(x86_64::VirtAddr, x86_64::structures::idt::PageFaultErrorCode) -> Result<(), ()>,
+    >,
+) {
+    let mut slot = USER_PAGE_FAULT_HANDLER.lock();
+    *slot = prev;
+}
+
 /// Initialize the interrupt system
 pub fn init() {
     IDT.load();
@@ -258,27 +289,29 @@ fn configure_standard_irqs_apic() -> Result<(), &'static str> {
     let cpu_id = crate::smp::current_cpu() as u8;
 
     // Configure timer (IRQ 0) - critical for system operation
-    if let Err(e) = crate::apic::configure_irq(0, InterruptIndex::Timer.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(0, InterruptIndex::Timer.as_u8(), cpu_id as u8) {
         crate::serial_println!("Warning: Failed to configure timer IRQ: {}", e);
         // Timer is critical, but we can continue with PIC fallback
     }
 
     // Configure keyboard (IRQ 1)
-    if let Err(e) = crate::apic::configure_irq(1, InterruptIndex::Keyboard.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(1, InterruptIndex::Keyboard.as_u8(), cpu_id as u8) {
         crate::serial_println!("Warning: Failed to configure keyboard IRQ: {}", e);
     }
 
     // Configure mouse (IRQ 12)
-    if let Err(e) = crate::apic::configure_irq(12, InterruptIndex::Mouse.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(12, InterruptIndex::Mouse.as_u8(), cpu_id as u8) {
         crate::serial_println!("Warning: Failed to configure mouse IRQ: {}", e);
     }
 
     // Configure serial ports
-    if let Err(e) = crate::apic::configure_irq(4, InterruptIndex::SerialPort1.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(4, InterruptIndex::SerialPort1.as_u8(), cpu_id as u8)
+    {
         crate::serial_println!("Warning: Failed to configure serial port 1 IRQ: {}", e);
     }
 
-    if let Err(e) = crate::apic::configure_irq(3, InterruptIndex::SerialPort2.as_u8(), cpu_id) {
+    if let Err(e) = crate::apic::configure_irq(3, InterruptIndex::SerialPort2.as_u8(), cpu_id as u8)
+    {
         crate::serial_println!("Warning: Failed to configure serial port 2 IRQ: {}", e);
     }
 
@@ -395,6 +428,17 @@ extern "x86-interrupt" fn page_fault_handler(
 
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Check for a user-installed page fault handler first
+    {
+        let handler_slot = USER_PAGE_FAULT_HANDLER.lock();
+        if let Some(handler) = *handler_slot {
+            match handler(fault_address, error_code) {
+                Ok(()) => return, // Fault handled by user handler
+                Err(()) => {}     // Fall through to normal handling
+            }
+        }
+    }
 
     // In production, attempt page fault recovery
     if let Some(recovery_result) = attempt_page_fault_recovery(fault_address, error_code) {

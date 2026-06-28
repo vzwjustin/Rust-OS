@@ -892,23 +892,47 @@ fn initialize_2d_engine() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Allocate framebuffer memory for double buffering
+/// Allocate framebuffer memory for double buffering.
+///
+/// Allocates contiguous physical pages from the DMA zone (for
+/// compatibility with hardware that requires low memory) and maps
+/// them into the virtual address space. Returns the virtual address
+/// of the allocated buffer.
 fn allocate_framebuffer_memory(size: usize) -> Result<usize, &'static str> {
-    // This would use the memory manager to allocate contiguous physical memory
-    // For now, we'll return a placeholder address
-    let allocated_addr = 0xE1000000usize; // Example second buffer address
-
-    // In a real implementation, we would:
-    // 1. Allocate contiguous physical pages
-    // 2. Map them to virtual address space
-    // 3. Return the physical address for hardware configuration
+    use crate::memory::{get_memory_manager, map_physical_memory, MemoryFlags};
 
     if size > 32 * 1024 * 1024 {
-        // Sanity check: max 32MB framebuffer
         return Err("Framebuffer size too large");
     }
 
-    Ok(allocated_addr)
+    let page_size = 4096;
+    let num_pages = (size + page_size - 1) / page_size;
+
+    // Allocate contiguous physical frames from the memory manager
+    let mm = get_memory_manager().ok_or("Memory manager not initialized")?;
+
+    // Try to allocate from the DMA zone first (for hardware compatibility),
+    // then fall back to Normal zone
+    let frame = mm
+        .allocate_contiguous_pages(num_pages, crate::memory::MemoryZone::Dma)
+        .or_else(|| mm.allocate_contiguous_pages(num_pages, crate::memory::MemoryZone::Normal))
+        .ok_or("Failed to allocate contiguous framebuffer memory")?;
+
+    let phys_addr = frame.start_address().as_u64() as usize;
+
+    // Map the physical pages into virtual address space.
+    // Use a high virtual address in the direct-mapped region.
+    let virt_addr = 0xFFFF_9000_0000_0000usize + phys_addr;
+
+    // Map each page
+    for i in 0..num_pages {
+        let page_phys = phys_addr + i * page_size;
+        let page_virt = virt_addr + i * page_size;
+        map_physical_memory(page_virt, page_phys, MemoryFlags::WRITABLE)
+            .map_err(|_| "Failed to map framebuffer memory")?;
+    }
+
+    Ok(virt_addr)
 }
 
 /// Initialize framebuffer using an existing buffer provided by the bootloader
