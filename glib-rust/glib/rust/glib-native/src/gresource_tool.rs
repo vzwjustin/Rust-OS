@@ -443,8 +443,7 @@ mod tests {
         data.push(0); // unused
         data.extend_from_slice(&(value_offset as u32).to_le_bytes()); // value_start
         data.extend_from_slice(&((value_offset + value_data.len()) as u32).to_le_bytes()); // value_end
-        data.extend_from_slice(&0u32.to_le_bytes()); // options.start
-        data.extend_from_slice(&0u32.to_le_bytes()); // options.end
+        data.extend_from_slice(&0u32.to_le_bytes()); // options
 
         // Value data
         data.extend_from_slice(&value_data);
