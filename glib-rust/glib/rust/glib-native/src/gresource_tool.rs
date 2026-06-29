@@ -38,7 +38,7 @@ struct GvdbHeader {
     root_end: u32,
 }
 
-/// GVDB hash item (`struct gvdb_hash_item` in upstream `gvdb-format.h`, 32 bytes).
+/// GVDB hash item (struct gvdb_hash_item in upstream gvdb-format.h, 28 bytes).
 struct GvdbHashItem {
     hash_value: u32,
     parent: u32,
