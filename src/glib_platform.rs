@@ -3,6 +3,11 @@
 //! Binds `glib-native` platform traits to the kernel syscall VFS (`crate::vfs`).
 
 use crate::glib_spawn;
+use crate::linux_compat::special_fd::poll_revents;
+use crate::process::thread;
+use crate::process::Priority;
+use crate::process::scheduler;
+use crate::time;
 use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, Stat, VfsError};
 use alloc::format;
 use alloc::string::String;
@@ -21,7 +26,7 @@ use glib_native::giomodule::{IoModuleHandle, IoModulePlatform};
 use glib_native::gmodule::{ModuleHandle, ModulePlatform};
 use glib_native::goutputstream::{OutputStream, OutputStreamImpl};
 use glib_native::mappedfile::{MappedFile, MappedFileError, MappedFilePlatform};
-use glib_native::poll::{PollFD, PollPlatform, TimerPollPlatform};
+use glib_native::poll::{PollFD, PollPlatform};
 use glib_native::spawn::{SpawnChildSetupFunc, SpawnError, SpawnFlags, SpawnPlatform, SpawnResult};
 use glib_native::stdio::{OpenFlags as GOpenFlags, StatBuf, StdioPlatform, F_OK, R_OK, W_OK, X_OK};
 use glib_native::thread::{ThreadError, ThreadHandle, ThreadPlatform};
@@ -348,25 +353,61 @@ impl StdioPlatform for RustOsStdioPlatform {
 
 pub struct RustOsSpawnPlatform;
 
-/// Poll platform for RustOS: timer-based wait (no kernel `poll` syscall yet).
+/// Poll platform backed by the kernel VFS / special-fd readiness checks.
 pub struct RustOsPollPlatform;
 
 impl PollPlatform for RustOsPollPlatform {
     fn poll(&self, fds: &mut [PollFD], timeout_ms: i32) -> i32 {
-        TimerPollPlatform.poll(fds, timeout_ms)
+        let deadline = if timeout_ms >= 0 {
+            Some(time::uptime_ns() + timeout_ms as u64 * 1_000_000)
+        } else {
+            None
+        };
+
+        loop {
+            let mut ready = 0;
+            for pfd in fds.iter_mut() {
+                pfd.revents = poll_revents(pfd.fd, pfd.events as i16) as u16;
+                if pfd.revents != 0 {
+                    ready += 1;
+                }
+            }
+
+            if ready > 0 {
+                return ready;
+            }
+
+            if timeout_ms == 0 {
+                return 0;
+            }
+
+            if let Some(deadline) = deadline {
+                if time::uptime_ns() >= deadline {
+                    return 0;
+                }
+            }
+
+            scheduler::yield_cpu();
+        }
     }
 }
 
-/// Thread platform for RustOS: threads are not available on bare metal.
+/// Thread platform backed by the kernel thread manager.
 pub struct RustOsThreadPlatform;
 
 impl ThreadPlatform for RustOsThreadPlatform {
-    fn spawn(&self, _name: &str, _func: fn()) -> Result<ThreadHandle, ThreadError> {
-        Err(ThreadError::Again)
+    fn spawn(&self, name: &str, func: fn()) -> Result<ThreadHandle, ThreadError> {
+        let tid = thread::create_kernel_thread(name, Priority::Normal, 0x8000, move || {
+            func();
+        })
+        .map_err(|_| ThreadError::Again)?;
+        Ok(ThreadHandle::from_tid(tid))
     }
 
-    fn join(&self, _handle: ThreadHandle) -> Result<(), ThreadError> {
-        Err(ThreadError::Again)
+    fn join(&self, handle: ThreadHandle) -> Result<(), ThreadError> {
+        thread::join_thread(handle.tid())
+            .map(|_| ())
+            .map_err(|_| ThreadError::Again)
     }
 }
 

@@ -17,6 +17,18 @@ pub enum ThreadError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ThreadHandle(u64);
 
+impl ThreadHandle {
+    /// Construct a handle from a kernel thread id (RustOS integration).
+    pub const fn from_tid(tid: u32) -> Self {
+        Self(tid as u64)
+    }
+
+    /// Extract the kernel thread id when the platform stores it in the handle.
+    pub const fn tid(self) -> u32 {
+        self.0 as u32
+    }
+}
+
 /// Once status (`GOnceStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OnceStatus {
