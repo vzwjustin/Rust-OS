@@ -391,6 +391,40 @@ pub unsafe fn try_exec_init() -> ! {
     boot_userspace_init()
 }
 
+/// Fix broken symlinks after CPIO extraction.
+///
+/// The Alpine rootfs ships hundreds of symlinks pointing to `/bin/busybox`,
+/// but the busybox binary itself is not always present in the archive.
+/// When `/bin/sh` is a broken symlink, the PID-1 init script (`#!/bin/sh`)
+/// cannot execute.  Fix this by repointing `/bin/sh` to `/bin/bash`, which
+/// is a real ELF binary in the rootfs and is compatible with POSIX shell
+/// scripts.
+fn fixup_broken_symlinks() {
+    use crate::vfs::{vfs_stat, vfs_unlink, vfs_symlink, InodeType};
+
+    // Check whether /bin/sh resolves to a real file. If it's a symlink
+    // whose target doesn't exist, vfs_stat returns the symlink's own stat
+    // (type=Symlink). In that case, remove it and create a new symlink
+    // to /bin/bash.
+    match vfs_stat("/bin/sh") {
+        Ok(stat) if stat.inode_type == InodeType::Symlink => {
+            // The symlink target is /bin/busybox which doesn't exist.
+            // Replace with a symlink to /bin/bash.
+            crate::serial_println!("initramfs: /bin/sh is a broken symlink, repointing to /bin/bash");
+            let _ = vfs_unlink("/bin/sh");
+            let _ = vfs_symlink("/bin/bash", "/bin/sh");
+        }
+        Ok(_) => {
+            // /bin/sh exists and is a real file - nothing to do.
+        }
+        Err(_) => {
+            // /bin/sh doesn't exist at all - create a symlink to /bin/bash.
+            crate::serial_println!("initramfs: /bin/sh missing, creating symlink to /bin/bash");
+            let _ = vfs_symlink("/bin/bash", "/bin/sh");
+        }
+    }
+}
+
 /// Load initramfs at kernel boot
 pub fn init_initramfs() -> Result<(), InitramfsError> {
     if INITRAMFS_DATA.is_empty() {
@@ -409,6 +443,7 @@ pub fn init_initramfs() -> Result<(), InitramfsError> {
                 info.format,
                 info.size
             );
+            fixup_broken_symlinks();
             Ok(())
         }
         Err(InitramfsError::DecompressionFailed) => {

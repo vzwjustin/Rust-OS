@@ -444,11 +444,41 @@ struct ResolvedExec {
 }
 
 /// Read a regular file from the syscall VFS (where initramfs and rootfs live).
+/// Follows symlinks transparently so ELF binaries behind symlinks (e.g.
+/// `/bin/sh` -> `/bin/bash`) are read correctly.
 fn read_file_bytes_from_vfs(path: &str) -> Result<Vec<u8>, LinuxError> {
     use crate::linux_compat::file_ops::vfs_error_to_linux;
     use crate::vfs::{self, OpenFlags as VfsOpenFlags};
 
     let stat = vfs::vfs_stat(path).map_err(vfs_error_to_linux)?;
+
+    // If the path is a symlink, read the target path string and retry
+    // with the resolved target.  The VFS does not follow symlinks
+    // automatically on read, so we do it here.
+    if stat.inode_type == crate::vfs::InodeType::Symlink {
+        let fd = vfs::vfs_open(path, VfsOpenFlags::RDONLY, 0).map_err(vfs_error_to_linux)?;
+        let mut target = Vec::with_capacity(stat.size as usize);
+        target.resize(stat.size as usize, 0);
+        match vfs::vfs_read(fd, &mut target) {
+            Ok(n) if n > 0 => {
+                let _ = vfs::vfs_close(fd);
+                let target_str = core::str::from_utf8(&target[..n])
+                    .map_err(|_| LinuxError::ENOEXEC)?
+                    .trim_end_matches('\0');
+                crate::serial_println!(
+                    "exec: following symlink {} -> {}",
+                    path,
+                    target_str
+                );
+                return read_file_bytes_from_vfs(target_str);
+            }
+            _ => {
+                let _ = vfs::vfs_close(fd);
+                return Err(LinuxError::EIO);
+            }
+        }
+    }
+
     if stat.inode_type == crate::vfs::InodeType::Directory {
         return Err(LinuxError::EISDIR);
     }
