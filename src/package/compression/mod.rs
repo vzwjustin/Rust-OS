@@ -2,6 +2,7 @@
 //!
 //! This module provides decompression utilities for common package formats.
 
+pub mod ffi;
 pub mod gzip;
 pub mod tar;
 
@@ -66,26 +67,21 @@ impl CompressionFormat {
 
 /// Decompress data based on detected format
 ///
-/// Gzip/DEFLATE is fully implemented via `miniz_oxide`.
-/// XZ, Zstd, and Bzip2 require pure-Rust no_std decoder crates that do
-/// not yet exist in the ecosystem — porting liblzma/libzstd/libbz2 C
-/// code into the kernel build is the path forward.  Until then these
-/// formats return an explicit error stating the missing dependency.
+/// Gzip/DEFLATE is implemented via `miniz_oxide`.
+/// XZ/LZMA2, Zstd, and Bzip2 are implemented via C library ports in
+/// `c_libs/` compiled with the `cc` crate and linked into the kernel.
+/// The C code uses `kcompat.h` to map malloc/free to the kernel allocator.
 pub fn decompress(data: &[u8]) -> PackageResult<Vec<u8>> {
     let format = CompressionFormat::detect(data);
 
     match format {
         CompressionFormat::Gzip => GzipDecoder::decode(data),
-        CompressionFormat::Xz => Err(PackageError::InvalidFormat(
-            "XZ/LZMA2 decompression requires a liblzma port — not available in no_std kernel"
-                .into(),
-        )),
-        CompressionFormat::Zstd => Err(PackageError::InvalidFormat(
-            "Zstd decompression requires a libzstd port — not available in no_std kernel".into(),
-        )),
-        CompressionFormat::Bzip2 => Err(PackageError::InvalidFormat(
-            "Bzip2 decompression requires a libbz2 port — not available in no_std kernel".into(),
-        )),
+        CompressionFormat::Xz => ffi::xz_decompress_safe(data)
+            .map_err(|e| PackageError::ExtractionError(e.into())),
+        CompressionFormat::Zstd => ffi::zstd_decompress_safe(data)
+            .map_err(|e| PackageError::ExtractionError(e.into())),
+        CompressionFormat::Bzip2 => ffi::bzip2_decompress_safe(data)
+            .map_err(|e| PackageError::ExtractionError(e.into())),
         CompressionFormat::None => Ok(data.to_vec()),
     }
 }

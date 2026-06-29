@@ -1253,15 +1253,19 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
             report_warning("Initramfs", "Using minimal filesystem");
         }
     }
+    crate::serial_println!("filesystem_mount: substage 4");
     update_substage(4, "Initializing storage filesystem interface...");
     crate::drivers::storage::filesystem_interface::init_filesystem_interface();
+    crate::serial_println!("filesystem_mount: fs interface done");
     report_success("Storage filesystem interface initialized");
+    crate::serial_println!("filesystem_mount: install_block_devices");
     if let Err(e) = crate::vfs::devfs::install_block_devices() {
         let reason = format!("{:?}", e);
         report_warning("Block device nodes", &reason);
     } else {
         report_success("Block device nodes registered in /dev");
     }
+    crate::serial_println!("filesystem_mount: block devices done");
 
     crate::serial_println!("filesystem_mount: calling complete_stage");
     complete_stage(BootStage::FileSystemMount);
