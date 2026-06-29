@@ -587,7 +587,8 @@ pub fn init_network_drivers() -> Result<NetworkDriverManager, NetworkError> {
         );
 
         let mapped = base_addr;
-        let pci_address = ((dev.bus as u32) << 16) | ((dev.device as u32) << 11) | ((dev.function as u32) << 8);
+        let pci_address =
+            ((dev.bus as u32) << 16) | ((dev.device as u32) << 11) | ((dev.function as u32) << 8);
 
         if let Some((driver, caps)) =
             create_network_driver_from_pci(dev.vendor_id, dev.device_id, mapped, irq, pci_address)
@@ -715,11 +716,17 @@ pub fn detect_and_load_network_drivers() -> Result<Vec<String>, NetworkError> {
 
         let base_addr = (bar0 & 0xFFFF_FFF0) as u64;
         let irq = 0u8;
-        let pci_address = ((device.bus as u32) << 16) | ((device.device as u32) << 11) | ((device.function as u32) << 8);
+        let pci_address = ((device.bus as u32) << 16)
+            | ((device.device as u32) << 11)
+            | ((device.function as u32) << 8);
 
-        if let Some((mut driver, _caps)) =
-            create_network_driver_from_pci(device.vendor_id, device.device_id, base_addr, irq, pci_address)
-        {
+        if let Some((mut driver, _caps)) = create_network_driver_from_pci(
+            device.vendor_id,
+            device.device_id,
+            base_addr,
+            irq,
+            pci_address,
+        ) {
             let name = driver.name().to_string();
             crate::serial_println!(
                 "net: initializing '{}' for {:04X}:{:04X} at 0x{:X}",

@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
+use x86_64::instructions::interrupts::without_interrupts;
 use x86_64::instructions::port::Port;
 use x86_64::VirtAddr;
 
@@ -723,7 +724,12 @@ fn synchronize_timer_system(timer_manager: &mut TimerManager) -> Result<(), &'st
 /// Timer interrupt handler - called by interrupt system
 pub fn timer_tick() {
     // Increment tick counter - always do this for basic uptime tracking
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let tick = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // Call watchdog tick every 1000 ticks (1 second)
+    if tick % 1000 == 0 {
+        crate::drivers::watchdog::watchdog_tick();
+    }
 
     // Only do advanced processing if timer system is initialized
     // This prevents crashes during early boot when other subsystems aren't ready
@@ -1319,7 +1325,7 @@ pub fn schedule_timer(delay_us: u64, callback: TimerCallback) -> TimerId {
         interval_us: 0,
     };
 
-    SCHEDULED_TIMERS.lock().push(timer);
+    without_interrupts(|| SCHEDULED_TIMERS.lock().push(timer));
     id
 }
 
@@ -1336,19 +1342,21 @@ pub fn schedule_periodic_timer(interval_us: u64, callback: TimerCallback) -> Tim
         interval_us,
     };
 
-    SCHEDULED_TIMERS.lock().push(timer);
+    without_interrupts(|| SCHEDULED_TIMERS.lock().push(timer));
     id
 }
 
 /// Cancel a scheduled timer
 pub fn cancel_timer(timer_id: TimerId) -> bool {
-    let mut timers = SCHEDULED_TIMERS.lock();
-    if let Some(pos) = timers.iter().position(|t| t.id == timer_id) {
-        timers.remove(pos);
-        true
-    } else {
-        false
-    }
+    without_interrupts(|| {
+        let mut timers = SCHEDULED_TIMERS.lock();
+        if let Some(pos) = timers.iter().position(|t| t.id == timer_id) {
+            timers.remove(pos);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 /// Process scheduled timers (called from timer interrupt)
@@ -1359,22 +1367,22 @@ pub fn process_scheduled_timers() {
     }
 
     let current_time = uptime_us();
-    let mut timers = SCHEDULED_TIMERS.lock();
     let mut expired_timers = Vec::new();
 
-    // Find expired timers
-    let mut i = 0;
-    while i < timers.len() {
-        if timers[i].target_time_us <= current_time {
-            let timer = timers.remove(i);
-            expired_timers.push(timer);
-        } else {
-            i += 1;
-        }
-    }
+    without_interrupts(|| {
+        let mut timers = SCHEDULED_TIMERS.lock();
 
-    // Release the lock before calling callbacks to avoid deadlocks
-    drop(timers);
+        // Find expired timers
+        let mut i = 0;
+        while i < timers.len() {
+            if timers[i].target_time_us <= current_time {
+                let timer = timers.remove(i);
+                expired_timers.push(timer);
+            } else {
+                i += 1;
+            }
+        }
+    });
 
     // Process expired timers
     for mut timer in expired_timers {
@@ -1384,7 +1392,7 @@ pub fn process_scheduled_timers() {
         // Reschedule if periodic
         if timer.periodic {
             timer.target_time_us = current_time + timer.interval_us;
-            SCHEDULED_TIMERS.lock().push(timer);
+            without_interrupts(|| SCHEDULED_TIMERS.lock().push(timer));
         }
     }
 }

@@ -106,7 +106,7 @@ pub struct CommandStatusWrapper {
 }
 
 impl CommandStatusWrapper {
-    const SIGNATURE: u32 = 0x53425355; // 'USBS'
+    pub const SIGNATURE: u32 = 0x53425355; // 'USBS'
 
     pub fn is_valid(&self) -> bool {
         self.signature == Self::SIGNATURE
@@ -217,6 +217,8 @@ pub struct UsbMassStorageDriver {
     block_size: u32,
     block_count: u64,
     tag_counter: u32,
+    /// USB host device slot when attached to the xHCI framework.
+    host_device_id: Option<u32>,
 }
 
 impl UsbMassStorageDriver {
@@ -238,7 +240,17 @@ impl UsbMassStorageDriver {
             block_size: 512,
             block_count: 0,
             tag_counter: 1,
+            host_device_id: None,
         }
+    }
+
+    /// Attach to a USB host enumerated device slot.
+    pub fn attach_host(&mut self, device_id: u32) {
+        self.host_device_id = Some(device_id);
+    }
+
+    pub fn host_device_id(&self) -> Option<u32> {
+        self.host_device_id
     }
 
     /// Get next transaction tag
@@ -254,55 +266,46 @@ impl UsbMassStorageDriver {
         command: &[u8],
         data_length: u32,
         direction_in: bool,
-        _buffer: Option<&mut [u8]>,
+        buffer: Option<&mut [u8]>,
     ) -> Result<CommandStatusWrapper, StorageError> {
         if self.protocol != UsbMscProtocol::BulkOnly as u8 {
             return Err(StorageError::NotSupported);
         }
 
-        // USB Mass Storage requires a real USB host controller driver to
-        // transfer data over bulk endpoints.  The kernel does not yet have
-        // a USB host controller driver (xHCI/EHCI/UHCI/OHCI), so we cannot
-        // actually send CBWs or receive CSWs.  Return an error instead of
-        // fabricating a successful response.
-        let _ = (command, data_length, direction_in, self.next_tag());
+        let tag = self.next_tag();
+        if let Some(host_id) = self.host_device_id {
+            return crate::drivers::usb::msc_execute_scsi(
+                host_id,
+                command,
+                data_length,
+                direction_in,
+                buffer,
+                tag,
+            );
+        }
+
+        let _ = (command, data_length, direction_in, tag);
         Err(StorageError::NotSupported)
     }
 
     /// Execute SCSI Inquiry command
     fn scsi_inquiry(&mut self) -> Result<(), StorageError> {
         let command = [ScsiCommand::Inquiry as u8, 0, 0, 0, 36, 0];
-        let _csw = self.execute_scsi_command(&command, 36, true, None)?;
+        let mut inq_buf = [0u8; 36];
+        let csw = self.execute_scsi_command(&command, 36, true, Some(&mut inq_buf))?;
+        if !csw.is_success() {
+            return Err(StorageError::HardwareError);
+        }
 
-        // Simulate inquiry response
-        let inquiry = ScsiInquiryResponse {
-            peripheral: 0x00, // Direct access block device
-            removable: 0x80,  // Removable medium
-            version: 0x04,    // SPC-2
-            response_format: 0x02,
-            additional_length: 31,
-            flags: [0; 3],
-            vendor_id: *b"RustOS  ",
-            product_id: *b"USB Mass Storage",
-            product_revision: *b"1.0 ",
-        };
+        let response =
+            unsafe { core::ptr::read_unaligned(inq_buf.as_ptr() as *const ScsiInquiryResponse) };
+        self.inquiry_data = Some(response);
 
-        self.inquiry_data = Some(inquiry);
-
-        // Set device type based on peripheral type
-        let peripheral_type = inquiry.peripheral & 0x1F;
-        match peripheral_type {
-            0x00 => {
-                // Direct access block device (hard drive, USB stick)
-                if (inquiry.removable & 0x80) != 0 {
-                    self.capabilities.is_removable = true;
-                }
-            }
-            0x05 => {
-                // CD/DVD device
-                self.capabilities.is_removable = true;
-            }
-            _ => {}
+        let peripheral_type = response.peripheral & 0x1F;
+        if peripheral_type == 0x00 && (response.removable & 0x80) != 0 {
+            self.capabilities.is_removable = true;
+        } else if peripheral_type == 0x05 {
+            self.capabilities.is_removable = true;
         }
 
         Ok(())
@@ -311,15 +314,19 @@ impl UsbMassStorageDriver {
     /// Execute SCSI Read Capacity command
     fn scsi_read_capacity(&mut self) -> Result<(), StorageError> {
         let command = [ScsiCommand::ReadCapacity10 as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let _csw = self.execute_scsi_command(&command, 8, true, None)?;
+        let mut cap_buf = [0u8; 8];
+        let csw = self.execute_scsi_command(&command, 8, true, Some(&mut cap_buf))?;
+        if !csw.is_success() {
+            return Err(StorageError::HardwareError);
+        }
 
-        // Simulate capacity response (1GB device with 512-byte blocks)
-        self.block_count = 2097152; // 1GB / 512 bytes
-        self.block_size = 512;
+        let last_lba = u32::from_be_bytes([cap_buf[0], cap_buf[1], cap_buf[2], cap_buf[3]]);
+        self.block_size = u32::from_be_bytes([cap_buf[4], cap_buf[5], cap_buf[6], cap_buf[7]]);
+        self.block_count = u64::from(last_lba) + 1;
 
         self.capabilities.capacity_bytes = self.block_count * self.block_size as u64;
         self.capabilities.sector_size = self.block_size;
-        self.capabilities.max_transfer_size = 64 * 1024; // 64KB typical
+        self.capabilities.max_transfer_size = 64 * 1024;
 
         Ok(())
     }
@@ -500,12 +507,22 @@ impl StorageDriver for UsbMassStorageDriver {
     fn init(&mut self) -> Result<(), StorageError> {
         self.state = StorageDeviceState::Initializing;
 
-        // USB Mass Storage requires a USB host controller driver to enumerate
-        // devices, set configurations, claim interfaces, and obtain endpoint
-        // addresses.  The kernel does not yet have a USB host controller
-        // driver, so we cannot initialize a real USB mass storage device.
-        // Return an error rather than pretending the device is ready.
-        Err(StorageError::NotSupported)
+        if self.host_device_id.is_none() {
+            return Err(StorageError::NotSupported);
+        }
+
+        self.usb_state = UsbMscState::Connected;
+
+        if !self.scsi_test_unit_ready()? {
+            return Err(StorageError::HardwareError);
+        }
+
+        self.scsi_inquiry()?;
+        self.scsi_read_capacity()?;
+
+        self.state = StorageDeviceState::Ready;
+        self.usb_state = UsbMscState::Ready;
+        Ok(())
     }
 
     fn read_sectors(
@@ -646,6 +663,23 @@ pub fn create_usb_mass_storage_driver(
         device_name.unwrap_or_else(|| format!("USB MSC {:04x}:{:04x}", vendor_id, product_id));
 
     let driver = UsbMassStorageDriver::new(name, vendor_id, product_id, subclass, protocol);
+    Box::new(driver)
+}
+
+/// Create USB Mass Storage driver pre-attached to a host device slot.
+pub fn create_usb_mass_storage_driver_with_host(
+    host_device_id: u32,
+    vendor_id: u16,
+    product_id: u16,
+    subclass: u8,
+    protocol: u8,
+    device_name: Option<String>,
+) -> Box<dyn StorageDriver> {
+    let name =
+        device_name.unwrap_or_else(|| format!("USB MSC {:04x}:{:04x}", vendor_id, product_id));
+
+    let mut driver = UsbMassStorageDriver::new(name, vendor_id, product_id, subclass, protocol);
+    driver.attach_host(host_device_id);
     Box::new(driver)
 }
 

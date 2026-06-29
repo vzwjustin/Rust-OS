@@ -586,7 +586,7 @@ pub fn exec_program_for_pid(
 
     let prog_name = resolved.argv.first().map(|s| s.as_str()).unwrap_or(path);
 
-    apply_loaded_binary(pid, &loaded, rsp, prog_name)
+    apply_loaded_binary(pid, &loaded, rsp, prog_name, &resolved.load_path)
 }
 
 /// Apply a loaded ELF image and initial stack to the process PCB.
@@ -595,6 +595,7 @@ fn apply_loaded_binary(
     loaded: &crate::process::elf_loader::LoadedBinary,
     rsp: u64,
     program_name: &str,
+    exec_path: &str,
 ) -> Result<(), LinuxError> {
     use crate::process::ProcessState;
 
@@ -646,6 +647,8 @@ fn apply_loaded_binary(
             let copy_len = core::cmp::min(name_bytes.len(), pcb.name.len().saturating_sub(1));
             pcb.name = [0u8; 32];
             pcb.name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+            pcb.exec_path.clear();
+            pcb.exec_path.push_str(exec_path);
         })
         .ok_or(LinuxError::ESRCH)
 }
@@ -693,7 +696,7 @@ pub fn execve(
         .unwrap_or(path.as_str());
 
     let entry_point = loaded.entry_point.as_u64();
-    apply_loaded_binary(pid, &loaded, rsp, prog_name)?;
+    apply_loaded_binary(pid, &loaded, rsp, prog_name, &resolved.load_path)?;
 
     // INT 0x80 runs in ring 0, so in_user_mode() is always false here. Queue the
     // new entry point for the syscall return path (see take_pending_user_entry).
@@ -743,7 +746,7 @@ pub unsafe fn execve_and_enter_user_mode(
         .map(|s| s.as_str())
         .unwrap_or(path.as_str());
 
-    apply_loaded_binary(pid, &loaded, rsp, prog_name)?;
+    apply_loaded_binary(pid, &loaded, rsp, prog_name, &resolved.load_path)?;
     crate::usermode::switch_to_user_mode(loaded.entry_point.as_u64(), rsp);
 }
 

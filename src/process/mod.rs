@@ -196,6 +196,8 @@ pub struct ProcessControlBlock {
     pub memory: MemoryInfo,
     /// Process name
     pub name: [u8; 32],
+    /// Path of the executable image (set on execve)
+    pub exec_path: alloc::string::String,
     /// CPU time used (in ticks)
     pub cpu_time: u64,
     /// User CPU time in clock ticks (USER_HZ)
@@ -372,7 +374,9 @@ impl FileDescriptor {
                                 written += 1;
                             }
                         }
-                        Some(crate::keyboard::KeyEvent::SpecialPress(crate::keyboard::SpecialKey::Enter)) => {
+                        Some(crate::keyboard::KeyEvent::SpecialPress(
+                            crate::keyboard::SpecialKey::Enter,
+                        )) => {
                             buffer[written] = b'\n';
                             written += 1;
                             break;
@@ -432,11 +436,9 @@ impl FileDescriptor {
     pub fn size(&self) -> Result<u64, crate::fs::FsError> {
         match &self.fd_type {
             FileDescriptorType::VfsFile { inode } => Ok(inode.size()),
-            FileDescriptorType::VfsHandle { vfs_fd } => {
-                crate::vfs::vfs_fstat(*vfs_fd)
-                    .map(|stat| stat.size)
-                    .map_err(|_| crate::fs::FsError::IoError)
-            }
+            FileDescriptorType::VfsHandle { vfs_fd } => crate::vfs::vfs_fstat(*vfs_fd)
+                .map(|stat| stat.size)
+                .map_err(|_| crate::fs::FsError::IoError),
             _ => Err(crate::fs::FsError::BadFileDescriptor),
         }
     }
@@ -552,6 +554,7 @@ impl ProcessControlBlock {
             fpu: context::FpuState::default(),
             memory: MemoryInfo::default(),
             name: [0; 32],
+            exec_path: alloc::string::String::new(),
             cpu_time: 0,
             user_time_ticks: 0,
             system_time_ticks: 0,

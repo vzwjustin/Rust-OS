@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
@@ -301,6 +302,32 @@ pub fn sethostname(name: *const u8, len: usize) -> LinuxResult<i32> {
     }
     HOSTNAME_SET.store(1, Ordering::Relaxed);
     Ok(0)
+}
+
+/// Return the current kernel hostname as a string (NUL-terminated bytes stripped).
+pub fn kernel_hostname() -> String {
+    use alloc::string::String;
+
+    let hn = HOSTNAME.lock();
+    let len = hn.iter().position(|&b| b == 0).unwrap_or(MAX_HOSTNAME);
+    String::from(core::str::from_utf8(&hn[..len]).unwrap_or("localhost"))
+}
+
+/// Set the kernel hostname from a UTF-8 string (used by `/proc/sys/kernel/hostname`).
+pub fn set_kernel_hostname(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() || value.len() > MAX_HOSTNAME {
+        return Err("invalid hostname length");
+    }
+    if value.as_bytes().contains(&0) {
+        return Err("invalid hostname character");
+    }
+
+    let mut hn = HOSTNAME.lock();
+    let bytes = value.as_bytes();
+    hn[..bytes.len()].copy_from_slice(bytes);
+    hn[bytes.len()] = 0;
+    HOSTNAME_SET.store(1, Ordering::Relaxed);
+    Ok(())
 }
 
 /// gethostname - get hostname
@@ -623,8 +650,14 @@ pub fn reboot(magic: i32, magic2: i32, cmd: u32, _arg: *mut u8) -> LinuxResult<i
     const LINUX_REBOOT_CMD_POWER_OFF: u32 = 0x4321FEDC;
     const LINUX_REBOOT_CMD_CAD_ON: u32 = 0x89ABCDEF;
     const LINUX_REBOOT_CMD_CAD_OFF: u32 = 0x00000000;
+    const LINUX_REBOOT_CMD_KEXEC: u32 = 0x45584543;
 
     match cmd {
+        LINUX_REBOOT_CMD_KEXEC => {
+            crate::serial_println!("[sysinfo_ops] reboot: kexec handoff");
+            crate::kexec::execute_loaded_image()?;
+            Ok(0)
+        }
         LINUX_REBOOT_CMD_RESTART => {
             crate::serial_println!("[sysinfo_ops] reboot: restarting system");
             let _ = crate::kernel::shutdown();

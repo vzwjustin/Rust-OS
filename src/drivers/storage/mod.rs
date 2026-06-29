@@ -777,7 +777,17 @@ pub fn list_block_devices() -> Vec<BlockDevice> {
         manager
             .get_all_device_info()
             .iter()
-            .filter_map(|info| BlockDevice::new(info.id).ok())
+            .filter_map(|info| {
+                manager.get_device(info.id).map(|device| {
+                    let caps = device.driver.capabilities();
+                    BlockDevice {
+                        device_id: info.id,
+                        sector_size: caps.sector_size,
+                        total_sectors: caps.capacity_bytes / caps.sector_size as u64,
+                        device_type: device.driver.device_type(),
+                    }
+                })
+            })
             .collect()
     })
     .unwrap_or_default()
@@ -790,7 +800,17 @@ pub fn get_device_by_type(device_type: StorageDeviceType) -> Option<BlockDevice>
             .get_all_device_info()
             .iter()
             .find(|info| info.device_type == device_type)
-            .and_then(|info| BlockDevice::new(info.id).ok())
+            .and_then(|info| {
+                manager.get_device(info.id).map(|device| {
+                    let caps = device.driver.capabilities();
+                    BlockDevice {
+                        device_id: info.id,
+                        sector_size: caps.sector_size,
+                        total_sectors: caps.capacity_bytes / caps.sector_size as u64,
+                        device_type: device.driver.device_type(),
+                    }
+                })
+            })
     })
     .flatten()
 }

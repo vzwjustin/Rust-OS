@@ -371,7 +371,6 @@ impl VbeDriver {
         // Since BIOS calls are not available in 64-bit long mode, there are no
         // modes to add.
         Err("VBE mode enumeration not available in 64-bit long mode")
-
     }
 
     /// Create mode info structure for a given resolution and bit depth

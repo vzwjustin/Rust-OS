@@ -22,6 +22,7 @@ pub const GENERAL_PROTECTION_IST_INDEX: u16 = 2;
 
 /// Stack size for interrupt stacks
 const STACK_SIZE: usize = 4096 * 5; // 20KB stack
+pub const IO_BITMAP_BYTES: usize = 8192;
 
 /// 16-byte-aligned stack storage. A bare `[u8; N]` has alignment 1, so its top
 /// can land on an 8-byte boundary — and the x86-64 ABI requires 16-byte stack
@@ -40,7 +41,36 @@ static mut GP_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 static mut RING0_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 
 /// Task State Segment (mutable for stack updates)
-static mut TSS: TaskStateSegment = TaskStateSegment::new();
+#[repr(C, align(16))]
+struct TssWithIoBitmap {
+    tss: TaskStateSegment,
+    io_bitmap: [u8; IO_BITMAP_BYTES + 1],
+}
+
+impl TssWithIoBitmap {
+    const fn new() -> Self {
+        Self {
+            tss: TaskStateSegment::new(),
+            io_bitmap: [0xff; IO_BITMAP_BYTES + 1],
+        }
+    }
+}
+
+static mut TSS: TssWithIoBitmap = TssWithIoBitmap::new();
+
+fn tss_descriptor_with_io_bitmap() -> Descriptor {
+    let base = unsafe { core::ptr::addr_of!(TSS.tss) as u64 };
+    let limit = (core::mem::size_of::<TssWithIoBitmap>() - 1) as u64;
+
+    let low = (limit & 0xffff)
+        | ((base & 0x00ff_ffff) << 16)
+        | (0b1001u64 << 40)
+        | (1u64 << 47)
+        | (((limit >> 16) & 0x0f) << 48)
+        | (((base >> 24) & 0xff) << 56);
+    let high = base >> 32;
+    Descriptor::SystemSegment(low, high)
+}
 
 /// GDT segment selectors
 struct Selectors {
@@ -74,7 +104,7 @@ lazy_static! {
         let user_code_selector = gdt.add_entry(Descriptor::user_code_segment());
 
         // Entry 5 (0x28): Task State Segment (takes 2 entries for 64-bit TSS)
-        let tss_selector = gdt.add_entry(Descriptor::tss_segment(unsafe { &TSS }));
+        let tss_selector = gdt.add_entry(tss_descriptor_with_io_bitmap());
 
         (gdt, Selectors {
             kernel_code_selector,
@@ -90,20 +120,20 @@ lazy_static! {
 pub fn init() {
     // Initialize TSS with double fault stack
     unsafe {
-        TSS.privilege_stack_table[0] = {
+        TSS.tss.privilege_stack_table[0] = {
             let stack_start = VirtAddr::from_ptr(&raw const RING0_STACK);
             stack_start + (STACK_SIZE - 8)
         };
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
+        TSS.tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
             let stack_end = stack_start + STACK_SIZE;
             stack_end
         };
-        TSS.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = {
+        TSS.tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = {
             let stack_start = VirtAddr::from_ptr(&raw const PAGE_FAULT_STACK);
             stack_start + STACK_SIZE
         };
-        TSS.interrupt_stack_table[GENERAL_PROTECTION_IST_INDEX as usize] = {
+        TSS.tss.interrupt_stack_table[GENERAL_PROTECTION_IST_INDEX as usize] = {
             let stack_start = VirtAddr::from_ptr(&raw const GP_FAULT_STACK);
             stack_start + STACK_SIZE
         };
@@ -158,9 +188,26 @@ pub fn get_tss_selector() -> GdtSegmentSelector {
 /// SAFETY: `kernel_stack` must point to the top of a valid, mapped kernel
 /// stack for the current process. This function is only safe when called
 /// during a context switch where the supplied stack is active.
+/// Replace the hardware TSS I/O permission bitmap.
+pub fn set_io_permission_bitmap(bitmap: &[u8; IO_BITMAP_BYTES]) {
+    unsafe {
+        let dst = core::ptr::addr_of_mut!(TSS.io_bitmap) as *mut u8;
+        core::ptr::copy_nonoverlapping(bitmap.as_ptr(), dst, IO_BITMAP_BYTES);
+        *dst.add(IO_BITMAP_BYTES) = 0xff;
+    }
+}
+
+/// Deny all user-space port I/O in the hardware TSS bitmap.
+pub fn deny_all_io_ports() {
+    unsafe {
+        let dst = core::ptr::addr_of_mut!(TSS.io_bitmap) as *mut u8;
+        core::ptr::write_bytes(dst, 0xff, IO_BITMAP_BYTES + 1);
+    }
+}
+
 pub unsafe fn set_kernel_stack_pointer(kernel_stack: u64) {
     if kernel_stack != 0 {
-        TSS.privilege_stack_table[0] = VirtAddr::new(kernel_stack);
+        TSS.tss.privilege_stack_table[0] = VirtAddr::new(kernel_stack);
     }
 }
 
@@ -251,16 +298,16 @@ pub struct StackInfo {
 pub fn get_stack_info() -> StackInfo {
     unsafe {
         StackInfo {
-            kernel_stack: TSS.privilege_stack_table[0],
+            kernel_stack: TSS.tss.privilege_stack_table[0],
             user_stack: None,
             interrupt_stacks: [
-                TSS.interrupt_stack_table[0],
-                TSS.interrupt_stack_table[1],
-                TSS.interrupt_stack_table[2],
-                TSS.interrupt_stack_table[3],
-                TSS.interrupt_stack_table[4],
-                TSS.interrupt_stack_table[5],
-                TSS.interrupt_stack_table[6],
+                TSS.tss.interrupt_stack_table[0],
+                TSS.tss.interrupt_stack_table[1],
+                TSS.tss.interrupt_stack_table[2],
+                TSS.tss.interrupt_stack_table[3],
+                TSS.tss.interrupt_stack_table[4],
+                TSS.tss.interrupt_stack_table[5],
+                TSS.tss.interrupt_stack_table[6],
             ],
         }
     }
@@ -276,7 +323,7 @@ pub fn get_stack_info() -> StackInfo {
 /// The stack pointer must point to a valid, mapped kernel stack.
 pub fn set_kernel_stack(stack_ptr: VirtAddr) {
     unsafe {
-        TSS.privilege_stack_table[0] = stack_ptr;
+        TSS.tss.privilege_stack_table[0] = stack_ptr;
     }
 }
 
@@ -287,7 +334,7 @@ pub fn set_kernel_stack(stack_ptr: VirtAddr) {
 /// an interrupt or syscall, the CPU loads RSP from this entry.
 pub fn set_user_stack(stack_ptr: VirtAddr) {
     unsafe {
-        TSS.privilege_stack_table[0] = stack_ptr;
+        TSS.tss.privilege_stack_table[0] = stack_ptr;
     }
 }
 
@@ -422,16 +469,16 @@ pub mod tss_management {
     pub fn get_tss_fields() -> TssFields {
         unsafe {
             TssFields {
-                rsp0: TSS.privilege_stack_table[0].as_u64(),
-                rsp1: TSS.privilege_stack_table[1].as_u64(),
-                rsp2: TSS.privilege_stack_table[2].as_u64(),
-                ist1: TSS.interrupt_stack_table[0].as_u64(),
-                ist2: TSS.interrupt_stack_table[1].as_u64(),
-                ist3: TSS.interrupt_stack_table[2].as_u64(),
-                ist4: TSS.interrupt_stack_table[3].as_u64(),
-                ist5: TSS.interrupt_stack_table[4].as_u64(),
-                ist6: TSS.interrupt_stack_table[5].as_u64(),
-                ist7: TSS.interrupt_stack_table[6].as_u64(),
+                rsp0: TSS.tss.privilege_stack_table[0].as_u64(),
+                rsp1: TSS.tss.privilege_stack_table[1].as_u64(),
+                rsp2: TSS.tss.privilege_stack_table[2].as_u64(),
+                ist1: TSS.tss.interrupt_stack_table[0].as_u64(),
+                ist2: TSS.tss.interrupt_stack_table[1].as_u64(),
+                ist3: TSS.tss.interrupt_stack_table[2].as_u64(),
+                ist4: TSS.tss.interrupt_stack_table[3].as_u64(),
+                ist5: TSS.tss.interrupt_stack_table[4].as_u64(),
+                ist6: TSS.tss.interrupt_stack_table[5].as_u64(),
+                ist7: TSS.tss.interrupt_stack_table[6].as_u64(),
             }
         }
     }

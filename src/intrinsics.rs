@@ -87,3 +87,14 @@ pub unsafe extern "C" fn memmove(dest: *mut c_void, src: *const c_void, n: usize
 
     dest
 }
+
+/// C string length implementation
+#[no_mangle]
+pub unsafe extern "C" fn strlen(s: *const c_void) -> usize {
+    let bytes = s as *const u8;
+    let mut len: usize = 0;
+    while core::ptr::read_unaligned(bytes.add(len)) != 0 {
+        len += 1;
+    }
+    len
+}

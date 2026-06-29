@@ -7,6 +7,12 @@
 //! - Real-time task support
 //! - Load balancing across CPU cores
 
+pub mod completion;
+pub mod wait;
+
+pub use completion::Completion;
+pub use wait::{WaitQueue, WaitTimeoutResult};
+
 use alloc::{collections::VecDeque, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
@@ -442,6 +448,11 @@ impl GlobalScheduler {
             .with_process(pid, |p| p.cpu_affinity)
             .unwrap_or(u64::MAX);
 
+        self.find_best_cpu_for_affinity(process_affinity)
+    }
+
+    /// Find the least-loaded CPU allowed by `process_affinity`.
+    fn find_best_cpu_for_affinity(&self, process_affinity: u64) -> CpuId {
         let mut best_cpu = 0;
         let mut min_load = usize::MAX;
 
@@ -495,10 +506,9 @@ impl GlobalScheduler {
     pub fn block_process(&self, pid: Pid) -> Result<(), &'static str> {
         // Remove from all CPU ready queues
         for cpu_scheduler_mutex in &self.cpu_schedulers {
-            if let Some(mut cpu_scheduler) = cpu_scheduler_mutex.try_lock() {
-                for queue in &mut cpu_scheduler.ready_queues {
-                    queue.retain(|&p| p != pid);
-                }
+            let mut cpu_scheduler = cpu_scheduler_mutex.lock();
+            for queue in &mut cpu_scheduler.ready_queues {
+                queue.retain(|&p| p != pid);
             }
         }
 
@@ -512,15 +522,23 @@ impl GlobalScheduler {
 
     /// Unblock a process (add back to ready queue)
     pub fn unblock_process(&self, pid: Pid) -> Result<(), &'static str> {
-        let (priority, cpu_id) = self
+        let (priority, affinity) = self
             .with_process_mut(pid, |process| {
                 process.state = ProcessState::Ready;
-                (process.priority, self.find_best_cpu_for_process(pid))
+                (process.priority, process.cpu_affinity)
             })
             .ok_or("Process not found")?;
 
-        // Add to appropriate CPU's ready queue
-        if let Some(mut cpu_scheduler) = self.cpu_schedulers[cpu_id as usize].try_lock() {
+        let cpu_id = self.find_best_cpu_for_affinity(affinity);
+
+        // Add to the chosen CPU's ready queue reliably. Do not use try_lock here:
+        // wait-queue wake delivery must not be lost just because the ready queue
+        // lock is temporarily held by the scheduler or an interrupt path.
+        let mut cpu_scheduler = self.cpu_schedulers[cpu_id as usize].lock();
+        if !cpu_scheduler.ready_queues[priority as usize]
+            .iter()
+            .any(|&queued| queued == pid)
+        {
             cpu_scheduler.enqueue_process(pid, priority);
         }
 

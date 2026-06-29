@@ -124,7 +124,11 @@ impl EthernetHeader {
 }
 
 /// Process incoming Ethernet frame
-pub fn process_frame(network_stack: &NetworkStack, mut packet: PacketBuffer) -> NetworkResult<()> {
+pub fn process_frame(
+    network_stack: &NetworkStack,
+    interface_name: &str,
+    mut packet: PacketBuffer,
+) -> NetworkResult<()> {
     // Parse Ethernet header
     let header = EthernetHeader::parse(&mut packet)?;
 
@@ -134,6 +138,10 @@ pub fn process_frame(network_stack: &NetworkStack, mut packet: PacketBuffer) -> 
     if !is_frame_for_us(&header.destination) {
         return Ok(()); // Silently drop
     }
+
+    // Deliver to AF_PACKET sockets before upper-layer dispatch.
+    let frame_bytes = packet.as_slice().to_vec();
+    let _ = super::raw::deliver_link_frame(interface_name, &frame_bytes);
 
     // Process based on EtherType
     match header.ether_type {

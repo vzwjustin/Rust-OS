@@ -7,12 +7,21 @@
 //! - File descriptor management
 //! - Path resolution and caching
 
+pub mod btrfs;
 pub mod buffer;
+pub mod cifs;
 pub mod devfs;
 pub mod ext4;
+pub mod f2fs;
 pub mod fat32;
+pub mod isofs;
+pub mod nfs_client;
+pub mod nfsd;
+pub mod overlayfs;
 pub mod ramfs;
+pub mod sysfs;
 pub mod vfs;
+pub mod xfs;
 
 use alloc::{
     boxed::Box,
@@ -46,6 +55,22 @@ pub enum FileSystemType {
     Fat32,
     /// Network filesystem
     NetworkFs,
+    /// sysfs virtual filesystem
+    SysFs,
+    /// Overlay filesystem
+    OverlayFs,
+    /// ISO 9660 CD-ROM filesystem
+    Iso9660,
+    /// F2FS flash-friendly filesystem
+    F2fs,
+    /// Btrfs copy-on-write filesystem
+    Btrfs,
+    /// XFS high-performance filesystem
+    Xfs,
+    /// SMB/CIFS network filesystem
+    Cifs,
+    /// hugetlbfs (2 MiB page pool)
+    HugetlbFs,
 }
 
 impl fmt::Display for FileSystemType {
@@ -56,6 +81,14 @@ impl fmt::Display for FileSystemType {
             FileSystemType::Ext2 => write!(f, "ext2"),
             FileSystemType::Fat32 => write!(f, "fat32"),
             FileSystemType::NetworkFs => write!(f, "nfs"),
+            FileSystemType::SysFs => write!(f, "sysfs"),
+            FileSystemType::OverlayFs => write!(f, "overlay"),
+            FileSystemType::Iso9660 => write!(f, "iso9660"),
+            FileSystemType::F2fs => write!(f, "f2fs"),
+            FileSystemType::Btrfs => write!(f, "btrfs"),
+            FileSystemType::Xfs => write!(f, "xfs"),
+            FileSystemType::Cifs => write!(f, "cifs"),
+            FileSystemType::HugetlbFs => write!(f, "hugetlbfs"),
         }
     }
 }
@@ -1186,7 +1219,7 @@ pub fn init() -> FsResult<()> {
         VFS_MANAGER.mount("/", root_fs, MountFlags::default())?;
     }
 
-// Mount devfs at /dev — leak the box to get a stable instance for
+    // Mount devfs at /dev — leak the box to get a stable instance for
     // dynamic device registration, then mount a thin wrapper around it.
     let dev_fs = Box::new(devfs::DevFs::new());
     let dev_fs_ref: &'static devfs::DevFs = Box::leak(dev_fs);
@@ -1197,7 +1230,15 @@ pub fn init() -> FsResult<()> {
         MountFlags::default(),
     )?;
 
-        // Create standard directories (only if using RAM filesystem)
+    // Mount sysfs at /sys
+    let sys_fs = Box::new(sysfs::SysFs::new());
+    VFS_MANAGER.mount("/sys", sys_fs, MountFlags::default())?;
+
+    // hugetlbfs pool exposed at /dev/hugepages
+    let huge_fs = Box::new(crate::hugetlb::HugetlbFs::new());
+    VFS_MANAGER.mount("/dev/hugepages", huge_fs, MountFlags::default())?;
+
+    // Create standard directories (only if using RAM filesystem)
     if !root_mounted {
         VFS_MANAGER.mkdir("/tmp", FilePermissions::from_octal(0o755))?;
         VFS_MANAGER.mkdir("/proc", FilePermissions::from_octal(0o755))?;
@@ -1219,12 +1260,24 @@ pub fn mount_filesystem(
     let filesystem: Box<dyn FileSystem> = match fs_type {
         Some(FileSystemType::Ext2) => Box::new(ext4::Ext4FileSystem::new(device_id)?),
         Some(FileSystemType::Fat32) => Box::new(fat32::Fat32FileSystem::new(device_id)?),
+        Some(FileSystemType::Iso9660) => Box::new(isofs::Iso9660FileSystem::new(device_id)?),
+        Some(FileSystemType::F2fs) => Box::new(f2fs::F2fsFileSystem::new(device_id)?),
+        Some(FileSystemType::Btrfs) => Box::new(btrfs::BtrfsFileSystem::new(device_id)?),
+        Some(FileSystemType::Xfs) => Box::new(xfs::XfsFileSystem::new(device_id)?),
         _ => {
             // Auto-detect filesystem type
             if let Ok(ext4_fs) = ext4::Ext4FileSystem::new(device_id) {
                 Box::new(ext4_fs)
+            } else if let Ok(f2fs_fs) = f2fs::F2fsFileSystem::new(device_id) {
+                Box::new(f2fs_fs)
+            } else if let Ok(btrfs_fs) = btrfs::BtrfsFileSystem::new(device_id) {
+                Box::new(btrfs_fs)
+            } else if let Ok(xfs_fs) = xfs::XfsFileSystem::new(device_id) {
+                Box::new(xfs_fs)
             } else if let Ok(fat32_fs) = fat32::Fat32FileSystem::new(device_id) {
                 Box::new(fat32_fs)
+            } else if let Ok(iso_fs) = isofs::Iso9660FileSystem::new(device_id) {
+                Box::new(iso_fs)
             } else {
                 return Err(FsError::NotSupported);
             }
@@ -1241,13 +1294,25 @@ pub fn unmount_filesystem(mount_point: &str) -> FsResult<()> {
     VFS_MANAGER.unmount(mount_point)
 }
 
+/// Update a regular file under the mounted sysfs tree (path relative to `/sys`).
+pub fn update_sysfs_file(relative_path: &str, content: &[u8]) -> FsResult<()> {
+    let path = if relative_path.starts_with('/') {
+        format!("/sys{}", relative_path)
+    } else {
+        format!("/sys/{}", relative_path)
+    };
+    let inode = VFS_MANAGER.open(&path, OpenFlags::read_write())?;
+    VFS_MANAGER.write(inode, content)?;
+    Ok(())
+}
+
 /// Get the global VFS manager
 pub fn vfs() -> &'static VfsManager {
     &VFS_MANAGER
 }
 
 /// Get current time in milliseconds
-fn get_current_time() -> u64 {
+pub fn get_current_time() -> u64 {
     // Use system time for filesystem timestamps
     crate::time::get_system_time_ms()
 }

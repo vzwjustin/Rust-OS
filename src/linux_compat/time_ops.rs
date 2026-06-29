@@ -314,7 +314,14 @@ pub fn timer_create(
     match clockid {
         clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
             let id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-            POSIX_TIMERS.lock().insert(id, PosixTimer { clockid, expires_ns: 0, interval_ns: 0 });
+            POSIX_TIMERS.lock().insert(
+                id,
+                PosixTimer {
+                    clockid,
+                    expires_ns: 0,
+                    interval_ns: 0,
+                },
+            );
             unsafe {
                 *timerid = id;
             }

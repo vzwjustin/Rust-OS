@@ -198,6 +198,11 @@ pub mod ioctl_req {
 
     /// Bytes available to read
     pub const FIONREAD: u64 = 0x541B;
+
+    /// IPv4 routing table ioctls
+    pub const SIOCADDRT: u64 = crate::net::routing::SIOCADDRT;
+    pub const SIOCDELRT: u64 = crate::net::routing::SIOCDELRT;
+    pub const SIOCRTMSG: u64 = crate::net::routing::SIOCRTMSG;
 }
 
 /// fcntl - file control operations
@@ -437,7 +442,38 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
+    if let Ok(stat) = crate::vfs::vfs_fstat(fd) {
+        if stat.rdev == ((10 << 8) | 135) {
+            return handle_rtc_ioctl(request, argp);
+        }
+        if stat.rdev == ((10 << 8) | 130) {
+            return handle_watchdog_ioctl(request, argp);
+        }
+    }
+
+    if let Some(result) = crate::userfaultfd::ioctl(fd, request, argp) {
+        return result;
+    }
+
     match request {
+        ioctl_req::SIOCADDRT | ioctl_req::SIOCDELRT | ioctl_req::SIOCRTMSG => {
+            if argp == 0 && request != ioctl_req::SIOCRTMSG {
+                return Err(LinuxError::EFAULT);
+            }
+            let stack = crate::net::network_stack();
+            crate::net::routing::handle_route_ioctl(
+                request,
+                argp,
+                stack.routing_table(),
+                |iface| stack.get_interface(iface).is_some(),
+                |iface, gw| stack.gateway_reachable_on_interface(iface, gw),
+                |addr, buf| {
+                    crate::memory::user_space::UserSpaceMemory::copy_from_user(addr, buf)
+                        .map_err(|_| ())
+                },
+            )
+            .map_err(|e| super::socket_ops::net_err_to_linux(e))
+        }
         ioctl_req::TCGETS | ioctl_req::TCGETA => {
             if argp == 0 {
                 return Err(LinuxError::EFAULT);
@@ -566,6 +602,67 @@ pub fn flock(fd: Fd, operation: i32) -> LinuxResult<i32> {
         _ => Err(LinuxError::EINVAL),
     }
 }
+
+fn handle_rtc_ioctl(request: u64, argp: u64) -> LinuxResult<i32> {
+    if argp == 0 {
+        return Err(LinuxError::EFAULT);
+    }
+    match request {
+        // RTC_RD_TIME
+        0x80247009 => {
+            let time = crate::drivers::rtc::read_time().map_err(|_| LinuxError::EIO)?;
+            unsafe {
+                *(argp as *mut crate::drivers::rtc::RtcTime) = time;
+            }
+            Ok(0)
+        }
+        // RTC_SET_TIME
+        0x4024700a => {
+            let time = unsafe { *(argp as *const crate::drivers::rtc::RtcTime) };
+            crate::drivers::rtc::write_time(&time).map_err(|_| LinuxError::EIO)?;
+            Ok(0)
+        }
+        _ => Err(LinuxError::ENOTTY),
+    }
+}
+
+fn handle_watchdog_ioctl(request: u64, argp: u64) -> LinuxResult<i32> {
+    match request {
+        // WDIOC_GETTIMEOUT
+        0x80045706 => {
+            if argp == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let timeout = crate::drivers::watchdog::get_timeout() as i32;
+            unsafe {
+                *(argp as *mut i32) = timeout;
+            }
+            Ok(0)
+        }
+        // WDIOC_SETTIMEOUT
+        0xc0045706 => {
+            if argp == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let timeout = unsafe { *(argp as *const i32) };
+            if timeout <= 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            crate::drivers::watchdog::set_timeout(timeout as u32);
+            unsafe {
+                *(argp as *mut i32) = timeout; // Return the new timeout
+            }
+            Ok(0)
+        }
+        // WDIOC_KEEPALIVE
+        0x80045705 => {
+            crate::drivers::watchdog::kick();
+            Ok(0)
+        }
+        _ => Err(LinuxError::ENOTTY),
+    }
+}
+
 #[cfg(any())]
 mod tests {
     use super::*;

@@ -83,16 +83,22 @@ mod smp;
 mod pci;
 // Include drivers
 mod drivers;
+// Include ALSA-style sound device registry
+mod sound;
 // Include network stack
 pub mod net;
 // Re-export network module with alternative name for compatibility
 pub use net as network;
 // Include security
 mod security;
+// Kernel crypto subsystem (Linux crypto/algapi style)
+mod crypto;
 // Include IPC
 mod ipc;
 // Include kernel core
 mod kernel;
+// Include event notifier chains
+mod notifier;
 // Include process management
 mod process;
 // Include process manager (high-level process APIs)
@@ -125,6 +131,7 @@ mod linux_integration;
 mod memory_manager;
 // Include VFS and initramfs for Linux userspace
 mod initramfs;
+mod sysfs;
 mod vfs;
 // Include ELF loader for binary execution
 mod elf_loader;
@@ -150,6 +157,82 @@ mod mutter;
 mod dbus;
 mod user_sched;
 mod wayland;
+// Include SoftIRQ and workqueue subsystem (deferred work, interrupt bottom halves)
+mod softirq;
+// Include futex (fast userspace mutexes)
+mod futex;
+// Include epoll (I/O event multiplexing)
+mod epoll;
+// Include OOM killer (out-of-memory handling)
+mod oom;
+// Include swap subsystem (paging to backing store)
+mod swap;
+// Include block I/O layer (generic block device abstraction)
+mod block_io;
+// Include cgroups (resource control groups)
+mod cgroup;
+// Include seccomp (secure computing mode - syscall filtering)
+mod seccomp;
+// Include namespaces (PID, mount, network, UTS, IPC, user, cgroup isolation)
+mod namespace;
+// Include ptrace (process tracing and debugging)
+mod ptrace;
+// Include inotify (filesystem event monitoring)
+mod inotify;
+// Include pidfd (process file descriptors)
+mod pidfd;
+// Include io_uring (asynchronous I/O submission/completion rings)
+mod io_uring;
+// Include fanotify (advanced filesystem event monitoring)
+mod fanotify;
+// Include mount_api (new mount API: fsopen, fsconfig, fsmount, fspick, move_mount)
+mod mount_api;
+// Include disk quota (per-mount block/inode limits and quotactl)
+mod quota;
+// Include landlock (unprivileged sandboxing via access control rulesets)
+mod landlock;
+// Include bpf (eBPF program and map management)
+mod bpf;
+mod file_handle;
+mod hugetlb;
+mod kexec;
+mod memfd_secret;
+mod perf_event;
+mod power;
+mod privileged_syscalls;
+mod process_vm;
+mod rseq;
+mod userfaultfd;
+// Include keyring (kernel key management subsystem)
+mod keyring;
+// Include sysv_ipc (System V IPC: semaphores, shared memory, message queues)
+mod sysv_ipc;
+// Include aio (POSIX asynchronous I/O)
+mod aio;
+// Include module_loader (kernel module loading — stub)
+mod module_loader;
+// Linux audit subsystem (syscall/path event logging)
+mod audit;
+// ftrace / tracepoints framework
+mod md;
+mod trace;
+// Kernel probes (kprobes)
+mod kprobes;
+// RCU, cpufreq/cpuidle, NUMA, livepatch, EDAC, MFD, NVDIMM
+mod cpufreq;
+mod cpuidle;
+mod edac;
+mod efi;
+mod kasan;
+mod kcsan;
+mod livepatch;
+mod memory_hotplug;
+mod mfd;
+mod numa;
+mod nvdimm;
+mod of;
+mod rcu;
+mod thp;
 
 // VGA_WRITER is now used via macros in print module
 
@@ -654,6 +737,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         unsafe {
             early_serial_write_str("RustOS: Initializing paging memory manager...\r\n");
         }
+        // Parse UEFI runtime services if firmware left a discoverable system table.
+        efi::init_from_boot_info(boot_info);
+
         match memory::init_memory_management(
             boot_info.memory_map.iter().as_slice(),
             Some(phys_mem_offset),
@@ -1101,6 +1187,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
+        // Initialize the kernel crypto subsystem
+        crypto::init();
+        unsafe {
+            early_serial_write_str("RustOS: Crypto subsystem initialized\r\n");
+        }
+
         unsafe {
             early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n");
         }
@@ -1127,19 +1219,141 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Linux compatibility layer initialized\r\n");
         }
 
+        // Initialize SoftIRQ and workqueue subsystem
+        softirq::init();
+
+        // NUMA policy backend and RCU (RCU uses RCU softirq)
+        numa::init();
+        rcu::init();
+
+        // Initialize futex subsystem
+        futex::init();
+
+        // Initialize epoll subsystem
+        epoll::init();
+
+        // Initialize OOM killer
+        oom::init();
+
+        // Initialize swap subsystem
+        swap::init();
+
+        // Initialize block I/O layer
+        block_io::init();
+
+        // Initialize cgroups
+        cgroup::init();
+
+        // Initialize seccomp
+        seccomp::init();
+
+        // Initialize namespaces
+        namespace::init();
+
+        // Initialize ptrace
+        ptrace::init();
+
+        // Initialize inotify
+        inotify::init();
+
+        // Initialize pidfd
+        pidfd::init();
+
+        // Initialize io_uring
+        io_uring::init();
+
+        // Initialize fanotify
+        fanotify::init();
+
+        // Initialize new mount API
+        mount_api::init();
+
+        // Initialize disk quota subsystem
+        quota::init();
+
+        // Initialize Landlock
+        landlock::init();
+
+        // Initialize BPF
+        bpf::init();
+
+        // Initialize keyring
+        keyring::init();
+
+        // Initialize SysV IPC
+        sysv_ipc::init();
+
+        // Initialize AIO
+        aio::init();
+
+        // Initialize perf events
+        perf_event::init();
+
+        // Initialize userfaultfd and secret memory fd state
+        userfaultfd::init();
+        memfd_secret::init();
+        hugetlb::init();
+        thp::init();
+        memory_hotplug::init();
+        kasan::init();
+        kcsan::init();
+        of::init();
+        power::init();
+        cpufreq::init();
+        cpuidle::init();
+
+        // Initialize runtime file handles and privileged low-level syscall state
+        file_handle::init();
+        privileged_syscalls::init();
+        // Initialize restartable sequence registrations
+        rseq::init();
+
+        // Initialize module loader
+        module_loader::init();
+        livepatch::init();
+        edac::init();
+        mfd::init();
+        nvdimm::init();
+
+        // Initialize audit, trace, and kprobes
+        audit::init();
+        trace::init();
+        kprobes::init();
+
+        // Initialize kexec
+        kexec::init();
+
         // Verify C compression libraries (zstd, bzip2, xz) are linked and
         // the kernel allocator FFI callbacks work.
-        match package::compression::ffi::zstd_decompress_safe(&[0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x58, 0x01, 0x00, 0x00]) {
-            Ok(_) => unsafe { early_serial_write_str("RustOS: Zstd decompressor linked OK\r\n"); },
-            Err(_) => unsafe { early_serial_write_str("RustOS: Zstd decompressor link check (expected: format error on test input)\r\n"); },
+        match package::compression::ffi::zstd_decompress_safe(&[
+            0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x58, 0x01, 0x00, 0x00,
+        ]) {
+            Ok(_) => unsafe {
+                early_serial_write_str("RustOS: Zstd decompressor linked OK\r\n");
+            },
+            Err(_) => unsafe {
+                early_serial_write_str("RustOS: Zstd decompressor link check (expected: format error on test input)\r\n");
+            },
         }
         match package::compression::ffi::bzip2_decompress_safe(&[0x42, 0x5A, 0x68, 0x39, 0x00]) {
-            Ok(_) => unsafe { early_serial_write_str("RustOS: Bzip2 decompressor linked OK\r\n"); },
-            Err(_) => unsafe { early_serial_write_str("RustOS: Bzip2 decompressor link check (expected: format error on test input)\r\n"); },
+            Ok(_) => unsafe {
+                early_serial_write_str("RustOS: Bzip2 decompressor linked OK\r\n");
+            },
+            Err(_) => unsafe {
+                early_serial_write_str("RustOS: Bzip2 decompressor link check (expected: format error on test input)\r\n");
+            },
         }
-        match package::compression::ffi::xz_decompress_safe(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) {
-            Ok(_) => unsafe { early_serial_write_str("RustOS: XZ decompressor linked OK\r\n"); },
-            Err(_) => unsafe { early_serial_write_str("RustOS: XZ decompressor link check (expected: format error on test input)\r\n"); },
+        match package::compression::ffi::xz_decompress_safe(&[
+            0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]) {
+            Ok(_) => unsafe {
+                early_serial_write_str("RustOS: XZ decompressor linked OK\r\n");
+            },
+            Err(_) => unsafe {
+                early_serial_write_str(
+                    "RustOS: XZ decompressor link check (expected: format error on test input)\r\n",
+                );
+            },
         }
 
         // Initialize Linux integration layer
@@ -1204,7 +1418,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             Ok(()) => unsafe {
                 early_serial_write_str("RustOS: Wayland compositor ready\r\n");
                 match wayland::smoke_check() {
-                    Ok(()) => early_serial_write_str("RustOS: Wayland wire protocol smoke check passed\r\n"),
+                    Ok(()) => early_serial_write_str(
+                        "RustOS: Wayland wire protocol smoke check passed\r\n",
+                    ),
                     Err(e) => {
                         early_serial_write_str("RustOS: Wayland smoke check FAILED: ");
                         early_serial_write_str(e);

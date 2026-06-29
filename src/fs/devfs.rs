@@ -41,6 +41,10 @@ pub enum DeviceType {
     KernelMemory,
     /// Full device (/dev/full)
     Full,
+    /// Real-time clock (/dev/rtc)
+    Rtc,
+    /// Watchdog timer (/dev/watchdog)
+    Watchdog,
 }
 
 /// Device node information
@@ -216,6 +220,28 @@ impl DevFs {
                 1,
                 7,
                 FilePermissions::from_octal(0o666),
+            ),
+        );
+
+        devices.insert(
+            "rtc".to_string(),
+            DeviceNode::new_char_device(
+                13,
+                DeviceType::Rtc,
+                10,
+                135,
+                FilePermissions::from_octal(0o644),
+            ),
+        );
+
+        devices.insert(
+            "watchdog".to_string(),
+            DeviceNode::new_char_device(
+                14,
+                DeviceType::Watchdog,
+                10,
+                130,
+                FilePermissions::from_octal(0o600),
             ),
         );
 
@@ -404,6 +430,26 @@ impl FileSystem for DevFs {
                 }
                 Ok(buffer.len())
             }
+            DeviceType::Rtc => {
+                let time = crate::drivers::rtc::read_time().map_err(|_| FsError::IoError)?;
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &time as *const crate::drivers::rtc::RtcTime as *const u8,
+                        core::mem::size_of::<crate::drivers::rtc::RtcTime>(),
+                    )
+                };
+                let to_copy = core::cmp::min(buffer.len(), bytes.len());
+                buffer[..to_copy].copy_from_slice(&bytes[..to_copy]);
+                Ok(to_copy)
+            }
+            DeviceType::Watchdog => {
+                let left = crate::drivers::watchdog::get_timeleft();
+                let s = alloc::format!("{}\n", left);
+                let bytes = s.as_bytes();
+                let to_copy = core::cmp::min(buffer.len(), bytes.len());
+                buffer[..to_copy].copy_from_slice(&bytes[..to_copy]);
+                Ok(to_copy)
+            }
             _ => Err(FsError::NotSupported),
         }
     }
@@ -467,6 +513,18 @@ impl FileSystem for DevFs {
                 unsafe {
                     core::ptr::copy_nonoverlapping(buffer.as_ptr(), dst, buffer.len());
                 }
+                Ok(buffer.len())
+            }
+            DeviceType::Rtc => {
+                if buffer.len() < core::mem::size_of::<crate::drivers::rtc::RtcTime>() {
+                    return Err(FsError::InvalidArgument);
+                }
+                let time = unsafe { *(buffer.as_ptr() as *const crate::drivers::rtc::RtcTime) };
+                crate::drivers::rtc::write_time(&time).map_err(|_| FsError::IoError)?;
+                Ok(core::mem::size_of::<crate::drivers::rtc::RtcTime>())
+            }
+            DeviceType::Watchdog => {
+                crate::drivers::watchdog::kick();
                 Ok(buffer.len())
             }
             _ => Err(FsError::NotSupported),
@@ -657,20 +715,52 @@ static GLOBAL_DEVFS: RwLock<Option<&'static DevFs>> = RwLock::new(None);
 pub struct DevFsMount(pub &'static DevFs);
 
 impl FileSystem for DevFsMount {
-    fn fs_type(&self) -> FileSystemType { self.0.fs_type() }
-    fn statfs(&self) -> FsResult<FileSystemStats> { self.0.statfs() }
-    fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> { self.0.create(path, permissions) }
-    fn open(&self, path: &str, flags: OpenFlags) -> FsResult<InodeNumber> { self.0.open(path, flags) }
-    fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> { self.0.read(inode, offset, buffer) }
-    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> { self.0.write(inode, offset, buffer) }
-    fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> { self.0.metadata(inode) }
-    fn set_metadata(&self, inode: InodeNumber, metadata: &FileMetadata) -> FsResult<()> { self.0.set_metadata(inode, metadata) }
-    fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> { self.0.mkdir(path, permissions) }
-    fn rmdir(&self, path: &str) -> FsResult<()> { self.0.rmdir(path) }
-    fn unlink(&self, path: &str) -> FsResult<()> { self.0.unlink(path) }
-    fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> { self.0.readdir(inode) }
-    fn rename(&self, old_path: &str, new_path: &str) -> FsResult<()> { self.0.rename(old_path, new_path) }
-    fn symlink(&self, target: &str, link_path: &str) -> FsResult<()> { self.0.symlink(target, link_path) }
-    fn readlink(&self, path: &str) -> FsResult<String> { self.0.readlink(path) }
-    fn sync(&self) -> FsResult<()> { self.0.sync() }
+    fn fs_type(&self) -> FileSystemType {
+        self.0.fs_type()
+    }
+    fn statfs(&self) -> FsResult<FileSystemStats> {
+        self.0.statfs()
+    }
+    fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        self.0.create(path, permissions)
+    }
+    fn open(&self, path: &str, flags: OpenFlags) -> FsResult<InodeNumber> {
+        self.0.open(path, flags)
+    }
+    fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
+        self.0.read(inode, offset, buffer)
+    }
+    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
+        self.0.write(inode, offset, buffer)
+    }
+    fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
+        self.0.metadata(inode)
+    }
+    fn set_metadata(&self, inode: InodeNumber, metadata: &FileMetadata) -> FsResult<()> {
+        self.0.set_metadata(inode, metadata)
+    }
+    fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        self.0.mkdir(path, permissions)
+    }
+    fn rmdir(&self, path: &str) -> FsResult<()> {
+        self.0.rmdir(path)
+    }
+    fn unlink(&self, path: &str) -> FsResult<()> {
+        self.0.unlink(path)
+    }
+    fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
+        self.0.readdir(inode)
+    }
+    fn rename(&self, old_path: &str, new_path: &str) -> FsResult<()> {
+        self.0.rename(old_path, new_path)
+    }
+    fn symlink(&self, target: &str, link_path: &str) -> FsResult<()> {
+        self.0.symlink(target, link_path)
+    }
+    fn readlink(&self, path: &str) -> FsResult<String> {
+        self.0.readlink(path)
+    }
+    fn sync(&self) -> FsResult<()> {
+        self.0.sync()
+    }
 }

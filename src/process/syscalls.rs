@@ -848,7 +848,9 @@ impl SyscallDispatcher {
         process_manager: &ProcessManager,
         current_pid: Pid,
     ) -> SyscallResult {
-        use crate::memory::{allocate_memory, deallocate_memory, MemoryProtection, MemoryRegionType};
+        use crate::memory::{
+            allocate_memory, deallocate_memory, MemoryProtection, MemoryRegionType,
+        };
 
         let length = args.get(1).copied().unwrap_or(0);
         let prot = args.get(2).copied().unwrap_or(0);
@@ -895,14 +897,12 @@ impl SyscallDispatcher {
                 guard_page: false,
             };
 
-            let virt_addr = match allocate_memory(
-                length as usize,
-                MemoryRegionType::UserHeap,
-                fill_protection,
-            ) {
-                Ok(addr) => addr,
-                Err(_) => return SyscallResult::Error(SyscallError::OutOfMemory),
-            };
+            let virt_addr =
+                match allocate_memory(length as usize, MemoryRegionType::UserHeap, fill_protection)
+                {
+                    Ok(addr) => addr,
+                    Err(_) => return SyscallResult::Error(SyscallError::OutOfMemory),
+                };
 
             let free_and_fail = |err: SyscallError| -> SyscallResult {
                 let _ = deallocate_memory(virt_addr);
@@ -920,7 +920,8 @@ impl SyscallDispatcher {
             let mut copied = 0usize;
             while copied < to_read {
                 let chunk_len = core::cmp::min(4096, to_read - copied);
-                let dst = unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
+                let dst =
+                    unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
                 match crate::vfs::vfs_pread(fd, dst, offset + copied as u64) {
                     Ok(0) => break,
                     Ok(n) => copied += n,

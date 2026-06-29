@@ -159,6 +159,7 @@ impl ContextSwitcher {
         if current_context.kernel_stack != target_context.kernel_stack {
             self.switch_kernel_stack(target_context.kernel_stack);
         }
+        crate::privileged_syscalls::apply_io_privileges_for_process(target_pid);
 
         // ponytail: route the actual register/stack switch through the working
         // naked `context_switch_asm` instead of the broken `save_cpu_context` /

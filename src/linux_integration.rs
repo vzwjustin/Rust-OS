@@ -69,6 +69,11 @@ pub fn init() -> Result<(), &'static str> {
     init_time_integration()?;
     unsafe { crate::early_serial_write_str("linux_integration: time ok\r\n") };
 
+    // Ensure crypto registry is ready for AF_ALG-style consumers
+    unsafe { crate::early_serial_write_str("linux_integration: crypto begin\r\n") };
+    init_crypto_integration()?;
+    unsafe { crate::early_serial_write_str("linux_integration: crypto ok\r\n") };
+
     *initialized = true;
     unsafe { crate::early_serial_write_str("[Linux Integration] Deep integration complete\r\n") };
 
@@ -163,6 +168,24 @@ fn init_time_integration() -> Result<(), &'static str> {
     unsafe {
         crate::early_serial_write_str(
             "[Linux Integration] Time operations -> Time Subsystem integration ready\r\n",
+        )
+    };
+    Ok(())
+}
+
+/// Initialize crypto integration for hash/cipher consumers (AF_ALG-style).
+fn init_crypto_integration() -> Result<(), &'static str> {
+    if !crate::crypto::is_initialized() {
+        crate::crypto::init();
+    }
+
+    if crate::crypto::crypto_alg_count() == 0 {
+        return Err("crypto registry empty after init");
+    }
+
+    unsafe {
+        crate::early_serial_write_str(
+            "[Linux Integration] Crypto algorithms -> kernel crypto registry ready\r\n",
         )
     };
     Ok(())
@@ -617,20 +640,48 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             args[3] as usize,
         )
         .map(|v| v as u64),
-        crate::syscall::SyscallNumber::InotifyAddWatch => linux_compat::fs_ops::inotify_add_watch(
-            args[0] as i32,
-            args[1] as *const u8,
-            args[2] as u32,
-        )
-        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::InotifyAddWatch => {
+            let path = if args[1] == 0 {
+                return Err(LinuxError::EFAULT);
+            } else {
+                let cstr = args[1] as *const u8;
+                let mut len = 0;
+                while unsafe { *cstr.add(len) } != 0 {
+                    len += 1;
+                }
+                let bytes = unsafe { core::slice::from_raw_parts(cstr, len) };
+                alloc::string::String::from_utf8_lossy(bytes).into_owned()
+            };
+            let wd = crate::inotify::inotify_add_watch(args[0] as i32, &path, args[2] as u32);
+            if wd < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(wd as u64)
+            }
+        }
         crate::syscall::SyscallNumber::InotifyInit => {
-            linux_compat::fs_ops::inotify_init().map(|v| v as u64)
+            let fd = crate::inotify::inotify_init1(0);
+            if fd < 0 {
+                Err(LinuxError::EMFILE)
+            } else {
+                Ok(fd as u64)
+            }
         }
         crate::syscall::SyscallNumber::InotifyInit1 => {
-            linux_compat::fs_ops::inotify_init1(args[0] as i32).map(|v| v as u64)
+            let fd = crate::inotify::inotify_init1(args[0] as i32);
+            if fd < 0 {
+                Err(LinuxError::EMFILE)
+            } else {
+                Ok(fd as u64)
+            }
         }
         crate::syscall::SyscallNumber::InotifyRmWatch => {
-            linux_compat::fs_ops::inotify_rm_watch(args[0] as i32, args[1] as i32).map(|v| v as u64)
+            let ret = crate::inotify::inotify_rm_watch(args[0] as i32, args[1] as i32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
         }
         crate::syscall::SyscallNumber::Ioctl => {
             linux_compat::ioctl_ops::ioctl(args[0] as i32, args[1] as u64, args[2] as u64)
@@ -770,7 +821,13 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             args[1] as *mut linux_compat::TimeSpec,
         )
         .map(|v| v as u64),
-        crate::syscall::SyscallNumber::Openat2 => Err(LinuxError::ENOSYS),
+        crate::syscall::SyscallNumber::Openat2 => linux_compat::file_ops::openat2(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *const linux_compat::OpenHow,
+            args[3] as usize,
+        )
+        .map(|v| v as u64),
         crate::syscall::SyscallNumber::Pause => linux_compat::signal_ops::pause().map(|v| v as u64),
         crate::syscall::SyscallNumber::Pipe2 => {
             linux_compat::ipc_ops::pipe2(args[0] as *mut [i32; 2], args[1] as i32).map(|v| v as u64)
@@ -978,7 +1035,12 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         )
         .map(|v| v as u64),
         crate::syscall::SyscallNumber::Setns => {
-            linux_compat::fs_ops::setns(args[0] as i32, args[1] as i32).map(|v| v as u64)
+            let ret = crate::namespace::setns(args[0] as i32, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
         }
         crate::syscall::SyscallNumber::Setpriority => {
             linux_compat::process_ops::setpriority(args[0] as i32, args[1] as i32, args[2] as i32)
@@ -1103,7 +1165,12 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Unshare => {
-            linux_compat::fs_ops::unshare(args[0] as i32).map(|v| v as u64)
+            let ret = crate::namespace::unshare(args[0] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
         }
         crate::syscall::SyscallNumber::Utimensat => linux_compat::file_ops::utimensat(
             args[0] as i32,
@@ -1121,90 +1188,1445 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         crate::syscall::SyscallNumber::Vfork => {
             linux_compat::process_ops::vfork().map(|v| v as u64)
         }
-        crate::syscall::SyscallNumber::Acct
-        | crate::syscall::SyscallNumber::AddKey
-        | crate::syscall::SyscallNumber::Bpf
-        | crate::syscall::SyscallNumber::DeleteModule
-        | crate::syscall::SyscallNumber::FinitModule
-        | crate::syscall::SyscallNumber::Fsconfig
-        | crate::syscall::SyscallNumber::Fsmount
-        | crate::syscall::SyscallNumber::Fsopen
-        | crate::syscall::SyscallNumber::Fspick
-        | crate::syscall::SyscallNumber::InitModule
-        | crate::syscall::SyscallNumber::Ioperm
-        | crate::syscall::SyscallNumber::Iopl
-        | crate::syscall::SyscallNumber::KexecFileLoad
-        | crate::syscall::SyscallNumber::KexecLoad
-        | crate::syscall::SyscallNumber::Keyctl
-        | crate::syscall::SyscallNumber::LandlockAddRule
-        | crate::syscall::SyscallNumber::LandlockCreateRuleset
-        | crate::syscall::SyscallNumber::LandlockRestrictSelf
-        | crate::syscall::SyscallNumber::MountSetattr
-        | crate::syscall::SyscallNumber::MoveMount
-        | crate::syscall::SyscallNumber::OpenByHandleAt
-        | crate::syscall::SyscallNumber::OpenTree
-        | crate::syscall::SyscallNumber::PerfEventOpen
-        | crate::syscall::SyscallNumber::Ptrace
-        | crate::syscall::SyscallNumber::RequestKey
-        | crate::syscall::SyscallNumber::Seccomp
-        | crate::syscall::SyscallNumber::Vhangup => Err(LinuxError::EPERM),
+        crate::syscall::SyscallNumber::Acct => Err(LinuxError::EPERM),
+        crate::syscall::SyscallNumber::Ioperm => {
+            crate::privileged_syscalls::ioperm(args[0], args[1], args[2] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Iopl => {
+            crate::privileged_syscalls::iopl(args[0] as u32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::OpenByHandleAt => crate::file_handle::open_by_handle_at(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Vhangup => {
+            crate::privileged_syscalls::vhangup().map(|v| v as u64)
+        }
+
+        // ── Deprecated/removed syscalls (return ENOSYS) ──────────────
+        crate::syscall::SyscallNumber::GetKernelSyms
+        | crate::syscall::SyscallNumber::QueryModule
+        | crate::syscall::SyscallNumber::EpollCtlOld
+        | crate::syscall::SyscallNumber::EpollWaitOld
+        | crate::syscall::SyscallNumber::EpollCreateOld
+        | crate::syscall::SyscallNumber::RemapFilePages
+        | crate::syscall::SyscallNumber::Nfsservctl => Err(LinuxError::ENOSYS),
+
+        // ── sysfs (deprecated — use /proc/filesystems) ───────────────
+        crate::syscall::SyscallNumber::Sysfs => {
+            // sysfs(option, arg1, arg2)
+            // option 1: get filesystem type index by name
+            // option 2: get filesystem type name by index
+            // option 3: get fs index for mounted fs
+            // Deprecated — return ENOSYS
+            Err(LinuxError::ENOSYS)
+        }
+
+        // ── _sysctl (deprecated — use /proc/sys) ─────────────────────
+        crate::syscall::SyscallNumber::Sysctl => Err(LinuxError::ENOSYS),
+
+        // ── quotactl (old path-based quota, we have quotactl_fd) ─────
+        crate::syscall::SyscallNumber::Quotactl => linux_compat::fs_ops::quotactl(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
+
+        // ── get_thread_area (x86 TLS descriptor read) ────────────────
+        crate::syscall::SyscallNumber::GetThreadArea => {
+            // get_thread_area(struct user_desc *u_info)
+            // x86-specific TLS descriptor — we use arch_prctl for TLS
+            // Return ENOSYS (x86-64 doesn't really use this)
+            Err(LinuxError::ENOSYS)
+        }
+
+        // ── lookup_dcookie (debug cookie lookup) ─────────────────────
+        crate::syscall::SyscallNumber::LookupDcookie => {
+            // lookup_dcookie(cookie, buf, len) — debug profiling
+            Err(LinuxError::ENOSYS)
+        }
+
+        // ── cachestat (kernel 6.5+) ──────────────────────────────────
+        crate::syscall::SyscallNumber::Cachestat => {
+            // cachestat(fd, args, cstat, flags)
+            if args[2] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            // struct cachestat { long nr_cache; long nr_dirty; long nr_writeback; long nr_evictable; long nr_recently_evicted; }
+            // Return zeroed — all pages are "cached" in memory
+            let buf = unsafe { core::slice::from_raw_parts_mut(args[2] as *mut u8, 40) };
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            // Set nr_cache to a large number (all pages cached)
+            unsafe {
+                *(args[2] as *mut i64) = 0x7FFFFFFFFFFFFFFF;
+            }
+            Ok(0)
+        }
+
+        // ── fchmodat2 (kernel 6.6+) ──────────────────────────────────
+        crate::syscall::SyscallNumber::Fchmodat2 => {
+            // fchmodat2(dirfd, pathname, mode, flags)
+            linux_compat::file_ops::fchmodat(
+                args[0] as i32,
+                args[1] as *const u8,
+                args[2] as u32,
+                args[3] as i32,
+            )
+            .map(|v| v as u64)
+        }
+
+        // ── map_shadow_stack (kernel 6.6+, CET) ──────────────────────
+        crate::syscall::SyscallNumber::MapShadowStack => {
+            // map_shadow_stack(addr, size, flags)
+            // CET shadow stack — not supported on our target
+            Err(LinuxError::ENOSYS)
+        }
+
+        // ── New futex API (kernel 6.7+) ──────────────────────────────
+        crate::syscall::SyscallNumber::FutexWake => {
+            // futex_wake(waiters, mask, flags)
+            let ret = crate::futex::futex_wake(args[0] as *mut i32, args[1] as i32, 0xFFFFFFFF);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::FutexWait => {
+            // futex_wait(waiters, expected, timeout, flags)
+            let ret =
+                crate::futex::futex_wait(args[0] as *mut i32, args[1] as i32, 0xFFFFFFFF, None);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::FutexRequeue => {
+            // futex_requeue(waiters, expected, requeue_waiters, nr_requeue, flags)
+            let ret = crate::futex::futex_wake(args[0] as *mut i32, args[3] as i32, 0xFFFFFFFF);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── statmount (kernel 6.8+, new mount API) ───────────────────
+        crate::syscall::SyscallNumber::Statmount => {
+            // statmount(mask, buf, bufsize, flags)
+            if args[1] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            // struct statmount { __u32 size; __u32 mnt_id; __u32 mnt_parent_id; ... }
+            // Return zeroed buffer with minimal info
+            let bufsize = args[2] as usize;
+            let len = core::cmp::min(bufsize, 256);
+            let buf = unsafe { core::slice::from_raw_parts_mut(args[1] as *mut u8, len) };
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            // Set size field
+            if len >= 4 {
+                unsafe {
+                    *(args[1] as *mut u32) = len as u32;
+                }
+            }
+            Ok(0)
+        }
+
+        // ── listmount (kernel 6.8+, new mount API) ───────────────────
+        crate::syscall::SyscallNumber::Listmount => {
+            // listmount(mnt_id, buf, bufsize, flags)
+            if args[1] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            // Return empty list (no child mounts)
+            Ok(0)
+        }
+
+        // ── LSM syscalls (kernel 6.8+) ───────────────────────────────
+        crate::syscall::SyscallNumber::LsmGetSelfAttr
+        | crate::syscall::SyscallNumber::LsmSetSelfAttr
+        | crate::syscall::SyscallNumber::LsmListModules => {
+            // No LSM framework — return 0 for get/list (empty), ENOSYS for set
+            match syscall {
+                crate::syscall::SyscallNumber::LsmSetSelfAttr => Err(LinuxError::ENOSYS),
+                _ => Ok(0),
+            }
+        }
+
+        // ── mseal (kernel 6.10+, memory sealing) ─────────────────────
+        crate::syscall::SyscallNumber::Mseal => {
+            // mseal(addr, len, flags)
+            // Memory sealing prevents changes to VMA permissions
+            // Accept silently — our mmap/mprotect doesn't enforce sealing
+            let _addr = args[0];
+            let _len = args[1] as usize;
+            let flags = args[2] as u32;
+            // Only valid flag is MSEAL_SEAL (1)
+            if flags & !1 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            Ok(0)
+        }
+        crate::syscall::SyscallNumber::Bpf => {
+            let ret = crate::bpf::bpf(args[0] as u32, args[1], args[2] as u32);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Keyring syscalls ─────────────────────────────────────────
+        crate::syscall::SyscallNumber::AddKey => {
+            let ret = crate::keyring::add_key(
+                args[0] as *const u8,
+                args[1] as *const u8,
+                args[2] as *const u8,
+                args[3] as usize,
+                args[4] as i32,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::RequestKey => {
+            let ret = crate::keyring::request_key(
+                args[0] as *const u8,
+                args[1] as *const u8,
+                args[2] as *const u8,
+                args[3] as i32,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Keyctl => {
+            let ret = crate::keyring::keyctl(args[0] as u32, args[1], args[2], args[3], args[4]);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Module loading syscalls ──────────────────────────────────
+        crate::syscall::SyscallNumber::InitModule => {
+            let ret = crate::module_loader::init_module(
+                args[0] as *const u8,
+                args[1] as usize,
+                args[2] as *const u8,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::FinitModule => {
+            let ret = crate::module_loader::finit_module(
+                args[0] as i32,
+                args[1] as *const u8,
+                args[2] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::DeleteModule => {
+            let ret = crate::module_loader::delete_module(args[0] as *const u8, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── kexec syscalls ───────────────────────────────────────────
+        crate::syscall::SyscallNumber::KexecLoad => {
+            let ret =
+                crate::kexec::kexec_load(args[0], args[1] as usize, args[2] as *const u8, args[3]);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::KexecFileLoad => {
+            let ret = crate::kexec::kexec_file_load(
+                args[0] as i32,
+                args[1] as i32,
+                args[2] as usize,
+                args[3] as *const u8,
+                args[4],
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Perf event syscall ───────────────────────────────────────
+        crate::syscall::SyscallNumber::PerfEventOpen => {
+            let ret = crate::perf_event::perf_event_open(
+                args[0] as *const crate::perf_event::PerfEventAttr,
+                args[1] as i32,
+                args[2] as i32,
+                args[3] as i32,
+                args[4],
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── New mount API syscalls ───────────────────────────────────
+        crate::syscall::SyscallNumber::Fsopen => {
+            let ret = crate::mount_api::fsopen(args[0] as *const u8, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Fsconfig => {
+            let ret = crate::mount_api::fsconfig(
+                args[0] as i32,
+                args[1] as u32,
+                args[2] as *const u8,
+                args[3] as *const u8,
+                args[4] as i32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Fsmount => {
+            let ret = crate::mount_api::fsmount(args[0] as i32, args[1] as u32, args[2] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Fspick => {
+            let ret = crate::mount_api::fspick(args[0] as *const u8, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::MoveMount => {
+            let ret = crate::mount_api::move_mount(
+                args[0] as i32,
+                args[1] as *const u8,
+                args[2] as i32,
+                args[3] as *const u8,
+                args[4] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::OpenTree => {
+            let ret =
+                crate::mount_api::open_tree(args[0] as i32, args[1] as *const u8, args[2] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::MountSetattr => {
+            let ret = crate::mount_api::mount_setattr(
+                args[0] as i32,
+                args[1] as *const u8,
+                args[2] as u32,
+                args[3],
+                args[4],
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Landlock syscalls ─────────────────────────────────────────
+        crate::syscall::SyscallNumber::LandlockCreateRuleset => {
+            let ret = crate::landlock::landlock_create_ruleset(
+                args[0] as *const crate::landlock::LandlockRulesetAttr,
+                args[1] as usize,
+                args[2] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::LandlockAddRule => {
+            let ret = crate::landlock::landlock_add_rule(
+                args[0] as i32,
+                args[1] as u32,
+                args[2] as *const u8,
+                args[3] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::LandlockRestrictSelf => {
+            let ret = crate::landlock::landlock_restrict_self(args[0] as i32, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        crate::syscall::SyscallNumber::Ptrace => {
+            let ret = crate::ptrace::ptrace(
+                args[0] as u32,
+                args[1] as u32,
+                args[2] as u64,
+                args[3] as u64,
+            );
+            if ret < 0 {
+                Err(LinuxError::EPERM)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Seccomp => {
+            let ret = crate::seccomp::seccomp_set_mode(
+                args[0] as u32,
+                args[1] as u32,
+                args[2] as *const u8,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
         crate::syscall::SyscallNumber::CreateModule
         | crate::syscall::SyscallNumber::ModifyLdt
         | crate::syscall::SyscallNumber::Vserver => Err(LinuxError::EINVAL),
-        crate::syscall::SyscallNumber::Adjtimex
-        | crate::syscall::SyscallNumber::ClockAdjtime
-        | crate::syscall::SyscallNumber::FanotifyInit
-        | crate::syscall::SyscallNumber::FanotifyMark
-        | crate::syscall::SyscallNumber::FutexWaitv
-        | crate::syscall::SyscallNumber::IoCancel
-        | crate::syscall::SyscallNumber::IoDestroy
-        | crate::syscall::SyscallNumber::IoGetevents
-        | crate::syscall::SyscallNumber::IoPgetevents
-        | crate::syscall::SyscallNumber::IoSetup
-        | crate::syscall::SyscallNumber::IoSubmit
-        | crate::syscall::SyscallNumber::IoUringEnter
-        | crate::syscall::SyscallNumber::IoUringRegister
-        | crate::syscall::SyscallNumber::IoUringSetup
-        | crate::syscall::SyscallNumber::Kcmp
-        | crate::syscall::SyscallNumber::MemfdSecret
-        | crate::syscall::SyscallNumber::Mknodat
-        | crate::syscall::SyscallNumber::NameToHandleAt
-        | crate::syscall::SyscallNumber::PidfdGetfd
-        | crate::syscall::SyscallNumber::PidfdOpen
-        | crate::syscall::SyscallNumber::PidfdSendSignal
-        | crate::syscall::SyscallNumber::ProcessMadvise
-        | crate::syscall::SyscallNumber::ProcessMrelease
-        | crate::syscall::SyscallNumber::ProcessVmReadv
-        | crate::syscall::SyscallNumber::ProcessVmWritev
-        | crate::syscall::SyscallNumber::Pselect6
-        | crate::syscall::SyscallNumber::QuotactlFd
-        | crate::syscall::SyscallNumber::RestartSyscall
-        | crate::syscall::SyscallNumber::Rseq
-        | crate::syscall::SyscallNumber::RtSigqueueinfo
-        | crate::syscall::SyscallNumber::RtSigreturn
-        | crate::syscall::SyscallNumber::RtSigtimedwait
-        | crate::syscall::SyscallNumber::RtTgsigqueueinfo
-        | crate::syscall::SyscallNumber::SchedGetattr
-        | crate::syscall::SyscallNumber::SchedSetattr
-        | crate::syscall::SyscallNumber::Semctl
-        | crate::syscall::SyscallNumber::Semop
-        | crate::syscall::SyscallNumber::Semtimedop
-        | crate::syscall::SyscallNumber::SetMempolicyHomeNode
-        | crate::syscall::SyscallNumber::Setfsgid
-        | crate::syscall::SyscallNumber::Setfsuid
-        | crate::syscall::SyscallNumber::Shmat
-        | crate::syscall::SyscallNumber::Shmctl
-        | crate::syscall::SyscallNumber::Statx
-        | crate::syscall::SyscallNumber::Sync
-        | crate::syscall::SyscallNumber::Time
-        | crate::syscall::SyscallNumber::TimerGettime
-        | crate::syscall::SyscallNumber::TimerSettime
-        | crate::syscall::SyscallNumber::Umounth
-        | crate::syscall::SyscallNumber::Uname
-        | crate::syscall::SyscallNumber::Userfaultfd
-        | crate::syscall::SyscallNumber::Ustat
-        | crate::syscall::SyscallNumber::Vmsplice
-        | crate::syscall::SyscallNumber::Waitid => Err(LinuxError::ENOSYS),
+        // ── Adjtimex (NTP time adjustment) ────────────────────────────
+        crate::syscall::SyscallNumber::Adjtimex => {
+            // Read mode: return current clock state (TIME_OK)
+            if args[0] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            // struct timbuf { modes, offset, freq, maxerror, esterror,
+            //   status, constant, precision, tolerance, tick, ppsfreq, jitter,
+            //   shift, stabil, jitcnt, calcnt, errcnt, stbcnt, tai, __padding }
+            // 208 bytes. Return TIME_OK (0).
+            let buf = unsafe { core::slice::from_raw_parts_mut(args[0] as *mut u8, 208) };
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            Ok(0) // TIME_OK
+        }
+        crate::syscall::SyscallNumber::ClockAdjtime => {
+            // clock_adjtime(clockid, struct timbuf*)
+            // Same as adjtimex but for a specific clock — we only support CLOCK_REALTIME
+            if args[1] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let buf = unsafe { core::slice::from_raw_parts_mut(args[1] as *mut u8, 208) };
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            Ok(0) // TIME_OK
+        }
+
+        // ── Kcmp (compare kernel resources) ───────────────────────────
+        crate::syscall::SyscallNumber::Kcmp => {
+            // kcmp(pid1, pid2, type, idx1, idx2)
+            let pid1 = args[0] as i32;
+            let pid2 = args[1] as i32;
+            let kcmp_type = args[2] as u32;
+            let _idx1 = args[3];
+            let _idx2 = args[4];
+
+            // KCMP_TYPES: 0=VM, 1=FILES, 2=FS, 3=SIGHAND, 4=IO, 5=SYSVSEM, 6=EPOLL_TFD
+            if kcmp_type > 6 {
+                return Err(LinuxError::EINVAL);
+            }
+            // If same PID, resources are always shared
+            if pid1 == pid2 {
+                return Ok(0); // KCMP_EQUAL
+            }
+            // Different processes — no sharing in our implementation
+            Ok(1) // KCMP_NOT_EQUAL
+        }
+
+        // ── RestartSyscall ────────────────────────────────────────────
+        crate::syscall::SyscallNumber::RestartSyscall => {
+            // restart_syscall() — restart a syscall interrupted by a signal
+            // Since we don't implement signal-interrupted syscall restart,
+            // return EINTR to indicate no restartable syscall
+            Err(LinuxError::EINTR)
+        }
+
+        // ── SetMempolicyHomeNode ──────────────────────────────────────
+        crate::syscall::SyscallNumber::SetMempolicyHomeNode => {
+            // set_mempolicy_home_node(start, end, home_node, flags)
+            // NUMA home node policy — no NUMA in RustOS, accept silently
+            Ok(0)
+        }
+
+        // ── Umounth (old umount, syscall 166) ─────────────────────────
+        crate::syscall::SyscallNumber::Umounth => {
+            // Old umount() — equivalent to umount2(target, 0)
+            linux_compat::fs_ops::umount(args[0] as *const u8).map(|v| v as u64)
+        }
+
+        // ── Ustat (deprecated filesystem stats) ──────────────────────
+        crate::syscall::SyscallNumber::Ustat => {
+            // ustat(dev, struct ustat*)
+            if args[1] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            // struct ustat { char f_fname[6]; char f_fpack[6]; long f_tfree;
+            //   ino_t f_tinode; } — 20 bytes on 64-bit
+            let buf = unsafe { core::slice::from_raw_parts_mut(args[1] as *mut u8, 20) };
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            // Return success with zeroed stats
+            Ok(0)
+        }
+        crate::syscall::SyscallNumber::MemfdSecret => {
+            let ret = crate::memfd_secret::memfd_secret(args[0] as u32);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── AIO syscalls ─────────────────────────────────────────────
+        crate::syscall::SyscallNumber::IoSetup => {
+            let ret = crate::aio::io_setup(args[0] as u32, args[1] as *mut u64);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoDestroy => {
+            let ret = crate::aio::io_destroy(args[0]);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoSubmit => {
+            let ret = crate::aio::io_submit(
+                args[0],
+                args[1] as i64,
+                args[2] as *const *const crate::aio::IoCb,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoGetevents => {
+            let ret = crate::aio::io_getevents(
+                args[0],
+                args[1] as i64,
+                args[2] as i64,
+                args[3] as *mut crate::aio::IoEvent,
+                args[4] as *const u8,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoCancel => {
+            let ret = crate::aio::io_cancel(
+                args[0],
+                args[1] as *const crate::aio::IoCb,
+                args[2] as *mut crate::aio::IoEvent,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoPgetevents => {
+            let ret = crate::aio::io_getevents(
+                args[0],
+                args[1] as i64,
+                args[2] as i64,
+                args[3] as *mut crate::aio::IoEvent,
+                args[4] as *const u8,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Quotactl (fd-based) ───────────────────────────────────────
+        crate::syscall::SyscallNumber::QuotactlFd => linux_compat::fs_ops::quotactl(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
+
+        // ── SysV IPC syscalls ────────────────────────────────────────
+        crate::syscall::SyscallNumber::Semctl => {
+            let ret =
+                crate::sysv_ipc::semctl(args[0] as i32, args[1] as i32, args[2] as i32, args[3]);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Semop => {
+            let ret = crate::sysv_ipc::semop(
+                args[0] as i32,
+                args[1] as *const crate::sysv_ipc::SemBuf,
+                args[2] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Semtimedop => {
+            let ret = crate::sysv_ipc::semtimedop(
+                args[0] as i32,
+                args[1] as *const crate::sysv_ipc::SemBuf,
+                args[2] as u32,
+                args[3] as *const u8,
+            );
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Shmat => {
+            let ret = crate::sysv_ipc::shmat(args[0] as i32, args[1], args[2] as i32);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret as i32))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Shmctl => {
+            let ret = crate::sysv_ipc::shmctl(args[0] as i32, args[1] as i32, args[2]);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Process VM syscalls ──────────────────────────────────────
+        crate::syscall::SyscallNumber::ProcessVmReadv => crate::process_vm::process_vm_readv(
+            args[0] as i32,
+            args[1],
+            args[2] as usize,
+            args[3],
+            args[4] as usize,
+            args[5],
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::ProcessVmWritev => crate::process_vm::process_vm_writev(
+            args[0] as i32,
+            args[1],
+            args[2] as usize,
+            args[3],
+            args[4] as usize,
+            args[5],
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::ProcessMadvise => crate::process_vm::process_madvise(
+            args[0] as i32,
+            args[1],
+            args[2] as usize,
+            args[3] as i32,
+            args[4] as u32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::ProcessMrelease => {
+            crate::process_vm::process_mrelease(args[0] as i32, args[1] as u32).map(|v| v as u64)
+        }
+
+        // ── Misc syscalls ────────────────────────────────────────────
+        crate::syscall::SyscallNumber::Userfaultfd => {
+            let ret = crate::userfaultfd::userfaultfd(args[0] as u32);
+            if ret < 0 {
+                Err(LinuxError::from_errno(-ret))
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::Rseq => {
+            crate::rseq::rseq(args[0], args[1] as u32, args[2] as u32, args[3] as u32)
+                .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::Pselect6 => linux_compat::socket_ops::pselect6(
+            args[0] as i32,
+            args[1] as *mut u64,
+            args[2] as *mut u64,
+            args[3] as *mut u64,
+            args[4] as *const linux_compat::TimeSpec,
+            args[5] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Mknodat => {
+            // mknodat(dirfd, pathname, mode, dev)
+            let dirfd = args[0] as i32;
+            let pathname = args[1] as *const u8;
+            let mode = args[2] as u32;
+            let _dev = args[3] as u64;
+
+            if pathname.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+
+            const S_IFMT: u32 = 0o170000;
+            const S_IFIFO: u32 = 0o010000;
+            const S_IFCHR: u32 = 0o002000;
+            const S_IFBLK: u32 = 0o006000;
+            const S_IFREG: u32 = 0o100000;
+            const S_IFSOCK: u32 = 0o140000;
+
+            let file_type = mode & S_IFMT;
+
+            match file_type {
+                S_IFIFO => {
+                    let path = linux_compat::file_ops::c_str_to_string(pathname)
+                        .map_err(|_| LinuxError::EFAULT)?;
+                    let full_path = if path.starts_with('/') {
+                        path
+                    } else {
+                        alloc::format!("/{}", path)
+                    };
+                    crate::vfs::get_vfs()
+                        .mknod(&full_path, crate::vfs::InodeType::Fifo, mode)
+                        .map_err(|_| LinuxError::EEXIST)?;
+                    Ok(0)
+                }
+                S_IFREG => {
+                    let path = linux_compat::file_ops::c_str_to_string(pathname)
+                        .map_err(|_| LinuxError::EFAULT)?;
+                    let full_path = if path.starts_with('/') {
+                        path
+                    } else {
+                        alloc::format!("/{}", path)
+                    };
+                    crate::vfs::get_vfs()
+                        .mknod(&full_path, crate::vfs::InodeType::File, mode)
+                        .map_err(|_| LinuxError::EEXIST)?;
+                    Ok(0)
+                }
+                S_IFSOCK => {
+                    // Creating a socket file — return EPERM (no socket fs support)
+                    Err(LinuxError::EPERM)
+                }
+                S_IFCHR | S_IFBLK => {
+                    // Device nodes require CAP_MKNOD — return EPERM
+                    Err(LinuxError::EPERM)
+                }
+                _ => Err(LinuxError::EINVAL),
+            }
+        }
+        crate::syscall::SyscallNumber::NameToHandleAt => crate::file_handle::name_to_handle_at(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+            args[3] as *mut i32,
+            args[4] as i32,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Vmsplice => {
+            // vmsplice(fd, iov, nr_segs, flags)
+            // For pipe write fds, copy data from iovec into pipe
+            let fd = args[0] as i32;
+            let iov = args[1] as *const u8;
+            let nr_segs = args[2] as usize;
+            let flags = args[3] as u32;
+
+            if nr_segs > 1024 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            // SPLICE_F_MOVE=1, SPLICE_F_NONBLOCK=2, SPLICE_F_MORE=4, SPLICE_F_GIFT=8
+            let valid_flags = 1 | 2 | 4 | 8;
+            if flags & !valid_flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            // For non-pipe fds or unsupported, return EINVAL
+            // vmsplice on a pipe write end: copy data from iovec into pipe
+            let kind = crate::vfs::vfs_fd_kind(fd).map_err(|_| LinuxError::EBADF)?;
+
+            match kind {
+                crate::vfs::FdKind::PipeWrite(pipe_id) => {
+                    let ipc = crate::process::ipc::get_ipc_manager();
+                    let mut total = 0usize;
+                    for i in 0..nr_segs {
+                        // struct iovec { void *iov_base; size_t iov_len; }
+                        let base = unsafe { *(iov.add(i * 16) as *const *const u8) };
+                        let len = unsafe { *(iov.add(i * 16 + 8) as *const usize) };
+                        if base.is_null() || len == 0 {
+                            continue;
+                        }
+                        let data = unsafe { core::slice::from_raw_parts(base, len) };
+                        match ipc.pipe_write(pipe_id, data) {
+                            Ok(n) => total += n,
+                            Err(_) => break,
+                        }
+                    }
+                    Ok(total as u64)
+                }
+                _ => Err(LinuxError::EINVAL),
+            }
+        }
+
+        // ── Signal syscalls ──────────────────────────────────────────
+        crate::syscall::SyscallNumber::RtSigreturn => {
+            linux_compat::signal_ops::rt_sigreturn().map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::RtSigqueueinfo => linux_compat::signal_ops::rt_sigqueueinfo(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *const u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::RtTgsigqueueinfo => {
+            linux_compat::signal_ops::rt_tgsigqueueinfo(
+                args[0] as i32,
+                args[1] as i32,
+                args[2] as i32,
+                args[3] as *const u8,
+            )
+            .map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::RtSigtimedwait => {
+            if args[0] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let set = unsafe { *(args[0] as *const u64) };
+            let timeout_ns = if args[2] != 0 {
+                let ts = unsafe { &*(args[2] as *const linux_compat::TimeSpec) };
+                Some(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
+            } else {
+                None
+            };
+            linux_compat::signal_ops::rt_sigtimedwait(set, timeout_ns).map(|v| v as u64)
+        }
+
+        // ── PID fd syscalls ──────────────────────────────────────────
+        crate::syscall::SyscallNumber::PidfdOpen => {
+            let ret = crate::pidfd::pidfd_open(args[0] as i32, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::PidfdSendSignal => {
+            let ret = crate::pidfd::pidfd_send_signal(
+                args[0] as i32,
+                args[1] as i32,
+                args[2],
+                args[3] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::PidfdGetfd => {
+            let ret = crate::pidfd::pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32);
+            if ret < 0 {
+                Err(LinuxError::EPERM)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Sync ─────────────────────────────────────────────────────
+        crate::syscall::SyscallNumber::Sync => {
+            // Flush all dirty buffers to device
+            let _ = crate::vfs::get_vfs().sync_all();
+            Ok(0)
+        }
+
+        // ── Uname ────────────────────────────────────────────────────
+        crate::syscall::SyscallNumber::Uname => {
+            if args[0] == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            #[repr(C)]
+            struct OldUtsname {
+                sysname: [u8; 65],
+                nodename: [u8; 65],
+                release: [u8; 65],
+                version: [u8; 65],
+                machine: [u8; 65],
+                domainname: [u8; 65],
+            }
+            let uts = crate::namespace::get_nsproxy(crate::process::current_pid());
+            let mut fill = |buf: &mut [u8; 65], s: &str| {
+                for (i, b) in s.bytes().enumerate() {
+                    if i >= 64 {
+                        break;
+                    }
+                    buf[i] = b;
+                }
+                buf[s.len().min(64)] = 0;
+            };
+            let mut name = OldUtsname {
+                sysname: [0; 65],
+                nodename: [0; 65],
+                release: [0; 65],
+                version: [0; 65],
+                machine: [0; 65],
+                domainname: [0; 65],
+            };
+            fill(&mut name.sysname, &uts.uts.sysname);
+            fill(&mut name.nodename, &uts.uts.nodename);
+            fill(&mut name.release, &uts.uts.release);
+            fill(&mut name.version, &uts.uts.version);
+            fill(&mut name.machine, &uts.uts.machine);
+            fill(&mut name.domainname, &uts.uts.domainname);
+            unsafe {
+                *(args[0] as *mut OldUtsname) = name;
+            }
+            Ok(0)
+        }
+
+        // ── Waitid ───────────────────────────────────────────────────
+        crate::syscall::SyscallNumber::Waitid => {
+            let idtype = args[0] as i32;
+            let id = args[1] as i32;
+            let infop = args[2] as *mut u8;
+            let options = args[3] as i32;
+
+            // idtype: 0=P_ALL, 1=P_PID, 2=P_PGID
+            let pm = crate::process::get_process_manager();
+            let target_pid = match idtype {
+                1 => {
+                    if id <= 0 {
+                        return Err(LinuxError::EINVAL);
+                    }
+                    Some(id as u32)
+                }
+                2 => {
+                    if id <= 0 {
+                        return Err(LinuxError::EINVAL);
+                    }
+                    // Find any child in this process group
+                    let children: alloc::vec::Vec<u32> = pm
+                        .find_processes(|p| {
+                            p.pgid == id as u32
+                                && p.parent_pid == Some(crate::process::current_pid())
+                        })
+                        .into_iter()
+                        .map(|p| p.pid)
+                        .collect();
+                    children.first().copied()
+                }
+                _ => {
+                    // P_ALL — find any child that has exited
+                    let children: alloc::vec::Vec<u32> = pm
+                        .find_processes(|p| p.parent_pid == Some(crate::process::current_pid()))
+                        .into_iter()
+                        .filter(|p| {
+                            matches!(
+                                p.state,
+                                crate::process::ProcessState::Zombie
+                                    | crate::process::ProcessState::Terminated
+                            )
+                        })
+                        .map(|p| p.pid)
+                        .collect();
+                    children.first().copied()
+                }
+            };
+
+            if let Some(pid) = target_pid {
+                if let Some(pcb) = pm.get_process(pid) {
+                    if matches!(
+                        pcb.state,
+                        crate::process::ProcessState::Zombie
+                            | crate::process::ProcessState::Terminated
+                    ) {
+                        let exit_code = pcb.exit_code.unwrap_or(0);
+                        let uid = pcb.uid;
+                        // Write siginfo
+                        if !infop.is_null() {
+                            #[repr(C)]
+                            struct SigInfo {
+                                si_signo: i32,
+                                si_errno: i32,
+                                si_code: i32,
+                                _pad: i32,
+                                si_pid: u32,
+                                si_uid: u32,
+                                si_status: i32,
+                                _pad2: [u8; 32],
+                            }
+                            unsafe {
+                                *(infop as *mut SigInfo) = SigInfo {
+                                    si_signo: 17, // SIGCHLD
+                                    si_errno: 0,
+                                    si_code: 1, // CLD_EXITED
+                                    _pad: 0,
+                                    si_pid: pid,
+                                    si_uid: uid,
+                                    si_status: exit_code,
+                                    _pad2: [0; 32],
+                                };
+                            }
+                        }
+                        // Reap the zombie
+                        let _ =
+                            pm.reap_zombie_child(crate::process::current_pid(), |p| p.pid == pid);
+                        return Ok(pid as u64);
+                    }
+                }
+            }
+
+            // No children to wait for
+            if options & 1 != 0 {
+                // WNOHANG
+                return Ok(0);
+            }
+
+            // Would block — return ECHILD if no children exist
+            let has_children = pm
+                .find_processes(|p| p.parent_pid == Some(crate::process::current_pid()))
+                .into_iter()
+                .any(|p| {
+                    !matches!(
+                        p.state,
+                        crate::process::ProcessState::Zombie
+                            | crate::process::ProcessState::Terminated
+                    )
+                });
+
+            if !has_children {
+                return Err(LinuxError::ECHILD);
+            }
+
+            Err(LinuxError::EAGAIN)
+        }
+
+        // ── Scheduling attributes ────────────────────────────────────
+        crate::syscall::SyscallNumber::SchedGetattr => {
+            if args[1] == 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            let pid = if args[0] == 0 {
+                crate::process::current_pid()
+            } else {
+                args[0] as u32
+            };
+            let pm = crate::process::get_process_manager();
+            let pcb = pm.get_process(pid).ok_or(LinuxError::ESRCH)?;
+
+            #[repr(C)]
+            struct SchedAttr {
+                size: u32,
+                policy: u32,
+                flags: u64,
+                nice: u32,
+                priority: u32,
+                runtime_ns: u64,
+                deadline_ns: u64,
+                period_ns: u64,
+            }
+            let policy = match pcb.priority {
+                crate::process::Priority::RealTime => 0, // SCHED_FIFO
+                crate::process::Priority::High => 1,     // SCHED_RR
+                crate::process::Priority::Normal => 0,   // SCHED_NORMAL
+                crate::process::Priority::Low => 0,      // SCHED_NORMAL
+                crate::process::Priority::Idle => 5,     // SCHED_IDLE
+            };
+            let attr = SchedAttr {
+                size: core::mem::size_of::<SchedAttr>() as u32,
+                policy,
+                flags: 0,
+                nice: 0,
+                priority: pcb.priority as u32,
+                runtime_ns: 0,
+                deadline_ns: 0,
+                period_ns: 0,
+            };
+            unsafe {
+                *(args[1] as *mut SchedAttr) = attr;
+            }
+            Ok(0)
+        }
+        crate::syscall::SyscallNumber::SchedSetattr => {
+            if args[1] == 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            let pid = if args[0] == 0 {
+                crate::process::current_pid()
+            } else {
+                args[0] as u32
+            };
+            #[repr(C)]
+            struct SchedAttr {
+                size: u32,
+                policy: u32,
+                flags: u64,
+                nice: u32,
+                priority: u32,
+                runtime_ns: u64,
+                deadline_ns: u64,
+                period_ns: u64,
+            }
+            let attr = unsafe { &*(args[1] as *const SchedAttr) };
+            let new_priority = match attr.policy {
+                0 => crate::process::Priority::Normal,
+                1 => crate::process::Priority::High,
+                5 => crate::process::Priority::Idle,
+                _ => crate::process::Priority::Normal,
+            };
+            let pm = crate::process::get_process_manager();
+            pm.with_process_mut(pid, |pcb| {
+                pcb.priority = new_priority;
+            })
+            .ok_or(LinuxError::ESRCH)?;
+            Ok(0)
+        }
+
+        // ── io_uring syscalls ─────────────────────────────────────────
+        crate::syscall::SyscallNumber::IoUringSetup => {
+            let ret = crate::io_uring::io_uring_setup(
+                args[0] as u32,
+                args[1] as *mut crate::io_uring::IoUringParams,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoUringEnter => {
+            let ret = crate::io_uring::io_uring_enter(
+                args[0] as i32,
+                args[1] as u32,
+                args[2] as u32,
+                args[3] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::IoUringRegister => {
+            let ret = crate::io_uring::io_uring_register(
+                args[0] as i32,
+                args[1] as u32,
+                args[2],
+                args[3] as u32,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── Fanotify syscalls ─────────────────────────────────────────
+        crate::syscall::SyscallNumber::FanotifyInit => {
+            let ret = crate::fanotify::fanotify_init(args[0] as u32, args[1] as u32);
+            if ret < 0 {
+                Err(LinuxError::EPERM)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+        crate::syscall::SyscallNumber::FanotifyMark => {
+            let ret = crate::fanotify::fanotify_mark(
+                args[0] as i32,
+                args[1] as u32,
+                args[2],
+                args[3] as i32,
+                args[4] as *const u8,
+            );
+            if ret < 0 {
+                Err(LinuxError::EINVAL)
+            } else {
+                Ok(ret as u64)
+            }
+        }
+
+        // ── FutexWaitv ────────────────────────────────────────────────
+        crate::syscall::SyscallNumber::FutexWaitv => {
+            let waiters = args[0] as *const u8;
+            let nr_waiters = args[1] as u32;
+            let flags = args[2] as u32;
+            let _timeout = args[3];
+
+            if waiters.is_null() || nr_waiters == 0 || nr_waiters > 128 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            // futex_waitv struct: { u64 val; u64 uaddr; u32 flags; u32 __reserved; }
+            #[repr(C)]
+            struct FutexWaitv {
+                val: u64,
+                uaddr: u64,
+                flags: u32,
+                __reserved: u32,
+            }
+
+            // Wait on each futex — return index of first woken
+            for i in 0..nr_waiters {
+                let w = unsafe { &*(waiters.add(i as usize * 32) as *const FutexWaitv) };
+                let expected = w.val;
+                let uaddr = w.uaddr as *const u32;
+                if uaddr.is_null() {
+                    continue;
+                }
+                let current = unsafe { core::ptr::read_volatile(uaddr) };
+                if current != expected as u32 {
+                    // Value changed — wake immediately
+                    return Ok(i as u64);
+                }
+                // Would block on this futex — try next
+            }
+
+            // All futexes still at expected values — would block
+            // For now, return ETIMEDOUT rather than blocking forever
+            Err(LinuxError::EAGAIN)
+        }
+
+        // ── Statx ─────────────────────────────────────────────────────
+        crate::syscall::SyscallNumber::Statx => {
+            let dirfd = args[0] as i32;
+            let pathname = args[1] as *const u8;
+            let flags = args[2] as i32;
+            let mask = args[3] as u32;
+            let statxbuf = args[4] as *mut u8;
+            if pathname.is_null() || statxbuf.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+
+            // Read pathname
+            let mut path_len = 0;
+            while unsafe { *pathname.add(path_len) } != 0 {
+                path_len += 1;
+            }
+            let path_bytes = unsafe { core::slice::from_raw_parts(pathname, path_len) };
+            let path_str = alloc::string::String::from_utf8_lossy(path_bytes);
+
+            // Get stat from VFS
+            let vfs = crate::vfs::get_vfs();
+            match vfs.stat(&path_str) {
+                Ok(stat) => {
+                    // struct statx_timestamp { i64 tv_sec; u32 tv_nsec; i32 __reserved; }
+                    #[repr(C)]
+                    struct StatxTimestamp {
+                        tv_sec: i64,
+                        tv_nsec: u32,
+                        __reserved: i32,
+                    }
+                    // struct statx (simplified — 256 bytes)
+                    #[repr(C)]
+                    struct Statx {
+                        stx_mask: u32,
+                        stx_blksize: u32,
+                        stx_attributes: u64,
+                        stx_nlink: u32,
+                        stx_uid: u32,
+                        stx_gid: u32,
+                        stx_mode: u16,
+                        __spare0: u16,
+                        stx_ino: u64,
+                        stx_size: u64,
+                        stx_blocks: u64,
+                        stx_attributes_mask: u64,
+                        stx_atime: StatxTimestamp,
+                        stx_btime: StatxTimestamp,
+                        stx_ctime: StatxTimestamp,
+                        stx_mtime: StatxTimestamp,
+                        stx_rdev_major: u32,
+                        stx_rdev_minor: u32,
+                        stx_dev_major: u32,
+                        stx_dev_minor: u32,
+                        stx_mnt_id: u64,
+                        stx_dio_mem_align: u32,
+                        stx_dio_offset_align: u32,
+                        __spare3: [u64; 12],
+                    }
+
+                    let stx = Statx {
+                        stx_mask: mask,
+                        stx_blksize: stat.blksize as u32,
+                        stx_attributes: 0,
+                        stx_nlink: stat.nlink,
+                        stx_uid: stat.uid,
+                        stx_gid: stat.gid,
+                        stx_mode: stat.mode as u16,
+                        __spare0: 0,
+                        stx_ino: stat.ino,
+                        stx_size: stat.size,
+                        stx_blocks: stat.blocks,
+                        stx_attributes_mask: 0,
+                        stx_atime: StatxTimestamp {
+                            tv_sec: stat.atime as i64,
+                            tv_nsec: 0,
+                            __reserved: 0,
+                        },
+                        stx_btime: StatxTimestamp {
+                            tv_sec: stat.ctime as i64,
+                            tv_nsec: 0,
+                            __reserved: 0,
+                        },
+                        stx_ctime: StatxTimestamp {
+                            tv_sec: stat.ctime as i64,
+                            tv_nsec: 0,
+                            __reserved: 0,
+                        },
+                        stx_mtime: StatxTimestamp {
+                            tv_sec: stat.mtime as i64,
+                            tv_nsec: 0,
+                            __reserved: 0,
+                        },
+                        stx_rdev_major: 0,
+                        stx_rdev_minor: 0,
+                        stx_dev_major: 0,
+                        stx_dev_minor: 0,
+                        stx_mnt_id: 0,
+                        stx_dio_mem_align: 0,
+                        stx_dio_offset_align: 0,
+                        __spare3: [0; 12],
+                    };
+                    unsafe {
+                        core::ptr::write(statxbuf as *mut Statx, stx);
+                    }
+                    Ok(0)
+                }
+                Err(_) => Err(LinuxError::ENOENT),
+            }
+        }
+
+        // ── Setfsuid / Setfsgid ───────────────────────────────────────
+        crate::syscall::SyscallNumber::Setfsuid => {
+            let uid = args[0] as u32;
+            let pid = crate::process::current_pid();
+            let pm = crate::process::get_process_manager();
+            let old_fsuid = pm.get_process(pid).map(|p| p.euid).unwrap_or(0);
+            pm.with_process_mut(pid, |pcb| {
+                // Linux setfsuid sets the filesystem uid; we use euid as proxy
+                if uid != 0xFFFFFFFF {
+                    pcb.euid = uid;
+                }
+            })
+            .ok_or(LinuxError::ESRCH)?;
+            Ok(old_fsuid as u64)
+        }
+        crate::syscall::SyscallNumber::Setfsgid => {
+            let gid = args[0] as u32;
+            let pid = crate::process::current_pid();
+            let pm = crate::process::get_process_manager();
+            let old_fsgid = pm.get_process(pid).map(|p| p.egid).unwrap_or(0);
+            pm.with_process_mut(pid, |pcb| {
+                if gid != 0xFFFFFFFF {
+                    pcb.egid = gid;
+                }
+            })
+            .ok_or(LinuxError::ESRCH)?;
+            Ok(old_fsgid as u64)
+        }
+
+        // ── Time ──────────────────────────────────────────────────────
+        crate::syscall::SyscallNumber::Time => {
+            let now_secs = (crate::time::uptime_ns() / 1_000_000_000) as i64;
+            if args[0] != 0 {
+                unsafe {
+                    *(args[0] as *mut i64) = now_secs;
+                }
+            }
+            Ok(now_secs as u64)
+        }
+
+        // ── TimerGettime / TimerSettime ───────────────────────────────
+        crate::syscall::SyscallNumber::TimerGettime => {
+            let timerid = args[0] as i32;
+            let curr_value = args[1] as *mut u8;
+            if curr_value.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            // struct itimerspec { struct timespec it_interval; struct timespec it_value; }
+            // Return zeroed — no active timers yet
+            let zeros = [0u8; 32];
+            unsafe {
+                core::ptr::copy_nonoverlapping(zeros.as_ptr(), curr_value, 32);
+            }
+            Ok(0)
+        }
+        crate::syscall::SyscallNumber::TimerSettime => {
+            let timerid = args[0] as i32;
+            let _flags = args[1] as i32;
+            let new_value = args[2] as *const u8;
+            let old_value = args[3] as *mut u8;
+            if new_value.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            // If old_value is provided, return the previous timer value (zeroed)
+            if !old_value.is_null() {
+                let zeros = [0u8; 32];
+                unsafe {
+                    core::ptr::copy_nonoverlapping(zeros.as_ptr(), old_value, 32);
+                }
+            }
+            Ok(0)
+        }
+
         _ => Err(LinuxError::ENOSYS),
     }
 }

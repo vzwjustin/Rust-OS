@@ -3,20 +3,16 @@
 //! This module implements Linux-compatible socket operations including
 //! send, recv, socket options, and I/O multiplexing.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
 use crate::memory::user_space::UserSpaceMemory;
 use crate::net::socket::{SocketAddress, SocketOption, SocketOptionType, SocketType};
 use crate::net::{self, NetworkAddress, NetworkError, Protocol};
-use crate::process::ipc::get_ipc_manager;
 use crate::vfs::{self, FdKind};
 
 /// Operation counter for statistics
@@ -46,138 +42,23 @@ const SOCK_NONBLOCK: i32 = 0o20000;
 /// Set O_CLOEXEC on the new fd
 const SOCK_CLOEXEC: i32 = 0o2000000;
 
-// =============================================================================
-// AF_UNIX (Unix domain socket) support
-// =============================================================================
+use crate::net::raw::{self, AF_PACKET};
+use crate::net::unix::{self, UnixSocketType};
 
-/// Role of a pre-bound runtime socket used by the GNOME overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnixSocketRole {
-    Generic,
-    DbusSession,
-    WaylandDisplay,
-}
-
-/// Global registry of bound AF_UNIX socket paths to listener state.
-static UNIX_SOCKET_REGISTRY: RwLock<BTreeMap<String, Arc<UnixPathListener>>> =
-    RwLock::new(BTreeMap::new());
-
-/// Per-fd Unix socket state: the pipe ID used for data transport and
-/// whether this end is the listener or connector.
-#[derive(Clone)]
-struct UnixSocketEnd {
-    pipe_id: u32,
-    is_listener: bool,
-    path: Option<String>,
-    role: UnixSocketRole,
-    pending_out_of_band_fds: Arc<Mutex<Vec<u32>>>,
-}
-
-/// Listener state for a bound Unix domain socket path.
-struct UnixPathListener {
-    path: String,
-    role: UnixSocketRole,
-    listening: AtomicBool,
-    pending: Mutex<Vec<u32>>,
-}
-
-impl UnixPathListener {
-    fn new(path: String, role: UnixSocketRole, listening: bool) -> Arc<Self> {
-        Arc::new(Self {
-            path,
-            role,
-            listening: AtomicBool::new(listening),
-            pending: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn is_listening(&self) -> bool {
-        self.listening.load(Ordering::Acquire)
-    }
-
-    fn set_listening(&self, listening: bool) {
-        self.listening.store(listening, Ordering::Release);
-    }
-
-    fn push_pending(&self, pipe_id: u32) {
-        self.pending.lock().push(pipe_id);
-    }
-
-    fn pop_pending(&self) -> Option<u32> {
-        let mut pending = self.pending.lock();
-        if pending.is_empty() {
-            None
-        } else {
-            Some(pending.remove(0))
-        }
-    }
-}
-
-/// Map fd → Unix socket endpoint state
-static UNIX_SOCKET_FDS: RwLock<BTreeMap<i32, UnixSocketEnd>> = RwLock::new(BTreeMap::new());
-
-/// Map listener fd → bound path (for accept/listen)
-static UNIX_LISTENER_FDS: RwLock<BTreeMap<i32, String>> = RwLock::new(BTreeMap::new());
+pub use crate::net::unix::UnixSocketRole;
 
 /// Pre-bind a Unix socket path for kernel-provided services (D-Bus, Wayland).
 pub fn prebind_unix_socket(path: &str, role: UnixSocketRole) -> Result<(), &'static str> {
-    if path.is_empty() {
-        return Err("Unix socket path must not be empty");
-    }
-
-    let mut registry = UNIX_SOCKET_REGISTRY.write();
-    if registry.contains_key(path) {
-        return Ok(());
-    }
-
-    registry.insert(
-        String::from(path),
-        UnixPathListener::new(String::from(path), role, true),
-    );
-    Ok(())
+    unix::prebind_unix_socket(path, role)
 }
 
 /// Returns true when a path has been pre-bound or bound by userspace.
 pub fn is_prebound(path: &str) -> bool {
-    UNIX_SOCKET_REGISTRY.read().contains_key(path)
-}
-
-fn lookup_listener(path: &str) -> Option<Arc<UnixPathListener>> {
-    UNIX_SOCKET_REGISTRY.read().get(path).cloned()
-}
-
-fn allocate_connection_pipe() -> Result<u32, LinuxError> {
-    let ipc = get_ipc_manager();
-    let (pipe_id, _) = ipc.create_pipe().map_err(|_| LinuxError::EMFILE)?;
-    Ok(pipe_id)
-}
-
-fn register_connector(sockfd: Fd, pipe_id: u32, path: &str, role: UnixSocketRole) {
-    if role == UnixSocketRole::WaylandDisplay {
-        let _ = crate::wayland::server::attach_connection(pipe_id);
-    } else if role == UnixSocketRole::DbusSession {
-        crate::dbus::register_session_pipe(pipe_id);
-    }
-
-    UNIX_SOCKET_FDS.write().insert(
-        sockfd,
-        UnixSocketEnd {
-            pipe_id,
-            is_listener: false,
-            path: Some(String::from(path)),
-            role,
-            pending_out_of_band_fds: Arc::new(Mutex::new(Vec::new())),
-        },
-    );
+    unix::is_prebound(path)
 }
 
 fn queue_out_of_band_fds(sockfd: Fd, fds: &[u32]) {
-    if fds.is_empty() {
-        return;
-    }
-    if let Some(end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
-        end.pending_out_of_band_fds.lock().extend_from_slice(fds);
-    }
+    unix::queue_out_of_band_fds(sockfd, fds);
 }
 
 /// Queue file descriptors to deliver on the next recvmsg for a Wayland socket fd.
@@ -187,23 +68,11 @@ pub fn queue_wayland_out_of_band_fds(sockfd: Fd, fds: &[u32]) {
 
 /// Queue out-of-band FDs for every userspace fd bound to a Wayland pipe.
 pub fn queue_wayland_pipe_out_of_band_fds(pipe_id: u32, fds: &[u32]) {
-    if fds.is_empty() {
-        return;
-    }
-    for (sockfd, end) in UNIX_SOCKET_FDS.read().iter() {
-        if end.pipe_id == pipe_id && end.role == UnixSocketRole::WaylandDisplay {
-            queue_out_of_band_fds(*sockfd, fds);
-        }
-    }
+    unix::queue_wayland_pipe_out_of_band_fds(pipe_id, fds);
 }
 
 fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
-    let end = match UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
-        Some(end) => end,
-        None => return Ok(()),
-    };
-
-    let mut pending = end.pending_out_of_band_fds.lock();
+    let pending = unix::take_out_of_band_fds(sockfd);
     if pending.is_empty() {
         return Ok(());
     }
@@ -218,7 +87,7 @@ fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
     }
 
     let mut delivered = Vec::new();
-    for pipe_id in pending.drain(..) {
+    for pipe_id in pending {
         let fd = super::special_fd::register_special(
             crate::vfs::FdKind::PipeRead(pipe_id),
             crate::vfs::OpenFlags::RDONLY,
@@ -251,18 +120,8 @@ fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
     Ok(())
 }
 
-fn maybe_dispatch_dbus_request(data: &[u8], pipe_id: u32) {
-    if let Some(reply) = crate::dbus::process_wire_request(data, Some(pipe_id)) {
-        let ipc = get_ipc_manager();
-        let _ = ipc.pipe_write(pipe_id, &reply);
-    }
-}
-
-fn maybe_dispatch_wayland_request(data: &[u8], pipe_id: u32) {
-    if let Some(reply) = crate::wayland::server::process_wire_request(data, pipe_id) {
-        let ipc = get_ipc_manager();
-        let _ = ipc.pipe_write(pipe_id, &reply);
-    }
+fn unix_err(code: i32) -> LinuxError {
+    LinuxError::from_errno(-code)
 }
 
 /// Initialize socket operations subsystem
@@ -362,6 +221,32 @@ fn read_msghdr_fields(msg: *const u8) -> LinuxResult<(*const u8, u32, *const IoV
     Ok((msg_name, msg_namelen, msg_iov, msg_iovlen))
 }
 
+fn parse_unix_path(addr: *const SockAddr, addrlen: u32) -> LinuxResult<String> {
+    let mut family_bytes = [0u8; 2];
+    UserSpaceMemory::copy_from_user(addr as u64, &mut family_bytes)
+        .map_err(|_| LinuxError::EFAULT)?;
+    let family = u16::from_ne_bytes(family_bytes);
+    if family != 1 {
+        return Err(LinuxError::EAFNOSUPPORT);
+    }
+    if (addrlen as usize) < 2 {
+        return Err(LinuxError::EINVAL);
+    }
+    let path_len = (addrlen as usize - 2).min(108);
+    let mut path_buf = [0u8; 108];
+    UserSpaceMemory::copy_from_user((addr as u64) + 2, &mut path_buf[..path_len])
+        .map_err(|_| LinuxError::EFAULT)?;
+    let path_str = String::from(
+        core::str::from_utf8(&path_buf[..path_len])
+            .map_err(|_| LinuxError::EINVAL)?
+            .trim_end_matches('\0'),
+    );
+    if path_str.is_empty() {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(path_str)
+}
+
 /// Parse a SockAddr into a SocketAddress.
 fn parse_sockaddr(addr: *const SockAddr, _addrlen: u32) -> LinuxResult<SocketAddress> {
     if addr.is_null() {
@@ -454,27 +339,32 @@ pub fn send(sockfd: Fd, buf: *const u8, len: usize, flags: i32) -> LinuxResult<i
         return Err(LinuxError::EFAULT);
     }
 
-    // Check for AF_UNIX socket
-    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
+    // Raw / AF_PACKET sockets
+    if raw::is_raw_fd(sockfd) || raw::is_packet_fd(sockfd) {
         if len == 0 {
             return Ok(0);
         }
         let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
         let mut data = vec![0u8; copy_len];
         UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
-        let ipc = get_ipc_manager();
         let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
-        match ipc.pipe_write(unix_end.pipe_id, &data) {
-            Ok(n) => {
-                if unix_end.role == UnixSocketRole::DbusSession {
-                    maybe_dispatch_dbus_request(&data[..n], unix_end.pipe_id);
-                } else if unix_end.role == UnixSocketRole::WaylandDisplay {
-                    maybe_dispatch_wayland_request(&data[..n], unix_end.pipe_id);
-                }
-                return Ok(n as isize);
-            }
-            Err(_) => return Err(LinuxError::EPIPE),
+        return raw::send(sockfd, &data)
+            .map_err(net_err_to_linux)
+            .map(|n| n as isize);
+    }
+
+    // AF_UNIX socket
+    if unix::is_unix_fd(sockfd) {
+        if len == 0 {
+            return Ok(0);
         }
+        let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
+        let mut data = vec![0u8; copy_len];
+        UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
+        let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
+        return unix::send(sockfd, &data, None)
+            .map_err(unix_err)
+            .map(|n| n as isize);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
@@ -513,14 +403,33 @@ pub fn sendto(
         return Err(LinuxError::EFAULT);
     }
 
-    let socket_id = fd_to_socket_id(sockfd)?;
     if len == 0 {
         return Ok(0);
     }
+
     let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
     let mut data = vec![0u8; copy_len];
     UserSpaceMemory::copy_from_user(buf as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
     let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
+
+    if raw::is_raw_fd(sockfd) || raw::is_packet_fd(sockfd) {
+        return raw::send(sockfd, &data)
+            .map_err(net_err_to_linux)
+            .map(|n| n as isize);
+    }
+
+    if unix::is_unix_fd(sockfd) {
+        let dest_path = if dest_addr.is_null() {
+            None
+        } else {
+            Some(parse_unix_path(dest_addr, addrlen)?)
+        };
+        return unix::send(sockfd, &data, dest_path.as_deref())
+            .map_err(unix_err)
+            .map(|n| n as isize);
+    }
+
+    let socket_id = fd_to_socket_id(sockfd)?;
 
     if dest_addr.is_null() {
         // No destination - use connected send
@@ -598,23 +507,33 @@ pub fn recv(sockfd: Fd, buf: *mut u8, len: usize, flags: i32) -> LinuxResult<isi
         return Err(LinuxError::EFAULT);
     }
 
-    // Check for AF_UNIX socket
-    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
+    if raw::is_raw_fd(sockfd) || raw::is_packet_fd(sockfd) {
+        if len == 0 {
+            return Ok(0);
+        }
+        let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
+        let mut buffer = vec![0u8; copy_len];
+        let _ = flags;
+        let n = raw::recv(sockfd, &mut buffer).map_err(net_err_to_linux)?;
+        UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n]).map_err(|_| LinuxError::EFAULT)?;
+        return Ok(n as isize);
+    }
+
+    if unix::is_unix_fd(sockfd) {
         if len == 0 {
             return Ok(0);
         }
         let copy_len = len.min(MAX_SOCKET_RW_CHUNK);
         let mut buffer = vec![0u8; copy_len];
         let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_TRUNC | MSG_PEEK);
-        let ipc = get_ipc_manager();
-        match ipc.pipe_read(unix_end.pipe_id, &mut buffer) {
-            Ok(n) => {
+        return match unix::recv(sockfd, &mut buffer) {
+            Ok((n, _sender)) => {
                 UserSpaceMemory::copy_to_user(buf as u64, &buffer[..n])
                     .map_err(|_| LinuxError::EFAULT)?;
-                return Ok(n as isize);
+                Ok(n as isize)
             }
-            Err(_) => return Ok(0), // No data available
-        }
+            Err(e) => Err(unix_err(e)),
+        };
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
@@ -731,7 +650,7 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EFAULT);
     }
 
-    if let Some(unix_end) = UNIX_SOCKET_FDS.read().get(&sockfd).cloned() {
+    if unix::is_unix_fd(sockfd) {
         let _ = flags & (MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_TRUNC | MSG_PEEK);
         let (_, _, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
         if msg_iov.is_null() && msg_iovlen > 0 {
@@ -750,9 +669,8 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
 
             let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
             let mut buffer = vec![0u8; copy_len];
-            let ipc = get_ipc_manager();
-            match ipc.pipe_read(unix_end.pipe_id, &mut buffer) {
-                Ok(n) => {
+            match unix::recv(sockfd, &mut buffer) {
+                Ok((n, _)) => {
                     UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
                         .map_err(|_| LinuxError::EFAULT)?;
                     total_read += n;
@@ -761,7 +679,7 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
             }
         }
 
-        if unix_end.role == UnixSocketRole::WaylandDisplay {
+        if unix::endpoint_role(sockfd) == Some(UnixSocketRole::WaylandDisplay) {
             let _ = deliver_out_of_band_fds(sockfd, msg);
         }
 
@@ -1181,6 +1099,52 @@ pub fn pselect(
     result
 }
 
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct Pselect6Sigmask {
+    ss: u64,
+    ss_len: usize,
+}
+
+/// pselect6 - Linux syscall ABI wrapper around pselect.
+pub fn pselect6(
+    nfds: i32,
+    readfds: *mut u64,
+    writefds: *mut u64,
+    exceptfds: *mut u64,
+    timeout: *const TimeSpec,
+    sigmask: *const u8,
+) -> LinuxResult<i32> {
+    let mut mask_value: SigSet = 0;
+    let mask_ptr = if sigmask.is_null() {
+        core::ptr::null()
+    } else {
+        let mut raw = Pselect6Sigmask::default();
+        let raw_bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                (&mut raw as *mut Pselect6Sigmask) as *mut u8,
+                core::mem::size_of::<Pselect6Sigmask>(),
+            )
+        };
+        UserSpaceMemory::copy_from_user(sigmask as u64, raw_bytes)
+            .map_err(|_| LinuxError::EFAULT)?;
+        if raw.ss == 0 {
+            core::ptr::null()
+        } else {
+            if raw.ss_len != core::mem::size_of::<SigSet>() {
+                return Err(LinuxError::EINVAL);
+            }
+            let mut mask_bytes = [0u8; core::mem::size_of::<SigSet>()];
+            UserSpaceMemory::copy_from_user(raw.ss, &mut mask_bytes)
+                .map_err(|_| LinuxError::EFAULT)?;
+            mask_value = SigSet::from_ne_bytes(mask_bytes);
+            &mask_value as *const SigSet
+        }
+    };
+
+    pselect(nfds, readfds, writefds, exceptfds, timeout, mask_ptr)
+}
+
 /// epoll_create - create an epoll file descriptor
 pub fn epoll_create(size: i32) -> LinuxResult<Fd> {
     inc_ops();
@@ -1248,8 +1212,6 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
         1 | 2 | 10 | 16 | 17 | 18 => {}
         _ => return Err(LinuxError::EINVAL),
     }
-
-    // Validate socket type
     match sock_type & 0xFF {
         1 | 2 | 3 | 5 => {}
         _ => return Err(LinuxError::EINVAL),
@@ -1278,22 +1240,51 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
         _ => Protocol::TCP,
     };
 
-    // AF_UNIX (1) - create a Unix domain socket backed by IPC pipes
+    // AF_UNIX (1) - stream or datagram Unix domain socket
     if domain == 1 {
-        // Create a root-backed fd for the Unix socket. The actual pipe
-        // is created on bind() (listener) or connect() (connector).
-        let inode = crate::vfs::get_vfs()
-            .lookup("/")
-            .map_err(|_| LinuxError::ENOMEM)?;
-        let mut fd_flags: u32 = 0;
+        let unix_type = unix::map_sock_type(sock_type);
+        let fd = unix::create_socket_fd(
+            unix_type,
+            (sock_type & SOCK_NONBLOCK) != 0,
+            (sock_type & SOCK_CLOEXEC) != 0,
+        )
+        .map_err(|_| LinuxError::EMFILE)?;
+        return Ok(fd);
+    }
+
+    // AF_PACKET (17) - link-layer packet socket
+    if domain == AF_PACKET {
+        let eth_proto = if protocol == 0 { 0u16 } else { protocol as u16 };
+        let socket_id = raw::create_packet_socket(eth_proto).map_err(net_err_to_linux)?;
+        let inode = vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOMEM)?;
+        let mut fd_flags = vfs::OpenFlags::RDWR;
         if (sock_type & SOCK_NONBLOCK) != 0 {
             fd_flags |= vfs::OpenFlags::NONBLOCK;
         }
         if (sock_type & SOCK_CLOEXEC) != 0 {
             fd_flags |= vfs::OpenFlags::CLOEXEC;
         }
-        let fd = crate::vfs::vfs_open_special(inode, fd_flags, FdKind::Regular)
+        let fd = vfs::vfs_open_special(inode, fd_flags, FdKind::Regular)
             .map_err(|_| LinuxError::EMFILE)?;
+        raw::register_packet_fd(fd, socket_id);
+        return Ok(fd);
+    }
+
+    // AF_INET SOCK_RAW
+    if (sock_type & 0xFF) == 3 && domain == 2 {
+        let raw_proto = if protocol == 0 { 0u8 } else { protocol as u8 };
+        let socket_id = raw::create_raw_socket(raw_proto).map_err(net_err_to_linux)?;
+        let inode = vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOMEM)?;
+        let mut fd_flags = vfs::OpenFlags::RDWR;
+        if (sock_type & SOCK_NONBLOCK) != 0 {
+            fd_flags |= vfs::OpenFlags::NONBLOCK;
+        }
+        if (sock_type & SOCK_CLOEXEC) != 0 {
+            fd_flags |= vfs::OpenFlags::CLOEXEC;
+        }
+        let fd = vfs::vfs_open_special(inode, fd_flags, FdKind::Regular)
+            .map_err(|_| LinuxError::EMFILE)?;
+        raw::register_raw_fd(fd, socket_id);
         return Ok(fd);
     }
 
@@ -1333,49 +1324,31 @@ pub fn bind(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i32>
     let family = u16::from_ne_bytes(family_bytes);
 
     if family == 1 {
-        // AF_UNIX bind: extract the path from sockaddr_un.sun_path
-        // sockaddr_un is 110 bytes: 2 bytes family + 108 bytes path
-        if (addrlen as usize) < 2 {
-            return Err(LinuxError::EINVAL);
+        let path_str = parse_unix_path(addr, addrlen)?;
+        unix::bind(sockfd, &path_str).map_err(unix_err)?;
+        return Ok(0);
+    }
+
+    // AF_PACKET bind (sockaddr_ll)
+    if family == AF_PACKET as u16 {
+        if raw::is_packet_fd(sockfd) {
+            // sockaddr_ll: family(2), protocol(2), ifindex(4), hatype(2), pkttype(1), halen(1), addr(8)
+            let mut ll = [0u8; 20];
+            UserSpaceMemory::copy_from_user(addr as u64, &mut ll)
+                .map_err(|_| LinuxError::EFAULT)?;
+            let ifindex = u32::from_ne_bytes([ll[4], ll[5], ll[6], ll[7]]);
+            let protocol = u16::from_be_bytes([ll[2], ll[3]]);
+            let id = raw::packet_id_for_fd_internal(sockfd).ok_or(LinuxError::EBADF)?;
+            raw::packet_bind(id, ifindex, protocol).map_err(net_err_to_linux)?;
+            return Ok(0);
         }
-        let path_len = (addrlen as usize - 2).min(108);
-        let mut path_buf = [0u8; 108];
-        UserSpaceMemory::copy_from_user((addr as u64) + 2, &mut path_buf[..path_len])
-            .map_err(|_| LinuxError::EFAULT)?;
+        return Err(LinuxError::EINVAL);
+    }
 
-        // Convert to string (null-terminated)
-        let path_str = String::from(
-            core::str::from_utf8(&path_buf[..path_len])
-                .map_err(|_| LinuxError::EINVAL)?
-                .trim_end_matches('\0'),
-        );
-
-        if path_str.is_empty() {
-            return Err(LinuxError::EINVAL);
-        }
-
-        // Check if path is already bound
-        if UNIX_SOCKET_REGISTRY.read().contains_key(&path_str) {
-            return Err(LinuxError::EADDRINUSE);
-        }
-
-        let listener = UnixPathListener::new(path_str.clone(), UnixSocketRole::Generic, false);
-        UNIX_SOCKET_REGISTRY
-            .write()
-            .insert(path_str.clone(), listener);
-
-        UNIX_SOCKET_FDS.write().insert(
-            sockfd,
-            UnixSocketEnd {
-                pipe_id: 0,
-                is_listener: true,
-                path: Some(path_str.clone()),
-                role: UnixSocketRole::Generic,
-                pending_out_of_band_fds: Arc::new(Mutex::new(Vec::new())),
-            },
-        );
-        UNIX_LISTENER_FDS.write().insert(sockfd, path_str);
-
+    if raw::is_raw_fd(sockfd) {
+        let sa = parse_sockaddr(addr, addrlen)?;
+        let id = raw::raw_id_for_fd_internal(sockfd).ok_or(LinuxError::EBADF)?;
+        raw::raw_bind(id, sa.address).map_err(net_err_to_linux)?;
         return Ok(0);
     }
 
@@ -1405,39 +1378,8 @@ pub fn connect(sockfd: Fd, addr: *const SockAddr, addrlen: u32) -> LinuxResult<i
     let family = u16::from_ne_bytes(family_bytes);
 
     if family == 1 {
-        // AF_UNIX connect: look up the path in the registry
-        if (addrlen as usize) < 2 {
-            return Err(LinuxError::EINVAL);
-        }
-        let path_len = (addrlen as usize - 2).min(108);
-        let mut path_buf = [0u8; 108];
-        UserSpaceMemory::copy_from_user((addr as u64) + 2, &mut path_buf[..path_len])
-            .map_err(|_| LinuxError::EFAULT)?;
-
-        let path_str = String::from(
-            core::str::from_utf8(&path_buf[..path_len])
-                .map_err(|_| LinuxError::EINVAL)?
-                .trim_end_matches('\0'),
-        );
-
-        // Look up the bound socket listener
-        let listener = {
-            let registry = UNIX_SOCKET_REGISTRY.read();
-            registry
-                .get(&path_str)
-                .cloned()
-                .ok_or(LinuxError::ECONNREFUSED)?
-        };
-
-        if !listener.is_listening() {
-            return Err(LinuxError::ECONNREFUSED);
-        }
-
-        let pipe_id = allocate_connection_pipe()?;
-        listener.push_pending(pipe_id);
-
-        register_connector(sockfd, pipe_id, &path_str, listener.role);
-
+        let path_str = parse_unix_path(addr, addrlen)?;
+        unix::connect(sockfd, &path_str).map_err(unix_err)?;
         return Ok(0);
     }
 
@@ -1460,13 +1402,9 @@ pub fn listen(sockfd: Fd, backlog: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    if let Some(path) = UNIX_LISTENER_FDS.read().get(&sockfd).cloned() {
-        if let Some(listener) = lookup_listener(&path) {
-            listener.set_listening(true);
-            let _ = backlog;
-            return Ok(0);
-        }
-        return Err(LinuxError::EINVAL);
+    if unix::is_unix_fd(sockfd) {
+        unix::listen(sockfd, backlog).map_err(unix_err)?;
+        return Ok(0);
     }
 
     let socket_id = fd_to_socket_id(sockfd)?;
@@ -1482,22 +1420,11 @@ pub fn listen(sockfd: Fd, backlog: i32) -> LinuxResult<i32> {
 pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult<Fd> {
     inc_ops();
 
-    if let Some(path) = UNIX_LISTENER_FDS.read().get(&sockfd).cloned() {
-        let listener = lookup_listener(&path).ok_or(LinuxError::EINVAL)?;
-        let pipe_id = listener.pop_pending().ok_or(LinuxError::EAGAIN)?;
-
-        let inode = crate::vfs::get_vfs()
-            .lookup("/")
-            .map_err(|_| LinuxError::ENOMEM)?;
-        let client_fd = crate::vfs::vfs_open_special(inode, 0, FdKind::Regular)
-            .map_err(|_| LinuxError::EMFILE)?;
-
-        register_connector(client_fd, pipe_id, &path, listener.role);
-
+    if unix::is_unix_fd(sockfd) {
+        let client_fd = unix::accept(sockfd).map_err(unix_err)?;
         if !addr.is_null() && !addrlen.is_null() {
             let _ = (addr, addrlen);
         }
-
         return Ok(client_fd);
     }
 
@@ -1558,28 +1485,15 @@ pub fn socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> L
         return Err(LinuxError::EAFNOSUPPORT);
     }
 
-    let _ = protocol;
-
-    // Create a bidirectional pipe via IPC
-    let pipefd: [i32; 2] = [0, 0];
-    super::special_fd::pipe(pipefd.as_ptr() as *mut [i32; 2])?;
-
-    // Apply SOCK_NONBLOCK / SOCK_CLOEXEC from the type parameter.
-    let mut fd_flags: u32 = 0;
-    if (sock_type & SOCK_NONBLOCK) != 0 {
-        fd_flags |= vfs::OpenFlags::NONBLOCK;
-    }
-    if (sock_type & SOCK_CLOEXEC) != 0 {
-        fd_flags |= vfs::OpenFlags::CLOEXEC;
-    }
-    if fd_flags != 0 {
-        let _ = vfs::vfs_set_fd_flags(pipefd[0], fd_flags);
-        let _ = vfs::vfs_set_fd_flags(pipefd[1], fd_flags);
-    }
+    let (fd0, fd1) = unix::socketpair(
+        (sock_type & SOCK_NONBLOCK) != 0,
+        (sock_type & SOCK_CLOEXEC) != 0,
+    )
+    .map_err(unix_err)?;
 
     unsafe {
-        *sv = pipefd[0];
-        *sv.offset(1) = pipefd[1];
+        *sv = fd0;
+        *sv.offset(1) = fd1;
     }
     Ok(0)
 }

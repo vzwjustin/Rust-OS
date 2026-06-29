@@ -750,7 +750,9 @@ impl super::NetworkDriver for AtherosWifiDriverWrapper {
                 WifiMode::Monitor => 2u32,
                 WifiMode::AdHoc => 3u32,
             };
-            unsafe { core::ptr::write_volatile(mode_reg, mode_val); }
+            unsafe {
+                core::ptr::write_volatile(mode_reg, mode_val);
+            }
         }
         Ok(())
     }

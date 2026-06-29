@@ -29,6 +29,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
         crate::vfs::VfsError::ReadOnly => LinuxError::EROFS,
         crate::vfs::VfsError::NotSupported => LinuxError::ENOSYS,
         crate::vfs::VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
+        crate::vfs::VfsError::DiskQuotaExceeded => LinuxError::EDQUOT,
     }
 }
 
@@ -250,7 +251,13 @@ pub fn pwritev(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResu
 /// Supports offset == -1 to read from the current file position (like readv).
 /// Flags are currently ignored because the underlying filesystem does not
 /// implement RWF_HIPRI/RWF_NOWAIT semantics.
-pub fn preadv2(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off, _flags: i32) -> LinuxResult<isize> {
+pub fn preadv2(
+    fd: Fd,
+    iov: *const IoVec,
+    iovcnt: i32,
+    offset: Off,
+    _flags: i32,
+) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {
@@ -276,7 +283,13 @@ pub fn preadv2(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off, _flags: i32)
 ///
 /// Supports offset == -1 to write at the current file position (like writev).
 /// Flags are currently ignored for the same reason as preadv2.
-pub fn pwritev2(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off, _flags: i32) -> LinuxResult<isize> {
+pub fn pwritev2(
+    fd: Fd,
+    iov: *const IoVec,
+    iovcnt: i32,
+    offset: Off,
+    _flags: i32,
+) -> LinuxResult<isize> {
     inc_ops();
 
     if fd < 0 {

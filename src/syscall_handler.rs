@@ -29,12 +29,46 @@ pub fn dispatch_syscall(
     arg6: u64,
 ) -> i64 {
     crate::performance_monitor::record_syscall();
+
+    let dispatch_addr = crate::syscall_handler::dispatch_syscall as *const () as u64;
+    crate::kprobes::run_probes_at(dispatch_addr, syscall_num);
+
+    // Seccomp check — filter syscalls before dispatching
     let args = [arg1, arg2, arg3, arg4, arg5, arg6];
+    if let Err(errno) = crate::seccomp::check_syscall(syscall_num as i32, &args) {
+        if crate::audit::is_enabled() {
+            crate::audit::audit_log_syscall(syscall_num as i32, &args, errno as i64);
+        }
+        return errno as i64;
+    }
+
+    if crate::trace::tracing_on() {
+        crate::trace::tracepoint_emit("syscalls:sys_enter", syscall_num);
+    }
+    if crate::trace::function_tracer_enabled() {
+        crate::trace::record_function_trace("dispatch_syscall", dispatch_addr, syscall_num);
+    }
+
     let result = match crate::linux_integration::route_syscall(syscall_num, &args) {
         Ok(v) => v as i64,
         Err(e) => -(e as i64),
     };
+
+    if crate::audit::is_enabled() {
+        crate::audit::audit_log_syscall(syscall_num as i32, &args, result);
+    }
+    if crate::trace::tracing_on() {
+        crate::trace::tracepoint_emit("syscalls:sys_exit", result as u64);
+    }
+
     crate::debug::trace_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, result);
+
+    // Ptrace syscall exit notification
+    let pid = crate::process::current_pid();
+    if crate::ptrace::is_traced(pid) {
+        crate::ptrace::syscall_event(pid, false);
+    }
+
     result
 }
 
@@ -314,17 +348,14 @@ fn syscall_futex(
     uaddr2: *mut i32,
     val3: i32,
 ) -> i64 {
-    match crate::linux_compat::thread_ops::futex(
-        uaddr,
-        futex_op,
-        val,
-        timeout as *const crate::linux_compat::TimeSpec,
-        uaddr2,
-        val3,
-    ) {
-        Ok(v) => v as i64,
-        Err(e) => -(e as i64),
-    }
+    // Use the dedicated futex module for full operation support
+    let to = if timeout.is_null() {
+        None
+    } else {
+        let ts = unsafe { &*(timeout as *const crate::linux_compat::TimeSpec) };
+        Some(crate::futex::FutexTimeout::from_timespec(ts, false))
+    };
+    crate::futex::do_futex(uaddr, futex_op, val, to.as_ref(), uaddr2, val as i32, val3) as i64
 }
 
 fn syscall_clone(

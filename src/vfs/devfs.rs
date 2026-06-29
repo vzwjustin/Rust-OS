@@ -50,6 +50,8 @@ enum DevKind {
     URandom,
     Full,
     Console,
+    Tty,
+    Ptmx,
     InputEvent,
 }
 
@@ -246,7 +248,11 @@ impl InodeOps for DevInode {
                 self.fill_random(buf);
                 Ok(buf.len())
             }
-            DevKind::Console => Ok(0),
+            DevKind::Console | DevKind::Tty => {
+                let n = crate::drivers::tty::devfs_read(crate::drivers::tty::TtyId::Console, buf);
+                Ok(n)
+            }
+            DevKind::Ptmx => Ok(0),
             DevKind::InputEvent => read_input_event(buf),
         }
     }
@@ -255,16 +261,11 @@ impl InodeOps for DevInode {
         match self.kind {
             DevKind::Null | DevKind::Zero | DevKind::Random | DevKind::URandom => Ok(buf.len()),
             DevKind::Full => Err(VfsError::NoSpace),
-            DevKind::Console => {
-                if let Ok(text) = core::str::from_utf8(buf) {
-                    crate::serial_print!("{text}");
-                } else {
-                    for &b in buf {
-                        crate::serial_print!("{}", b as char);
-                    }
-                }
-                Ok(buf.len())
+            DevKind::Console | DevKind::Tty => {
+                let n = crate::drivers::tty::devfs_write(crate::drivers::tty::TtyId::Console, buf);
+                Ok(n)
             }
+            DevKind::Ptmx => Err(VfsError::NotSupported),
             DevKind::InputEvent => Err(VfsError::NotSupported),
         }
     }
@@ -277,6 +278,8 @@ impl InodeOps for DevInode {
             DevKind::URandom => (1, 9),
             DevKind::Full => (1, 7),
             DevKind::Console => (5, 1),
+            DevKind::Tty => (5, 0),
+            DevKind::Ptmx => (5, 2),
             DevKind::InputEvent => (13, 64),
         };
         Ok(Stat {
@@ -708,8 +711,20 @@ pub fn install_dev(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     attach(
         &dev,
         "tty",
-        DevInode::new(alloc_dev_ino(), DevKind::Console, 0o666),
+        DevInode::new(alloc_dev_ino(), DevKind::Tty, 0o666),
     )?;
+    attach(
+        &dev,
+        "ptmx",
+        DevInode::new(alloc_dev_ino(), DevKind::Ptmx, 0o666),
+    )?;
+
+    // /dev/pts — pseudoterminal slave directory (nodes added dynamically).
+    let _pts_dir = match dev.lookup("pts") {
+        Ok(existing) => existing,
+        Err(VfsError::NotFound) => dev.create("pts", InodeType::Directory, 0o755)?,
+        Err(err) => return Err(err),
+    };
 
     // /dev/input directory and event node expected by GNOME session probes/libinput.
     let input_dir = match dev.lookup("input") {
@@ -724,4 +739,231 @@ pub fn install_dev(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     )?;
 
     Ok(())
+}
+
+/// Register ALSA PCM and control nodes under `/dev/snd`.
+pub fn install_sound_nodes() -> Result<usize, crate::vfs::VfsError> {
+    let root = crate::vfs::get_vfs().lookup("/")?;
+    let dev = root.lookup("dev")?;
+
+    let snd_dir = match dev.lookup("snd") {
+        Ok(existing) => existing,
+        Err(crate::vfs::VfsError::NotFound) => dev.create("snd", InodeType::Directory, 0o755)?,
+        Err(err) => return Err(err),
+    };
+
+    let mut count = 0usize;
+    for pcm in crate::sound::list_pcm_devices() {
+        if snd_dir.lookup(&pcm.name).is_ok() {
+            continue;
+        }
+        attach(
+            &snd_dir,
+            &pcm.name,
+            SoundPcmInode::new(alloc_dev_ino(), pcm.minor, pcm.playback, 0o660),
+        )?;
+        count += 1;
+    }
+
+    if snd_dir.lookup("controlC0").is_err() {
+        attach(
+            &snd_dir,
+            "controlC0",
+            SoundControlInode::new(alloc_dev_ino(), 0, 0o660),
+        )?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+struct SoundPcmInode {
+    ino: u64,
+    minor: u32,
+    playback: bool,
+    mode: u32,
+}
+
+impl SoundPcmInode {
+    fn new(ino: u64, minor: u32, playback: bool, mode: u32) -> Arc<Self> {
+        Arc::new(Self {
+            ino,
+            minor,
+            playback,
+            mode,
+        })
+    }
+}
+
+impl InodeOps for SoundPcmInode {
+    fn read_at(&self, _offset: u64, buf: &mut [u8]) -> VfsResult<usize> {
+        Ok(crate::sound::pcm_read(self.minor, buf).unwrap_or(0))
+    }
+
+    fn write_at(&self, _offset: u64, buf: &[u8]) -> VfsResult<usize> {
+        Ok(crate::sound::pcm_write(self.minor, buf).unwrap_or(0))
+    }
+
+    fn stat(&self) -> VfsResult<Stat> {
+        Ok(Stat {
+            ino: self.ino,
+            inode_type: InodeType::CharDevice,
+            size: 0,
+            blksize: 4096,
+            blocks: 0,
+            mode: self.mode,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            rdev: ((116u64) << 8) | self.minor as u64,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+        })
+    }
+
+    fn truncate(&self, _size: u64) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
+
+    fn sync(&self) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn lookup(&self, _name: &str) -> VfsResult<Arc<dyn InodeOps>> {
+        Err(VfsError::NotDirectory)
+    }
+
+    fn create(
+        &self,
+        _name: &str,
+        _inode_type: InodeType,
+        _mode: u32,
+    ) -> VfsResult<Arc<dyn InodeOps>> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn unlink(&self, _name: &str) -> VfsResult<()> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn link(&self, _name: &str, _target: Arc<dyn InodeOps>) -> VfsResult<()> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn rename(
+        &self,
+        _old_name: &str,
+        _new_dir: Arc<dyn InodeOps>,
+        _new_name: &str,
+    ) -> VfsResult<()> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn readdir(&self) -> VfsResult<alloc::vec::Vec<super::DirEntry>> {
+        Err(VfsError::NotDirectory)
+    }
+
+    fn inode_type(&self) -> InodeType {
+        InodeType::CharDevice
+    }
+
+    fn attach_child(&self, _name: &str, _child: Arc<dyn InodeOps>) -> VfsResult<()> {
+        Err(VfsError::NotDirectory)
+    }
+}
+
+struct SoundControlInode {
+    ino: u64,
+    card: u32,
+    mode: u32,
+}
+
+impl SoundControlInode {
+    fn new(ino: u64, card: u32, mode: u32) -> Arc<Self> {
+        Arc::new(Self { ino, card, mode })
+    }
+}
+
+impl InodeOps for SoundControlInode {
+    fn read_at(&self, _offset: u64, buf: &mut [u8]) -> VfsResult<usize> {
+        let info = alloc::format!("card={}\n", self.card);
+        let bytes = info.as_bytes();
+        let n = core::cmp::min(buf.len(), bytes.len());
+        buf[..n].copy_from_slice(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn write_at(&self, _offset: u64, buf: &[u8]) -> VfsResult<usize> {
+        Ok(buf.len())
+    }
+
+    fn stat(&self) -> VfsResult<Stat> {
+        let minor = self.card;
+        Ok(Stat {
+            ino: self.ino,
+            inode_type: InodeType::CharDevice,
+            size: 0,
+            blksize: 4096,
+            blocks: 0,
+            mode: self.mode,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            rdev: ((116u64) << 8) | minor as u64,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+        })
+    }
+
+    fn truncate(&self, _size: u64) -> VfsResult<()> {
+        Err(VfsError::NotSupported)
+    }
+
+    fn sync(&self) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn lookup(&self, _name: &str) -> VfsResult<Arc<dyn InodeOps>> {
+        Err(VfsError::NotDirectory)
+    }
+
+    fn create(
+        &self,
+        _name: &str,
+        _inode_type: InodeType,
+        _mode: u32,
+    ) -> VfsResult<Arc<dyn InodeOps>> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn unlink(&self, _name: &str) -> VfsResult<()> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn link(&self, _name: &str, _target: Arc<dyn InodeOps>) -> VfsResult<()> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn rename(
+        &self,
+        _old_name: &str,
+        _new_dir: Arc<dyn InodeOps>,
+        _new_name: &str,
+    ) -> VfsResult<()> {
+        Err(VfsError::ReadOnly)
+    }
+
+    fn readdir(&self) -> VfsResult<alloc::vec::Vec<super::DirEntry>> {
+        Err(VfsError::NotDirectory)
+    }
+
+    fn inode_type(&self) -> InodeType {
+        InodeType::CharDevice
+    }
+
+    fn attach_child(&self, _name: &str, _child: Arc<dyn InodeOps>) -> VfsResult<()> {
+        Err(VfsError::NotDirectory)
+    }
 }

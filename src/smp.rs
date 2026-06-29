@@ -562,3 +562,193 @@ fn delay_microseconds(us: u64) {
         core::hint::spin_loop();
     }
 }
+
+// =============================================================================
+// Cross-CPU Function Calls (IPIs) & Per-CPU Area
+// =============================================================================
+
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+
+/// A job to be executed on another CPU.
+#[derive(Debug, Clone)]
+pub struct CallJob {
+    /// Function to execute.
+    pub func: fn(*mut u8),
+    /// Argument to pass to the function.
+    pub arg: *mut u8,
+    /// Completion flag pointer. If null, the caller won't wait for completion.
+    pub completed: *const AtomicBool,
+}
+
+// SAFETY: CallJob is transferred between CPUs. The caller must guarantee
+// that the function pointer, argument, and completion flag remain valid
+// until the job has completed.
+unsafe impl Send for CallJob {}
+unsafe impl Sync for CallJob {}
+
+/// Global map of call queues, indexed by target CPU ID.
+static CALL_QUEUES: Mutex<BTreeMap<u32, Vec<CallJob>>> = Mutex::new(BTreeMap::new());
+
+/// Send a function call to a specific CPU and optionally wait for it to complete.
+pub fn smp_call_function_single(
+    target_cpu: u32,
+    func: fn(*mut u8),
+    arg: *mut u8,
+    wait: bool,
+) -> Result<(), &'static str> {
+    let current = current_cpu();
+    if target_cpu == current {
+        // Execute locally if the target is the current CPU.
+        func(arg);
+        return Ok(());
+    }
+
+    let completed = AtomicBool::new(false);
+    let job = CallJob {
+        func,
+        arg,
+        completed: if wait {
+            &completed as *const AtomicBool
+        } else {
+            core::ptr::null()
+        },
+    };
+
+    {
+        let mut queues = CALL_QUEUES.lock();
+        queues.entry(target_cpu).or_insert_with(Vec::new).push(job);
+    }
+
+    // Send IPI with vector 0xFC (Call IPI)
+    send_ipi(target_cpu, 0xFC)?;
+
+    if wait {
+        while !completed.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    }
+
+    Ok(())
+}
+
+/// Send a function call to all online CPUs (except the calling CPU) and optionally wait.
+pub fn smp_call_function(func: fn(*mut u8), arg: *mut u8, wait: bool) -> Result<(), &'static str> {
+    let current = current_cpu();
+    let cpu_count_val = cpu_count();
+    let mut completions = Vec::new();
+
+    {
+        let mut queues = CALL_QUEUES.lock();
+        let cpu_data = CPU_DATA.lock();
+        for cpu_id in 0..cpu_count_val {
+            if cpu_id == current {
+                continue;
+            }
+            if !cpu_data[cpu_id as usize].online {
+                continue;
+            }
+
+            let completed = if wait {
+                let ab = Box::leak(Box::new(AtomicBool::new(false))) as *mut AtomicBool;
+                completions.push(ab);
+                ab as *const AtomicBool
+            } else {
+                core::ptr::null()
+            };
+
+            let job = CallJob {
+                func,
+                arg,
+                completed,
+            };
+
+            queues.entry(cpu_id).or_insert_with(Vec::new).push(job);
+        }
+    }
+
+    // Broadcast IPI with vector 0xFC to all except self
+    broadcast_ipi(0xFC)?;
+
+    if wait {
+        for completed_ptr in completions.iter() {
+            unsafe {
+                while !(*(*completed_ptr)).load(Ordering::Acquire) {
+                    core::hint::spin_loop();
+                }
+                // Free the leaked Box
+                let _ = Box::from_raw(*completed_ptr);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Interrupt handler for the cross-CPU call IPI.
+///
+/// This is called from the interrupt handler when vector 0xFC is received.
+pub fn handle_call_ipi() {
+    let cpu_id = current_cpu();
+    let mut jobs = Vec::new();
+
+    {
+        let mut queues = CALL_QUEUES.lock();
+        if let Some(q) = queues.get_mut(&cpu_id) {
+            jobs.append(q);
+        }
+    }
+
+    for job in jobs {
+        (job.func)(job.arg);
+        if !job.completed.is_null() {
+            unsafe {
+                (*job.completed).store(true, Ordering::Release);
+            }
+        }
+    }
+
+    eoi();
+}
+
+/// A type-safe container for per-CPU variables.
+#[derive(Debug)]
+pub struct PerCpu<T> {
+    data: Mutex<BTreeMap<u32, T>>,
+}
+
+impl<T> PerCpu<T> {
+    /// Create a new empty per-CPU container.
+    pub const fn new() -> Self {
+        Self {
+            data: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Set the value for the current CPU.
+    pub fn set(&self, val: T) {
+        let cpu = current_cpu();
+        self.data.lock().insert(cpu, val);
+    }
+
+    /// Read the value for the current CPU.
+    pub fn get<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&T) -> R,
+    {
+        let cpu = current_cpu();
+        let data = self.data.lock();
+        data.get(&cpu).map(f)
+    }
+
+    /// Modify the value for the current CPU.
+    pub fn get_mut<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        let cpu = current_cpu();
+        let mut data = self.data.lock();
+        data.get_mut(&cpu).map(f)
+    }
+}
