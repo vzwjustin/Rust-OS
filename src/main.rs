@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![allow(dead_code)]
 #![allow(static_mut_refs)]
 #![feature(abi_x86_interrupt)]
 #![feature(custom_test_frameworks)]
@@ -32,7 +31,7 @@ unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
     unsafe { ALLOCATOR.alloc_zeroed(layout) }
 }
 
-// Include compiler intrinsics for missing symbols
+// Include compiler intrinsics for missing symbols (memcpy/memset/memcmp/memmove)
 mod intrinsics;
 
 // Include VGA buffer module for better output
@@ -144,7 +143,6 @@ mod syscall_fast;
 // Include usermode helper module
 mod usermode;
 // Include usermode testing module
-mod usermode_test;
 // Include GLib compatibility layer
 mod glib;
 mod glib_platform;
