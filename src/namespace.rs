@@ -476,9 +476,12 @@ pub fn setns(fd: i32, nstype: u32) -> i32 {
     if fd < 0 {
         return -9; // EBADF
     }
+    if crate::vfs::vfs_fd_kind(fd).is_err() {
+        return -9; // EBADF
+    }
     let id = match crate::linux_compat::special_fd::get_namespace_id(fd) {
         Some(id) => id,
-        None => return -22,
+        None => return -22, // EINVAL: valid fd, but not a namespace fd
     };
     let handle = match NS_FD_HANDLES.read().get(&id).cloned() {
         Some(handle) => handle,
@@ -494,16 +497,16 @@ pub fn setns(fd: i32, nstype: u32) -> i32 {
     }
 
     let pid = crate::process::current_pid();
-    let current = get_nsproxy(pid);
-    set_nsproxy(pid, clone_with_single_namespace(current, &handle));
-    return 0;
-    // We don't have namespace fds in VFS yet, so return ENOSYS
-    // A full implementation would:
-    // 1. Look up the fd → namespace object
-    // 2. Verify the namespace type matches nstype
-    // 3. Replace the corresponding namespace in the caller's NsProxy
-    let _ = (fd, nstype);
-    -38 // ENOSYS
+    let current_ns = get_nsproxy(pid);
+    let new_ns = clone_with_single_namespace(current_ns, &handle);
+    set_nsproxy(pid, new_ns);
+    crate::serial_println!(
+        "[ns] setns: pid {} joined {} namespace from fd {}",
+        pid,
+        handle.ns_type.name(),
+        fd
+    );
+    0
 }
 
 /// clone_ns — create new namespaces for a child process (called from clone).

@@ -1,4 +1,4 @@
-//! NVDIMM region registration with ACPI NFIT scan stub.
+//! NVDIMM region registration with ACPI NFIT table parsing.
 //!
 //! On init, scans ACPI for an NFIT table; when absent, registers the
 //! conventional DRAM span as node-local persistent-capable memory metadata.
@@ -54,8 +54,9 @@ pub fn nfit_present() -> bool {
     *NFIT_PRESENT.read()
 }
 
-/// Stub NFIT parser: validates header and counts SPA/memory-map structures.
-fn parse_nfit_stub(virt: usize, length: u32) -> Vec<NvdimmRegion> {
+/// NFIT parser: validates the ACPI table header and extracts SPA/memory-map
+/// structures to build NvdimmRegion entries.
+fn parse_nfit(virt: usize, length: u32) -> Vec<NvdimmRegion> {
     let mut out = Vec::new();
     if length < 40 {
         return out;
@@ -144,7 +145,7 @@ pub fn scan_acpi_nfit() -> usize {
         u32::from_le_bytes([*ptr.add(4), *ptr.add(5), *ptr.add(6), *ptr.add(7)])
     };
 
-    let parsed = parse_nfit_stub(virt, length);
+    let parsed = parse_nfit(virt, length);
     let count = parsed.len();
     for region in parsed {
         register_region(region);

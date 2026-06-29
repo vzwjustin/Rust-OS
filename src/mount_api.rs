@@ -113,6 +113,30 @@ impl FsContext {
     }
 }
 
+fn c_string_bytes(value: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(value.len() + 1);
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+    bytes
+}
+
+fn mount_attr_to_legacy_flags(attr: u32) -> u64 {
+    let mut flags = 0u64;
+    if attr & MOUNT_ATTR_RDONLY as u32 != 0 {
+        flags |= 1;
+    }
+    if attr & MOUNT_ATTR_NOSUID as u32 != 0 {
+        flags |= 2;
+    }
+    if attr & MOUNT_ATTR_NODEV as u32 != 0 {
+        flags |= 4;
+    }
+    if attr & MOUNT_ATTR_NOEXEC as u32 != 0 {
+        flags |= 8;
+    }
+    flags
+}
+
 // ── Global state ────────────────────────────────────────────────────────
 
 static FS_CONTEXTS: RwLock<BTreeMap<u32, Mutex<FsContext>>> = RwLock::new(BTreeMap::new());
@@ -140,10 +164,12 @@ pub fn fsopen(fs_type: *const u8, flags: u32) -> i32 {
 
     // Validate filesystem type
     let known_types = [
-        "ramfs", "proc", "sysfs", "tmpfs", "devtmpfs", "devpts", "overlay", "9p",
+        "ramfs", "proc", "sysfs", "tmpfs", "devtmpfs", "devpts", "overlay", "9p", "ext4", "ext3",
+        "ext2", "vfat", "msdos", "fat", "squashfs", "f2fs", "btrfs", "xfs", "iso9660", "nfs",
+        "nfs4", "cifs", "smb3",
     ];
     if !known_types.contains(&fs_type_str.as_str()) {
-        return -38; // ENODEV
+        return -19; // ENODEV
     }
 
     let id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::SeqCst);
@@ -357,29 +383,54 @@ pub fn move_mount(
     let ctx_id = crate::linux_compat::special_fd::get_fs_context_id(from_dfd)
         .or_else(|| crate::linux_compat::special_fd::get_mount_object_id(from_dfd));
 
-    if let Some(id) = ctx_id {
+    let Some(id) = ctx_id else {
+        return -9; // EBADF
+    };
+
+    let (fs_type, source, mount_flags) = {
         let contexts = FS_CONTEXTS.read();
-        if let Some(ctx_mutex) = contexts.get(&id) {
-            let mut ctx = ctx_mutex.lock();
+        let Some(ctx_mutex) = contexts.get(&id) else {
+            return -9;
+        };
+        let ctx = ctx_mutex.lock();
+        (
+            ctx.fs_type.clone(),
+            ctx.source.clone(),
+            mount_attr_to_legacy_flags(ctx.flags),
+        )
+    };
 
-            // Determine the source path
-            let source = if ctx.source.is_empty() {
-                "none"
-            } else {
-                &ctx.source
-            };
+    let fs_type_bytes = c_string_bytes(&fs_type);
+    let target_bytes = c_string_bytes(&to_path_str);
+    let source_bytes = if source.is_empty() {
+        None
+    } else {
+        Some(c_string_bytes(&source))
+    };
+    let source_ptr = source_bytes
+        .as_ref()
+        .map(|bytes| bytes.as_ptr())
+        .unwrap_or(core::ptr::null());
 
-            // Actually mount the filesystem at the target path
-            // For now, we just record the mount path
-            ctx.mount_path = Some(to_path_str.clone());
-
+    match crate::linux_compat::fs_ops::mount(
+        source_ptr,
+        target_bytes.as_ptr(),
+        fs_type_bytes.as_ptr(),
+        mount_flags,
+        core::ptr::null(),
+    ) {
+        Ok(_) => {
+            let contexts = FS_CONTEXTS.read();
+            if let Some(ctx_mutex) = contexts.get(&id) {
+                let mut ctx = ctx_mutex.lock();
+                ctx.mount_path = Some(to_path_str.clone());
+                ctx.mounted = true;
+            }
             crate::serial_println!("[mount_api] move_mount: ctx={} -> path={}", id, to_path_str);
+            0
         }
+        Err(e) => -(e as i32),
     }
-
-    // For open_tree-based move, we would clone the mount
-    // For now, return success
-    0
 }
 
 /// open_tree — open a handle to a mount tree
@@ -459,15 +510,22 @@ pub fn mount_setattr(dfd: i32, path: *const u8, flags: u32, attr: u64, size: u64
 
     let mount_attr = unsafe { &*(attr as *const MountAttr) };
 
-    // For now, we just log the attribute change
-    crate::serial_println!(
-        "[mount_api] mount_setattr: path={} set={:#x} clr={:#x}",
-        path_str,
-        mount_attr.attr_set,
-        mount_attr.attr_clr
-    );
-
-    0
+    // Apply the attribute changes to the VFS mount point.
+    match crate::fs::vfs().set_mount_flags(&path_str, mount_attr.attr_set, mount_attr.attr_clr) {
+        Ok(()) => {
+            crate::serial_println!(
+                "[mount_api] mount_setattr: path={} set={:#x} clr={:#x}",
+                path_str,
+                mount_attr.attr_set,
+                mount_attr.attr_clr
+            );
+            0
+        }
+        Err(e) => {
+            crate::serial_println!("[mount_api] mount_setattr: path={} error={:?}", path_str, e);
+            -2 // ENOENT
+        }
+    }
 }
 
 /// Close a fs context (called when the fd is closed).

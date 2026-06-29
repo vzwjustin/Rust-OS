@@ -7,7 +7,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use spin::RwLock;
 
 use super::process_ops;
@@ -65,6 +65,13 @@ fn send_signal_to_thread(tid: Pid, sig: i32) -> LinuxResult<i32> {
             }
         })
         .ok_or(LinuxError::ESRCH)?;
+
+    // Wake the thread if it's blocked (e.g., in a blocking syscall)
+    if sig != 0 {
+        let pm = process::get_process_manager();
+        let pid = tid.try_into().map_err(|_| LinuxError::EINVAL)?;
+        let _ = pm.unblock_process(pid);
+    }
 
     Ok(0)
 }
@@ -307,6 +314,146 @@ pub fn futex(
             }
             Ok(woke)
         }
+        futex_op::FUTEX_REQUEUE => {
+            // Wake up to `val` waiters, then move up to val2 waiters from uaddr to uaddr2.
+            if _uaddr2.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            let key = uaddr as usize;
+            let key2 = _uaddr2 as usize;
+            let nr_wake = val.max(0) as usize;
+            let nr_requeue = _timeout as usize;
+            let mut woke = 0i32;
+            let mut moved = 0i32;
+            let mut waiters = FUTEX_WAITERS.write();
+            if let Some(queue) = waiters.get_mut(&key) {
+                let count = core::cmp::min(nr_wake, queue.len());
+                for waiter in queue.drain(..count) {
+                    let _ = process::get_process_manager().unblock_process(waiter as u32);
+                    woke += 1;
+                }
+            }
+            let drained: Vec<Pid> = {
+                let queue = match waiters.get_mut(&key) {
+                    Some(q) if !q.is_empty() => q,
+                    _ => return Ok(woke),
+                };
+                let count = core::cmp::min(nr_requeue, queue.len());
+                queue.drain(..count).collect()
+            };
+            if waiters.get(&key).map(|q| q.is_empty()).unwrap_or(true) {
+                waiters.remove(&key);
+            }
+            for waiter in drained {
+                waiters.entry(key2).or_default().push(waiter);
+                moved += 1;
+            }
+            Ok(woke + moved)
+        }
+        futex_op::FUTEX_CMP_REQUEUE => {
+            // Like REQUEUE but only if *uaddr still equals val3.
+            if _uaddr2.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            unsafe {
+                if *uaddr != _val3 {
+                    return Err(LinuxError::EAGAIN);
+                }
+            }
+            let key = uaddr as usize;
+            let key2 = _uaddr2 as usize;
+            let nr_wake = val.max(0) as usize;
+            let nr_requeue = _timeout as usize;
+            let mut woke = 0i32;
+            let mut moved = 0i32;
+            let mut waiters = FUTEX_WAITERS.write();
+            if let Some(queue) = waiters.get_mut(&key) {
+                let count = core::cmp::min(nr_wake, queue.len());
+                for waiter in queue.drain(..count) {
+                    let _ = process::get_process_manager().unblock_process(waiter as u32);
+                    woke += 1;
+                }
+            }
+            let drained: Vec<Pid> = {
+                let queue = match waiters.get_mut(&key) {
+                    Some(q) if !q.is_empty() => q,
+                    _ => return Ok(woke),
+                };
+                let count = core::cmp::min(nr_requeue, queue.len());
+                queue.drain(..count).collect()
+            };
+            if waiters.get(&key).map(|q| q.is_empty()).unwrap_or(true) {
+                waiters.remove(&key);
+            }
+            for waiter in drained {
+                waiters.entry(key2).or_default().push(waiter);
+                moved += 1;
+            }
+            Ok(woke + moved)
+        }
+        futex_op::FUTEX_WAIT_BITSET | futex_op::FUTEX_WAKE_BITSET => Err(LinuxError::ENOSYS),
+        futex_op::FUTEX_LOCK_PI => {
+            // FUTEX_LOCK_PI: Lock a PI futex. If the futex word is 0 (unlocked),
+            // atomically set it to our TID. Otherwise, wait.
+            let pid = process::current_pid() as i32;
+            let futex_word = unsafe { &*(uaddr as *const AtomicI32) };
+            if futex_word
+                .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Ok(0);
+            }
+            // Slow path: wait like FUTEX_WAIT but don't check val
+            let key = uaddr as usize;
+            {
+                let mut waiters = FUTEX_WAITERS.write();
+                waiters.entry(key).or_default().push(pid as Pid);
+            }
+            let _ = process::get_process_manager().block_process(pid as u32);
+            // When woken, try to acquire again
+            let _ = futex_word.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst);
+            Ok(0)
+        }
+        futex_op::FUTEX_UNLOCK_PI => {
+            // FUTEX_UNLOCK_PI: Unlock a PI futex. Atomically set to 0 and wake
+            // one waiter.
+            let pid = process::current_pid() as i32;
+            let futex_word = unsafe { &*(uaddr as *const AtomicI32) };
+            if futex_word
+                .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(LinuxError::EPERM);
+            }
+            let key = uaddr as usize;
+            let mut woke = 0i32;
+            let mut waiters = FUTEX_WAITERS.write();
+            if let Some(queue) = waiters.get_mut(&key) {
+                if let Some(waiter) = queue.first().copied() {
+                    let _ = process::get_process_manager().unblock_process(waiter as u32);
+                    queue.remove(0);
+                    woke = 1;
+                }
+                if queue.is_empty() {
+                    waiters.remove(&key);
+                }
+            }
+            Ok(woke)
+        }
+        futex_op::FUTEX_TRYLOCK_PI => {
+            // FUTEX_TRYLOCK_PI: Try to lock a PI futex without waiting.
+            let pid = process::current_pid() as i32;
+            let futex_word = unsafe { &*(uaddr as *const AtomicI32) };
+            if futex_word
+                .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                Ok(0)
+            } else {
+                Err(LinuxError::EAGAIN)
+            }
+        }
+        futex_op::FUTEX_WAIT_REQUEUE_PI | futex_op::FUTEX_CMP_REQUEUE_PI => Err(LinuxError::ENOSYS),
         _ => Err(LinuxError::ENOSYS),
     }
 }
@@ -593,18 +740,23 @@ pub fn clone3(cl_args: *const CloneArgs, size: usize) -> LinuxResult<Pid> {
 
 /// getcpu - determine current CPU and NUMA node
 ///
-/// Single-core stub: always reports CPU 0, node 0.  This is sufficient for
-/// userspace that only needs a stable cpu number for per-thread caching; the
-/// tcache pointer is ignored.
+/// Reads the actual CPU ID from the APIC via `smp::current_cpu()` and
+/// maps it to a NUMA node via `smp::get_cpu_data()`.  The tcache pointer
+/// is ignored (Linux also deprecated it).
 pub fn getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> LinuxResult<i32> {
     inc_ops();
+    let cpu_id = crate::smp::current_cpu();
+    let node_id = crate::smp::get_cpu_data(cpu_id)
+        .map(|_| 0u32) // Single NUMA node for now; smp doesn't track NUMA yet
+        .unwrap_or(0);
+
     if !cpu.is_null() {
         // SAFETY: caller guarantees cpu points to a valid, writable u32.
-        unsafe { *cpu = 0 };
+        unsafe { *cpu = cpu_id };
     }
     if !node.is_null() {
         // SAFETY: caller guarantees node points to a valid, writable u32.
-        unsafe { *node = 0 };
+        unsafe { *node = node_id };
     }
     Ok(0)
 }

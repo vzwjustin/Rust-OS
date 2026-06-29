@@ -174,7 +174,10 @@ impl SyscallDispatcher {
             SyscallNumber::PkgUpdate => self.sys_pkg_update(args),
             SyscallNumber::PkgUpgrade => self.sys_pkg_upgrade(args),
             SyscallNumber::Invalid => SyscallResult::Error(SyscallError::InvalidSyscall),
-            _ => SyscallResult::Error(SyscallError::OperationNotSupported),
+            _ => match crate::linux_integration::route_syscall(syscall_number, args) {
+                Ok(value) => SyscallResult::Success(value),
+                Err(error) => SyscallResult::Success((-(error as i32) as i64) as u64),
+            },
         };
 
         match result {

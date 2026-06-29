@@ -4,8 +4,14 @@
 //! Uses virtqueues for RX (receive) and TX (transmit) with scatter-gather DMA.
 
 use super::*;
+use crate::net::device::{
+    DeviceCapabilities, DeviceInfo, DeviceType, DuplexMode, LinkMode, NetworkDevice,
+};
 use crate::net::MacAddress;
+use crate::net::{InterfaceStats, NetworkAddress, NetworkError, NetworkResult, PacketBuffer};
+use alloc::boxed::Box;
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -46,6 +52,56 @@ const QUEUE_SIZE: u16 = 32;
 
 /// Packet buffer size (1518 = max Ethernet frame)
 const PACKET_BUF_SIZE: usize = 1518 + 12; // +12 for virtio-net header
+
+/// Number of static TX buffers in the pool
+const TX_BUF_COUNT: usize = 32;
+
+/// Static TX buffer pool — buffers must persist until the device has consumed them.
+/// Stack-local buffers would be deallocated before the device finishes DMA.
+static TX_BUFFERS: Mutex<[[u8; PACKET_BUF_SIZE]; TX_BUF_COUNT]> =
+    Mutex::new([[0u8; PACKET_BUF_SIZE]; TX_BUF_COUNT]);
+
+/// Track which TX buffers are in use
+static TX_BUF_USED: Mutex<[bool; TX_BUF_COUNT]> = Mutex::new([false; TX_BUF_COUNT]);
+
+/// Allocate a TX buffer from the static pool
+fn alloc_tx_buffer() -> Option<usize> {
+    let mut used = TX_BUF_USED.lock();
+    for i in 0..TX_BUF_COUNT {
+        if !used[i] {
+            used[i] = true;
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Free a TX buffer back to the pool
+fn free_tx_buffer(idx: usize) {
+    TX_BUF_USED.lock()[idx] = false;
+}
+
+fn reap_tx_completions(tx_queue: &mut VirtQueue) {
+    while tx_queue.has_used() {
+        if let Some((id, _len)) = tx_queue.pop_used() {
+            let desc_idx = id as usize;
+            let buf_idx = {
+                let mut map = TX_DESC_TO_BUF.lock();
+                let Some(slot) = map.get_mut(desc_idx) else {
+                    tx_queue.free_desc(id as u16);
+                    continue;
+                };
+                let buf_idx = *slot;
+                *slot = TX_BUF_SENTINEL;
+                buf_idx
+            };
+            if buf_idx != TX_BUF_SENTINEL {
+                free_tx_buffer(buf_idx as usize);
+            }
+            tx_queue.free_desc(id as u16);
+        }
+    }
+}
 
 /// VirtIO network driver state
 pub struct VirtioNet {
@@ -163,12 +219,21 @@ impl VirtioNet {
         let tx_queue = self.tx_queue.as_mut().unwrap();
 
         // Allocate a descriptor
+        reap_tx_completions(tx_queue);
+
         let desc_idx = tx_queue
             .alloc_desc()
             .ok_or("virtio-net: no free TX descriptors")?;
 
-        // Build virtio-net header + data in a temporary buffer
-        let mut buf = [0u8; PACKET_BUF_SIZE];
+        // Allocate a TX buffer from the static pool (must persist for DMA)
+        let Some(buf_idx) = alloc_tx_buffer() else {
+            tx_queue.free_desc(desc_idx);
+            return Err("virtio-net: no free TX buffers");
+        };
+
+        // Build virtio-net header + data in the static buffer
+        let mut buffers = TX_BUFFERS.lock();
+        let buf = &mut buffers[buf_idx];
         let hdr = VirtioNetHdr::default();
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -186,11 +251,14 @@ impl VirtioNet {
         }
 
         let total_len = core::mem::size_of::<VirtioNetHdr>() + data.len();
-        let buf_phys = super::virt_to_phys(buf.as_ptr() as usize);
+        let buf_phys = super::virt_to_phys(buffers[buf_idx].as_ptr() as usize);
 
         tx_queue.set_desc(desc_idx, buf_phys, total_len as u32, 0, 0);
+        TX_DESC_TO_BUF.lock()[desc_idx as usize] = buf_idx as u16;
         tx_queue.submit(desc_idx);
         self.transport.notify(tx_queue);
+
+        drop(buffers);
 
         Ok(())
     }
@@ -260,6 +328,11 @@ impl VirtioNet {
     }
 }
 
+const TX_BUF_SENTINEL: u16 = u16::MAX;
+
+/// Mapping from TX descriptor index to TX buffer index for cleanup.
+static TX_DESC_TO_BUF: Mutex<[u16; 256]> = Mutex::new([TX_BUF_SENTINEL; 256]);
+
 /// Global virtio-net driver instance
 static VIRTIO_NET: Mutex<Option<VirtioNet>> = Mutex::new(None);
 
@@ -275,7 +348,8 @@ pub fn init_virtio_net(transport: VirtioTransport) -> Result<(), &'static str> {
     let interface = crate::net::NetworkInterface {
         name: "eth0".to_string(),
         mac_address: crate::net::NetworkAddress::mac(mac),
-        ip_addresses: alloc::vec![],
+        ip_addresses: Vec::new(),
+        netmask: crate::net::NetworkAddress::ipv4(255, 255, 255, 0),
         mtu: 1500,
         flags: crate::net::InterfaceFlags {
             up: true,
@@ -291,6 +365,13 @@ pub fn init_virtio_net(transport: VirtioTransport) -> Result<(), &'static str> {
         crate::serial_println!("virtio-net: failed to register interface: {:?}", e);
     }
 
+    // Register as a NetworkDevice with the DeviceManager so the network stack
+    // can route send/recv calls through the virtio-net driver.
+    let device = VirtioNetDevice::new(mac);
+    if let Err(e) = crate::net::device::device_manager().register_device(Box::new(device)) {
+        crate::serial_println!("virtio-net: failed to register device: {:?}", e);
+    }
+
     *VIRTIO_NET.lock() = Some(net);
     Ok(())
 }
@@ -302,4 +383,159 @@ where
 {
     let mut guard = VIRTIO_NET.lock();
     guard.as_mut().map(f)
+}
+
+/// Check if virtio-net is initialized
+pub fn is_available() -> bool {
+    VIRTIO_NET.lock().is_some()
+}
+
+/// Network device adapter for virtio-net
+/// Implements the NetworkDevice trait so the network stack can route packets
+/// through the virtio-net driver via the DeviceManager.
+pub struct VirtioNetDevice {
+    name: alloc::string::String,
+    mac_address: NetworkAddress,
+    mtu: u16,
+    up: bool,
+    stats: InterfaceStats,
+}
+
+impl VirtioNetDevice {
+    pub fn new(mac: MacAddress) -> Self {
+        Self {
+            name: alloc::string::String::from("eth0"),
+            mac_address: NetworkAddress::mac(mac),
+            mtu: 1500,
+            up: true,
+            stats: InterfaceStats::default(),
+        }
+    }
+}
+
+impl NetworkDevice for VirtioNetDevice {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Ethernet
+    }
+
+    fn mac_address(&self) -> NetworkAddress {
+        self.mac_address
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            max_mtu: 1500,
+            min_mtu: 68,
+            hw_checksum: false,
+            supports_checksum_offload: false,
+            scatter_gather: true,
+            tso: false,
+            supports_tso: false,
+            supports_lro: false,
+            rss: false,
+            vlan: false,
+            supports_vlan: false,
+            jumbo_frames: false,
+            supports_jumbo_frames: false,
+            multicast_filter: false,
+            max_tx_queues: 1,
+            max_rx_queues: 1,
+        }
+    }
+
+    fn mtu(&self) -> u16 {
+        self.mtu
+    }
+
+    fn set_mtu(&mut self, mtu: u16) -> NetworkResult<()> {
+        if mtu < 68 {
+            return Err(NetworkError::InvalidArgument);
+        }
+        self.mtu = mtu;
+        Ok(())
+    }
+
+    fn is_up(&self) -> bool {
+        self.up
+    }
+
+    fn up(&mut self) -> NetworkResult<()> {
+        self.up = true;
+        Ok(())
+    }
+
+    fn down(&mut self) -> NetworkResult<()> {
+        self.up = false;
+        Ok(())
+    }
+
+    fn send(&mut self, packet: PacketBuffer) -> NetworkResult<()> {
+        if !self.up {
+            return Err(NetworkError::NetworkUnreachable);
+        }
+        let data = packet.as_slice();
+        if data.is_empty() {
+            return Err(NetworkError::InvalidPacket);
+        }
+        if data.len() > self.mtu as usize + 14 {
+            return Err(NetworkError::BufferOverflow);
+        }
+
+        match with_virtio_net(|net| net.send(data)) {
+            Some(Ok(())) => {
+                self.stats.tx_packets += 1;
+                self.stats.tx_bytes += data.len() as u64;
+                Ok(())
+            }
+            Some(Err(e)) => {
+                self.stats.tx_errors += 1;
+                crate::serial_println!("virtio-net: send failed: {}", e);
+                Err(NetworkError::NetworkUnreachable)
+            }
+            None => {
+                self.stats.tx_errors += 1;
+                Err(NetworkError::NetworkUnreachable)
+            }
+        }
+    }
+
+    fn recv(&mut self) -> NetworkResult<Option<PacketBuffer>> {
+        if !self.up {
+            return Ok(None);
+        }
+
+        match with_virtio_net(|net| net.recv()) {
+            Some(Some(data)) => {
+                self.stats.rx_packets += 1;
+                self.stats.rx_bytes += data.len() as u64;
+                Ok(Some(PacketBuffer::from_data(data)))
+            }
+            Some(None) => Ok(None),
+            None => Ok(None),
+        }
+    }
+
+    fn stats(&self) -> InterfaceStats {
+        self.stats.clone()
+    }
+
+    fn reset_stats(&mut self) {
+        self.stats = InterfaceStats::default();
+    }
+
+    fn device_info(&self) -> DeviceInfo {
+        DeviceInfo {
+            driver: alloc::string::String::from("virtio-net"),
+            version: alloc::string::String::from("1.0.0"),
+            firmware: None,
+            bus_info: Some(alloc::string::String::from("virtio-pci")),
+            link_modes: vec![LinkMode::Mode1000BaseTFull],
+            link_speed: Some(1000),
+            duplex: Some(DuplexMode::Full),
+        }
+    }
 }

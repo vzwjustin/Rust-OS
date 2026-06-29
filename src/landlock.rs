@@ -279,9 +279,17 @@ pub fn landlock_add_rule(ruleset_fd: i32, rule_type: u32, rule_attr: *const u8, 
                 return -22;
             }
 
-            // Resolve parent_fd to a path — use VFS to get the path
-            // For now, we store the fd number as a proxy
-            let path = String::from("fd:") + &parent_fd.to_string();
+            // Resolve parent_fd to a real filesystem path via the VFS.
+            // This ensures that subsequent access checks compare against
+            // actual paths rather than opaque fd numbers.
+            let path = match crate::vfs::vfs_fd_directory_path(parent_fd as i32) {
+                Ok(dir_path) => dir_path,
+                Err(_) => {
+                    // If the fd can't be resolved, fall back to the fd
+                    // number string so the rule is still recorded.
+                    String::from("fd:") + &parent_fd.to_string()
+                }
+            };
 
             ruleset.rules.push(LandlockRule::PathBeneath {
                 allowed_access: allowed,

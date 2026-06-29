@@ -193,11 +193,41 @@ pub fn request_key(
     }
     drop(keys);
 
-    // No existing key — would need to invoke callout (userspace helper)
-    // For now, return ENOKEY
+    // No existing key — create a new key with an empty payload.
+    // In Linux, request_key invokes a userspace callout to instantiate the
+    // key.  Since we have no userspace callout mechanism, we create the key
+    // with an empty payload and return it.  The caller (or a subsequent
+    // keyctl(KEYCTL_INSTANTIATE)) can fill in the payload later.
     let _ = callout_info;
-    let _ = dest_keyring_id;
-    -126 // ENOKEY
+    let uid = crate::process::get_process_manager()
+        .get_process(crate::process::current_pid())
+        .map(|p| p.uid)
+        .unwrap_or(0);
+
+    let id = NEXT_KEY_ID.fetch_add(1, Ordering::SeqCst);
+    let key = Key::new(id, &ktype, &desc, Vec::new(), uid);
+    KEYS.write().insert(id, Mutex::new(key));
+
+    // Link into the destination keyring if specified
+    if dest_keyring_id >= 0 {
+        link_key_into_keyring(dest_keyring_id as u32, id);
+    } else {
+        // Link into session keyring
+        let pid = crate::process::current_pid();
+        let sessions = SESSION_KEYRINGS.read();
+        if let Some(&sk_id) = sessions.get(&pid) {
+            drop(sessions);
+            link_key_into_keyring(sk_id, id);
+        }
+    }
+
+    crate::serial_println!(
+        "[keyring] request_key: created new key type={} desc={} id={}",
+        ktype,
+        desc,
+        id
+    );
+    id as i32
 }
 
 /// keyctl — various key control operations
@@ -268,7 +298,10 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
                 if key.revoked {
                     return -22;
                 }
-                if payload.is_null() || plen == 0 {
+                if payload.is_null() && plen != 0 {
+                    return -14;
+                }
+                if plen == 0 {
                     key.payload.clear();
                 } else {
                     key.payload = unsafe { core::slice::from_raw_parts(payload, plen) }.to_vec();
@@ -470,6 +503,138 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
                 }
             }
             8
+        }
+        KEYCTL_INSTANTIATE => {
+            // keyctl(KEYCTL_INSTANTIATE, id, payload, plen, timeout)
+            let id = arg2 as i32;
+            let payload = arg3 as *const u8;
+            let plen = arg4 as usize;
+            if id < 0 {
+                return -22;
+            }
+            let keys = KEYS.read();
+            if let Some(key_mutex) = keys.get(&(id as u32)) {
+                let mut key = key_mutex.lock();
+                if payload.is_null() || plen == 0 {
+                    key.payload.clear();
+                } else {
+                    key.payload = unsafe { core::slice::from_raw_parts(payload, plen) }.to_vec();
+                }
+                return 0;
+            }
+            -2
+        }
+        KEYCTL_NEGATE => {
+            // keyctl(KEYCTL_NEGATE, id, timeout, keyring_id)
+            // Negate = instantiate with no payload and mark as negative
+            let id = arg2 as i32;
+            if id < 0 {
+                return -22;
+            }
+            let keys = KEYS.read();
+            if let Some(key_mutex) = keys.get(&(id as u32)) {
+                let mut key = key_mutex.lock();
+                key.payload.clear();
+                key.revoked = true;
+                return 0;
+            }
+            -2
+        }
+        KEYCTL_SET_REQKEY_KEYRING => {
+            let _ = arg2;
+            -38
+        }
+        KEYCTL_ASSUME_AUTHORITY => {
+            let _ = arg2;
+            -38
+        }
+        KEYCTL_GET_PERSISTENT => {
+            // keyctl(KEYCTL_GET_PERSISTENT, uid, keyring_id)
+            // Return the persistent keyring for the given UID
+            let uid = arg2 as u32;
+            let _keyring_id = arg3 as i32;
+            // Create or find a persistent keyring for this UID
+            let desc = alloc::format!("_persistent.{}", uid);
+            let keys = KEYS.read();
+            for (&id, key_mutex) in keys.iter() {
+                let key = key_mutex.lock();
+                if key.is_keyring && key.description == desc {
+                    return id as i32;
+                }
+            }
+            drop(keys);
+            // Create new persistent keyring
+            let new_id = NEXT_KEY_ID.fetch_add(1, Ordering::SeqCst);
+            let key = Key::new(new_id, KEY_TYPE_KEYRING, &desc, Vec::new(), uid);
+            KEYS.write().insert(new_id, Mutex::new(key));
+            new_id as i32
+        }
+        KEYCTL_MOVE => {
+            // keyctl(KEYCTL_MOVE, key_id, from_keyring_id, to_keyring_id, flags)
+            let key_id = arg2 as i32;
+            let from_kr = arg3 as i32;
+            let to_kr = arg4 as i32;
+            if key_id < 0 || from_kr < 0 || to_kr < 0 {
+                return -22;
+            }
+            let keys = KEYS.read();
+            if !keys.contains_key(&(key_id as u32)) {
+                return -2;
+            }
+            let from_mutex = match keys.get(&(from_kr as u32)) {
+                Some(kr) => kr,
+                None => return -2,
+            };
+            let to_mutex = match keys.get(&(to_kr as u32)) {
+                Some(kr) => kr,
+                None => return -2,
+            };
+            if from_kr == to_kr {
+                return if from_mutex.lock().links.contains(&(key_id as u32)) {
+                    0
+                } else {
+                    -2
+                };
+            }
+
+            let (first_mutex, second_mutex, source_is_first) = if from_kr <= to_kr {
+                (from_mutex, to_mutex, true)
+            } else {
+                (to_mutex, from_mutex, false)
+            };
+            let mut first = first_mutex.lock();
+            let mut second = second_mutex.lock();
+            let (source, dest) = if source_is_first {
+                (&mut first, &mut second)
+            } else {
+                (&mut second, &mut first)
+            };
+            if !source.is_keyring || !dest.is_keyring {
+                return -22;
+            }
+            let Some(pos) = source.links.iter().position(|&k| k == key_id as u32) else {
+                return -2;
+            };
+            if !dest.links.contains(&(key_id as u32)) {
+                dest.links.push(key_id as u32);
+            }
+            source.links.remove(pos);
+            0
+        }
+        KEYCTL_RESTRICT_KEYRING => {
+            let _ = (arg2, arg3, arg4);
+            -38
+        }
+        KEYCTL_WATCH_KEY => {
+            // keyctl(KEYCTL_WATCH_KEY, id, watch_fd, watch_id)
+            // Key watching requires watch_queue — return ENOSYS
+            let _ = (arg2, arg3, arg4);
+            -38
+        }
+        KEYCTL_DH_COMPUTE | KEYCTL_PKEY_QUERY | KEYCTL_PKEY_ENCRYPT | KEYCTL_PKEY_DECRYPT
+        | KEYCTL_PKEY_SIGN | KEYCTL_PKEY_VERIFY => {
+            // Public key / DH crypto operations — not supported in-kernel
+            -38
         }
         _ => {
             // Unsupported keyctl commands

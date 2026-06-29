@@ -38,7 +38,7 @@ pub fn unlikely(b: bool) -> bool {
 
 /// Cache-aligned structure wrapper
 #[repr(align(64))] // Align to cache line
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CacheAligned<T> {
     pub inner: T,
 }
@@ -60,6 +60,18 @@ impl<T> core::ops::Deref for CacheAligned<T> {
 impl<T> core::ops::DerefMut for CacheAligned<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
+    }
+}
+
+impl<T> IntoIterator for CacheAligned<T>
+where
+    T: IntoIterator,
+{
+    type Item = T::Item;
+    type IntoIter = T::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
     }
 }
 

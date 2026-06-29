@@ -34,6 +34,17 @@ const EI_DATA_LSB: u8 = 1;
 const ET_REL: u16 = 1;
 const EM_X86_64: u16 = 62;
 
+/// ELF section header type constants.
+const SHT_RELA: u32 = 4;
+const SHT_NOBITS: u32 = 8;
+
+/// ELF relocation type constants for x86_64.
+const R_X86_64_64: u32 = 1;
+const R_X86_64_PC32: u32 = 2;
+const R_X86_64_PLT32: u32 = 4;
+const R_X86_64_32: u32 = 10;
+const R_X86_64_32S: u32 = 11;
+
 static MODULES: RwLock<BTreeMap<String, ModuleImage>> = RwLock::new(BTreeMap::new());
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -133,6 +144,122 @@ fn validate_module_elf(image: &[u8]) -> Result<(), i32> {
     Ok(())
 }
 
+/// Apply RELA relocations to the module image in-place.
+///
+/// Processes all SHT_RELA sections, applying x86_64 relocation types
+/// (R_X86_64_64, R_X86_64_PC32, R_X86_64_32, R_X86_64_32S) to the
+/// section data.  Since the module is not yet mapped at a fixed address,
+/// relocations are applied relative to the image base (offset 0), which
+/// is correct for PC-relative references within the module itself.
+fn apply_relocations(image: &mut [u8]) -> Result<(), i32> {
+    let shoff = le64(image, 40)? as usize;
+    let shentsize = le16(image, 58)? as usize;
+    let shnum = le16(image, 60)? as usize;
+    let shstrndx = le16(image, 62)? as usize;
+    if shoff == 0 || shentsize < 64 || shstrndx >= shnum {
+        return Ok(()); // No section headers — nothing to relocate
+    }
+
+    // Read section headers into a vec for easy access
+    let mut sections: Vec<(u32, u64, u64, u64, u64, u64)> = Vec::with_capacity(shnum);
+    for idx in 0..shnum {
+        let sh = shoff
+            .checked_add(idx.checked_mul(shentsize).ok_or(8)?)
+            .ok_or(8)?;
+        let sh_type = le32(image, sh)?;
+        let sh_addr = le64(image, sh + 16)?;
+        let sh_offset = le64(image, sh + 24)?;
+        let sh_size = le64(image, sh + 32)?;
+        let sh_link = le64(image, sh + 40)?;
+        let sh_info = le32(image, sh + 44)? as u64;
+        sections.push((sh_type, sh_addr, sh_offset, sh_size, sh_link, sh_info));
+    }
+
+    // Process each RELA section
+    for (sh_type, _sh_addr, sh_offset, sh_size, _sh_link, sh_info) in &sections {
+        if *sh_type != SHT_RELA {
+            continue;
+        }
+
+        // sh_link is the index of the symbol table section
+        // For modules without external symbols, all symbols resolve to 0
+        // (relative to image base). We apply relocations within the image.
+
+        let rela_off = *sh_offset as usize;
+        let rela_size = *sh_size as usize;
+        if rela_off + rela_size > image.len() {
+            continue;
+        }
+
+        // Each RELA entry is 24 bytes: r_offset(8), r_info(8), r_addend(8)
+        let entry_size = 24usize;
+        let count = rela_size / entry_size;
+
+        for i in 0..count {
+            let base = rela_off + i * entry_size;
+            let r_offset = le64(image, base)?;
+            let r_info = le64(image, base + 8)?;
+            let r_addend = le64(image, base + 16)? as i64;
+
+            let r_type = (r_info & 0xffffffff) as u32;
+            let r_sym = r_info >> 32;
+            if r_sym != 0 {
+                return Err(38);
+            }
+
+            let target_section = sections.get(*sh_info as usize).ok_or(8)?;
+            let target_addr = target_section.1;
+            let target_off = target_section.2;
+            let target_size = target_section.3;
+            if r_offset < target_addr || r_offset >= target_addr.saturating_add(target_size) {
+                return Err(8);
+            }
+            let target = target_off.checked_add(r_offset - target_addr).ok_or(8)? as usize;
+
+            match r_type {
+                R_X86_64_64 => {
+                    // R + A (absolute 64-bit)
+                    if target + 8 > image.len() {
+                        continue;
+                    }
+                    let val = r_addend as u64;
+                    image[target..target + 8].copy_from_slice(&val.to_le_bytes());
+                }
+                R_X86_64_PC32 | R_X86_64_PLT32 => {
+                    // S + A - P (PC-relative 32-bit)
+                    // P = r_offset (address of the relocation site)
+                    // S = 0 (image base), so val = A - P
+                    if target + 4 > image.len() {
+                        continue;
+                    }
+                    let p = r_offset as i64;
+                    let val = (r_addend - p) as i32;
+                    image[target..target + 4].copy_from_slice(&val.to_le_bytes());
+                }
+                R_X86_64_32 => {
+                    // S + A (absolute 32-bit, zero-extended)
+                    if target + 4 > image.len() {
+                        continue;
+                    }
+                    let val = r_addend as u32;
+                    image[target..target + 4].copy_from_slice(&val.to_le_bytes());
+                }
+                R_X86_64_32S => {
+                    // S + A (absolute 32-bit, sign-extended)
+                    if target + 4 > image.len() {
+                        continue;
+                    }
+                    let val = r_addend as i32;
+                    image[target..target + 4].copy_from_slice(&val.to_le_bytes());
+                }
+                _ => return Err(38),
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn section_name<'a>(strtab: &'a [u8], name_off: u32) -> &'a str {
     let start = name_off as usize;
     if start >= strtab.len() {
@@ -185,8 +312,9 @@ fn fallback_name() -> String {
     alloc::format!("module{}", NEXT_ID.load(Ordering::SeqCst))
 }
 
-fn load_module(image: Vec<u8>, params: String, flags: u32) -> Result<i32, i32> {
+fn load_module(mut image: Vec<u8>, params: String, flags: u32) -> Result<i32, i32> {
     validate_module_elf(&image)?;
+    apply_relocations(&mut image)?;
     let name = module_name_from_modinfo(&image).unwrap_or_else(fallback_name);
     let mut modules = MODULES.write();
     if modules.contains_key(&name) {

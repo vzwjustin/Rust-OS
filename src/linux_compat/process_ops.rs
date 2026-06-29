@@ -189,7 +189,7 @@ pub fn wait(status: *mut i32) -> LinuxResult<Pid> {
 }
 
 /// waitpid - wait for specific child process
-pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
+pub fn waitpid(pid: Pid, status: *mut i32, options: i32) -> LinuxResult<Pid> {
     inc_ops();
 
     let parent_pid = process::current_pid();
@@ -214,6 +214,9 @@ pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
         pcb.pid == pid as u32
     };
 
+    // WNOHANG = 1 (Linux constant)
+    const WNOHANG: i32 = 1;
+
     match process_mgr.reap_zombie_child(parent_pid, matches) {
         Ok((child_pid, exit_status)) => {
             if !status.is_null() {
@@ -224,7 +227,13 @@ pub fn waitpid(pid: Pid, status: *mut i32, _options: i32) -> LinuxResult<Pid> {
             Ok(child_pid as i32)
         }
         Err("No child processes") => Err(LinuxError::ECHILD),
-        Err("Would block waiting for child") => Err(LinuxError::EAGAIN),
+        Err("Would block waiting for child") => {
+            if options & WNOHANG != 0 {
+                Ok(0)
+            } else {
+                Err(LinuxError::EAGAIN)
+            }
+        }
         Err(_) => Err(LinuxError::EINVAL),
     }
 }
@@ -856,6 +865,8 @@ pub fn setuid(uid: Uid) -> LinuxResult<i32> {
                 pcb.uid = uid;
                 pcb.euid = uid;
             }
+            pcb.suid = uid;
+            pcb.fsuid = uid;
         })
         .ok_or(LinuxError::ESRCH)?;
 
@@ -877,6 +888,7 @@ pub fn seteuid(uid: Uid) -> LinuxResult<i32> {
     process_mgr
         .with_process_mut(pid, |pcb| {
             pcb.euid = uid;
+            pcb.fsuid = uid;
         })
         .ok_or(LinuxError::ESRCH)?;
 
@@ -903,6 +915,8 @@ pub fn setgid(gid: Gid) -> LinuxResult<i32> {
                 pcb.gid = gid;
                 pcb.egid = gid;
             }
+            pcb.sgid = gid;
+            pcb.fsgid = gid;
         })
         .ok_or(LinuxError::ESRCH)?;
 
@@ -924,6 +938,326 @@ pub fn setegid(gid: Gid) -> LinuxResult<i32> {
     process_mgr
         .with_process_mut(pid, |pcb| {
             pcb.egid = gid;
+            pcb.fsgid = gid;
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
+}
+
+/// setreuid - set real and effective user ID
+///
+/// If `ruid` is -1 (`u32::MAX`), the real uid is not changed.
+/// If `euid` is -1, the effective uid is not changed.
+/// A non-root process may only set ruid to its current ruid or euid,
+/// and euid to its current ruid, euid, or suid.
+pub fn setreuid(ruid: Uid, euid: Uid) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    let ruid_set = ruid != u32::MAX;
+    let euid_set = euid != u32::MAX;
+
+    if ruid_set {
+        if pcb.euid != 0 && ruid != pcb.uid && ruid != pcb.euid {
+            return Err(LinuxError::EPERM);
+        }
+    }
+    if euid_set {
+        if pcb.euid != 0 && euid != pcb.uid && euid != pcb.euid && euid != pcb.suid {
+            return Err(LinuxError::EPERM);
+        }
+    }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            if ruid_set {
+                pcb.uid = ruid;
+            }
+            if euid_set {
+                pcb.euid = euid;
+                pcb.fsuid = euid;
+            }
+            if ruid_set || euid_set {
+                pcb.suid = pcb.euid;
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
+}
+
+/// setregid - set real and effective group ID
+pub fn setregid(rgid: Gid, egid: Gid) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    let rgid_set = rgid != u32::MAX;
+    let egid_set = egid != u32::MAX;
+
+    if rgid_set {
+        if pcb.euid != 0 && rgid != pcb.gid && rgid != pcb.egid {
+            return Err(LinuxError::EPERM);
+        }
+    }
+    if egid_set {
+        if pcb.euid != 0 && egid != pcb.gid && egid != pcb.egid && egid != pcb.sgid {
+            return Err(LinuxError::EPERM);
+        }
+    }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            if rgid_set {
+                pcb.gid = rgid;
+            }
+            if egid_set {
+                pcb.egid = egid;
+                pcb.fsgid = egid;
+            }
+            if rgid_set || egid_set {
+                pcb.sgid = pcb.egid;
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
+}
+
+/// setresuid - set real, effective, and saved user ID
+///
+/// Any argument of -1 (`u32::MAX`) leaves that field unchanged.
+pub fn setresuid(ruid: Uid, euid: Uid, suid: Uid) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    let ruid_set = ruid != u32::MAX;
+    let euid_set = euid != u32::MAX;
+    let suid_set = suid != u32::MAX;
+
+    if pcb.euid != 0 {
+        if ruid_set && ruid != pcb.uid && ruid != pcb.euid && ruid != pcb.suid {
+            return Err(LinuxError::EPERM);
+        }
+        if euid_set && euid != pcb.uid && euid != pcb.euid && euid != pcb.suid {
+            return Err(LinuxError::EPERM);
+        }
+        if suid_set && suid != pcb.uid && suid != pcb.euid && suid != pcb.suid {
+            return Err(LinuxError::EPERM);
+        }
+    }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            if ruid_set {
+                pcb.uid = ruid;
+            }
+            if euid_set {
+                pcb.euid = euid;
+                pcb.fsuid = euid;
+            }
+            if suid_set {
+                pcb.suid = suid;
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
+}
+
+/// getresuid - get real, effective, and saved user IDs
+pub fn getresuid(ruid: *mut Uid, euid: *mut Uid, suid: *mut Uid) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pcb = current_pcb()?;
+
+    unsafe {
+        if !ruid.is_null() {
+            *ruid = pcb.uid;
+        }
+        if !euid.is_null() {
+            *euid = pcb.euid;
+        }
+        if !suid.is_null() {
+            *suid = pcb.suid;
+        }
+    }
+
+    Ok(0)
+}
+
+/// setresgid - set real, effective, and saved group ID
+pub fn setresgid(rgid: Gid, egid: Gid, sgid: Gid) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let process_mgr = process::get_process_manager();
+    let pcb = current_pcb()?;
+
+    let rgid_set = rgid != u32::MAX;
+    let egid_set = egid != u32::MAX;
+    let sgid_set = sgid != u32::MAX;
+
+    if pcb.euid != 0 {
+        if rgid_set && rgid != pcb.gid && rgid != pcb.egid && rgid != pcb.sgid {
+            return Err(LinuxError::EPERM);
+        }
+        if egid_set && egid != pcb.gid && egid != pcb.egid && egid != pcb.sgid {
+            return Err(LinuxError::EPERM);
+        }
+        if sgid_set && sgid != pcb.gid && sgid != pcb.egid && sgid != pcb.sgid {
+            return Err(LinuxError::EPERM);
+        }
+    }
+
+    process_mgr
+        .with_process_mut(pid, |pcb| {
+            if rgid_set {
+                pcb.gid = rgid;
+            }
+            if egid_set {
+                pcb.egid = egid;
+                pcb.fsgid = egid;
+            }
+            if sgid_set {
+                pcb.sgid = sgid;
+            }
+        })
+        .ok_or(LinuxError::ESRCH)?;
+
+    Ok(0)
+}
+
+/// getresgid - get real, effective, and saved group IDs
+pub fn getresgid(rgid: *mut Gid, egid: *mut Gid, sgid: *mut Gid) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pcb = current_pcb()?;
+
+    unsafe {
+        if !rgid.is_null() {
+            *rgid = pcb.gid;
+        }
+        if !egid.is_null() {
+            *egid = pcb.egid;
+        }
+        if !sgid.is_null() {
+            *sgid = pcb.sgid;
+        }
+    }
+
+    Ok(0)
+}
+
+/// setfsuid - set filesystem user ID
+///
+/// Returns the previous fsuid. A value of -1 (`u32::MAX`) is a no-op.
+pub fn setfsuid(uid: Uid) -> Uid {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let pm = process::get_process_manager();
+    let old_fsuid = pm.get_process(pid).map(|p| p.fsuid).unwrap_or(0);
+
+    if uid != u32::MAX {
+        pm.with_process_mut(pid, |pcb| {
+            pcb.fsuid = uid;
+        });
+    }
+
+    old_fsuid
+}
+
+/// setfsgid - set filesystem group ID
+///
+/// Returns the previous fsgid. A value of -1 (`u32::MAX`) is a no-op.
+pub fn setfsgid(gid: Gid) -> Gid {
+    inc_ops();
+
+    let pid = process::current_pid();
+    let pm = process::get_process_manager();
+    let old_fsgid = pm.get_process(pid).map(|p| p.fsgid).unwrap_or(0);
+
+    if gid != u32::MAX {
+        pm.with_process_mut(pid, |pcb| {
+            pcb.fsgid = gid;
+        });
+    }
+
+    old_fsgid
+}
+
+/// getgroups - get list of supplementary group IDs
+///
+/// If `size` is 0, returns the number of supplementary groups without
+/// writing anything to `list`. Otherwise writes up to `size` group IDs
+/// and returns the number written.
+pub fn getgroups(size: i32, list: *mut u32) -> LinuxResult<i32> {
+    inc_ops();
+
+    let pcb = current_pcb()?;
+    let groups = &pcb.supplementary_groups;
+
+    if size == 0 {
+        return Ok(groups.len() as i32);
+    }
+
+    if size < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if (size as usize) < groups.len() {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if !list.is_null() {
+        for (i, &gid) in groups.iter().enumerate() {
+            unsafe {
+                *list.add(i) = gid;
+            }
+        }
+    }
+
+    Ok(groups.len() as i32)
+}
+
+/// setgroups - set list of supplementary group IDs
+///
+/// Requires CAP_SETGID (euid == 0). Sets the supplementary group list
+/// for the calling process.
+pub fn setgroups(size: i32, list: *const u32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if size < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let pcb = current_pcb()?;
+    if pcb.euid != 0 {
+        return Err(LinuxError::EPERM);
+    }
+
+    let size = size as usize;
+    let mut groups = alloc::vec::Vec::with_capacity(size);
+    if !list.is_null() {
+        for i in 0..size {
+            groups.push(unsafe { *list.add(i) });
+        }
+    }
+
+    let pid = process::current_pid();
+    process::get_process_manager()
+        .with_process_mut(pid, |pcb| {
+            pcb.supplementary_groups = groups;
         })
         .ok_or(LinuxError::ESRCH)?;
 

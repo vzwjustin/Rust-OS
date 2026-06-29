@@ -50,6 +50,10 @@ pub struct NfsFile {
 struct NfsClientState {
     mounts: BTreeMap<String, NfsMount>,
     fh_cache: BTreeMap<Vec<u8>, NfsAttr>,
+    /// Cached file data keyed by file handle bytes.
+    data_cache: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Cached path-to-filehandle mappings for LOOKUP results.
+    path_cache: BTreeMap<String, NfsFile>,
 }
 
 impl NfsClientState {
@@ -57,6 +61,8 @@ impl NfsClientState {
         Self {
             mounts: BTreeMap::new(),
             fh_cache: BTreeMap::new(),
+            data_cache: BTreeMap::new(),
+            path_cache: BTreeMap::new(),
         }
     }
 }
@@ -104,7 +110,11 @@ pub fn list_mounts() -> Vec<NfsMount> {
     NFS_CLIENT.read().mounts.values().cloned().collect()
 }
 
-/// Read bytes at `offset` from an NFS file (framework).
+/// Read bytes at `offset` from an NFS file.
+///
+/// If the file data has been cached (via `cache_file_data`), reads are
+/// served from the in-memory cache.  Otherwise returns `NotSupported`
+/// since the network RPC layer is not yet wired.
 pub fn read_file(mount_point: &str, fh: &NfsFh, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
     let state = NFS_CLIENT.read();
     let mount = state.mounts.get(mount_point).ok_or(FsError::NotFound)?;
@@ -123,9 +133,25 @@ pub fn read_file(mount_point: &str, fh: &NfsFh, offset: u64, buf: &mut [u8]) -> 
         return Ok(0);
     }
 
-    // Framework: NFSv3 READ RPC via mount.server would go here.
-    let _ = (mount, buf);
-    Err(FsError::NotSupported)
+    // Serve from data cache if available
+    if let Some(data) = state.data_cache.get(&fh.data) {
+        let off = offset as usize;
+        if off >= data.len() {
+            return Ok(0);
+        }
+        let avail = data.len() - off;
+        let to_copy = core::cmp::min(buf.len(), avail);
+        buf[..to_copy].copy_from_slice(&data[off..off + to_copy]);
+        return Ok(to_copy);
+    }
+
+    // No cached data and no network RPC layer — return empty read for
+    // zero-size files, otherwise NotSupported.
+    if attr.size == 0 {
+        Ok(0)
+    } else {
+        Err(FsError::NotSupported)
+    }
 }
 
 /// Cache GETATTR results for a file handle.
@@ -133,14 +159,56 @@ pub fn cache_attr(fh: NfsFh, attr: NfsAttr) {
     NFS_CLIENT.write().fh_cache.insert(fh.data, attr);
 }
 
+/// Cache file data for a file handle (used when data is pre-loaded).
+pub fn cache_file_data(fh: &NfsFh, data: Vec<u8>) {
+    let mut state = NFS_CLIENT.write();
+    let len = data.len() as u64;
+    state.data_cache.insert(fh.data.clone(), data);
+    // Update attr size if not already set
+    state.fh_cache.entry(fh.data.clone()).or_insert(NfsAttr {
+        size: len,
+        mode: 0o644,
+        mtime: crate::time::uptime_ns(),
+    });
+}
+
+/// Cache a path-to-filehandle mapping (used by LOOKUP results).
+pub fn cache_path(mount_point: &str, path: &str, file: NfsFile) {
+    let key = format_nfs_key(mount_point, path);
+    NFS_CLIENT.write().path_cache.insert(key, file);
+}
+
+/// NFSv3 LOOKUP + GETATTR pipeline.
+///
+/// Resolves a path within a mounted NFS export.  If the path has been
+/// previously cached via `cache_path`, returns the cached `NfsFile`.
+/// Otherwise returns `NotSupported` since the network RPC layer is
+/// not yet wired.
+pub fn lookup_path(mount_point: &str, path: &str) -> FsResult<Arc<NfsFile>> {
+    let state = NFS_CLIENT.read();
+    // Verify mount exists
+    if !state.mounts.contains_key(mount_point) {
+        return Err(FsError::NotFound);
+    }
+    let key = format_nfs_key(mount_point, path);
+    if let Some(file) = state.path_cache.get(&key) {
+        return Ok(Arc::new(file.clone()));
+    }
+    Err(FsError::NotSupported)
+}
+
+fn format_nfs_key(mount_point: &str, path: &str) -> String {
+    let mut key = String::from(mount_point);
+    if !path.starts_with('/') {
+        key.push('/');
+    }
+    key.push_str(path);
+    key
+}
+
 /// Returns the filesystem type tag for mount tables.
 pub fn fs_type() -> FileSystemType {
     FileSystemType::NetworkFs
-}
-
-/// NFSv3 LOOKUP + GETATTR pipeline hook (framework).
-pub fn lookup_path(_mount_point: &str, _path: &str) -> FsResult<Arc<NfsFile>> {
-    Err(FsError::NotSupported)
 }
 
 /// Initialize NFS client subsystem.
@@ -148,4 +216,6 @@ pub fn init() {
     let mut state = NFS_CLIENT.write();
     state.mounts.clear();
     state.fh_cache.clear();
+    state.data_cache.clear();
+    state.path_cache.clear();
 }

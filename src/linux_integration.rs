@@ -204,7 +204,15 @@ pub fn route_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
     // Route to appropriate subsystem based on syscall type
     match syscall {
         crate::syscall::SyscallNumber::Signalfd4 => {
-            linux_compat::special_fd::signalfd(args[0] as i32, args[1] as u64, args[2] as i32)
+            let mask_ptr = args[1] as *const u64;
+            if mask_ptr.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+            if args[2] < core::mem::size_of::<u64>() as u64 {
+                return Err(LinuxError::EINVAL);
+            }
+            let mask = unsafe { core::ptr::read_unaligned(mask_ptr) };
+            linux_compat::special_fd::signalfd(args[0] as i32, mask, args[3] as i32)
                 .map(|v| v as u64)
         }
         // File operations
@@ -640,48 +648,20 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             args[3] as usize,
         )
         .map(|v| v as u64),
-        crate::syscall::SyscallNumber::InotifyAddWatch => {
-            let path = if args[1] == 0 {
-                return Err(LinuxError::EFAULT);
-            } else {
-                let cstr = args[1] as *const u8;
-                let mut len = 0;
-                while unsafe { *cstr.add(len) } != 0 {
-                    len += 1;
-                }
-                let bytes = unsafe { core::slice::from_raw_parts(cstr, len) };
-                alloc::string::String::from_utf8_lossy(bytes).into_owned()
-            };
-            let wd = crate::inotify::inotify_add_watch(args[0] as i32, &path, args[2] as u32);
-            if wd < 0 {
-                Err(LinuxError::EINVAL)
-            } else {
-                Ok(wd as u64)
-            }
-        }
+        crate::syscall::SyscallNumber::InotifyAddWatch => linux_compat::fs_ops::inotify_add_watch(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+        )
+        .map(|v| v as u64),
         crate::syscall::SyscallNumber::InotifyInit => {
-            let fd = crate::inotify::inotify_init1(0);
-            if fd < 0 {
-                Err(LinuxError::EMFILE)
-            } else {
-                Ok(fd as u64)
-            }
+            linux_compat::fs_ops::inotify_init().map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::InotifyInit1 => {
-            let fd = crate::inotify::inotify_init1(args[0] as i32);
-            if fd < 0 {
-                Err(LinuxError::EMFILE)
-            } else {
-                Ok(fd as u64)
-            }
+            linux_compat::fs_ops::inotify_init1(args[0] as i32).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::InotifyRmWatch => {
-            let ret = crate::inotify::inotify_rm_watch(args[0] as i32, args[1] as i32);
-            if ret < 0 {
-                Err(LinuxError::EINVAL)
-            } else {
-                Ok(ret as u64)
-            }
+            linux_compat::fs_ops::inotify_rm_watch(args[0] as i32, args[1] as i32).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Ioctl => {
             linux_compat::ioctl_ops::ioctl(args[0] as i32, args[1] as u64, args[2] as u64)
@@ -1037,7 +1017,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         crate::syscall::SyscallNumber::Setns => {
             let ret = crate::namespace::setns(args[0] as i32, args[1] as u32);
             if ret < 0 {
-                Err(LinuxError::EINVAL)
+                Err(LinuxError::from_errno(-ret))
             } else {
                 Ok(ret as u64)
             }
@@ -1185,6 +1165,15 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             args[2] as *const [linux_compat::TimeVal; 2],
         )
         .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Utime => linux_compat::file_ops::utime(
+            args[0] as *const u8,
+            args[1] as *const linux_compat::file_ops::UtimBuf,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::Mknod => {
+            linux_compat::file_ops::mknod(args[0] as *const u8, args[1] as u32, args[2] as u64)
+                .map(|v| v as u64)
+        }
         crate::syscall::SyscallNumber::Vfork => {
             linux_compat::process_ops::vfork().map(|v| v as u64)
         }
@@ -1208,11 +1197,26 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         // ── Deprecated/removed syscalls (return ENOSYS) ──────────────
         crate::syscall::SyscallNumber::GetKernelSyms
         | crate::syscall::SyscallNumber::QueryModule
-        | crate::syscall::SyscallNumber::EpollCtlOld
-        | crate::syscall::SyscallNumber::EpollWaitOld
-        | crate::syscall::SyscallNumber::EpollCreateOld
         | crate::syscall::SyscallNumber::RemapFilePages
         | crate::syscall::SyscallNumber::Nfsservctl => Err(LinuxError::ENOSYS),
+
+        crate::syscall::SyscallNumber::EpollCreateOld => {
+            linux_compat::socket_ops::epoll_create(args[0] as i32).map(|v| v as u64)
+        }
+        crate::syscall::SyscallNumber::EpollCtlOld => linux_compat::socket_ops::epoll_ctl(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as i32,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::EpollWaitOld => linux_compat::socket_ops::epoll_wait(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as i32,
+            args[3] as i32,
+        )
+        .map(|v| v as u64),
 
         // ── sysfs (deprecated — use /proc/filesystems) ───────────────
         crate::syscall::SyscallNumber::Sysfs => {
@@ -1238,10 +1242,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
 
         // ── get_thread_area (x86 TLS descriptor read) ────────────────
         crate::syscall::SyscallNumber::GetThreadArea => {
-            // get_thread_area(struct user_desc *u_info)
-            // x86-specific TLS descriptor — we use arch_prctl for TLS
-            // Return ENOSYS (x86-64 doesn't really use this)
-            Err(LinuxError::ENOSYS)
+            linux_compat::thread_ops::get_thread_area(args[0] as *mut u8).map(|v| v as u64)
         }
 
         // ── lookup_dcookie (debug cookie lookup) ─────────────────────
@@ -1253,18 +1254,58 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         // ── cachestat (kernel 6.5+) ──────────────────────────────────
         crate::syscall::SyscallNumber::Cachestat => {
             // cachestat(fd, args, cstat, flags)
-            if args[2] == 0 {
+            let fd = args[0] as i32;
+            let range_ptr = args[1] as *const u8;
+            let cstat = args[2] as *mut u8;
+            let _flags = args[3] as u32;
+
+            if cstat.is_null() {
                 return Err(LinuxError::EFAULT);
             }
-            // struct cachestat { long nr_cache; long nr_dirty; long nr_writeback; long nr_evictable; long nr_recently_evicted; }
-            // Return zeroed — all pages are "cached" in memory
-            let buf = unsafe { core::slice::from_raw_parts_mut(args[2] as *mut u8, 40) };
+
+            // struct cachestat_range { __u64 off; __u64 len; }
+            let (off, len) = if range_ptr.is_null() {
+                (0u64, u64::MAX)
+            } else {
+                unsafe {
+                    let r = &*(range_ptr as *const (u64, u64));
+                    (r.0, r.1)
+                }
+            };
+
+            // Get file stats via VFS to compute real page counts
+            let file_size = match crate::vfs::vfs_fstat(fd) {
+                Ok(stat) => stat.size,
+                Err(_) => {
+                    // Can't stat — return zeros
+                    let buf = unsafe { core::slice::from_raw_parts_mut(cstat, 40) };
+                    for b in buf.iter_mut() {
+                        *b = 0;
+                    }
+                    return Ok(0);
+                }
+            };
+
+            // Calculate pages in the requested range
+            let range_end = off.saturating_add(len).min(file_size);
+            let range_start = off.min(file_size);
+            let bytes_in_range = range_end.saturating_sub(range_start);
+            let page_size = 4096u64;
+            let nr_pages = bytes_in_range.div_ceil(page_size);
+
+            // struct cachestat { __u64 nr_cache; __u64 nr_dirty; __u64 nr_writeback; __u64 nr_evictable; __u64 nr_recently_evicted; }
+            // All pages are in memory (no swap/backing store), so nr_cache = total pages
+            let buf = unsafe { core::slice::from_raw_parts_mut(cstat, 40) };
             for b in buf.iter_mut() {
                 *b = 0;
             }
-            // Set nr_cache to a large number (all pages cached)
             unsafe {
-                *(args[2] as *mut i64) = 0x7FFFFFFFFFFFFFFF;
+                let cs = &mut *(cstat as *mut (u64, u64, u64, u64, u64));
+                cs.0 = nr_pages; // nr_cache
+                cs.1 = 0; // nr_dirty
+                cs.2 = 0; // nr_writeback
+                cs.3 = nr_pages; // nr_evictable
+                cs.4 = 0; // nr_recently_evicted
             }
             Ok(0)
         }
@@ -1320,23 +1361,39 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
 
         // ── statmount (kernel 6.8+, new mount API) ───────────────────
         crate::syscall::SyscallNumber::Statmount => {
-            // statmount(mask, buf, bufsize, flags)
-            if args[1] == 0 {
+            // statmount(mnt_id, mask, buf, bufsize, flags)
+            // mnt_id is args[0], mask is args[1], buf is args[2], bufsize is args[3]
+            let buf = args[2] as *mut u8;
+            let bufsize = args[3] as usize;
+
+            if buf.is_null() {
                 return Err(LinuxError::EFAULT);
             }
-            // struct statmount { __u32 size; __u32 mnt_id; __u32 mnt_parent_id; ... }
-            // Return zeroed buffer with minimal info
-            let bufsize = args[2] as usize;
+
+            let vfs = crate::vfs::get_vfs();
+            let mount_paths = vfs.list_mount_paths();
+
+            // struct statmount { __u32 size; __u32 mnt_id; __u32 mnt_parent_id;
+            //   __u32 mnt_id_old; __u32 mnt_parent_id_old; __u64 sr_dev;
+            //   __u64 sb_flags; __u64 opt; __u64 opt_fields; __u64 pad[16]; }
+            // Total: 160 bytes minimum
             let len = core::cmp::min(bufsize, 256);
-            let buf = unsafe { core::slice::from_raw_parts_mut(args[1] as *mut u8, len) };
-            for b in buf.iter_mut() {
+            let buf_slice = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+            for b in buf_slice.iter_mut() {
                 *b = 0;
             }
-            // Set size field
-            if len >= 4 {
-                unsafe {
-                    *(args[1] as *mut u32) = len as u32;
-                }
+
+            unsafe {
+                let sm = &mut *(buf as *mut (u32, u32, u32, u32, u32, u64, u64, u64, u64));
+                sm.0 = len as u32; // size
+                sm.1 = 1; // mnt_id (root mount = 1)
+                sm.2 = 0; // mnt_parent_id (no parent for root)
+                sm.3 = 1; // mnt_id_old
+                sm.4 = 0; // mnt_parent_id_old
+                sm.5 = 0; // sr_dev
+                sm.6 = 0; // sb_flags
+                sm.7 = 0; // opt
+                sm.8 = 0; // opt_fields
             }
             Ok(0)
         }
@@ -1344,11 +1401,25 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         // ── listmount (kernel 6.8+, new mount API) ───────────────────
         crate::syscall::SyscallNumber::Listmount => {
             // listmount(mnt_id, buf, bufsize, flags)
-            if args[1] == 0 {
+            // mnt_id is args[0], buf is args[1], bufsize is args[2]
+            let buf = args[1] as *mut u64;
+            let bufsize = args[2] as usize;
+
+            if buf.is_null() {
                 return Err(LinuxError::EFAULT);
             }
-            // Return empty list (no child mounts)
-            Ok(0)
+
+            let vfs = crate::vfs::get_vfs();
+            let mount_paths = vfs.list_mount_paths();
+
+            // Return mount IDs (1-based index for each mount)
+            let count = core::cmp::min(mount_paths.len(), bufsize / 8);
+            for i in 0..count {
+                unsafe {
+                    *buf.add(i) = (i + 1) as u64;
+                }
+            }
+            Ok(count as u64)
         }
 
         // ── LSM syscalls (kernel 6.8+) ───────────────────────────────
@@ -1365,17 +1436,25 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         // ── mseal (kernel 6.10+, memory sealing) ─────────────────────
         crate::syscall::SyscallNumber::Mseal => {
             // mseal(addr, len, flags)
-            // Memory sealing prevents changes to VMA permissions
-            // Accept silently — our mmap/mprotect doesn't enforce sealing
-            let _addr = args[0];
-            let _len = args[1] as usize;
+            let addr = args[0] as *mut u8;
+            let len = args[1] as usize;
             let flags = args[2] as u32;
-            // Only valid flag is MSEAL_SEAL (1)
-            if flags & !1 != 0 {
-                return Err(LinuxError::EINVAL);
-            }
-            Ok(0)
+            linux_compat::memory_ops::mseal(addr, len, flags).map(|v| v as u64)
         }
+
+        // ── Linux 6.12+ syscalls (463-471) — not yet implemented ──────
+        crate::syscall::SyscallNumber::Setxattrat
+        | crate::syscall::SyscallNumber::Getxattrat
+        | crate::syscall::SyscallNumber::Listxattrat
+        | crate::syscall::SyscallNumber::Removexattrat
+        | crate::syscall::SyscallNumber::OpenTreeAttr
+        | crate::syscall::SyscallNumber::FileGetattr
+        | crate::syscall::SyscallNumber::FileSetattr
+        | crate::syscall::SyscallNumber::Listns
+        | crate::syscall::SyscallNumber::RseqSliceYield
+        | crate::syscall::SyscallNumber::Uretprobe
+        | crate::syscall::SyscallNumber::Uprobe => Err(LinuxError::ENOSYS),
+
         crate::syscall::SyscallNumber::Bpf => {
             let ret = crate::bpf::bpf(args[0] as u32, args[1], args[2] as u32);
             if ret < 0 {
@@ -1639,29 +1718,59 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         | crate::syscall::SyscallNumber::Vserver => Err(LinuxError::EINVAL),
         // ── Adjtimex (NTP time adjustment) ────────────────────────────
         crate::syscall::SyscallNumber::Adjtimex => {
-            // Read mode: return current clock state (TIME_OK)
+            // adjtimex(struct timex *)
             if args[0] == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            // struct timbuf { modes, offset, freq, maxerror, esterror,
-            //   status, constant, precision, tolerance, tick, ppsfreq, jitter,
-            //   shift, stabil, jitcnt, calcnt, errcnt, stbcnt, tai, __padding }
-            // 208 bytes. Return TIME_OK (0).
-            let buf = unsafe { core::slice::from_raw_parts_mut(args[0] as *mut u8, 208) };
+            // struct timex { u32 modes; s32 offset; s32 freq; s32 maxerror;
+            //   s32 esterror; s32 status; s32 constant; s32 precision;
+            //   s32 tolerance; s32 tick; u32 ppsfreq; s32 jitter; s32 shift;
+            //   s32 stabil; s32 jitcnt; s32 calcnt; s32 errcnt; s32 stbcnt;
+            //   s32 tai; s32:32 padding }
+            // 208 bytes.
+            let buf_ptr = args[0] as *mut u8;
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, 208) };
+
+            // Read modes field (first 4 bytes)
+            let modes = unsafe { *(args[0] as *const u32) };
+
+            // ADJ_OFFSET = 0x0001, ADJ_FREQUENCY = 0x0002, ADJ_MAXERROR = 0x0004
+            // ADJ_ESTERROR = 0x0008, ADJ_STATUS = 0x0010, ADJ_TIMECONST = 0x0020
+            // ADJ_TAI = 0x0080
+            // For read-only (modes == 0), just return current state.
+            // For write modes, we accept but don't apply NTP adjustments
+            // since we don't have a real NTP implementation.
+
+            // Clear the buffer and return TIME_OK
             for b in buf.iter_mut() {
                 *b = 0;
+            }
+            // Preserve modes field for read-back
+            unsafe {
+                *(args[0] as *mut u32) = modes;
             }
             Ok(0) // TIME_OK
         }
         crate::syscall::SyscallNumber::ClockAdjtime => {
-            // clock_adjtime(clockid, struct timbuf*)
-            // Same as adjtimex but for a specific clock — we only support CLOCK_REALTIME
+            // clock_adjtime(clockid, struct timex *)
+            // Same as adjtimex but for a specific clock.
+            // We support CLOCK_REALTIME (0) and CLOCK_MONOTONIC (1).
+            let clockid = args[0] as i32;
             if args[1] == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let buf = unsafe { core::slice::from_raw_parts_mut(args[1] as *mut u8, 208) };
+            // Validate clockid
+            if clockid < 0 || clockid > 1 {
+                return Err(LinuxError::EINVAL);
+            }
+            let buf_ptr = args[1] as *mut u8;
+            let modes = unsafe { *(args[1] as *const u32) };
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, 208) };
             for b in buf.iter_mut() {
                 *b = 0;
+            }
+            unsafe {
+                *(args[1] as *mut u32) = modes;
             }
             Ok(0) // TIME_OK
         }
@@ -1672,33 +1781,98 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             let pid1 = args[0] as i32;
             let pid2 = args[1] as i32;
             let kcmp_type = args[2] as u32;
-            let _idx1 = args[3];
-            let _idx2 = args[4];
+            let idx1 = args[3];
+            let idx2 = args[4];
 
             // KCMP_TYPES: 0=VM, 1=FILES, 2=FS, 3=SIGHAND, 4=IO, 5=SYSVSEM, 6=EPOLL_TFD
             if kcmp_type > 6 {
                 return Err(LinuxError::EINVAL);
             }
+
+            // Validate PIDs exist
+            let pm = crate::process::get_process_manager();
+            if pm.get_process(pid1 as u32).is_none() || pm.get_process(pid2 as u32).is_none() {
+                return Err(LinuxError::ESRCH);
+            }
+
             // If same PID, resources are always shared
             if pid1 == pid2 {
                 return Ok(0); // KCMP_EQUAL
             }
-            // Different processes — no sharing in our implementation
+
+            // KCMP_FILES (type 1): compare file descriptors at idx1/idx2
+            if kcmp_type == 1 {
+                let fd1 = idx1 as u32;
+                let fd2 = idx2 as u32;
+                let pcb1 = pm.get_process(pid1 as u32);
+                let pcb2 = pm.get_process(pid2 as u32);
+
+                if let (Some(p1), Some(p2)) = (pcb1, pcb2) {
+                    let fd1_info = p1.file_descriptors.get(&fd1);
+                    let fd2_info = p2.file_descriptors.get(&fd2);
+                    if let (Some(f1), Some(f2)) = (fd1_info, fd2_info) {
+                        // Compare file descriptor types and offsets
+                        if f1.fd_type == f2.fd_type && f1.offset == f2.offset {
+                            return Ok(0); // KCMP_EQUAL
+                        }
+                    }
+                }
+                return Ok(1); // KCMP_NOT_EQUAL
+            }
+
+            // KCMP_VM (type 0): compare memory regions
+            // For different processes, VM is never shared (no threads)
+            // KCMP_FS, KCMP_SIGHAND, KCMP_IO, KCMP_SYSVSEM: no sharing
             Ok(1) // KCMP_NOT_EQUAL
         }
 
         // ── RestartSyscall ────────────────────────────────────────────
         crate::syscall::SyscallNumber::RestartSyscall => {
-            // restart_syscall() — restart a syscall interrupted by a signal
-            // Since we don't implement signal-interrupted syscall restart,
-            // return EINTR to indicate no restartable syscall
-            Err(LinuxError::EINTR)
+            // restart_syscall() — restart a syscall interrupted by a signal.
+            // The PCB stores the interrupted syscall number and args in
+            // restart_info. We pop it and re-invoke route_syscall.
+            let pid = crate::process::current_pid();
+            let pm = crate::process::get_process_manager();
+            let restart = pm
+                .with_process_mut(pid, |pcb| pcb.restart_info.take())
+                .ok_or(LinuxError::ESRCH)?;
+
+            if let Some((syscall_num, syscall_args)) = restart {
+                // Re-invoke the original syscall
+                route_syscall(syscall_num, &syscall_args)
+            } else {
+                // No saved syscall to restart
+                Err(LinuxError::EINTR)
+            }
         }
 
         // ── SetMempolicyHomeNode ──────────────────────────────────────
         crate::syscall::SyscallNumber::SetMempolicyHomeNode => {
             // set_mempolicy_home_node(start, end, home_node, flags)
-            // NUMA home node policy — no NUMA in RustOS, accept silently
+            let start = args[0];
+            let end = args[1];
+            let home_node = args[2] as u64;
+            let _flags = args[3] as u32;
+
+            // Validate address range
+            if start >= end {
+                return Err(LinuxError::EINVAL);
+            }
+            if start >= 0xFFFF_8000_0000_0000 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            // Must be page-aligned
+            if start & 0xFFF != 0 || end & 0xFFF != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            // Only node 0 is valid in our single-node system
+            if home_node != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            // No NUMA hardware — accept silently
             Ok(0)
         }
 
@@ -1803,13 +1977,32 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         }
 
         // ── Quotactl (fd-based) ───────────────────────────────────────
-        crate::syscall::SyscallNumber::QuotactlFd => linux_compat::fs_ops::quotactl(
-            args[0] as i32,
-            args[1] as *const u8,
-            args[2] as i32,
-            args[3] as *mut u8,
-        )
-        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::QuotactlFd => {
+            // quotactl_fd(fd, cmd, id, addr)
+            // Like quotactl but uses a mount fd instead of a special device path.
+            let fd = args[0] as i32;
+            let cmd = args[1] as i32;
+            let id = args[2] as i32;
+            let addr = args[3] as *mut u8;
+
+            // Validate that fd is a valid open file descriptor
+            match crate::vfs::vfs_fstat(fd) {
+                Ok(stat) => {
+                    if stat.inode_type != crate::vfs::InodeType::Directory {
+                        return Err(LinuxError::ENOTDIR);
+                    }
+                }
+                Err(_) => {
+                    return Err(LinuxError::EBADF);
+                }
+            }
+
+            // Delegate to quotactl with a null special (fd-based path)
+            // The quota module resolves by special string; for fd-based,
+            // we pass the fd as a synthetic special path.
+            let special_str = alloc::format!("/proc/self/fd/{}\0", fd);
+            crate::quota::quotactl(cmd, special_str.as_ptr(), id, addr).map(|v| v as u64)
+        }
 
         // ── SysV IPC syscalls ────────────────────────────────────────
         crate::syscall::SyscallNumber::Semctl => {
@@ -1916,64 +2109,13 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             args[5] as *const u8,
         )
         .map(|v| v as u64),
-        crate::syscall::SyscallNumber::Mknodat => {
-            // mknodat(dirfd, pathname, mode, dev)
-            let dirfd = args[0] as i32;
-            let pathname = args[1] as *const u8;
-            let mode = args[2] as u32;
-            let _dev = args[3] as u64;
-
-            if pathname.is_null() {
-                return Err(LinuxError::EFAULT);
-            }
-
-            const S_IFMT: u32 = 0o170000;
-            const S_IFIFO: u32 = 0o010000;
-            const S_IFCHR: u32 = 0o002000;
-            const S_IFBLK: u32 = 0o006000;
-            const S_IFREG: u32 = 0o100000;
-            const S_IFSOCK: u32 = 0o140000;
-
-            let file_type = mode & S_IFMT;
-
-            match file_type {
-                S_IFIFO => {
-                    let path = linux_compat::file_ops::c_str_to_string(pathname)
-                        .map_err(|_| LinuxError::EFAULT)?;
-                    let full_path = if path.starts_with('/') {
-                        path
-                    } else {
-                        alloc::format!("/{}", path)
-                    };
-                    crate::vfs::get_vfs()
-                        .mknod(&full_path, crate::vfs::InodeType::Fifo, mode)
-                        .map_err(|_| LinuxError::EEXIST)?;
-                    Ok(0)
-                }
-                S_IFREG => {
-                    let path = linux_compat::file_ops::c_str_to_string(pathname)
-                        .map_err(|_| LinuxError::EFAULT)?;
-                    let full_path = if path.starts_with('/') {
-                        path
-                    } else {
-                        alloc::format!("/{}", path)
-                    };
-                    crate::vfs::get_vfs()
-                        .mknod(&full_path, crate::vfs::InodeType::File, mode)
-                        .map_err(|_| LinuxError::EEXIST)?;
-                    Ok(0)
-                }
-                S_IFSOCK => {
-                    // Creating a socket file — return EPERM (no socket fs support)
-                    Err(LinuxError::EPERM)
-                }
-                S_IFCHR | S_IFBLK => {
-                    // Device nodes require CAP_MKNOD — return EPERM
-                    Err(LinuxError::EPERM)
-                }
-                _ => Err(LinuxError::EINVAL),
-            }
-        }
+        crate::syscall::SyscallNumber::Mknodat => linux_compat::file_ops::mknodat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u64,
+        )
+        .map(|v| v as u64),
         crate::syscall::SyscallNumber::NameToHandleAt => crate::file_handle::name_to_handle_at(
             args[0] as i32,
             args[1] as *const u8,
@@ -2018,6 +2160,28 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                         let data = unsafe { core::slice::from_raw_parts(base, len) };
                         match ipc.pipe_write(pipe_id, data) {
                             Ok(n) => total += n,
+                            Err(_) => break,
+                        }
+                    }
+                    Ok(total as u64)
+                }
+                crate::vfs::FdKind::PipeRead(pipe_id) => {
+                    let ipc = crate::process::ipc::get_ipc_manager();
+                    let mut total = 0usize;
+                    for i in 0..nr_segs {
+                        let base = unsafe { *(iov.add(i * 16) as *const *mut u8) };
+                        let len = unsafe { *(iov.add(i * 16 + 8) as *const usize) };
+                        if base.is_null() || len == 0 {
+                            continue;
+                        }
+                        let buf = unsafe { core::slice::from_raw_parts_mut(base, len) };
+                        match ipc.pipe_read(pipe_id, buf) {
+                            Ok(n) => {
+                                total += n;
+                                if n < len {
+                                    break;
+                                }
+                            }
                             Err(_) => break,
                         }
                     }
@@ -2200,6 +2364,14 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                     ) {
                         let exit_code = pcb.exit_code.unwrap_or(0);
                         let uid = pcb.uid;
+                        // Determine if the child exited normally or was killed by a signal.
+                        // In Linux, exit status >= 128 means the process was terminated
+                        // by signal (status - 128).
+                        let (si_code, si_status) = if exit_code >= 128 {
+                            (2, exit_code - 128) // CLD_KILLED, signal number
+                        } else {
+                            (1, exit_code) // CLD_EXITED, exit code
+                        };
                         // Write siginfo
                         if !infop.is_null() {
                             #[repr(C)]
@@ -2217,11 +2389,11 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                                 *(infop as *mut SigInfo) = SigInfo {
                                     si_signo: 17, // SIGCHLD
                                     si_errno: 0,
-                                    si_code: 1, // CLD_EXITED
+                                    si_code,
                                     _pad: 0,
                                     si_pid: pid,
                                     si_uid: uid,
-                                    si_status: exit_code,
+                                    si_status,
                                     _pad2: [0; 32],
                                 };
                             }
@@ -2423,164 +2595,58 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 __reserved: u32,
             }
 
-            // Wait on each futex — return index of first woken
-            for i in 0..nr_waiters {
-                let w = unsafe { &*(waiters.add(i as usize * 32) as *const FutexWaitv) };
-                let expected = w.val;
-                let uaddr = w.uaddr as *const u32;
-                if uaddr.is_null() {
-                    continue;
-                }
-                let current = unsafe { core::ptr::read_volatile(uaddr) };
-                if current != expected as u32 {
-                    // Value changed — wake immediately
-                    return Ok(i as u64);
-                }
-                // Would block on this futex — try next
-            }
+            let pid = crate::process::current_pid();
 
-            // All futexes still at expected values — would block
-            // For now, return ETIMEDOUT rather than blocking forever
-            Err(LinuxError::EAGAIN)
+            loop {
+                // Check all futexes for any that have changed
+                for i in 0..nr_waiters {
+                    let w = unsafe { &*(waiters.add(i as usize * 32) as *const FutexWaitv) };
+                    let expected = w.val;
+                    let uaddr = w.uaddr as *const u32;
+                    if uaddr.is_null() {
+                        continue;
+                    }
+                    let current = unsafe { core::ptr::read_volatile(uaddr) };
+                    if current != expected as u32 {
+                        // Value changed — wake immediately
+                        return Ok(i as u64);
+                    }
+                }
+
+                // All futexes still at expected values — block and wait
+                let pm = crate::process::get_process_manager();
+                let _ = pm.block_process(pid);
+                crate::process::scheduler::yield_cpu();
+
+                // After being woken, loop back and re-check all futexes
+                // If a signal woke us, return EINTR
+                let pcb = pm.get_process(pid);
+                if let Some(ref pcb) = pcb {
+                    if !pcb.pending_signals.is_empty() {
+                        return Err(LinuxError::EINTR);
+                    }
+                }
+            }
         }
 
         // ── Statx ─────────────────────────────────────────────────────
-        crate::syscall::SyscallNumber::Statx => {
-            let dirfd = args[0] as i32;
-            let pathname = args[1] as *const u8;
-            let flags = args[2] as i32;
-            let mask = args[3] as u32;
-            let statxbuf = args[4] as *mut u8;
-            if pathname.is_null() || statxbuf.is_null() {
-                return Err(LinuxError::EFAULT);
-            }
-
-            // Read pathname
-            let mut path_len = 0;
-            while unsafe { *pathname.add(path_len) } != 0 {
-                path_len += 1;
-            }
-            let path_bytes = unsafe { core::slice::from_raw_parts(pathname, path_len) };
-            let path_str = alloc::string::String::from_utf8_lossy(path_bytes);
-
-            // Get stat from VFS
-            let vfs = crate::vfs::get_vfs();
-            match vfs.stat(&path_str) {
-                Ok(stat) => {
-                    // struct statx_timestamp { i64 tv_sec; u32 tv_nsec; i32 __reserved; }
-                    #[repr(C)]
-                    struct StatxTimestamp {
-                        tv_sec: i64,
-                        tv_nsec: u32,
-                        __reserved: i32,
-                    }
-                    // struct statx (simplified — 256 bytes)
-                    #[repr(C)]
-                    struct Statx {
-                        stx_mask: u32,
-                        stx_blksize: u32,
-                        stx_attributes: u64,
-                        stx_nlink: u32,
-                        stx_uid: u32,
-                        stx_gid: u32,
-                        stx_mode: u16,
-                        __spare0: u16,
-                        stx_ino: u64,
-                        stx_size: u64,
-                        stx_blocks: u64,
-                        stx_attributes_mask: u64,
-                        stx_atime: StatxTimestamp,
-                        stx_btime: StatxTimestamp,
-                        stx_ctime: StatxTimestamp,
-                        stx_mtime: StatxTimestamp,
-                        stx_rdev_major: u32,
-                        stx_rdev_minor: u32,
-                        stx_dev_major: u32,
-                        stx_dev_minor: u32,
-                        stx_mnt_id: u64,
-                        stx_dio_mem_align: u32,
-                        stx_dio_offset_align: u32,
-                        __spare3: [u64; 12],
-                    }
-
-                    let stx = Statx {
-                        stx_mask: mask,
-                        stx_blksize: stat.blksize as u32,
-                        stx_attributes: 0,
-                        stx_nlink: stat.nlink,
-                        stx_uid: stat.uid,
-                        stx_gid: stat.gid,
-                        stx_mode: stat.mode as u16,
-                        __spare0: 0,
-                        stx_ino: stat.ino,
-                        stx_size: stat.size,
-                        stx_blocks: stat.blocks,
-                        stx_attributes_mask: 0,
-                        stx_atime: StatxTimestamp {
-                            tv_sec: stat.atime as i64,
-                            tv_nsec: 0,
-                            __reserved: 0,
-                        },
-                        stx_btime: StatxTimestamp {
-                            tv_sec: stat.ctime as i64,
-                            tv_nsec: 0,
-                            __reserved: 0,
-                        },
-                        stx_ctime: StatxTimestamp {
-                            tv_sec: stat.ctime as i64,
-                            tv_nsec: 0,
-                            __reserved: 0,
-                        },
-                        stx_mtime: StatxTimestamp {
-                            tv_sec: stat.mtime as i64,
-                            tv_nsec: 0,
-                            __reserved: 0,
-                        },
-                        stx_rdev_major: 0,
-                        stx_rdev_minor: 0,
-                        stx_dev_major: 0,
-                        stx_dev_minor: 0,
-                        stx_mnt_id: 0,
-                        stx_dio_mem_align: 0,
-                        stx_dio_offset_align: 0,
-                        __spare3: [0; 12],
-                    };
-                    unsafe {
-                        core::ptr::write(statxbuf as *mut Statx, stx);
-                    }
-                    Ok(0)
-                }
-                Err(_) => Err(LinuxError::ENOENT),
-            }
-        }
+        crate::syscall::SyscallNumber::Statx => linux_compat::file_ops::statx(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as u32,
+            args[4] as *mut linux_compat::Statx,
+        )
+        .map(|v| v as u64),
 
         // ── Setfsuid / Setfsgid ───────────────────────────────────────
         crate::syscall::SyscallNumber::Setfsuid => {
             let uid = args[0] as u32;
-            let pid = crate::process::current_pid();
-            let pm = crate::process::get_process_manager();
-            let old_fsuid = pm.get_process(pid).map(|p| p.euid).unwrap_or(0);
-            pm.with_process_mut(pid, |pcb| {
-                // Linux setfsuid sets the filesystem uid; we use euid as proxy
-                if uid != 0xFFFFFFFF {
-                    pcb.euid = uid;
-                }
-            })
-            .ok_or(LinuxError::ESRCH)?;
-            Ok(old_fsuid as u64)
+            Ok(linux_compat::process_ops::setfsuid(uid) as u64)
         }
         crate::syscall::SyscallNumber::Setfsgid => {
             let gid = args[0] as u32;
-            let pid = crate::process::current_pid();
-            let pm = crate::process::get_process_manager();
-            let old_fsgid = pm.get_process(pid).map(|p| p.egid).unwrap_or(0);
-            pm.with_process_mut(pid, |pcb| {
-                if gid != 0xFFFFFFFF {
-                    pcb.egid = gid;
-                }
-            })
-            .ok_or(LinuxError::ESRCH)?;
-            Ok(old_fsgid as u64)
+            Ok(linux_compat::process_ops::setfsgid(gid) as u64)
         }
 
         // ── Time ──────────────────────────────────────────────────────
@@ -2595,37 +2661,18 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         }
 
         // ── TimerGettime / TimerSettime ───────────────────────────────
-        crate::syscall::SyscallNumber::TimerGettime => {
-            let timerid = args[0] as i32;
-            let curr_value = args[1] as *mut u8;
-            if curr_value.is_null() {
-                return Err(LinuxError::EFAULT);
-            }
-            // struct itimerspec { struct timespec it_interval; struct timespec it_value; }
-            // Return zeroed — no active timers yet
-            let zeros = [0u8; 32];
-            unsafe {
-                core::ptr::copy_nonoverlapping(zeros.as_ptr(), curr_value, 32);
-            }
-            Ok(0)
-        }
-        crate::syscall::SyscallNumber::TimerSettime => {
-            let timerid = args[0] as i32;
-            let _flags = args[1] as i32;
-            let new_value = args[2] as *const u8;
-            let old_value = args[3] as *mut u8;
-            if new_value.is_null() {
-                return Err(LinuxError::EFAULT);
-            }
-            // If old_value is provided, return the previous timer value (zeroed)
-            if !old_value.is_null() {
-                let zeros = [0u8; 32];
-                unsafe {
-                    core::ptr::copy_nonoverlapping(zeros.as_ptr(), old_value, 32);
-                }
-            }
-            Ok(0)
-        }
+        crate::syscall::SyscallNumber::TimerGettime => linux_compat::time_ops::timer_gettime(
+            args[0] as linux_compat::time_ops::TimerId,
+            args[1] as *mut u8,
+        )
+        .map(|v| v as u64),
+        crate::syscall::SyscallNumber::TimerSettime => linux_compat::time_ops::timer_settime(
+            args[0] as linux_compat::time_ops::TimerId,
+            args[1] as i32,
+            args[2] as *const u8,
+            args[3] as *mut u8,
+        )
+        .map(|v| v as u64),
 
         _ => Err(LinuxError::ENOSYS),
     }
@@ -2918,77 +2965,48 @@ fn route_process_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> 
             linux_compat::process_ops::setgid(gid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Setreuid => {
+            let ruid = args[0] as u32;
             let euid = args[1] as u32;
-            linux_compat::process_ops::seteuid(euid).map(|v| v as u64)
+            linux_compat::process_ops::setreuid(ruid, euid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Setregid => {
+            let rgid = args[0] as u32;
             let egid = args[1] as u32;
-            linux_compat::process_ops::setegid(egid).map(|v| v as u64)
+            linux_compat::process_ops::setregid(rgid, egid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Setresuid => {
+            let ruid = args[0] as u32;
             let euid = args[1] as u32;
-            linux_compat::process_ops::seteuid(euid).map(|v| v as u64)
+            let suid = args[2] as u32;
+            linux_compat::process_ops::setresuid(ruid, euid, suid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Getresuid => {
             let ruid = args[0] as *mut u32;
             let euid = args[1] as *mut u32;
             let suid = args[2] as *mut u32;
-            unsafe {
-                if !ruid.is_null() {
-                    *ruid = linux_compat::process_ops::getuid();
-                }
-                if !euid.is_null() {
-                    *euid = linux_compat::process_ops::geteuid();
-                }
-                if !suid.is_null() {
-                    *suid = linux_compat::process_ops::geteuid();
-                }
-            }
-            Ok(0)
+            linux_compat::process_ops::getresuid(ruid, euid, suid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Setresgid => {
+            let rgid = args[0] as u32;
             let egid = args[1] as u32;
-            linux_compat::process_ops::setegid(egid).map(|v| v as u64)
+            let sgid = args[2] as u32;
+            linux_compat::process_ops::setresgid(rgid, egid, sgid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Getresgid => {
             let rgid = args[0] as *mut u32;
             let egid = args[1] as *mut u32;
             let sgid = args[2] as *mut u32;
-            unsafe {
-                if !rgid.is_null() {
-                    *rgid = linux_compat::process_ops::getgid();
-                }
-                if !egid.is_null() {
-                    *egid = linux_compat::process_ops::getegid();
-                }
-                if !sgid.is_null() {
-                    *sgid = linux_compat::process_ops::getegid();
-                }
-            }
-            Ok(0)
+            linux_compat::process_ops::getresgid(rgid, egid, sgid).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Getgroups => {
             let size = args[0] as i32;
             let list = args[1] as *mut u32;
-            if size == 0 {
-                return Ok(1);
-            }
-            if size < 1 {
-                return Err(LinuxError::EINVAL);
-            }
-            unsafe {
-                if !list.is_null() {
-                    *list = 0;
-                }
-            }
-            Ok(1)
+            linux_compat::process_ops::getgroups(size, list).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Setgroups => {
             let size = args[0] as i32;
-            if size < 0 {
-                return Err(LinuxError::EINVAL);
-            }
-            Ok(0)
+            let list = args[1] as *const u32;
+            linux_compat::process_ops::setgroups(size, list).map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Setpgid => {
             let pid = args[0] as i32;

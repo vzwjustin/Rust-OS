@@ -351,12 +351,18 @@ pub fn timer_settime(
 
     // Store previous timer settings in old_value.
     if !old_value.is_null() {
+        let now = crate::time::uptime_ns();
+        let old_remaining = if timer.expires_ns != 0 && timer.expires_ns > now {
+            timer.expires_ns - now
+        } else {
+            0
+        };
         unsafe {
             *(old_value as *mut ITimerSpec) = ITimerSpec {
                 it_interval_sec: timer.interval_ns / 1_000_000_000,
                 it_interval_nsec: timer.interval_ns % 1_000_000_000,
-                it_value_sec: 0,
-                it_value_nsec: 0,
+                it_value_sec: old_remaining / 1_000_000_000,
+                it_value_nsec: old_remaining % 1_000_000_000,
             };
         }
     }

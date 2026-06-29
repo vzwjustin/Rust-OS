@@ -437,6 +437,10 @@ pub fn mark_cpu_online(cpu_id: u32) {
         if !cpu_data[cpu_id as usize].online {
             cpu_data[cpu_id as usize].online = true;
             ONLINE_CPUS.fetch_add(1, Ordering::AcqRel);
+            drop(cpu_data);
+            let mut id = cpu_id;
+            let _ = crate::notifier::CPU_CHAIN
+                .notify(1, (&mut id as *mut u32).cast::<core::ffi::c_void>());
         }
     }
 }
@@ -456,6 +460,10 @@ pub fn mark_cpu_offline(cpu_id: u32) {
         if cpu_data[cpu_id as usize].online {
             cpu_data[cpu_id as usize].online = false;
             ONLINE_CPUS.fetch_sub(1, Ordering::AcqRel);
+            drop(cpu_data);
+            let mut id = cpu_id;
+            let _ = crate::notifier::CPU_CHAIN
+                .notify(2, (&mut id as *mut u32).cast::<core::ffi::c_void>());
         }
     }
 }

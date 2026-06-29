@@ -156,12 +156,24 @@ enum IpcResourceType {
     SharedMemory,
 }
 
+/// A pending semaphore operation that a blocked process is waiting on.
+#[derive(Debug, Clone, Copy)]
+struct SemWaitEntry {
+    pid: u32,
+    sem_num: u16,
+    /// Target value: for P ops (sem_op < 0), we need semval + sem_op >= 0.
+    /// For zero-wait (sem_op == 0), we need semval == 0.
+    sem_op: i16,
+}
+
 /// Semaphore structure for System V semaphores
 #[derive(Debug)]
 struct SemaphoreSet {
     id: IpcId,
     semaphores: Vec<i32>,
     owner_pid: u32,
+    /// PIDs waiting for semaphore values to change
+    waiters: Vec<SemWaitEntry>,
 }
 
 /// Global semaphore table
@@ -511,6 +523,7 @@ pub fn semget(key: Key, nsems: i32, semflg: i32) -> LinuxResult<SemId> {
                     id: sem_id,
                     semaphores,
                     owner_pid: current_pid(),
+                    waiters: Vec::new(),
                 };
 
                 let mut sem_table = SEMAPHORE_TABLE.write();
@@ -534,6 +547,79 @@ struct SemBuf {
     sem_flg: i16, // Operation flags
 }
 
+/// IPC_NOWAIT flag for semop
+const SEM_IPC_NOWAIT: i16 = 0o4000;
+
+/// Check if all operations in a semop batch can proceed without blocking.
+/// Returns Ok(()) if all can proceed, or Err(index) indicating the first
+/// operation that would block.
+fn try_semops(sem_set: &SemaphoreSet, ops: &[SemBuf]) -> Result<(), usize> {
+    // Work on a temporary copy to handle atomicity (all ops or none)
+    let mut temp: Vec<i32> = sem_set.semaphores.clone();
+
+    for (i, op) in ops.iter().enumerate() {
+        let sem_num = op.sem_num as usize;
+        if sem_num >= temp.len() {
+            return Err(usize::MAX); // EFBIG indicator
+        }
+
+        if op.sem_op > 0 {
+            temp[sem_num] += op.sem_op as i32;
+        } else if op.sem_op < 0 {
+            let new_val = temp[sem_num] + op.sem_op as i32;
+            if new_val < 0 {
+                return Err(i); // Would block at operation i
+            }
+            temp[sem_num] = new_val;
+        } else {
+            // Wait for zero
+            if temp[sem_num] != 0 {
+                return Err(i); // Would block at operation i
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Apply semaphore operations (assumes they won't block — caller verified with try_semops).
+/// Wakes any waiters that can now proceed after the operations are applied.
+fn apply_semops(sem_set: &mut SemaphoreSet, ops: &[SemBuf]) {
+    for op in ops {
+        let sem_num = op.sem_num as usize;
+        if op.sem_op > 0 {
+            sem_set.semaphores[sem_num] += op.sem_op as i32;
+        } else if op.sem_op < 0 {
+            sem_set.semaphores[sem_num] += op.sem_op as i32;
+        }
+        // sem_op == 0: wait-for-zero is a no-op on the value
+    }
+
+    // Wake any waiters that can now proceed
+    let mut to_wake: Vec<u32> = Vec::new();
+    sem_set.waiters.retain(|entry| {
+        let sem_num = entry.sem_num as usize;
+        let can_proceed = if entry.sem_op < 0 {
+            (sem_set.semaphores[sem_num] + entry.sem_op as i32) >= 0
+        } else if entry.sem_op == 0 {
+            sem_set.semaphores[sem_num] == 0
+        } else {
+            true
+        };
+
+        if can_proceed {
+            to_wake.push(entry.pid);
+            false // Remove from waiters
+        } else {
+            true // Keep waiting
+        }
+    });
+
+    for pid in to_wake {
+        let _ = crate::process::get_process_manager().unblock_process(pid);
+    }
+}
+
 /// semop - semaphore operations
 pub fn semop(semid: SemId, sops: *mut u8, nsops: usize) -> LinuxResult<i32> {
     inc_ops();
@@ -550,39 +636,56 @@ pub fn semop(semid: SemId, sops: *mut u8, nsops: usize) -> LinuxResult<i32> {
     let sembuf_ptr = sops as *const SemBuf;
     let operations: Vec<SemBuf> = (0..nsops).map(|i| unsafe { *sembuf_ptr.add(i) }).collect();
 
-    let mut sem_table = SEMAPHORE_TABLE.write();
-    let sem_set = sem_table
-        .get_mut(&(semid as IpcId))
-        .ok_or(LinuxError::EINVAL)?;
+    // Check for IPC_NOWAIT on any operation
+    let nowait = operations.iter().any(|op| op.sem_flg & SEM_IPC_NOWAIT != 0);
 
-    // Perform all operations
-    for op in operations {
-        let sem_num = op.sem_num as usize;
+    let pid = crate::process::current_pid();
 
-        if sem_num >= sem_set.semaphores.len() {
-            return Err(LinuxError::EFBIG);
-        }
+    loop {
+        let mut sem_table = SEMAPHORE_TABLE.write();
+        let sem_set = sem_table
+            .get_mut(&(semid as IpcId))
+            .ok_or(LinuxError::EINVAL)?;
 
-        if op.sem_op > 0 {
-            // Increment semaphore (V operation)
-            sem_set.semaphores[sem_num] += op.sem_op as i32;
-        } else if op.sem_op < 0 {
-            // Decrement semaphore (P operation)
-            let new_val = sem_set.semaphores[sem_num] + op.sem_op as i32;
-            if new_val < 0 {
-                // Would block - for now return error
-                return Err(LinuxError::EAGAIN);
+        // Try to perform all operations atomically
+        match try_semops(sem_set, &operations) {
+            Ok(()) => {
+                apply_semops(sem_set, &operations);
+                drop(sem_table);
+                return Ok(0);
             }
-            sem_set.semaphores[sem_num] = new_val;
-        } else {
-            // Wait for zero
-            if sem_set.semaphores[sem_num] != 0 {
-                return Err(LinuxError::EAGAIN);
+            Err(usize::MAX) => {
+                // EFBIG — semaphore number out of range
+                return Err(LinuxError::EFBIG);
+            }
+            Err(block_idx) => {
+                // Operation block_idx would block
+                if nowait {
+                    return Err(LinuxError::EAGAIN);
+                }
+
+                // Add this process to the wait queue for the blocking semaphore
+                let block_op = operations[block_idx];
+                sem_set.waiters.push(SemWaitEntry {
+                    pid: pid as u32,
+                    sem_num: block_op.sem_num,
+                    sem_op: block_op.sem_op,
+                });
+                drop(sem_table);
+
+                // Block the current process
+                let pm = crate::process::get_process_manager();
+                let _ = pm.block_process(pid);
+
+                // Yield CPU — when we're unblocked, we'll retry the operations
+                crate::process::scheduler::yield_cpu();
+
+                // After yield_cpu returns, we've been rescheduled.
+                // Loop back and retry the operations.
+                continue;
             }
         }
     }
-
-    Ok(0)
 }
 
 /// semctl - semaphore control operations
@@ -683,9 +786,9 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
 
 /// semtimedop - semaphore operations with timeout
 ///
-/// Timeout is ignored on this system because semaphore operations never block.
-/// The semtimedop ABI takes an array of sembuf operations (the old Linux
-/// syscall passes a fourth timeout argument, which is accepted but ignored).
+/// The timeout is not yet fully implemented — the operation will block
+/// indefinitely until it can complete. A future enhancement should use the
+/// timeout to wake the process with ETIMEDOUT.
 pub fn semtimedop(
     semid: SemId,
     sops: *mut u8,
@@ -1057,33 +1160,8 @@ pub fn signalfd(fd: Fd, mask: *const SigSet, flags: i32) -> LinuxResult<Fd> {
         return Err(LinuxError::EFAULT);
     }
 
-    // Read the signal mask
     let signal_mask = unsafe { *(mask as *const u64) };
-
-    if fd < 0 {
-        // Create new signalfd
-        let new_fd = NEXT_SIGNALFD.fetch_add(1, Ordering::SeqCst) as Fd;
-
-        let signal_fd = SignalFd {
-            mask: signal_mask,
-            flags,
-        };
-
-        let mut table = SIGNALFD_TABLE.write();
-        table.insert(new_fd, signal_fd);
-
-        Ok(new_fd)
-    } else {
-        // Modify existing signalfd
-        let mut table = SIGNALFD_TABLE.write();
-        if let Some(signal_fd) = table.get_mut(&fd) {
-            signal_fd.mask = signal_mask;
-            signal_fd.flags = flags;
-            Ok(fd)
-        } else {
-            Err(LinuxError::EBADF)
-        }
-    }
+    super::special_fd::signalfd(fd, signal_mask, flags)
 }
 
 /// timerfd_create - create a timer that delivers events via file descriptor

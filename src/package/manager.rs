@@ -136,7 +136,8 @@ impl PackageManager {
             .list_packages()
             .iter()
             .filter(|pkg| {
-                pkg.metadata.dependencies
+                pkg.metadata
+                    .dependencies
                     .iter()
                     .any(|dep| dep == package_name)
             })

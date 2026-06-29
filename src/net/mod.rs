@@ -324,6 +324,8 @@ pub struct NetworkInterface {
     pub mac_address: NetworkAddress,
     /// IP addresses assigned to this interface
     pub ip_addresses: Vec<NetworkAddress>,
+    /// Network mask for the primary IP address
+    pub netmask: NetworkAddress,
     /// Maximum transmission unit
     pub mtu: u16,
     /// Interface flags
@@ -637,8 +639,36 @@ impl NetworkStack {
     fn is_same_subnet(&self, ip1: &NetworkAddress, ip2: &NetworkAddress) -> bool {
         match (ip1, ip2) {
             (NetworkAddress::IPv4(a), NetworkAddress::IPv4(b)) => {
-                // Simple /24 subnet check for now
-                a[0] == b[0] && a[1] == b[1] && a[2] == b[2]
+                // Use routing table to find the netmask for this interface
+                // Fall back to /24 (255.255.255.0) if no route found
+                let routes = self.routing_table.list();
+                let netmask = routes
+                    .iter()
+                    .find(|r| {
+                        if let (NetworkAddress::IPv4(dest), NetworkAddress::IPv4(mask)) =
+                            (&r.destination, &r.netmask)
+                        {
+                            (a[0] & mask[0]) == dest[0]
+                                && (a[1] & mask[1]) == dest[1]
+                                && (a[2] & mask[2]) == dest[2]
+                                && (a[3] & mask[3]) == dest[3]
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|r| {
+                        if let NetworkAddress::IPv4(m) = r.netmask {
+                            m
+                        } else {
+                            [255, 255, 255, 0]
+                        }
+                    })
+                    .unwrap_or([255, 255, 255, 0]);
+
+                (a[0] & netmask[0]) == (b[0] & netmask[0])
+                    && (a[1] & netmask[1]) == (b[1] & netmask[1])
+                    && (a[2] & netmask[2]) == (b[2] & netmask[2])
+                    && (a[3] & netmask[3]) == (b[3] & netmask[3])
             }
             _ => false,
         }
@@ -871,6 +901,7 @@ pub fn init() -> NetworkResult<()> {
         name: "lo".to_string(),
         mac_address: NetworkAddress::mac([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
         ip_addresses: vec![NetworkAddress::ipv4(127, 0, 0, 1)],
+        netmask: NetworkAddress::ipv4(255, 0, 0, 0),
         mtu: 65535,
         flags: InterfaceFlags {
             up: true,
@@ -916,6 +947,15 @@ pub fn init() -> NetworkResult<()> {
 /// Get the global network stack
 pub fn network_stack() -> &'static NetworkStack {
     &NETWORK_STACK
+}
+
+/// Poll all network devices for incoming packets and process them through
+/// the network stack. Should be called periodically from the main loop.
+pub fn poll_network() {
+    let packets = device::device_manager().poll_devices();
+    for (name, packet) in packets {
+        let _ = NETWORK_STACK.process_packet(&name, packet);
+    }
 }
 
 // =============================================================================

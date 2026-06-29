@@ -14,7 +14,7 @@ pub use completion::Completion;
 pub use wait::{WaitQueue, WaitTimeoutResult};
 
 use alloc::{collections::VecDeque, vec::Vec};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
 use spin::{Mutex, RwLock};
 use x86_64::VirtAddr;
@@ -385,7 +385,7 @@ pub struct GlobalScheduler {
     /// System boot time
     pub boot_time: u64,
     /// Load balancing enabled
-    pub load_balancing_enabled: bool,
+    pub load_balancing_enabled: AtomicBool,
 }
 
 impl GlobalScheduler {
@@ -402,7 +402,7 @@ impl GlobalScheduler {
             next_pid: AtomicU64::new(1),
             process_count: AtomicUsize::new(0),
             boot_time: get_system_time(),
-            load_balancing_enabled: true,
+            load_balancing_enabled: AtomicBool::new(true),
         }
     }
 
@@ -582,7 +582,9 @@ impl GlobalScheduler {
         }
 
         // Load balancing: check if we should steal work from other CPUs
-        if cpu_scheduler.current_process.is_none() && self.load_balancing_enabled {
+        if cpu_scheduler.current_process.is_none()
+            && self.load_balancing_enabled.load(Ordering::Relaxed)
+        {
             self.try_load_balance(cpu_id, &mut cpu_scheduler);
         }
 
@@ -691,7 +693,7 @@ impl GlobalScheduler {
 
     /// Try to steal work from other CPUs for load balancing
     fn try_load_balance(&self, cpu_id: CpuId, cpu_scheduler: &mut CpuScheduler) {
-        if !self.load_balancing_enabled {
+        if !self.load_balancing_enabled.load(Ordering::Relaxed) {
             return;
         }
 
@@ -820,7 +822,7 @@ impl GlobalScheduler {
         cpu_scheduler.utilization = new_utilization.min(100) as u8;
 
         // Periodic load balancing (every 100ms)
-        if current_time % 100_000 == 0 && self.load_balancing_enabled {
+        if current_time % 100_000 == 0 && self.load_balancing_enabled.load(Ordering::Relaxed) {
             drop(cpu_scheduler); // Release lock before load balancing
             self.periodic_load_balance();
         }
@@ -1355,9 +1357,10 @@ pub fn get_cpu_loads() -> Vec<(CpuId, usize, u8)> {
 }
 
 /// Enable or disable load balancing
-pub fn set_load_balancing(_enabled: bool) {
-    // This would require making load_balancing_enabled mutable
-    // For now, it's a compile-time setting
+pub fn set_load_balancing(enabled: bool) {
+    GLOBAL_SCHEDULER
+        .load_balancing_enabled
+        .store(enabled, Ordering::Relaxed);
 }
 
 /// Yield CPU time to allow other processes to run

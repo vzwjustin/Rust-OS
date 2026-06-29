@@ -6,6 +6,21 @@
 use super::*;
 use spin::Mutex;
 
+/// Static request header buffer — must persist for DMA and be readable after device completion.
+/// Stack-local variables may be optimized into registers and not re-read after DMA writes.
+static BLK_REQ_BUF: Mutex<VirtioBlkReq> = Mutex::new(VirtioBlkReq {
+    req_type: 0,
+    reserved: 0,
+    sector: 0,
+});
+
+/// Static status buffer — device writes the result byte here via DMA.
+/// Must be in stable memory so the CPU re-reads the device-written value.
+static BLK_STATUS_BUF: Mutex<[u8; 32]> = Mutex::new([0xFFu8; 32]);
+
+/// Serializes use of the static DMA request/status buffers.
+static BLK_IO_LOCK: Mutex<()> = Mutex::new(());
+
 /// virtio-blk feature bits
 const VIRTIO_BLK_F_SIZE_MAX: u64 = 1 << 1;
 const VIRTIO_BLK_F_SEG_MAX: u64 = 1 << 2;
@@ -142,6 +157,7 @@ impl VirtioBlk {
 
     /// Read sectors from the device
     pub fn read_sectors(&mut self, sector: u64, buf: &mut [u8]) -> Result<usize, &'static str> {
+        let _io_guard = BLK_IO_LOCK.lock();
         let queue = self.queue.as_mut().unwrap();
         let sector_count = (buf.len() / SECTOR_SIZE) as u32;
         if sector_count == 0 {
@@ -159,20 +175,21 @@ impl VirtioBlk {
             .alloc_desc()
             .ok_or("virtio-blk: no free descriptors")?;
 
-        // Set up request header
-        let req = VirtioBlkReq {
-            req_type: VIRTIO_BLK_T_IN,
-            reserved: 0,
-            sector,
-        };
-        let req_phys = super::virt_to_phys(&req as *const _ as usize);
-        queue.set_desc(
-            desc_hdr,
-            req_phys,
-            core::mem::size_of::<VirtioBlkReq>() as u32,
-            desc_flags::NEXT,
-            desc_data,
-        );
+        // Set up request header in static DMA-safe buffer
+        {
+            let mut req = BLK_REQ_BUF.lock();
+            req.req_type = VIRTIO_BLK_T_IN;
+            req.reserved = 0;
+            req.sector = sector;
+            let req_phys = super::virt_to_phys(&*req as *const _ as usize);
+            queue.set_desc(
+                desc_hdr,
+                req_phys,
+                core::mem::size_of::<VirtioBlkReq>() as u32,
+                desc_flags::NEXT,
+                desc_data,
+            );
+        }
 
         // Set up data descriptor (write — device writes to it)
         let data_phys = super::virt_to_phys(buf.as_ptr() as usize);
@@ -184,9 +201,9 @@ impl VirtioBlk {
             desc_status,
         );
 
-        // Set up status descriptor (write)
-        let status = 0xFFu8;
-        let status_phys = super::virt_to_phys(&status as *const _ as usize);
+        // Set up status descriptor (write) — use static buffer for DMA safety
+        BLK_STATUS_BUF.lock()[0] = 0xFF;
+        let status_phys = super::virt_to_phys(BLK_STATUS_BUF.lock().as_ptr() as usize);
         queue.set_desc(desc_status, status_phys, 1, desc_flags::WRITE, 0);
 
         // Submit and notify
@@ -203,6 +220,8 @@ impl VirtioBlk {
                 queue.free_desc(desc_data);
                 queue.free_desc(desc_status);
 
+                // Read status from the static buffer (device wrote via DMA)
+                let status = BLK_STATUS_BUF.lock()[0];
                 if status == VIRTIO_BLK_S_OK {
                     return Ok(buf.len());
                 } else {
@@ -222,6 +241,7 @@ impl VirtioBlk {
 
     /// Write sectors to the device
     pub fn write_sectors(&mut self, sector: u64, buf: &[u8]) -> Result<usize, &'static str> {
+        let _io_guard = BLK_IO_LOCK.lock();
         if self.read_only {
             return Err("virtio-blk: device is read-only");
         }
@@ -242,19 +262,21 @@ impl VirtioBlk {
             .alloc_desc()
             .ok_or("virtio-blk: no free descriptors")?;
 
-        let req = VirtioBlkReq {
-            req_type: VIRTIO_BLK_T_OUT,
-            reserved: 0,
-            sector,
-        };
-        let req_phys = super::virt_to_phys(&req as *const _ as usize);
-        queue.set_desc(
-            desc_hdr,
-            req_phys,
-            core::mem::size_of::<VirtioBlkReq>() as u32,
-            desc_flags::NEXT,
-            desc_data,
-        );
+        // Set up request header in static DMA-safe buffer
+        {
+            let mut req = BLK_REQ_BUF.lock();
+            req.req_type = VIRTIO_BLK_T_OUT;
+            req.reserved = 0;
+            req.sector = sector;
+            let req_phys = super::virt_to_phys(&*req as *const _ as usize);
+            queue.set_desc(
+                desc_hdr,
+                req_phys,
+                core::mem::size_of::<VirtioBlkReq>() as u32,
+                desc_flags::NEXT,
+                desc_data,
+            );
+        }
 
         let data_phys = super::virt_to_phys(buf.as_ptr() as usize);
         queue.set_desc(
@@ -265,8 +287,9 @@ impl VirtioBlk {
             desc_status,
         );
 
-        let status = 0xFFu8;
-        let status_phys = super::virt_to_phys(&status as *const _ as usize);
+        // Set up status descriptor (write) — use static buffer for DMA safety
+        BLK_STATUS_BUF.lock()[0] = 0xFF;
+        let status_phys = super::virt_to_phys(BLK_STATUS_BUF.lock().as_ptr() as usize);
         queue.set_desc(desc_status, status_phys, 1, desc_flags::WRITE, 0);
 
         queue.submit(desc_hdr);
@@ -281,6 +304,8 @@ impl VirtioBlk {
                 queue.free_desc(desc_data);
                 queue.free_desc(desc_status);
 
+                // Read status from the static buffer (device wrote via DMA)
+                let status = BLK_STATUS_BUF.lock()[0];
                 if status == VIRTIO_BLK_S_OK {
                     return Ok(buf.len());
                 } else {
@@ -300,6 +325,7 @@ impl VirtioBlk {
 
     /// Flush pending writes to the device
     pub fn flush(&mut self) -> Result<(), &'static str> {
+        let _io_guard = BLK_IO_LOCK.lock();
         let queue = self.queue.as_mut().unwrap();
 
         let desc_hdr = queue
@@ -309,22 +335,25 @@ impl VirtioBlk {
             .alloc_desc()
             .ok_or("virtio-blk: no free descriptors")?;
 
-        let req = VirtioBlkReq {
-            req_type: VIRTIO_BLK_T_FLUSH,
-            reserved: 0,
-            sector: 0,
-        };
-        let req_phys = super::virt_to_phys(&req as *const _ as usize);
-        queue.set_desc(
-            desc_hdr,
-            req_phys,
-            core::mem::size_of::<VirtioBlkReq>() as u32,
-            desc_flags::NEXT,
-            desc_status,
-        );
+        // Set up request header in static DMA-safe buffer
+        {
+            let mut req = BLK_REQ_BUF.lock();
+            req.req_type = VIRTIO_BLK_T_FLUSH;
+            req.reserved = 0;
+            req.sector = 0;
+            let req_phys = super::virt_to_phys(&*req as *const _ as usize);
+            queue.set_desc(
+                desc_hdr,
+                req_phys,
+                core::mem::size_of::<VirtioBlkReq>() as u32,
+                desc_flags::NEXT,
+                desc_status,
+            );
+        }
 
-        let status = 0xFFu8;
-        let status_phys = super::virt_to_phys(&status as *const _ as usize);
+        // Set up status descriptor (write) — use static buffer for DMA safety
+        BLK_STATUS_BUF.lock()[0] = 0xFF;
+        let status_phys = super::virt_to_phys(BLK_STATUS_BUF.lock().as_ptr() as usize);
         queue.set_desc(desc_status, status_phys, 1, desc_flags::WRITE, 0);
 
         queue.submit(desc_hdr);
@@ -337,6 +366,8 @@ impl VirtioBlk {
                 queue.free_desc(desc_hdr);
                 queue.free_desc(desc_status);
 
+                // Read status from the static buffer (device wrote via DMA)
+                let status = BLK_STATUS_BUF.lock()[0];
                 if status == VIRTIO_BLK_S_OK {
                     return Ok(());
                 } else {

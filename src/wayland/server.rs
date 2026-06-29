@@ -581,8 +581,8 @@ fn handle_surface_request(client: &mut ClientConnection, message: &Message) -> O
             }
             None
         }
-        2 | 7 => {
-            // wl_surface.damage (opcode 2) or wl_surface.damage_buffer (opcode 7)
+        2 => {
+            // wl_surface.damage (opcode 2)
             let rect = super::DamageRect {
                 x: arg_i32(&message.args, 0),
                 y: arg_i32(&message.args, 1),

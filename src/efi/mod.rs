@@ -119,8 +119,15 @@ pub fn init_from_boot_info(boot_info: &BootInfo) -> bool {
             continue;
         }
 
+        // EFI system tables are always placed near the start of a reserved
+        // region by firmware.  Cap the per-region scan at 256 KiB so we do
+        // not spend seconds walking multi-megabyte reserved areas on BIOS
+        // boots where no EFI table exists.
+        const SCAN_LIMIT: u64 = 256 * 1024;
+        let scan_end = end.min(start.saturating_add(SCAN_LIMIT));
+
         let mut addr = start;
-        while addr + core::mem::size_of::<EfiSystemTable>() as u64 <= end {
+        while addr + core::mem::size_of::<EfiSystemTable>() as u64 <= scan_end {
             if let Some(info) = try_parse_system_table(addr, phys_off) {
                 AVAILABLE.store(true, Ordering::Relaxed);
                 *INFO.write() = Some(info.clone());

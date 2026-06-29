@@ -4,9 +4,9 @@
 
 use crate::glib_spawn;
 use crate::linux_compat::special_fd::poll_revents;
+use crate::process::scheduler;
 use crate::process::thread;
 use crate::process::Priority;
-use crate::process::scheduler;
 use crate::time;
 use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, Stat, VfsError};
 use alloc::format;

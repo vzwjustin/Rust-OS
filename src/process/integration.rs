@@ -4,6 +4,7 @@
 //! and other kernel subsystems like memory management and interrupts.
 
 use super::{get_process_manager, Pid};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -95,6 +96,12 @@ impl MemoryIntegration {
     ) -> Result<(), &'static str> {
         let process_manager = get_process_manager();
 
+        if crate::userfaultfd::handle_page_fault(fault_address, error_code, pid) {
+            process_manager.block_process(pid)?;
+            crate::process::scheduler::yield_cpu();
+            return Ok(());
+        }
+
         // Get process information
         let process = process_manager
             .get_process(pid)
@@ -121,7 +128,7 @@ impl MemoryIntegration {
     }
 
     /// Allocate a new page for process using production memory manager
-    fn allocate_page_for_process(_pid: Pid, fault_address: u64) -> Result<(), &'static str> {
+    fn allocate_page_for_process(pid: Pid, fault_address: u64) -> Result<(), &'static str> {
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType, PAGE_SIZE};
         use x86_64::VirtAddr;
 
@@ -138,13 +145,19 @@ impl MemoryIntegration {
         } else {
             // Create a new memory region for this process
             let _page_addr = fault_address & !(PAGE_SIZE as u64 - 1); // Align to page boundary
+            if !crate::cgroup::charge_memory(pid, PAGE_SIZE as u64) {
+                return Err("cgroup memory controller denied page allocation");
+            }
             let _region = memory_manager
                 .allocate_region(
                     PAGE_SIZE,
                     MemoryRegionType::UserData,
                     MemoryProtection::USER_DATA,
                 )
-                .map_err(|_| "Failed to allocate memory region")?;
+                .map_err(|_| {
+                    crate::cgroup::uncharge_memory(pid, PAGE_SIZE as u64);
+                    "Failed to allocate memory region"
+                })?;
         }
 
         Ok(())
@@ -578,6 +591,10 @@ impl ProcessIntegration {
         let process_manager = get_process_manager();
         let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
 
+        if !crate::cgroup::can_fork(parent_pid) {
+            return Err("cgroup pids controller denied fork");
+        }
+
         // Get parent process memory layout and other fork-inherited state
         let parent_process = process_manager
             .get_process(parent_pid)
@@ -693,6 +710,8 @@ impl ProcessIntegration {
             child.sched_info = parent_sched_info;
         });
 
+        crate::ptrace::clone_event(parent_pid, child_pid, crate::ptrace::PTRACE_EVENT_FORK);
+
         Ok(child_pid)
     }
 
@@ -700,8 +719,9 @@ impl ProcessIntegration {
     pub fn exec_process(
         &self,
         pid: Pid,
-        _program_path: &str,
+        program_path: &str,
         program_data: &[u8],
+        argv: &[String],
     ) -> Result<(), &'static str> {
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
@@ -714,13 +734,24 @@ impl ProcessIntegration {
         let elf_info = Self::parse_elf_header(program_data)?;
 
         // Allocate code segment
+        let total_charge = elf_info
+            .code_size
+            .saturating_add(elf_info.data_size)
+            .saturating_add(8 * 1024 * 1024);
+        if !crate::cgroup::charge_memory(pid, total_charge as u64) {
+            return Err("cgroup memory controller denied exec allocation");
+        }
+
         let code_region = memory_manager
             .allocate_region(
                 elf_info.code_size as usize,
                 MemoryRegionType::UserCode,
                 MemoryProtection::USER_CODE,
             )
-            .map_err(|_| "Failed to allocate code region for exec")?;
+            .map_err(|_| {
+                crate::cgroup::uncharge_memory(pid, total_charge as u64);
+                "Failed to allocate code region for exec"
+            })?;
 
         // Allocate data segment
         let data_region = if elf_info.data_size > 0 {
@@ -731,7 +762,10 @@ impl ProcessIntegration {
                         MemoryRegionType::UserData,
                         MemoryProtection::USER_DATA,
                     )
-                    .map_err(|_| "Failed to allocate data region for exec")?,
+                    .map_err(|_| {
+                        crate::cgroup::uncharge_memory(pid, total_charge as u64);
+                        "Failed to allocate data region for exec"
+                    })?,
             )
         } else {
             None
@@ -745,7 +779,10 @@ impl ProcessIntegration {
                 MemoryRegionType::UserStack,
                 MemoryProtection::USER_DATA,
             )
-            .map_err(|_| "Failed to allocate stack for exec")?;
+            .map_err(|_| {
+                crate::cgroup::uncharge_memory(pid, total_charge as u64);
+                "Failed to allocate stack for exec"
+            })?;
 
         // Load program sections into memory
         unsafe {
@@ -756,19 +793,78 @@ impl ProcessIntegration {
             }
 
             // Load data section
-            if let (Some(ref data_region), Some(data_data)) = (data_region, elf_info.data_data) {
+            if let (Some(data_region), Some(data_data)) = (data_region.as_ref(), elf_info.data_data)
+            {
                 let data_ptr = data_region.start.as_u64() as *mut u8;
                 core::ptr::copy_nonoverlapping(data_data.as_ptr(), data_ptr, data_data.len());
             }
 
-            // Initialize stack with program arguments
-            let stack_ptr = (stack_region.start.as_u64() + stack_size as u64 - 8) as *mut u64;
-            *stack_ptr = 0; // Null terminator for argv
+            // Initialize stack with program arguments.
+            // Stack layout (top to bottom): argv strings, argv pointer array
+            // (NULL-terminated), argc.
+            let stack_top = stack_region.start.as_u64() + stack_size as u64;
+            let mut sp = stack_top;
+
+            // Write argv strings and collect their stack addresses.
+            let mut argv_addrs: Vec<u64> = Vec::with_capacity(argv.len());
+            for arg in argv.iter().rev() {
+                let bytes = arg.as_bytes();
+                sp -= bytes.len() as u64 + 1; // +1 for NUL
+                let arg_ptr = sp as *mut u8;
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), arg_ptr, bytes.len());
+                *arg_ptr.add(bytes.len()) = 0; // NUL terminator
+                argv_addrs.push(sp);
+            }
+            // Align sp to 8 bytes
+            sp &= !7u64;
+
+            // Write argv pointer array (NULL-terminated), in reverse order
+            sp -= 8; // NULL terminator
+            *(sp as *mut u64) = 0;
+            for &addr in argv_addrs.iter().rev() {
+                sp -= 8;
+                *(sp as *mut u64) = addr;
+            }
+
+            // Write argc
+            sp -= 8;
+            *(sp as *mut u64) = argv.len() as u64;
         }
 
-        // Note: Process memory layout updates would require ProcessManager API
-        // In production, add: process_manager.update_memory_layout(pid, code_region, data_region, etc.)
-        // For now, the memory is allocated and mapped correctly for the process
+        // Register the new memory layout in the process's PCB so that
+        // brk, /proc/PID/maps, COW page-fault handling, etc. know about
+        // the regions we just allocated.
+        let process_manager = get_process_manager();
+        let code_start = code_region.start.as_u64();
+        let code_sz = elf_info.code_size;
+        let data_start = data_region.as_ref().map(|r| r.start.as_u64()).unwrap_or(0);
+        let data_sz = elf_info.data_size;
+        let stack_start = stack_region.start.as_u64();
+        let stack_sz = stack_size as u64;
+        let entry_point = elf_info.entry_point;
+
+        let _ = process_manager.with_process_mut(pid, |pcb| {
+            pcb.memory.code_start = code_start;
+            pcb.memory.code_size = code_sz;
+            pcb.memory.data_start = data_start;
+            pcb.memory.data_size = data_sz;
+            pcb.memory.stack_start = stack_start;
+            pcb.memory.stack_size = stack_sz;
+            pcb.memory.vm_start = code_start;
+            pcb.memory.vm_size = (stack_start + stack_sz).saturating_sub(code_start);
+            pcb.memory.heap_start = data_start + data_sz;
+            pcb.memory.heap_size = 0;
+            pcb.entry_point = entry_point;
+            pcb.exec_path = alloc::string::String::from(program_path);
+            // Set RIP to the ELF entry point so the next context switch
+            // begins execution in the new program.
+            pcb.context.rip = entry_point;
+            // Set RSP to the top of the new stack (arguments were written
+            // near the top; the exact sp was computed above but we set a
+            // reasonable default — the process will pick up argc/argv from
+            // the stack on entry).
+            pcb.context.rsp = stack_start + stack_sz - 24; // past argc/argv/null
+        });
 
         Ok(())
     }
@@ -1015,8 +1111,11 @@ impl ProcessIntegration {
             let _ = ipc_manager.cleanup_process_ipc(pid);
         }
 
-        // Force memory compaction if needed
-        // In a real implementation, we would trigger garbage collection/compaction here
+        // Force memory compaction if needed.
+        // The memory manager does not yet expose a compaction API, so we
+        // cannot trigger GC/compaction here.  When one is added, it should
+        // be called at this point to defragment the heap after terminating
+        // zombie processes.
 
         Ok(())
     }

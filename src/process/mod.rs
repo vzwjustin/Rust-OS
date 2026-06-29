@@ -234,8 +234,16 @@ pub struct ProcessControlBlock {
     pub gid: u32,
     /// Effective user ID
     pub euid: u32,
+    /// Saved user ID
+    pub suid: u32,
+    /// Filesystem user ID
+    pub fsuid: u32,
     /// Effective group ID
     pub egid: u32,
+    /// Saved group ID
+    pub sgid: u32,
+    /// Filesystem group ID
+    pub fsgid: u32,
     /// Process group ID
     pub pgid: Pid,
     /// Session ID
@@ -287,6 +295,8 @@ pub struct ProcessControlBlock {
     pub alarm_deadline: u64,
     /// ITIMER_REAL interval in ticks (0 = one-shot)
     pub alarm_interval: u64,
+    /// Saved syscall info for restart_syscall (syscall number + args)
+    pub restart_info: Option<(u64, [u64; 6])>,
 }
 
 /// File descriptor information
@@ -462,7 +472,7 @@ impl FileDescriptor {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FileDescriptorType {
     StandardInput,
     StandardOutput,
@@ -573,7 +583,11 @@ impl ProcessControlBlock {
             uid: 0,
             gid: 0,
             euid: 0,
+            suid: 0,
+            fsuid: 0,
             egid: 0,
+            sgid: 0,
+            fsgid: 0,
             pgid: pid,
             sid: pid,
             supplementary_groups: Vec::new(),
@@ -609,6 +623,7 @@ impl ProcessControlBlock {
             root_dir: alloc::string::String::from("/"),
             alarm_deadline: 0,
             alarm_interval: 0,
+            restart_info: None,
         };
 
         // Set process name
@@ -754,6 +769,11 @@ impl ProcessManager {
             if self.process_count.load(Ordering::SeqCst) >= MAX_PROCESSES {
                 return Err("Maximum process count exceeded");
             }
+            if let Some(parent) = parent_pid {
+                if !crate::cgroup::can_fork(parent) {
+                    return Err("cgroup pids controller denied fork");
+                }
+            }
 
             let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
             let mut pcb = ProcessControlBlock::new(pid, parent_pid, name);
@@ -779,13 +799,28 @@ impl ProcessManager {
 
             processes.insert(pid, pcb);
             self.process_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(parent) = parent_pid {
+                if !crate::cgroup::fork_charge(parent, pid) {
+                    processes.remove(&pid);
+                    self.process_count.fetch_sub(1, Ordering::SeqCst);
+                    return Err("cgroup pids controller charge failed");
+                }
+            }
             pid
         };
 
         // Add to scheduler
         {
             let mut scheduler = self.scheduler.lock();
-            scheduler.add_process(pid, priority)?;
+            if let Err(e) = scheduler.add_process(pid, priority) {
+                if parent_pid.is_some() {
+                    crate::cgroup::fork_uncharge(pid);
+                }
+                let mut processes = self.processes.write();
+                processes.remove(&pid);
+                self.process_count.fetch_sub(1, Ordering::SeqCst);
+                return Err(e);
+            }
         }
 
         // Initialize IPC state for new process
@@ -799,6 +834,12 @@ impl ProcessManager {
     pub fn adopt_spawned_process(&self, pcb: ProcessControlBlock) -> Result<(), &'static str> {
         let pid = pcb.pid;
         let priority = pcb.priority;
+        let parent_pid = pcb.parent_pid;
+        if let Some(parent) = parent_pid {
+            if !crate::cgroup::can_fork(parent) {
+                return Err("cgroup pids controller denied fork");
+            }
+        }
         let is_new = {
             let mut processes = self.processes.write();
             if processes.contains_key(&pid) {
@@ -810,6 +851,13 @@ impl ProcessManager {
                 }
                 processes.insert(pid, pcb);
                 self.process_count.fetch_add(1, Ordering::SeqCst);
+                if let Some(parent) = parent_pid {
+                    if !crate::cgroup::fork_charge(parent, pid) {
+                        processes.remove(&pid);
+                        self.process_count.fetch_sub(1, Ordering::SeqCst);
+                        return Err("cgroup pids controller charge failed");
+                    }
+                }
                 if pid >= self.next_pid.load(Ordering::SeqCst) {
                     self.next_pid.store(pid.saturating_add(1), Ordering::SeqCst);
                 }
@@ -819,7 +867,15 @@ impl ProcessManager {
 
         {
             let mut scheduler = self.scheduler.lock();
-            scheduler.add_process(pid, priority)?;
+            if let Err(e) = scheduler.add_process(pid, priority) {
+                if is_new {
+                    crate::cgroup::fork_uncharge(pid);
+                    let mut processes = self.processes.write();
+                    processes.remove(&pid);
+                    self.process_count.fetch_sub(1, Ordering::SeqCst);
+                }
+                return Err(e);
+            }
         }
 
         if is_new {
@@ -842,7 +898,14 @@ impl ProcessManager {
             };
             pcb.set_state(ProcessState::Zombie);
             pcb.exit_status = Some(exit_status);
+            pcb.exit_code = Some(exit_status);
         }
+
+        crate::ptrace::exit_event(pid, exit_status);
+        crate::rseq::clear_for_pid(pid);
+        crate::namespace::clear(pid);
+        crate::privileged_syscalls::clear_for_pid(pid);
+        crate::cgroup::fork_uncharge(pid);
 
         let mut scheduler = self.scheduler.lock();
         scheduler.remove_process(pid)
@@ -855,10 +918,16 @@ impl ProcessManager {
             if let Some(pcb) = processes.get_mut(&pid) {
                 pcb.set_state(ProcessState::Zombie);
                 pcb.exit_status = Some(exit_status);
+                pcb.exit_code = Some(exit_status);
             } else {
                 return Err("Process not found");
             }
         }
+
+        crate::ptrace::exit_event(pid, exit_status);
+        crate::rseq::clear_for_pid(pid);
+        crate::namespace::clear(pid);
+        crate::privileged_syscalls::clear_for_pid(pid);
 
         // Terminate all threads for this process
         self.terminate_process_threads(pid)?;
@@ -866,6 +935,7 @@ impl ProcessManager {
         // Cleanup IPC resources
         let ipc_manager = ipc::get_ipc_manager();
         ipc_manager.cleanup_process_ipc(pid)?;
+        crate::cgroup::fork_uncharge(pid);
 
         // Remove from scheduler
         {
@@ -926,8 +996,8 @@ impl ProcessManager {
 
     /// Handle system call
     pub fn handle_syscall(&self, syscall_number: u64, args: &[u64]) -> Result<u64, &'static str> {
-        let mut dispatcher = self.syscall_dispatcher.lock();
-        dispatcher.dispatch(syscall_number, args, self)
+        crate::linux_integration::route_syscall(syscall_number, args)
+            .map_err(|_| "System call failed")
     }
 
     /// Block current process

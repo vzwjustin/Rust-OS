@@ -207,9 +207,12 @@ pub fn init() {
     pty::init();
 }
 
-/// Poll hardware (serial RX) into the console TTY.
+/// Poll hardware (serial RX, virtio-console RX) into the console TTY.
 pub fn poll_input() {
     serial_tty::poll_rx();
+    if crate::drivers::virtio::console::is_available() {
+        crate::drivers::virtio::console::poll_tty_input();
+    }
 }
 
 pub fn read_console(buf: &mut [u8]) -> usize {
@@ -221,7 +224,11 @@ pub fn read_console(buf: &mut [u8]) -> usize {
 pub fn write_console(buf: &[u8]) -> usize {
     with_console(|port| {
         let processed = n_tty::process_output(port.termios, buf);
-        serial_tty::transmit(&processed)
+        let n = serial_tty::transmit(&processed);
+        if crate::drivers::virtio::console::is_available() {
+            let _ = crate::drivers::virtio::console::send(&processed);
+        }
+        n
     })
 }
 

@@ -721,6 +721,7 @@ impl DeviceManager {
                     name: device.name().to_string(),
                     mac_address: device.mac_address(),
                     ip_addresses: Vec::new(),
+                    netmask: NetworkAddress::ipv4(255, 255, 255, 0),
                     mtu: device.mtu(),
                     flags,
                     stats: device.stats(),

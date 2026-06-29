@@ -8,7 +8,9 @@
 //! for device configuration, notification, and ISR access.
 
 pub mod blk;
+pub mod console;
 pub mod net;
+pub mod rng;
 
 use crate::pci::{list_devices, PciDevice};
 use alloc::vec::Vec;
@@ -674,6 +676,16 @@ pub fn init() -> Result<(), &'static str> {
             VirtioDeviceType::Block => {
                 if let Err(e) = blk::init_virtio_blk(transport) {
                     crate::serial_println!("virtio-blk: init failed: {}", e);
+                }
+            }
+            VirtioDeviceType::Rng => {
+                if let Err(e) = rng::init_virtio_rng(transport) {
+                    crate::serial_println!("virtio-rng: init failed: {}", e);
+                }
+            }
+            VirtioDeviceType::Console => {
+                if let Err(e) = console::init_virtio_console(transport) {
+                    crate::serial_println!("virtio-console: init failed: {}", e);
                 }
             }
             _ => {

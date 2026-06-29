@@ -431,6 +431,21 @@ extern "x86-interrupt" fn page_fault_handler(
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
 
+    if error_code.contains(PageFaultErrorCode::USER_MODE) {
+        let pid = crate::process::current_pid();
+        if pid != 0
+            && crate::userfaultfd::handle_page_fault(fault_address.as_u64(), error_code.bits(), pid)
+        {
+            if crate::process::get_process_manager()
+                .block_process(pid)
+                .is_ok()
+            {
+                crate::process::scheduler::yield_cpu();
+                return;
+            }
+        }
+    }
+
     // Check for a user-installed page fault handler first
     {
         let handler_slot = USER_PAGE_FAULT_HANDLER.lock();

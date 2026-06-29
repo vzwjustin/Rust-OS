@@ -3,28 +3,130 @@
 //! This module provides a unified interface for all hardware drivers in RustOS,
 //! including graphics, input, network, and storage drivers with hot-plug support.
 
+pub mod acpi;
+pub mod agp;
+pub mod amba;
+pub mod apm;
+pub mod auxdisplay;
+pub mod auxiliary;
+pub mod backlight;
+pub mod block;
+pub mod bt;
+pub mod cdrom;
+pub mod cdx;
+pub mod cec;
+pub mod char;
+pub mod clk;
+pub mod coresight;
+pub mod counter;
+pub mod crypto;
+pub mod cxl;
+pub mod dax;
+pub mod devfreq;
 pub mod display;
 pub mod dma;
+pub mod dma_buf;
+pub mod dpll;
+pub mod dvb;
+pub mod edac;
+pub mod eisa;
+pub mod extcon;
+pub mod ffa;
+pub mod firewire;
+pub mod firmware;
+pub mod fpga;
+pub mod gnss;
+pub mod gpio;
+pub mod gpu;
 pub mod hid;
+pub mod hidraw;
 pub mod hotplug;
+pub mod hsi;
+pub mod hte;
+pub mod hwmon;
+pub mod hwrng;
+pub mod hwspinlock;
 pub mod i2c;
+pub mod i3c;
+pub mod iio;
+pub mod infiniband;
+pub mod input;
 pub mod input_manager;
+pub mod interconnect;
+pub mod iommu;
+pub mod iommufd;
+pub mod ipack;
+pub mod isapnp;
+pub mod isdbt;
+pub mod isdn;
+pub mod ishtp;
+pub mod leds;
+pub mod mailbox;
+pub mod mei;
+pub mod mfd;
+pub mod misc;
+pub mod mmc;
+pub mod moxtet;
+pub mod mtd;
+pub mod mux;
 pub mod network;
+pub mod nfc;
+pub mod ntb;
+pub mod ntsync;
+pub mod nvdimm;
+pub mod nvme;
+pub mod nvmem;
+pub mod nvmem_layouts;
+pub mod of;
+pub mod opp;
+pub mod parport;
 pub mod pci;
+pub mod pcmcia;
+pub mod peci;
+pub mod phy;
+pub mod pinctrl;
+pub mod platform;
+pub mod pmdomain;
+pub mod power_supply;
+pub mod powercap;
 pub mod ps2_controller;
 pub mod ps2_mouse;
+pub mod ptp;
+pub mod pwm;
+pub mod ras;
+pub mod regmap;
 pub mod regulator;
+pub mod reset;
+pub mod rpmsg;
 pub mod rtc;
 pub mod scsi;
+pub mod serio;
+pub mod slimbus;
+pub mod slimproc;
+pub mod soc;
+pub mod sound;
+pub mod soundwire;
 pub mod spi;
+pub mod spmi;
 pub mod storage;
+pub mod tee;
 pub mod thermal;
+pub mod thunderbolt;
 pub mod tty;
+pub mod udmabuf;
+pub mod ufs;
 pub mod usb;
+pub mod v4l2;
 pub mod vbe;
 pub mod vbe_io;
+pub mod vfio;
+pub mod vhost;
 pub mod virtio;
+pub mod virtio_pci;
+pub mod w1;
 pub mod watchdog;
+pub mod wmi;
+pub mod xen;
 
 // Removed unused imports
 use alloc::string::String;
@@ -40,6 +142,7 @@ pub use pci::{get_pci_stats, init as init_pci};
 // Re-export hot-plug functionality
 pub use hotplug::{
     get_hotplug_stats, init as init_hotplug, process_events as process_hotplug_events,
+    scan_devices as scan_hotplug_devices,
 };
 
 // Re-export input functionality
@@ -403,6 +506,12 @@ static mut GRAPHICS_INITIALIZED: bool = false;
 
 /// Initialize the global driver manager (simplified)
 pub fn init_drivers() -> Result<(), &'static str> {
+    unsafe {
+        if DRIVER_MANAGER_INITIALIZED {
+            return Ok(());
+        }
+    }
+
     // Initialize PCI subsystem
     if let Err(_e) = init_pci() {
         return Err("PCI initialization failed");
@@ -412,6 +521,9 @@ pub fn init_drivers() -> Result<(), &'static str> {
     if let Err(_e) = init_hotplug() {
         return Err("Hot-plug initialization failed");
     }
+
+    // Seed hot-plug state from devices discovered during the initial PCI scan.
+    let _ = scan_hotplug_devices();
 
     // Process any initial hot-plug events
     let _ = process_hotplug_events();
@@ -429,10 +541,6 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("i2c: init failed: {}", e);
     }
 
-    if let Err(e) = spi::init() {
-        crate::serial_println!("spi: init failed: {}", e);
-    }
-
     if let Err(e) = thermal::init() {
         crate::serial_println!("thermal: init failed: {}", e);
     }
@@ -443,6 +551,424 @@ pub fn init_drivers() -> Result<(), &'static str> {
 
     if let Err(e) = hid::init() {
         crate::serial_println!("hid: init failed: {}", e);
+    }
+
+    if let Err(e) = gpio::init() {
+        crate::serial_println!("gpio: init failed: {}", e);
+    }
+
+    if let Err(e) = leds::init() {
+        crate::serial_println!("leds: init failed: {}", e);
+    }
+
+    if let Err(e) = hwmon::init() {
+        crate::serial_println!("hwmon: init failed: {}", e);
+    }
+
+    if let Err(e) = platform::init() {
+        crate::serial_println!("platform: init failed: {}", e);
+    }
+
+    if let Err(e) = regmap::init() {
+        crate::serial_println!("regmap: init failed: {}", e);
+    }
+
+    if let Err(e) = firmware::init() {
+        crate::serial_println!("firmware: init failed: {}", e);
+    }
+
+    if let Err(e) = dma_buf::init() {
+        crate::serial_println!("dma_buf: init failed: {}", e);
+    }
+
+    if let Err(e) = dvb::init() {
+        crate::serial_println!("dvb: init failed: {}", e);
+    }
+
+    if let Err(e) = pwm::init() {
+        crate::serial_println!("pwm: init failed: {}", e);
+    }
+
+    if let Err(e) = nvmem::init() {
+        crate::serial_println!("nvmem: init failed: {}", e);
+    }
+
+    if let Err(e) = clk::init() {
+        crate::serial_println!("clk: init failed: {}", e);
+    }
+
+    if let Err(e) = pinctrl::init() {
+        crate::serial_println!("pinctrl: init failed: {}", e);
+    }
+
+    if let Err(e) = power_supply::init() {
+        crate::serial_println!("power_supply: init failed: {}", e);
+    }
+
+    if let Err(e) = backlight::init() {
+        crate::serial_println!("backlight: init failed: {}", e);
+    }
+
+    if let Err(e) = input::init() {
+        crate::serial_println!("input: init failed: {}", e);
+    }
+
+    if let Err(e) = char::init() {
+        crate::serial_println!("char: init failed: {}", e);
+    }
+
+    if let Err(e) = misc::init() {
+        crate::serial_println!("misc: init failed: {}", e);
+    }
+
+    if let Err(e) = reset::init() {
+        crate::serial_println!("reset: init failed: {}", e);
+    }
+
+    if let Err(e) = mtd::init() {
+        crate::serial_println!("mtd: init failed: {}", e);
+    }
+
+    if let Err(e) = mmc::init() {
+        crate::serial_println!("mmc: init failed: {}", e);
+    }
+
+    if let Err(e) = opp::init() {
+        crate::serial_println!("opp: init failed: {}", e);
+    }
+
+    if let Err(e) = iio::init() {
+        crate::serial_println!("iio: init failed: {}", e);
+    }
+
+    if let Err(e) = extcon::init() {
+        crate::serial_println!("extcon: init failed: {}", e);
+    }
+
+    if let Err(e) = phy::init() {
+        crate::serial_println!("phy: init failed: {}", e);
+    }
+
+    if let Err(e) = devfreq::init() {
+        crate::serial_println!("devfreq: init failed: {}", e);
+    }
+
+    if let Err(e) = pmdomain::init() {
+        crate::serial_println!("pmdomain: init failed: {}", e);
+    }
+
+    if let Err(e) = ptp::init() {
+        crate::serial_println!("ptp: init failed: {}", e);
+    }
+
+    if let Err(e) = counter::init() {
+        crate::serial_println!("counter: init failed: {}", e);
+    }
+
+    if let Err(e) = mailbox::init() {
+        crate::serial_println!("mailbox: init failed: {}", e);
+    }
+
+    if let Err(e) = edac::init() {
+        crate::serial_println!("edac: init failed: {}", e);
+    }
+
+    if let Err(e) = nfc::init() {
+        crate::serial_println!("nfc: init failed: {}", e);
+    }
+
+    if let Err(e) = sound::init() {
+        crate::serial_println!("sound: init failed: {}", e);
+    }
+
+    if let Err(e) = nvdimm::init() {
+        crate::serial_println!("nvdimm: init failed: {}", e);
+    }
+
+    if let Err(e) = vfio::init() {
+        crate::serial_println!("vfio: init failed: {}", e);
+    }
+
+    if let Err(e) = spmi::init() {
+        crate::serial_println!("spmi: init failed: {}", e);
+    }
+
+    if let Err(e) = cec::init() {
+        crate::serial_println!("cec: init failed: {}", e);
+    }
+
+    if let Err(e) = cxl::init() {
+        crate::serial_println!("cxl: init failed: {}", e);
+    }
+
+    if let Err(e) = dax::init() {
+        crate::serial_println!("dax: init failed: {}", e);
+    }
+
+    if let Err(e) = dpll::init() {
+        crate::serial_println!("dpll: init failed: {}", e);
+    }
+
+    if let Err(e) = iommufd::init() {
+        crate::serial_println!("iommufd: init failed: {}", e);
+    }
+
+    if let Err(e) = isdbt::init() {
+        crate::serial_println!("isdbt: init failed: {}", e);
+    }
+
+    if let Err(e) = ntb::init() {
+        crate::serial_println!("ntb: init failed: {}", e);
+    }
+
+    if let Err(e) = ntsync::init() {
+        crate::serial_println!("ntsync: init failed: {}", e);
+    }
+
+    scsi::init();
+
+    if let Err(e) = v4l2::init() {
+        crate::serial_println!("v4l2: init failed: {}", e);
+    }
+
+    if let Err(e) = amba::init() {
+        crate::serial_println!("amba: init failed: {}", e);
+    }
+
+    if let Err(e) = hidraw::init() {
+        crate::serial_println!("hidraw: init failed: {}", e);
+    }
+
+    if let Err(e) = hsi::init() {
+        crate::serial_println!("hsi: init failed: {}", e);
+    }
+
+    if let Err(e) = ipack::init() {
+        crate::serial_println!("ipack: init failed: {}", e);
+    }
+
+    if let Err(e) = ishtp::init() {
+        crate::serial_println!("ishtp: init failed: {}", e);
+    }
+
+    if let Err(e) = mei::init() {
+        crate::serial_println!("mei: init failed: {}", e);
+    }
+
+    if let Err(e) = nvme::init() {
+        crate::serial_println!("nvme: init failed: {}", e);
+    }
+
+    if let Err(e) = peci::init() {
+        crate::serial_println!("peci: init failed: {}", e);
+    }
+
+    if let Err(e) = rpmsg::init() {
+        crate::serial_println!("rpmsg: init failed: {}", e);
+    }
+
+    if let Err(e) = slimbus::init() {
+        crate::serial_println!("slimbus: init failed: {}", e);
+    }
+
+    if let Err(e) = slimproc::init() {
+        crate::serial_println!("slimproc: init failed: {}", e);
+    }
+
+    if let Err(e) = soc::init() {
+        crate::serial_println!("soc: init failed: {}", e);
+    }
+
+    if let Err(e) = tee::init() {
+        crate::serial_println!("tee: init failed: {}", e);
+    }
+
+    if let Err(e) = udmabuf::init() {
+        crate::serial_println!("udmabuf: init failed: {}", e);
+    }
+
+    if let Err(e) = virtio_pci::init() {
+        crate::serial_println!("virtio_pci: init failed: {}", e);
+    }
+
+    if let Err(e) = wmi::init() {
+        crate::serial_println!("wmi: init failed: {}", e);
+    }
+
+    if let Err(e) = xen::init() {
+        crate::serial_println!("xen: init failed: {}", e);
+    }
+
+    if let Err(e) = block::init() {
+        crate::serial_println!("block: init failed: {}", e);
+    }
+
+    if let Err(e) = bt::init() {
+        crate::serial_println!("bt: init failed: {}", e);
+    }
+
+    if let Err(e) = cdrom::init() {
+        crate::serial_println!("cdrom: init failed: {}", e);
+    }
+
+    if let Err(e) = crypto::init() {
+        crate::serial_println!("crypto: init failed: {}", e);
+    }
+
+    if let Err(e) = firewire::init() {
+        crate::serial_println!("firewire: init failed: {}", e);
+    }
+
+    if let Err(e) = hwrng::init() {
+        crate::serial_println!("hwrng: init failed: {}", e);
+    }
+
+    if let Err(e) = infiniband::init() {
+        crate::serial_println!("infiniband: init failed: {}", e);
+    }
+
+    if let Err(e) = mfd::init() {
+        crate::serial_println!("mfd: init failed: {}", e);
+    }
+
+    if let Err(e) = serio::init() {
+        crate::serial_println!("serio: init failed: {}", e);
+    }
+
+    if let Err(e) = thunderbolt::init() {
+        crate::serial_println!("thunderbolt: init failed: {}", e);
+    }
+
+    if let Err(e) = apm::init() {
+        crate::serial_println!("apm: init failed: {}", e);
+    }
+
+    if let Err(e) = parport::init() {
+        crate::serial_println!("parport: init failed: {}", e);
+    }
+
+    if let Err(e) = agp::init() {
+        crate::serial_println!("agp: init failed: {}", e);
+    }
+
+    if let Err(e) = auxdisplay::init() {
+        crate::serial_println!("auxdisplay: init failed: {}", e);
+    }
+
+    if let Err(e) = isdn::init() {
+        crate::serial_println!("isdn: init failed: {}", e);
+    }
+
+    if let Err(e) = pcmcia::init() {
+        crate::serial_println!("pcmcia: init failed: {}", e);
+    }
+
+    if let Err(e) = powercap::init() {
+        crate::serial_println!("powercap: init failed: {}", e);
+    }
+
+    if let Err(e) = ras::init() {
+        crate::serial_println!("ras: init failed: {}", e);
+    }
+
+    if let Err(e) = coresight::init() {
+        crate::serial_println!("coresight: init failed: {}", e);
+    }
+
+    if let Err(e) = hte::init() {
+        crate::serial_println!("hte: init failed: {}", e);
+    }
+
+    if let Err(e) = acpi::init() {
+        crate::serial_println!("acpi: init failed: {}", e);
+    }
+
+    if let Err(e) = auxiliary::init() {
+        crate::serial_println!("auxiliary: init failed: {}", e);
+    }
+
+    if let Err(e) = cdx::init() {
+        crate::serial_println!("cdx: init failed: {}", e);
+    }
+
+    if let Err(e) = eisa::init() {
+        crate::serial_println!("eisa: init failed: {}", e);
+    }
+
+    if let Err(e) = ffa::init() {
+        crate::serial_println!("ffa: init failed: {}", e);
+    }
+
+    if let Err(e) = fpga::init() {
+        crate::serial_println!("fpga: init failed: {}", e);
+    }
+
+    if let Err(e) = gnss::init() {
+        crate::serial_println!("gnss: init failed: {}", e);
+    }
+
+    if let Err(e) = gpu::init() {
+        crate::serial_println!("gpu: init failed: {}", e);
+    }
+
+    if let Err(e) = hwspinlock::init() {
+        crate::serial_println!("hwspinlock: init failed: {}", e);
+    }
+
+    if let Err(e) = i3c::init() {
+        crate::serial_println!("i3c: init failed: {}", e);
+    }
+
+    if let Err(e) = interconnect::init() {
+        crate::serial_println!("interconnect: init failed: {}", e);
+    }
+
+    if let Err(e) = iommu::init() {
+        crate::serial_println!("iommu: init failed: {}", e);
+    }
+
+    if let Err(e) = isapnp::init() {
+        crate::serial_println!("isapnp: init failed: {}", e);
+    }
+
+    if let Err(e) = moxtet::init() {
+        crate::serial_println!("moxtet: init failed: {}", e);
+    }
+
+    if let Err(e) = mux::init() {
+        crate::serial_println!("mux: init failed: {}", e);
+    }
+
+    if let Err(e) = nvmem_layouts::init() {
+        crate::serial_println!("nvmem_layouts: init failed: {}", e);
+    }
+
+    if let Err(e) = of::init() {
+        crate::serial_println!("of: init failed: {}", e);
+    }
+
+    if let Err(e) = soundwire::init() {
+        crate::serial_println!("soundwire: init failed: {}", e);
+    }
+
+    if let Err(e) = spi::init() {
+        crate::serial_println!("spi: init failed: {}", e);
+    }
+
+    if let Err(e) = ufs::init() {
+        crate::serial_println!("ufs: init failed: {}", e);
+    }
+
+    if let Err(e) = usb::init() {
+        crate::serial_println!("usb: init failed: {}", e);
+    }
+
+    if let Err(e) = vhost::init() {
+        crate::serial_println!("vhost: init failed: {}", e);
+    }
+
+    if let Err(e) = w1::init() {
+        crate::serial_println!("w1: init failed: {}", e);
     }
 
     unsafe {

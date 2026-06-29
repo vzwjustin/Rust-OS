@@ -22,6 +22,8 @@ struct SysfsInode {
     entries: BTreeMap<String, InodeNumber>,
     /// Callback triggered when the file is written to.
     write_callback: Option<fn(data: &[u8]) -> FsResult<()>>,
+    /// Target path for symlink inodes.
+    symlink_target: Option<String>,
 }
 
 impl SysfsInode {
@@ -43,6 +45,7 @@ impl SysfsInode {
             content,
             entries: BTreeMap::new(),
             write_callback: None,
+            symlink_target: None,
         }
     }
 
@@ -66,6 +69,29 @@ impl SysfsInode {
             content: Vec::new(),
             entries,
             write_callback: None,
+            symlink_target: None,
+        }
+    }
+
+    fn new_symlink(inode: InodeNumber, target: &str) -> Self {
+        Self {
+            metadata: FileMetadata {
+                inode,
+                file_type: FileType::SymbolicLink,
+                size: target.len() as u64,
+                permissions: FilePermissions::from_octal(0o777),
+                uid: 0,
+                gid: 0,
+                created: get_current_time(),
+                modified: get_current_time(),
+                accessed: get_current_time(),
+                link_count: 1,
+                device_id: None,
+            },
+            content: target.as_bytes().to_vec(),
+            entries: BTreeMap::new(),
+            write_callback: None,
+            symlink_target: Some(String::from(target)),
         }
     }
 }
@@ -400,8 +426,14 @@ impl FileSystem for SysFs {
         Err(FsError::ReadOnly)
     }
 
-    fn readlink(&self, _path: &str) -> FsResult<String> {
-        Err(FsError::NotSupported)
+    fn readlink(&self, path: &str) -> FsResult<String> {
+        let inode = self.open(path, OpenFlags::read_only())?;
+        let inodes = self.inodes.read();
+        let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
+        if node.metadata.file_type != FileType::SymbolicLink {
+            return Err(FsError::InvalidArgument);
+        }
+        node.symlink_target.clone().ok_or(FsError::NotFound)
     }
 
     fn sync(&self) -> FsResult<()> {
