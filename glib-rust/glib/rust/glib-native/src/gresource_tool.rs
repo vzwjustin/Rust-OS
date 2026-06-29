@@ -38,7 +38,7 @@ struct GvdbHeader {
     root_end: u32,
 }
 
-/// GVDB hash item (20 bytes).
+/// GVDB hash item (struct gvdb_hash_item in upstream gvdb-format.h, 28 bytes).
 struct GvdbHashItem {
     hash_value: u32,
     parent: u32,
@@ -48,6 +48,9 @@ struct GvdbHashItem {
     value_start: u32,
     value_end: u32,
 }
+
+/// Size of struct gvdb_hash_item including the trailing options field.
+const GVDB_HASH_ITEM_SIZE: usize = 28;
 
 const GVDB_SIGNATURE0: u32 = 1918981703;
 const GVDB_SIGNATURE1: u32 = 1953390953;
@@ -96,7 +99,7 @@ fn parse_gvdb_header(data: &[u8]) -> Result<GvdbHeader, String> {
 }
 
 fn parse_gvdb_hash_item(data: &[u8], offset: usize) -> Result<GvdbHashItem, String> {
-    if offset + 20 > data.len() {
+    if offset + GVDB_HASH_ITEM_SIZE > data.len() {
         return Err("hash item extends beyond data".into());
     }
 
@@ -106,8 +109,9 @@ fn parse_gvdb_hash_item(data: &[u8], offset: usize) -> Result<GvdbHashItem, Stri
     let key_size = read_u16_le(data, offset + 12)?;
     let item_type = data[offset + 14];
 
+    // `value.pointer` occupies bytes 16..24; `options` is at 24..32 (ignored here).
     let value_start = read_u32_le(data, offset + 16)?;
-    let value_end = read_u32_le(data, offset + 20 - 4)?;
+    let value_end = read_u32_le(data, offset + 20)?;
 
     Ok(GvdbHashItem {
         hash_value,
@@ -148,12 +152,16 @@ fn parse_gvdb(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String> {
     }
 
     let hash_items_size = hash_items_end - hash_items_start;
-    let n_items = hash_items_size / 20;
+    if hash_items_size % GVDB_HASH_ITEM_SIZE != 0 {
+        return Err("hash items region size is not a multiple of item size".into());
+    }
+
+    let n_items = hash_items_size / GVDB_HASH_ITEM_SIZE;
 
     let mut entries = BTreeMap::new();
 
     for i in 0..n_items {
-        let item_offset = hash_items_start + i * 20;
+        let item_offset = hash_items_start + i * GVDB_HASH_ITEM_SIZE;
         let item = match parse_gvdb_hash_item(data, item_offset) {
             Ok(it) => it,
             Err(_) => continue,
@@ -224,12 +232,16 @@ fn parse_gvdb_subtable(data: &[u8], start: usize, end: usize) -> Result<BTreeMap
     }
 
     let hash_items_size = hash_items_end - hash_items_start;
-    let n_items = hash_items_size / 20;
+    if hash_items_size % GVDB_HASH_ITEM_SIZE != 0 {
+        return Err("hash items region size is not a multiple of item size".into());
+    }
+
+    let n_items = hash_items_size / GVDB_HASH_ITEM_SIZE;
 
     let mut entries = BTreeMap::new();
 
     for i in 0..n_items {
-        let item_offset = hash_items_start + i * 20;
+        let item_offset = hash_items_start + i * GVDB_HASH_ITEM_SIZE;
         let item = match parse_gvdb_hash_item(data, item_offset) {
             Ok(it) => it,
             Err(_) => continue,
@@ -399,10 +411,10 @@ mod tests {
             v
         };
 
-        let value_start = 24; // header(24) + hash_header(8) + hash_item(20) = 52, but value after
+        let value_start = 24; // header(24) + hash_header(8) + hash_item(28) = 60, value after
         let header_size = 24; // signature(8) + version(4) + options(4) + root pointer(8)
         let hash_header_size = 8;
-        let hash_item_size = 20;
+        let hash_item_size = GVDB_HASH_ITEM_SIZE;
         let root_start = header_size;
         let root_end = root_start + hash_header_size + hash_item_size;
         let value_offset = root_end;
@@ -431,6 +443,7 @@ mod tests {
         data.push(0); // unused
         data.extend_from_slice(&(value_offset as u32).to_le_bytes()); // value_start
         data.extend_from_slice(&((value_offset + value_data.len()) as u32).to_le_bytes()); // value_end
+        data.extend_from_slice(&0u32.to_le_bytes()); // options
 
         // Value data
         data.extend_from_slice(&value_data);
