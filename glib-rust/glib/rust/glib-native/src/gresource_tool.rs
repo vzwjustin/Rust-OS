@@ -411,7 +411,7 @@ mod tests {
             v
         };
 
-        let value_start = 24; // header(24) + hash_header(8) + hash_item(32) = 64, value after
+        let value_start = 24; // header(24) + hash_header(8) + hash_item(28) = 60, value after
         let header_size = 24; // signature(8) + version(4) + options(4) + root pointer(8)
         let hash_header_size = 8;
         let hash_item_size = GVDB_HASH_ITEM_SIZE;
