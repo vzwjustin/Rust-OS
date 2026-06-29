@@ -391,6 +391,43 @@ pub unsafe fn try_exec_init() -> ! {
     boot_userspace_init()
 }
 
+/// Fix broken symlinks after CPIO extraction.
+///
+/// The Alpine rootfs ships hundreds of symlinks pointing to `/bin/busybox`.
+/// If the busybox binary is missing from the archive, `/bin/sh` (and every
+/// other utility) becomes a broken symlink and the PID-1 init script
+/// (`#!/bin/sh`) cannot execute.  When busybox is present the symlinks work
+/// as-is; when it's missing we repoint `/bin/sh` to `/bin/bash` as a
+/// last-resort fallback (bash is dynamically linked and may not work
+/// without the musl dynamic linker, but it's better than nothing).
+fn fixup_broken_symlinks() {
+    use crate::vfs::{vfs_stat, vfs_unlink, vfs_symlink, InodeType};
+
+    // If /bin/busybox exists as a real file, all symlinks are fine.
+    match vfs_stat("/bin/busybox") {
+        Ok(stat) if stat.inode_type == InodeType::File => {
+            return;
+        }
+        _ => {}
+    }
+
+    // busybox is missing — repoint /bin/sh to /bin/bash as fallback.
+    match vfs_stat("/bin/sh") {
+        Ok(stat) if stat.inode_type == InodeType::Symlink => {
+            crate::serial_println!(
+                "initramfs: /bin/busybox missing, repointing /bin/sh to /bin/bash"
+            );
+            let _ = vfs_unlink("/bin/sh");
+            let _ = vfs_symlink("/bin/bash", "/bin/sh");
+        }
+        Ok(_) => {}
+        Err(_) => {
+            crate::serial_println!("initramfs: /bin/sh missing, creating symlink to /bin/bash");
+            let _ = vfs_symlink("/bin/bash", "/bin/sh");
+        }
+    }
+}
+
 /// Load initramfs at kernel boot
 pub fn init_initramfs() -> Result<(), InitramfsError> {
     if INITRAMFS_DATA.is_empty() {
@@ -409,6 +446,7 @@ pub fn init_initramfs() -> Result<(), InitramfsError> {
                 info.format,
                 info.size
             );
+            fixup_broken_symlinks();
             Ok(())
         }
         Err(InitramfsError::DecompressionFailed) => {

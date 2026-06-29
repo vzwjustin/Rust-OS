@@ -444,11 +444,41 @@ struct ResolvedExec {
 }
 
 /// Read a regular file from the syscall VFS (where initramfs and rootfs live).
+/// Follows symlinks transparently so ELF binaries behind symlinks (e.g.
+/// `/bin/sh` -> `/bin/bash`) are read correctly.
 fn read_file_bytes_from_vfs(path: &str) -> Result<Vec<u8>, LinuxError> {
     use crate::linux_compat::file_ops::vfs_error_to_linux;
     use crate::vfs::{self, OpenFlags as VfsOpenFlags};
 
     let stat = vfs::vfs_stat(path).map_err(vfs_error_to_linux)?;
+
+    // If the path is a symlink, read the target path string and retry
+    // with the resolved target.  The VFS does not follow symlinks
+    // automatically on read, so we do it here.
+    if stat.inode_type == crate::vfs::InodeType::Symlink {
+        let fd = vfs::vfs_open(path, VfsOpenFlags::RDONLY, 0).map_err(vfs_error_to_linux)?;
+        let mut target = Vec::with_capacity(stat.size as usize);
+        target.resize(stat.size as usize, 0);
+        match vfs::vfs_read(fd, &mut target) {
+            Ok(n) if n > 0 => {
+                let _ = vfs::vfs_close(fd);
+                let target_str = core::str::from_utf8(&target[..n])
+                    .map_err(|_| LinuxError::ENOEXEC)?
+                    .trim_end_matches('\0');
+                crate::serial_println!(
+                    "exec: following symlink {} -> {}",
+                    path,
+                    target_str
+                );
+                return read_file_bytes_from_vfs(target_str);
+            }
+            _ => {
+                let _ = vfs::vfs_close(fd);
+                return Err(LinuxError::EIO);
+            }
+        }
+    }
+
     if stat.inode_type == crate::vfs::InodeType::Directory {
         return Err(LinuxError::EISDIR);
     }
@@ -580,6 +610,36 @@ pub fn exec_program_for_pid(
         return Err(LinuxError::ENOEXEC);
     }
 
+    // If the binary is dynamically linked, load shared library dependencies
+    // and apply relocations before setting up the user stack.
+    if loaded.is_dynamic {
+        crate::serial_println!(
+            "exec: {} is dynamic, linking dependencies",
+            resolved.load_path
+        );
+        match crate::process::dynamic_linker::link_binary_globally(
+            &binary_data,
+            &loaded.program_headers,
+            loaded.base_address,
+        ) {
+            Ok(n) => {
+                crate::serial_println!(
+                    "exec: dynamic linking OK ({} relocations applied)",
+                    n
+                );
+            }
+            Err(e) => {
+                crate::serial_println!(
+                    "exec: dynamic linking failed for {}: {}",
+                    resolved.load_path,
+                    e
+                );
+                // Continue anyway — the binary may still partially work
+                // (e.g. static-pie musl libc which is its own interpreter).
+            }
+        }
+    }
+
     let header = unsafe { core::ptr::read(binary_data.as_ptr() as *const Elf64Header) };
     let mut envp_strings = default_desktop_envp();
     envp_strings.extend(extra_envp.iter().map(|s| (*s).to_string()));
@@ -688,6 +748,29 @@ pub fn execve(
         return Err(LinuxError::ENOEXEC);
     }
 
+    // Dynamic linking: load shared library dependencies and apply relocations.
+    if loaded.is_dynamic {
+        match crate::process::dynamic_linker::link_binary_globally(
+            &binary_data,
+            &loaded.program_headers,
+            loaded.base_address,
+        ) {
+            Ok(n) => {
+                crate::serial_println!(
+                    "execve: dynamic linking OK ({} relocations)",
+                    n
+                );
+            }
+            Err(e) => {
+                crate::serial_println!(
+                    "execve: dynamic linking failed for {}: {}",
+                    resolved.load_path,
+                    e
+                );
+            }
+        }
+    }
+
     let header = unsafe { core::ptr::read(binary_data.as_ptr() as *const Elf64Header) };
 
     let rsp = build_linux_initial_stack(
@@ -737,6 +820,29 @@ pub unsafe fn execve_and_enter_user_mode(
     let (binary_data, loaded, resolved) = load_executable_from_vfs(&path, pid, &argv_strings)?;
     if binary_data.len() < core::mem::size_of::<Elf64Header>() {
         return Err(LinuxError::ENOEXEC);
+    }
+
+    // Dynamic linking: load shared library dependencies and apply relocations.
+    if loaded.is_dynamic {
+        match crate::process::dynamic_linker::link_binary_globally(
+            &binary_data,
+            &loaded.program_headers,
+            loaded.base_address,
+        ) {
+            Ok(n) => {
+                crate::serial_println!(
+                    "execve_direct: dynamic linking OK ({} relocations)",
+                    n
+                );
+            }
+            Err(e) => {
+                crate::serial_println!(
+                    "execve_direct: dynamic linking failed for {}: {}",
+                    resolved.load_path,
+                    e
+                );
+            }
+        }
     }
 
     let header = core::ptr::read(binary_data.as_ptr() as *const Elf64Header);

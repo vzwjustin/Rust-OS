@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![allow(dead_code)]
 #![allow(static_mut_refs)]
 #![feature(abi_x86_interrupt)]
 #![feature(custom_test_frameworks)]
@@ -32,7 +31,7 @@ unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
     unsafe { ALLOCATOR.alloc_zeroed(layout) }
 }
 
-// Include compiler intrinsics for missing symbols
+// Include compiler intrinsics for missing symbols (memcpy/memset/memcmp/memmove)
 mod intrinsics;
 
 // Include VGA buffer module for better output
@@ -144,7 +143,6 @@ mod syscall_fast;
 // Include usermode helper module
 mod usermode;
 // Include usermode testing module
-mod usermode_test;
 // Include GLib compatibility layer
 mod glib;
 mod glib_platform;
@@ -1718,7 +1716,14 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
 
         // Launch appropriate desktop environment
-        if use_graphics_desktop && desktop_result.window_manager_ready {
+        if userspace_spawned {
+            // Userspace init (GNOME) is running - don't launch the kernel
+            // desktop.  Enter a minimal compositor/idle loop that services
+            // the userspace process, forwards input to Wayland clients,
+            // and renders their surfaces without drawing a kernel desktop.
+            crate::serial_println!("Boot: entering userspace session idle loop");
+            userspace_session_loop()
+        } else if use_graphics_desktop && desktop_result.window_manager_ready {
             crate::serial_println!(
                 "desktop: {}x{}x{} gpu={}",
                 graphics_result.width,
@@ -2222,6 +2227,73 @@ fn pixel_desktop_main_loop() -> ! {
 /// - Mouse cursor rendering and movement
 /// - Window focus, dragging, and interaction
 /// - Periodic desktop updates and rendering
+extern "C" fn userspace_idle_resume() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+/// Minimal compositor/idle loop for userspace sessions (GNOME).
+///
+/// Unlike `modern_desktop_main_loop`, this does NOT render a kernel desktop.
+/// It only:
+/// - Services pending user processes via `user_sched::service_pending`
+/// - Forwards input events to Wayland clients
+/// - Renders Wayland client surfaces
+/// - Polls network devices
+/// - Launches the in-kernel Mutter client when ready
+fn userspace_session_loop() -> ! {
+    let mut update_counter: u64 = 0;
+
+    crate::serial_println!("userspace_session_loop: entered");
+
+    loop {
+        // Forward kernel input events to connected Wayland clients
+        wayland::poll_input();
+
+        // Launch the in-kernel Mutter client once the compositor is ready
+        if mutter::should_launch() {
+            crate::serial_println!("userspace_session_loop: launching Mutter client");
+            if let Err(e) = mutter::launch_client() {
+                crate::serial_println!("userspace_session_loop: Mutter launch failed: {}", e);
+            }
+        }
+
+        // Render Wayland client surfaces (no kernel desktop underneath)
+        if update_counter % 2 == 0 {
+            wayland::render_clients();
+            graphics::framebuffer::present();
+        }
+
+        // Refresh Mutter top bar periodically (clock updates)
+        if update_counter.is_multiple_of(500) {
+            mutter::update_client();
+        }
+
+        // Service pending user processes (GNOME init, etc.)
+        crate::user_sched::service_pending(userspace_idle_resume as *const () as u64);
+
+        // Poll network devices for incoming packets
+        if update_counter.is_multiple_of(1000) {
+            crate::net::poll_network();
+        }
+
+        // Periodic system maintenance
+        if update_counter.is_multiple_of(1_000_000) {
+            let _ = crate::vfs::procfs::update_gnome_status();
+            dbus::emit_readiness_changed_if_needed();
+        }
+
+        update_counter = update_counter.wrapping_add(1);
+
+        // Halt CPU until next interrupt
+        // SAFETY: Idle loop halts CPU until next interrupt. See docs/SAFETY.md#halt-loop.
+        unsafe {
+            core::arch::asm!("hlt");
+        }
+    }
+}
+
 extern "C" fn modern_desktop_idle_resume() -> ! {
     // Resume point after a bootstrap user task exits during the desktop idle
     // phase. The bootstrap code jumps here directly, so this function must
