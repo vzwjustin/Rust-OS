@@ -385,23 +385,45 @@ pub fn mmap(
     let protection = prot_to_protection_flags(prot);
     let mmap_flags = map_to_mmap_flags(flags);
 
+    // MAP_HUGETLB uses the dedicated 2 MiB page pool.
+    if flags & map::MAP_HUGETLB != 0 {
+        if length % crate::hugetlb::HUGEPAGE_SIZE != 0 {
+            return Err(LinuxError::EINVAL);
+        }
+        return crate::hugetlb::mmap(addr, length, protection, mmap_flags, fd, offset as usize);
+    }
+
     // Call memory manager to perform the mapping
     let result = if (flags & map::MAP_ANONYMOUS) == 0 && fd >= 0 {
-        vm_mmap_file(
-            addr_val,
-            length,
-            protection,
-            mmap_flags,
-            fd,
-            offset as usize,
-        )
-        .map_err(vm_error_to_linux)?
+        if let Ok(vfs::FdKind::MemfdSecret(id)) = vfs::vfs_fd_kind(fd) {
+            crate::memfd_secret::mmap(
+                id,
+                addr_val,
+                length,
+                protection,
+                mmap_flags,
+                offset as usize,
+            )?
+        } else {
+            vm_mmap_file(
+                addr_val,
+                length,
+                protection,
+                mmap_flags,
+                fd,
+                offset as usize,
+            )
+            .map_err(vm_error_to_linux)?
+        }
     } else {
         vm_mmap(addr_val, length, protection, mmap_flags).map_err(vm_error_to_linux)?
     };
 
     // File-backed mmap: populate mapped pages from the backing fd.
     if (flags & map::MAP_ANONYMOUS) == 0 && fd >= 0 {
+        if crate::io_uring::mmap(fd, offset as u64, result as usize, length)? {
+            return Ok(result as *mut u8);
+        }
         crate::memory::populate_user_mapping_from_vfs(result as usize, length, fd, offset as u64)
             .map_err(|_| LinuxError::EIO)?;
     }
@@ -440,6 +462,10 @@ pub fn munmap(addr: *mut u8, length: usize) -> LinuxResult<i32> {
     let addr_val = addr as usize;
     if addr_val >= 0xFFFF_8000_0000_0000 {
         return Err(LinuxError::EINVAL);
+    }
+
+    if crate::hugetlb::contains_mapping(addr_val, length) {
+        return crate::hugetlb::munmap(addr, length);
     }
 
     // Call memory manager to unmap the region
@@ -506,7 +532,14 @@ pub fn madvise(addr: *mut u8, length: usize, advice: i32) -> LinuxResult<i32> {
         madv::MADV_NORMAL | madv::MADV_RANDOM | madv::MADV_SEQUENTIAL => Ok(0),
         madv::MADV_WILLNEED | madv::MADV_DONTNEED | madv::MADV_FREE | madv::MADV_REMOVE => Ok(0),
         madv::MADV_MERGEABLE | madv::MADV_UNMERGEABLE => Ok(0),
-        madv::MADV_HUGEPAGE | madv::MADV_NOHUGEPAGE => Ok(0),
+        madv::MADV_HUGEPAGE => {
+            crate::thp::set_advice(addr_val, length, true)?;
+            Ok(0)
+        }
+        madv::MADV_NOHUGEPAGE => {
+            crate::thp::set_advice(addr_val, length, false)?;
+            Ok(0)
+        }
         madv::MADV_HWPOISON => Err(LinuxError::EPERM),
         _ => Err(LinuxError::EINVAL),
     }
@@ -1037,14 +1070,8 @@ pub fn sbrk(increment: isize) -> LinuxResult<*mut u8> {
 // Memory Information and NUMA Operations
 // ============================================================================
 
-/// NUMA memory policy modes
-mod numa_policy {
-    pub const MPOL_DEFAULT: i32 = 0;
-    pub const MPOL_PREFERRED: i32 = 1;
-    pub const MPOL_BIND: i32 = 2;
-    pub const MPOL_INTERLEAVE: i32 = 3;
-    pub const MPOL_LOCAL: i32 = 4;
-}
+/// NUMA memory policy modes (delegated to `crate::numa`).
+pub use crate::numa::{MPOL_BIND, MPOL_DEFAULT, MPOL_INTERLEAVE, MPOL_LOCAL, MPOL_PREFERRED};
 
 /// get_mempolicy - retrieve NUMA memory policy
 ///
@@ -1067,16 +1094,14 @@ pub fn get_mempolicy(
         return Err(LinuxError::EINVAL);
     }
 
-    let pcb = process::get_process_manager()
-        .get_process(current_pid())
-        .ok_or(LinuxError::ESRCH)?;
-
+    let pid = current_pid();
     let (policy, mask) = if flags & MPOL_F_MEMS_ALLOWED != 0 {
-        (numa_policy::MPOL_DEFAULT, 0x1u64)
+        (MPOL_DEFAULT, 0x1u64)
     } else if flags & MPOL_F_ADDR != 0 {
-        (pcb.memory_policy, pcb.nodemask)
+        let addr = _addr as usize;
+        crate::numa::lookup_policy(pid, addr)
     } else {
-        (pcb.memory_policy, pcb.nodemask)
+        crate::numa::get_task_policy(pid)
     };
 
     if !mode.is_null() {
@@ -1100,36 +1125,21 @@ pub fn get_mempolicy(
 pub fn set_mempolicy(mode: i32, nodemask: *const u64, maxnode: u64) -> LinuxResult<i32> {
     inc_ops();
 
-    use numa_policy::*;
-
-    // Validate mode
-    match mode {
-        MPOL_DEFAULT | MPOL_PREFERRED | MPOL_BIND | MPOL_INTERLEAVE | MPOL_LOCAL => {}
-        _ => return Err(LinuxError::EINVAL),
-    }
-
-    // Validate nodemask if required
-    if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
+    let mask = if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
         if nodemask.is_null() || maxnode == 0 {
             return Err(LinuxError::EINVAL);
         }
+        unsafe { *nodemask }
+    } else {
+        0x1
+    };
 
-        // Check if specified nodes are valid
-        // RustOS is single-node for now, so only node 0 is valid
-        let mask = unsafe { *nodemask };
-        if mask != 0x1 && mask != 0 {
-            return Err(LinuxError::EINVAL);
-        }
-    }
+    let pid = current_pid();
+    crate::numa::set_task_policy(pid, mode, mask)?;
 
-    // Set policy in the calling process PCB
     with_current_pcb(|pcb| {
         pcb.memory_policy = mode;
-        if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
-            pcb.nodemask = unsafe { *nodemask };
-        } else {
-            pcb.nodemask = 0x1;
-        }
+        pcb.nodemask = mask;
         Ok(0)
     })
 }
@@ -1162,15 +1172,8 @@ pub fn mbind(
         return Err(LinuxError::EINVAL);
     }
 
-    use numa_policy::*;
+    use crate::numa::{self, MPOL_DEFAULT, MPOL_LOCAL};
 
-    // Validate mode
-    match mode {
-        MPOL_DEFAULT | MPOL_PREFERRED | MPOL_BIND | MPOL_INTERLEAVE | MPOL_LOCAL => {}
-        _ => return Err(LinuxError::EINVAL),
-    }
-
-    // Validate nodemask
     if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
         if nodemask.is_null() || maxnode == 0 {
             return Err(LinuxError::EINVAL);
@@ -1186,8 +1189,13 @@ pub fn mbind(
         return Err(LinuxError::EINVAL);
     }
 
-    // Single-node system: policy binding is recorded as a no-op success.
-    let _ = (addr, len, mode, nodemask, flags);
+    let mask = if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
+        unsafe { *nodemask }
+    } else {
+        0x1
+    };
+
+    numa::bind_range(addr, len, mode, mask, flags)?;
     Ok(0)
 }
 
@@ -1327,6 +1335,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
         crate::vfs::VfsError::ReadOnly => LinuxError::EROFS,
         crate::vfs::VfsError::NotSupported => LinuxError::ENOSYS,
         crate::vfs::VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
+        crate::vfs::VfsError::DiskQuotaExceeded => LinuxError::EDQUOT,
     }
 }
 

@@ -976,7 +976,13 @@ pub struct IntelE1000Driver {
 
 impl IntelE1000Driver {
     /// Create new Intel E1000 driver instance
-    pub fn new(name: String, device_info: IntelE1000DeviceInfo, base_addr: u64, irq: u8, pci_address: u32) -> Self {
+    pub fn new(
+        name: String,
+        device_info: IntelE1000DeviceInfo,
+        base_addr: u64,
+        irq: u8,
+        pci_address: u32,
+    ) -> Self {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.max_mtu = 9018; // Jumbo frame support
         capabilities.hw_checksum = true;
@@ -1848,7 +1854,13 @@ pub fn create_intel_e1000_driver(
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)?;
 
     // Create driver instance
-    let driver = IntelE1000Driver::new(device_info.name.to_string(), *device_info, base_addr, irq, pci_address);
+    let driver = IntelE1000Driver::new(
+        device_info.name.to_string(),
+        *device_info,
+        base_addr,
+        irq,
+        pci_address,
+    );
 
     let capabilities = driver.extended_capabilities.clone();
 

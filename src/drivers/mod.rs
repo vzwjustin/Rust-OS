@@ -4,16 +4,27 @@
 //! including graphics, input, network, and storage drivers with hot-plug support.
 
 pub mod display;
+pub mod dma;
+pub mod hid;
 pub mod hotplug;
+pub mod i2c;
 pub mod input_manager;
 pub mod network;
 pub mod pci;
 pub mod ps2_controller;
 pub mod ps2_mouse;
+pub mod regulator;
+pub mod rtc;
+pub mod scsi;
+pub mod spi;
 pub mod storage;
+pub mod thermal;
+pub mod tty;
+pub mod usb;
 pub mod vbe;
 pub mod vbe_io;
 pub mod virtio;
+pub mod watchdog;
 
 // Removed unused imports
 use alloc::string::String;
@@ -408,6 +419,30 @@ pub fn init_drivers() -> Result<(), &'static str> {
     // Initialize VirtIO devices (virtio-net, virtio-blk)
     if let Err(e) = virtio::init() {
         crate::serial_println!("virtio: init failed: {}", e);
+    }
+
+    if let Err(e) = dma::init() {
+        crate::serial_println!("dma: init failed: {}", e);
+    }
+
+    if let Err(e) = i2c::init() {
+        crate::serial_println!("i2c: init failed: {}", e);
+    }
+
+    if let Err(e) = spi::init() {
+        crate::serial_println!("spi: init failed: {}", e);
+    }
+
+    if let Err(e) = thermal::init() {
+        crate::serial_println!("thermal: init failed: {}", e);
+    }
+
+    if let Err(e) = regulator::init() {
+        crate::serial_println!("regulator: init failed: {}", e);
+    }
+
+    if let Err(e) = hid::init() {
+        crate::serial_println!("hid: init failed: {}", e);
     }
 
     unsafe {

@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fs::{
-    ext4, fat32, DirectoryEntry, FileMetadata, FileSystem, FileSystemType, FileType, FsError,
-    InodeNumber, OpenFlags,
+    btrfs, ext4, f2fs, fat32, xfs, DirectoryEntry, FileMetadata, FileSystem, FileSystemType,
+    FileType, FsError, InodeNumber, OpenFlags,
 };
 
 use super::{InodeOps, InodeType, Stat, StatFs, SuperblockOps, VfsError, VfsResult};
@@ -26,6 +26,10 @@ fn alloc_ino() -> u64 {
 enum BackingFs {
     Ext4(Arc<ext4::Ext4FileSystem>),
     Fat32(Arc<fat32::Fat32FileSystem>),
+    Iso9660(Arc<crate::fs::isofs::Iso9660FileSystem>),
+    F2fs(Arc<f2fs::F2fsFileSystem>),
+    Btrfs(Arc<btrfs::BtrfsFileSystem>),
+    Xfs(Arc<xfs::XfsFileSystem>),
 }
 
 impl BackingFs {
@@ -41,6 +45,10 @@ impl BackingFs {
         let ino = match self {
             BackingFs::Ext4(fs) => fs.open(path, flags)?,
             BackingFs::Fat32(fs) => fs.open(path, flags)?,
+            BackingFs::Iso9660(fs) => fs.open(path, flags)?,
+            BackingFs::F2fs(fs) => fs.open(path, flags)?,
+            BackingFs::Btrfs(fs) => fs.open(path, flags)?,
+            BackingFs::Xfs(fs) => fs.open(path, flags)?,
         };
         let meta = self.metadata(ino)?;
         Ok((ino, meta))
@@ -50,6 +58,10 @@ impl BackingFs {
         match self {
             BackingFs::Ext4(fs) => fs.metadata(inode),
             BackingFs::Fat32(fs) => fs.metadata(inode),
+            BackingFs::Iso9660(fs) => fs.metadata(inode),
+            BackingFs::F2fs(fs) => fs.metadata(inode),
+            BackingFs::Btrfs(fs) => fs.metadata(inode),
+            BackingFs::Xfs(fs) => fs.metadata(inode),
         }
     }
 
@@ -57,6 +69,10 @@ impl BackingFs {
         match self {
             BackingFs::Ext4(fs) => fs.read(inode, offset, buf),
             BackingFs::Fat32(fs) => fs.read(inode, offset, buf),
+            BackingFs::Iso9660(fs) => fs.read(inode, offset, buf),
+            BackingFs::F2fs(fs) => fs.read(inode, offset, buf),
+            BackingFs::Btrfs(fs) => fs.read(inode, offset, buf),
+            BackingFs::Xfs(fs) => fs.read(inode, offset, buf),
         }
     }
 
@@ -64,6 +80,10 @@ impl BackingFs {
         match self {
             BackingFs::Ext4(fs) => fs.readdir(inode),
             BackingFs::Fat32(fs) => fs.readdir(inode),
+            BackingFs::Iso9660(fs) => fs.readdir(inode),
+            BackingFs::F2fs(fs) => fs.readdir(inode),
+            BackingFs::Btrfs(fs) => fs.readdir(inode),
+            BackingFs::Xfs(fs) => fs.readdir(inode),
         }
     }
 
@@ -71,6 +91,10 @@ impl BackingFs {
         match self {
             BackingFs::Ext4(fs) => fs.readlink(path),
             BackingFs::Fat32(fs) => fs.readlink(path),
+            BackingFs::Iso9660(fs) => fs.readlink(path),
+            BackingFs::F2fs(fs) => fs.readlink(path),
+            BackingFs::Btrfs(fs) => fs.readlink(path),
+            BackingFs::Xfs(fs) => fs.readlink(path),
         }
     }
 
@@ -78,6 +102,10 @@ impl BackingFs {
         match self {
             BackingFs::Ext4(fs) => fs.statfs(),
             BackingFs::Fat32(fs) => fs.statfs(),
+            BackingFs::Iso9660(fs) => fs.statfs(),
+            BackingFs::F2fs(fs) => fs.statfs(),
+            BackingFs::Btrfs(fs) => fs.statfs(),
+            BackingFs::Xfs(fs) => fs.statfs(),
         }
     }
 
@@ -85,6 +113,10 @@ impl BackingFs {
         match self {
             BackingFs::Ext4(fs) => fs.fs_type(),
             BackingFs::Fat32(fs) => fs.fs_type(),
+            BackingFs::Iso9660(fs) => fs.fs_type(),
+            BackingFs::F2fs(fs) => fs.fs_type(),
+            BackingFs::Btrfs(fs) => fs.fs_type(),
+            BackingFs::Xfs(fs) => fs.fs_type(),
         }
     }
 }
@@ -328,6 +360,50 @@ impl LegacyMount {
         let root = LegacyInode::from_open(backing.clone(), String::from("/"), ino, meta);
         Ok(Self { backing, root })
     }
+
+    pub fn from_iso9660(device_id: u32) -> Result<Self, FsError> {
+        let fs = crate::fs::isofs::Iso9660FileSystem::new(device_id)?;
+        let backing = Arc::new(BackingFs::Iso9660(Arc::new(fs)));
+        let (ino, meta) = backing.open_path("/")?;
+        let root = LegacyInode::from_open(backing.clone(), String::from("/"), ino, meta);
+        Ok(Self { backing, root })
+    }
+
+    pub fn from_f2fs(device_id: u32, sector_base: u64) -> Result<Self, FsError> {
+        let fs = if sector_base == 0 {
+            f2fs::F2fsFileSystem::new(device_id)?
+        } else {
+            f2fs::F2fsFileSystem::new_at(device_id, sector_base)?
+        };
+        let backing = Arc::new(BackingFs::F2fs(Arc::new(fs)));
+        let (ino, meta) = backing.open_path("/")?;
+        let root = LegacyInode::from_open(backing.clone(), String::from("/"), ino, meta);
+        Ok(Self { backing, root })
+    }
+
+    pub fn from_btrfs(device_id: u32, sector_base: u64) -> Result<Self, FsError> {
+        let fs = if sector_base == 0 {
+            btrfs::BtrfsFileSystem::new(device_id)?
+        } else {
+            btrfs::BtrfsFileSystem::new_at(device_id, sector_base)?
+        };
+        let backing = Arc::new(BackingFs::Btrfs(Arc::new(fs)));
+        let (ino, meta) = backing.open_path("/")?;
+        let root = LegacyInode::from_open(backing.clone(), String::from("/"), ino, meta);
+        Ok(Self { backing, root })
+    }
+
+    pub fn from_xfs(device_id: u32, sector_base: u64) -> Result<Self, FsError> {
+        let fs = if sector_base == 0 {
+            xfs::XfsFileSystem::new(device_id)?
+        } else {
+            xfs::XfsFileSystem::new_at(device_id, sector_base)?
+        };
+        let backing = Arc::new(BackingFs::Xfs(Arc::new(fs)));
+        let (ino, meta) = backing.open_path("/")?;
+        let root = LegacyInode::from_open(backing.clone(), String::from("/"), ino, meta);
+        Ok(Self { backing, root })
+    }
 }
 
 impl SuperblockOps for LegacyMount {
@@ -344,6 +420,10 @@ impl SuperblockOps for LegacyMount {
         let fs_type = match self.backing.fs_type() {
             FileSystemType::Ext2 => 0xEF53,
             FileSystemType::Fat32 => 0x4d44,
+            FileSystemType::Iso9660 => 0x9660,
+            FileSystemType::F2fs => 0xF2F5_2010,
+            FileSystemType::Btrfs => 0x9123_683E,
+            FileSystemType::Xfs => 0x5846_5342,
             _ => 0,
         };
         Ok(StatFs {
@@ -367,8 +447,29 @@ pub fn mount_block_device(source: &str, target: &str, fstype: &str) -> VfsResult
             LegacyMount::from_fat32(spec.device_id, spec.start_sector)
                 .map_err(|_| VfsError::IoError)?,
         ),
+        "iso9660" => {
+            Arc::new(LegacyMount::from_iso9660(spec.device_id).map_err(|_| VfsError::IoError)?)
+        }
+        "f2fs" => Arc::new(
+            LegacyMount::from_f2fs(spec.device_id, spec.start_sector)
+                .map_err(|_| VfsError::IoError)?,
+        ),
+        "btrfs" => Arc::new(
+            LegacyMount::from_btrfs(spec.device_id, spec.start_sector)
+                .map_err(|_| VfsError::IoError)?,
+        ),
+        "xfs" => Arc::new(
+            LegacyMount::from_xfs(spec.device_id, spec.start_sector)
+                .map_err(|_| VfsError::IoError)?,
+        ),
         _ => {
             if let Ok(m) = LegacyMount::from_ext4(spec.device_id, spec.start_sector) {
+                Arc::new(m)
+            } else if let Ok(m) = LegacyMount::from_f2fs(spec.device_id, spec.start_sector) {
+                Arc::new(m)
+            } else if let Ok(m) = LegacyMount::from_btrfs(spec.device_id, spec.start_sector) {
+                Arc::new(m)
+            } else if let Ok(m) = LegacyMount::from_xfs(spec.device_id, spec.start_sector) {
                 Arc::new(m)
             } else {
                 Arc::new(

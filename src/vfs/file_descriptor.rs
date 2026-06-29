@@ -11,7 +11,9 @@ use alloc::sync::Arc;
 #[derive(Debug, Clone)]
 pub enum FdKind {
     Regular,
-    Directory { path: String },
+    Directory {
+        path: String,
+    },
     PipeRead(u32),
     PipeWrite(u32),
     EventFd(u32),
@@ -20,6 +22,24 @@ pub enum FdKind {
     Signalfd(u32),
     Socket(u32),
     Inotify(u32),
+    Pidfd(u32),
+    IoUring(u32),
+    Fanotify(u32),
+    FsContext(u32),
+    MountObject(u32),
+    LandlockRuleset(u32),
+    BpfMap(u32),
+    BpfProg(u32),
+    PerfEvent(u32),
+    Userfaultfd(u32),
+    MemfdSecret(u32),
+    Namespace(u32),
+    /// /dev/console or /dev/tty
+    TtyConsole,
+    /// PTY master (/dev/ptmx)
+    PtyMaster(u32),
+    /// PTY slave (/dev/pts/N)
+    PtySlave(u32),
 }
 
 impl FdKind {
@@ -38,6 +58,8 @@ pub struct FileDescriptor {
     pub offset: u64,
     /// Special fd kind for poll/read/write dispatch
     pub kind: FdKind,
+    /// VFS path when opened via path-based open (for quota accounting)
+    pub path: Option<String>,
 }
 
 impl FileDescriptor {
@@ -48,6 +70,7 @@ impl FileDescriptor {
             flags,
             offset: 0,
             kind: FdKind::regular(),
+            path: None,
         }
     }
 
@@ -58,6 +81,23 @@ impl FileDescriptor {
             flags,
             offset: 0,
             kind,
+            path: None,
+        }
+    }
+
+    /// Create a path-backed file descriptor.
+    pub fn with_path(
+        inode: Arc<dyn InodeOps>,
+        flags: OpenFlags,
+        kind: FdKind,
+        path: String,
+    ) -> Self {
+        Self {
+            inode,
+            flags,
+            offset: 0,
+            kind,
+            path: Some(path),
         }
     }
 }
@@ -153,6 +193,7 @@ impl OpenFileTable {
             flags: file.flags,
             offset: file.offset,
             kind: file.kind.clone(),
+            path: file.path.clone(),
         };
 
         self.insert(new_file)
@@ -172,6 +213,7 @@ impl OpenFileTable {
             flags: file.flags,
             offset: file.offset,
             kind: file.kind.clone(),
+            path: file.path.clone(),
         };
 
         // Close newfd if it exists

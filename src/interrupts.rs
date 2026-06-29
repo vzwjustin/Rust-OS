@@ -79,6 +79,9 @@ lazy_static! {
         idt[InterruptIndex::SerialPort2.as_usize()].set_handler_fn(serial_port2_interrupt_handler);
         idt[InterruptIndex::SpuriousInterrupt.as_usize()].set_handler_fn(spurious_interrupt_handler);
 
+        // Cross-CPU call IPI handler (vector 0xFC)
+        idt[0xFC].set_handler_fn(call_ipi_interrupt_handler);
+
         // Linux syscall handler (INT 0x80)
         idt[0x80]
             .set_handler_fn(crate::syscall_handler::syscall_0x80_handler)
@@ -891,12 +894,26 @@ extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptSta
 
 // ========== HARDWARE INTERRUPT HANDLERS ==========
 
+extern "x86-interrupt" fn call_ipi_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::smp::handle_call_ipi();
+}
+
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     let tick = TIMER_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     crate::time::timer_tick();
 
     if tick % 16 == 0 {
         crate::wayland::poll_input();
+    }
+
+    // Process pending softirqs on IRQ exit
+    if crate::softirq::softirq_pending() {
+        crate::softirq::do_softirq();
+    }
+
+    // Run pending workqueue items every 4 ticks
+    if tick % 4 == 0 {
+        crate::softirq::run_workqueue();
     }
 
     unsafe {

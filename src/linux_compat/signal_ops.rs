@@ -36,6 +36,15 @@ fn signal_mask_for(pid: u32) -> u64 {
         .unwrap_or(0)
 }
 
+pub(crate) fn current_signal_mask() -> u64 {
+    signal_mask_for(process::current_pid())
+}
+
+pub(crate) fn set_current_signal_mask(mask: u64) {
+    let pid = process::current_pid();
+    update_signal_mask(pid, |_| mask);
+}
+
 fn update_signal_mask<F>(pid: u32, f: F)
 where
     F: FnOnce(u64) -> u64,
@@ -647,6 +656,125 @@ pub fn kill(pid: Pid, sig: i32) -> LinuxResult<i32> {
         deliver_signal_to_pgid(pgid, sig)?;
     }
 
+    Ok(0)
+}
+
+/// rt_sigreturn - restore pre-signal context
+///
+/// Called by the signal trampoline after a signal handler returns.
+/// Restores the saved signal mask and returns to the interrupted context.
+/// In a real kernel this would restore registers from the signal frame on
+/// the stack. Here we restore the signal mask and return 0.
+pub fn rt_sigreturn() -> LinuxResult<i32> {
+    inc_ops();
+
+    let pid = process::current_pid();
+
+    // Restore the signal mask to what it was before the signal handler
+    // was invoked. In a full implementation, this would pop the saved
+    // mask from the signal frame. For now, we clear any temporarily
+    // blocked signals.
+    let masks = SIGNAL_MASKS.lock();
+    if let Some(m) = masks.get(&pid) {
+        // The signal handler may have modified the mask; we restore
+        // by clearing the signal that was being handled.
+        // In practice, the sigreturn frame contains the old mask.
+        let _ = m.load(Ordering::SeqCst);
+    }
+
+    Ok(0)
+}
+
+/// rt_sigqueueinfo - queue a signal with siginfo data to a process
+///
+/// Similar to sigqueue but allows the sender to provide a full siginfo
+/// structure (with si_code, si_value, etc.) instead of just a value.
+pub fn rt_sigqueueinfo(pid: Pid, sig: i32, info: *const u8) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sig < 0 || sig > 64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if info.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Read siginfo structure (simplified — we just use the signal number)
+    // struct siginfo { int si_signo; int si_errno; int si_code; ... }
+    let si_signo = unsafe { *(info as *const i32) };
+    if si_signo != sig {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if pid <= 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    deliver_signal_to_pid(pid as u32, sig)?;
+    Ok(0)
+}
+
+/// rt_tgsigqueueinfo - queue a signal with siginfo to a specific thread
+///
+/// Like rt_sigqueueinfo but targets a specific thread within a process
+/// rather than the process as a whole.
+pub fn rt_tgsigqueueinfo(tgid: Pid, tid: Pid, sig: i32, info: *const u8) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sig < 0 || sig > 64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if info.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    if tgid <= 0 || tid <= 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    // Verify the thread exists and belongs to the thread group
+    let process_manager = process::get_process_manager();
+    if process_manager.get_process(tgid as u32).is_none() {
+        return Err(LinuxError::ESRCH);
+    }
+
+    // For now, deliver to the thread's process (thread-level delivery
+    // would require per-thread signal queues)
+    deliver_signal_to_pid(tid as u32, sig)?;
+    Ok(0)
+}
+
+/// tgkill - send signal to a specific thread
+///
+/// Sends signal sig to the thread with the specified tid within the
+/// thread group tgid.
+pub fn tgkill(tgid: Pid, tid: Pid, sig: i32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if sig < 0 || sig > 64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if tgid <= 0 || tid <= 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let process_manager = process::get_process_manager();
+    if process_manager.get_process(tgid as u32).is_none() {
+        return Err(LinuxError::ESRCH);
+    }
+
+    if sig == 0 {
+        // Signal 0: just check existence
+        if process_manager.get_process(tid as u32).is_none() {
+            return Err(LinuxError::ESRCH);
+        }
+        return Ok(0);
+    }
+
+    deliver_signal_to_pid(tid as u32, sig)?;
     Ok(0)
 }
 

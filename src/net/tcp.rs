@@ -603,17 +603,20 @@ impl TcpManager {
     }
 
     /// Check if a listening socket exists for the given local address/port.
-    pub fn is_listening(
-        &self,
-        local_addr: &NetworkAddress,
-        local_port: u16,
-    ) -> bool {
-        self.listening.read().contains_key(&(*local_addr, local_port))
+    pub fn is_listening(&self, local_addr: &NetworkAddress, local_port: u16) -> bool {
+        self.listening
+            .read()
+            .contains_key(&(*local_addr, local_port))
     }
 
     /// Push an established connection onto the accept queue for a listener.
     /// Returns an error if the queue is full.
-    pub fn push_accept(&self, local_addr: NetworkAddress, local_port: u16, conn: TcpConnection) -> NetworkResult<()> {
+    pub fn push_accept(
+        &self,
+        local_addr: NetworkAddress,
+        local_port: u16,
+        conn: TcpConnection,
+    ) -> NetworkResult<()> {
         let key = (local_addr, local_port);
         let mut queue = self.accept_queue.write();
         let q = queue.get_mut(&key).ok_or(NetworkError::InvalidAddress)?;

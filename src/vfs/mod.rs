@@ -64,6 +64,8 @@ pub enum VfsError {
     NotSupported,
     /// Directory not empty
     DirectoryNotEmpty,
+    /// Disk quota exceeded
+    DiskQuotaExceeded,
 }
 
 pub type VfsResult<T> = Result<T, VfsError>;
@@ -363,6 +365,7 @@ impl Vfs {
         let _ = root.create("etc", InodeType::Directory, 0o755);
         let _ = root.create("bin", InodeType::Directory, 0o755);
         let _ = procfs::install_proc(root.clone());
+        let _ = crate::sysfs::install_sysfs(root.clone());
         let _ = devfs::install_dev(Arc::clone(&root));
         let dev_root = root.lookup("dev").unwrap_or_else(|_| Arc::clone(&root));
         let _ = drmfs::install_drm_dev(&dev_root);
@@ -390,6 +393,8 @@ impl Vfs {
             sb,
         });
 
+        crate::quota::register_mount("", path);
+
         Ok(())
     }
 
@@ -403,7 +408,9 @@ impl Vfs {
         let pos = mounts.iter().position(|m| m.path == path);
         match pos {
             Some(i) => {
-                mounts.remove(i);
+                let removed = mounts.remove(i);
+                drop(mounts);
+                crate::quota::unregister_mount(&removed.path);
                 Ok(())
             }
             None => Err(VfsError::NotFound),
@@ -443,7 +450,7 @@ impl Vfs {
     }
 
     /// Resolve a path to an inode
-    fn resolve_path(&self, path: &str) -> VfsResult<Arc<dyn InodeOps>> {
+    pub(crate) fn resolve_path(&self, path: &str) -> VfsResult<Arc<dyn InodeOps>> {
         if path.is_empty() {
             return Err(VfsError::InvalidArgument);
         }
@@ -495,7 +502,7 @@ impl Vfs {
     }
 
     /// Resolve parent directory and filename from path
-    fn resolve_parent(&self, path: &str) -> VfsResult<(Arc<dyn InodeOps>, String)> {
+    pub(crate) fn resolve_parent(&self, path: &str) -> VfsResult<(Arc<dyn InodeOps>, String)> {
         let path = path.trim_end_matches('/');
 
         if let Some(pos) = path.rfind('/') {
@@ -517,6 +524,15 @@ impl Vfs {
 
     /// Open a file
     pub fn open(&self, path: &str, flags: OpenFlags, mode: u32) -> VfsResult<i32> {
+        if path == "/dev/ptmx" {
+            return crate::drivers::tty::pty::open_ptmx(flags.bits());
+        }
+        if let Some(rest) = path.strip_prefix("/dev/pts/") {
+            if let Ok(id) = rest.parse::<u32>() {
+                return crate::drivers::tty::pty::open_pts_slave(id, flags.bits());
+            }
+        }
+
         let inode = if flags.has_flag(OpenFlags::CREAT) {
             // Try to resolve existing file
             match self.resolve_path(path) {
@@ -529,7 +545,15 @@ impl Vfs {
                 Err(VfsError::NotFound) => {
                     // Create new file
                     let (parent, filename) = self.resolve_parent(path)?;
-                    parent.create(&filename, InodeType::File, mode)?
+                    let inode = parent.create(&filename, InodeType::File, mode)?;
+                    let stat = inode.stat()?;
+                    if let Err(e) =
+                        crate::quota::account_create(&stat, &crate::quota::mount_for_path(path))
+                    {
+                        let _ = parent.unlink(&filename);
+                        return Err(e);
+                    }
+                    inode
                 }
                 Err(e) => return Err(e),
             }
@@ -544,6 +568,9 @@ impl Vfs {
 
         // Truncate if requested
         if flags.has_flag(OpenFlags::TRUNC) && flags.is_writable() {
+            let stat = inode.stat()?;
+            let mount = crate::quota::mount_for_path(path);
+            crate::quota::account_write(&stat, &mount, stat.size, 0)?;
             inode.truncate(0)?;
         }
 
@@ -556,7 +583,12 @@ impl Vfs {
         } else {
             FdKind::Regular
         };
-        let fd = file_table.insert(FileDescriptor::with_kind(inode, flags, kind))?;
+        let fd = file_table.insert(FileDescriptor::with_path(
+            inode,
+            flags,
+            kind,
+            String::from(path),
+        ))?;
 
         Ok(fd)
     }
@@ -626,6 +658,13 @@ impl Vfs {
             file_desc.offset = stat.size;
         }
 
+        let stat = file_desc.inode.stat()?;
+        let new_size = core::cmp::max(stat.size, file_desc.offset + buf.len() as u64);
+        if let Some(ref path) = file_desc.path {
+            let mount = crate::quota::mount_for_path(path);
+            crate::quota::account_write(&stat, &mount, stat.size, new_size)?;
+        }
+
         let bytes_written = file_desc.inode.write_at(file_desc.offset, buf)?;
         file_desc.offset += bytes_written as u64;
 
@@ -651,6 +690,13 @@ impl Vfs {
 
         if !file_desc.flags.is_writable() {
             return Err(VfsError::PermissionDenied);
+        }
+
+        let stat = file_desc.inode.stat()?;
+        let new_size = core::cmp::max(stat.size, offset + buf.len() as u64);
+        if let Some(ref path) = file_desc.path {
+            let mount = crate::quota::mount_for_path(path);
+            crate::quota::account_write(&stat, &mount, stat.size, new_size)?;
         }
 
         file_desc.inode.write_at(offset, buf)
@@ -740,7 +786,24 @@ impl Vfs {
     /// Create a directory
     pub fn mkdir(&self, path: &str, mode: u32) -> VfsResult<()> {
         let (parent, dirname) = self.resolve_parent(path)?;
-        parent.create(&dirname, InodeType::Directory, mode)?;
+        let inode = parent.create(&dirname, InodeType::Directory, mode)?;
+        let stat = inode.stat()?;
+        if let Err(e) = crate::quota::account_create(&stat, &crate::quota::mount_for_path(path)) {
+            let _ = parent.unlink(&dirname);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Create a special file (FIFO, regular file, device node)
+    pub fn mknod(&self, path: &str, file_type: InodeType, mode: u32) -> VfsResult<()> {
+        let (parent, name) = self.resolve_parent(path)?;
+        let inode = parent.create(&name, file_type, mode)?;
+        let stat = inode.stat()?;
+        if let Err(e) = crate::quota::account_create(&stat, &crate::quota::mount_for_path(path)) {
+            let _ = parent.unlink(&name);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -760,13 +823,20 @@ impl Vfs {
             return Err(VfsError::DirectoryNotEmpty);
         }
 
-        parent.unlink(&dirname)
+        let stat = inode.stat()?;
+        parent.unlink(&dirname)?;
+        crate::quota::account_unlink(&stat, &crate::quota::mount_for_path(path))?;
+        Ok(())
     }
 
     /// Remove a file
     pub fn unlink(&self, path: &str) -> VfsResult<()> {
         let (parent, filename) = self.resolve_parent(path)?;
-        parent.unlink(&filename)
+        let inode = parent.lookup(&filename)?;
+        let stat = inode.stat()?;
+        parent.unlink(&filename)?;
+        crate::quota::account_unlink(&stat, &crate::quota::mount_for_path(path))?;
+        Ok(())
     }
 
     /// Change file permissions
@@ -1018,6 +1088,17 @@ pub fn vfs_pwrite(fd: i32, buf: &[u8], offset: u64) -> VfsResult<usize> {
 
 /// Truncate file by fd
 pub fn vfs_ftruncate(fd: i32, size: u64) -> VfsResult<()> {
+    let file_table = VFS.file_table.lock();
+    let file_desc = file_table.get(fd)?;
+    let stat = file_desc.inode.stat()?;
+    let path = file_desc.path.clone();
+    drop(file_table);
+
+    if let Some(ref path) = path {
+        let mount = crate::quota::mount_for_path(path);
+        crate::quota::account_write(&stat, &mount, stat.size, size)?;
+    }
+
     let inode = VFS.fd_inode(fd)?;
     inode.truncate(size)
 }

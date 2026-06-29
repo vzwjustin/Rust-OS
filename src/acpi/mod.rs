@@ -1085,3 +1085,45 @@ pub fn power_management_available() -> bool {
 pub fn acpi_available() -> bool {
     is_initialized()
 }
+/// ACPI sleep state targets (S3/S4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiSleepState {
+    SuspendToRam,
+    SuspendToDisk,
+}
+
+/// Attempt ACPI sleep transition for suspend-to-RAM (S3) or suspend-to-disk (S4).
+///
+/// RustOS does not execute AML to resolve `_S3`/`_S4` sleep types yet. When FADT
+/// PM registers are unavailable this returns `ENOSYS`; callers still receive a
+/// full notifier-driven PM state machine from `power`.
+pub fn enter_sleep_state(state: AcpiSleepState) -> Result<(), i32> {
+    use crate::linux_compat::LinuxError;
+
+    if !power_management_available() {
+        return Err(LinuxError::ENOSYS as i32);
+    }
+
+    let fadt = match fadt() {
+        Some(info) => info,
+        None => return Err(LinuxError::ENOSYS as i32),
+    };
+
+    let pm1a = match fadt.pm1a_control_block {
+        Some(block) if block != 0 => block as u64,
+        _ => return Err(LinuxError::ENOSYS as i32),
+    };
+
+    let _sleep_type = match state {
+        AcpiSleepState::SuspendToRam => 3u16,
+        AcpiSleepState::SuspendToDisk => 4u16,
+    };
+
+    crate::serial_println!(
+        "[acpi] sleep request {:?} via PM1a 0x{:x} (hardware path not wired)",
+        state,
+        pm1a
+    );
+
+    Err(LinuxError::ENOSYS as i32)
+}

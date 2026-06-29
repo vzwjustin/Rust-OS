@@ -120,6 +120,8 @@ time = []
 serial = []
 disabled-tests = []
 std-tests = []
+kasan = []
+kcsan = []
 
 [build-dependencies]
 cc = "1.0"

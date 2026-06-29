@@ -87,6 +87,214 @@ pub fn register_special(kind: FdKind, flags: u32) -> LinuxResult<i32> {
     vfs::vfs_open_special(inode, flags, kind).map_err(|_| LinuxError::EMFILE)
 }
 
+/// Register an inotify instance as a special fd.
+pub fn register_inotify(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::Inotify(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12, // ENFILE
+    }
+}
+
+/// Get the inotify instance ID from a file descriptor.
+pub fn get_inotify_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::Inotify(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a pidfd as a special fd.
+pub fn register_pidfd(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::Pidfd(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12, // ENFILE
+    }
+}
+
+/// Get the pidfd instance ID from a file descriptor.
+pub fn get_pidfd_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::Pidfd(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register an io_uring instance as a special fd.
+pub fn register_io_uring(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::IoUring(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the io_uring instance ID from a file descriptor.
+pub fn get_io_uring_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::IoUring(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a fanotify instance as a special fd.
+pub fn register_fanotify(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::Fanotify(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the fanotify instance ID from a file descriptor.
+pub fn get_fanotify_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::Fanotify(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a fs context as a special fd.
+pub fn register_fs_context(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::FsContext(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the fs context ID from a file descriptor.
+pub fn get_fs_context_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::FsContext(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a mount object as a special fd.
+pub fn register_mount_object(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::MountObject(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the mount object ID from a file descriptor.
+pub fn get_mount_object_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::MountObject(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a Landlock ruleset as a special fd.
+pub fn register_landlock_ruleset(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::LandlockRuleset(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the Landlock ruleset ID from a file descriptor.
+pub fn get_landlock_ruleset_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::LandlockRuleset(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a BPF map as a special fd.
+pub fn register_bpf_map(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::BpfMap(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the BPF map ID from a file descriptor.
+pub fn get_bpf_map_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::BpfMap(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a BPF program as a special fd.
+pub fn register_bpf_prog(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::BpfProg(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the BPF program ID from a file descriptor.
+pub fn get_bpf_prog_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::BpfProg(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register a perf event as a special fd.
+pub fn register_perf_event(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::PerfEvent(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get the perf event ID from a file descriptor.
+pub fn get_perf_event_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::PerfEvent(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register userfaultfd instance special fd.
+pub fn register_userfaultfd(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::Userfaultfd(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get userfaultfd instance ID from file descriptor.
+pub fn get_userfaultfd_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::Userfaultfd(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register memfd_secret special fd.
+pub fn register_memfd_secret(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::MemfdSecret(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get memfd_secret ID from file descriptor.
+pub fn get_memfd_secret_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::MemfdSecret(id)) => Some(id),
+        _ => None,
+    }
+}
+
+/// Register namespace handle special fd.
+pub fn register_namespace(id: u32, flags: u32) -> i32 {
+    match register_special(FdKind::Namespace(id), flags) {
+        Ok(fd) => fd,
+        Err(_) => -12,
+    }
+}
+
+/// Get namespace handle ID from file descriptor.
+pub fn get_namespace_id(fd: i32) -> Option<u32> {
+    match vfs::vfs_fd_kind(fd) {
+        Ok(FdKind::Namespace(id)) => Some(id),
+        _ => None,
+    }
+}
+
 /// Read from a special fd if applicable.
 pub fn try_read(fd: i32, buf: &mut [u8]) -> Option<LinuxResult<isize>> {
     let kind = vfs::vfs_fd_kind(fd).ok()?;
@@ -183,6 +391,32 @@ pub fn try_read(fd: i32, buf: &mut [u8]) -> Option<LinuxResult<isize>> {
             }
             Some(Err(LinuxError::EAGAIN))
         }
+        FdKind::Fanotify(_) => {
+            let n = crate::fanotify::read_events(fd, buf);
+            if n >= 0 {
+                Some(Ok(n))
+            } else {
+                Some(Err(match -n {
+                    9 => LinuxError::EBADF,
+                    11 => LinuxError::EAGAIN,
+                    _ => LinuxError::EINVAL,
+                }))
+            }
+        }
+        FdKind::PerfEvent(_) => {
+            let n = crate::perf_event::read_event(fd, buf);
+            if n >= 0 {
+                Some(Ok(n))
+            } else {
+                Some(Err(match -n {
+                    9 => LinuxError::EBADF,
+                    22 => LinuxError::EINVAL,
+                    _ => LinuxError::EIO,
+                }))
+            }
+        }
+        FdKind::Userfaultfd(id) => Some(crate::userfaultfd::read_events(id, buf)),
+        FdKind::MemfdSecret(_) => Some(Err(LinuxError::EINVAL)),
         _ => None,
     }
 }
@@ -249,6 +483,46 @@ pub fn try_close(fd: i32) -> Option<LinuxResult<()>> {
         }
         FdKind::Signalfd(id) => {
             SIGNALFD_BY_ID.write().remove(&id);
+            Some(Ok(()))
+        }
+        FdKind::Pidfd(id) => {
+            crate::pidfd::close_pidfd(id);
+            Some(Ok(()))
+        }
+        FdKind::IoUring(id) => {
+            crate::io_uring::close_ring(id);
+            Some(Ok(()))
+        }
+        FdKind::Fanotify(id) => {
+            crate::fanotify::close_instance(id);
+            Some(Ok(()))
+        }
+        FdKind::LandlockRuleset(id) => {
+            crate::landlock::close_ruleset(id);
+            Some(Ok(()))
+        }
+        FdKind::BpfMap(id) => {
+            crate::bpf::close_map(id);
+            Some(Ok(()))
+        }
+        FdKind::BpfProg(id) => {
+            crate::bpf::close_prog(id);
+            Some(Ok(()))
+        }
+        FdKind::PerfEvent(id) => {
+            crate::perf_event::close_event(id);
+            Some(Ok(()))
+        }
+        FdKind::Userfaultfd(id) => {
+            crate::userfaultfd::close_userfaultfd(id);
+            Some(Ok(()))
+        }
+        FdKind::MemfdSecret(id) => {
+            crate::memfd_secret::close_memfd_secret(id);
+            Some(Ok(()))
+        }
+        FdKind::Namespace(id) => {
+            crate::namespace::close_namespace_fd(id);
             Some(Ok(()))
         }
         FdKind::Socket(socket_id) => {
@@ -339,7 +613,68 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
                 }
             }
         }
-        FdKind::Epoll(_) | FdKind::Inotify(_) => {}
+        FdKind::Pidfd(id) => {
+            if events & poll_events::POLLIN != 0 {
+                if let Some(pid) = crate::pidfd::get_pid_by_id(id) {
+                    if process::get_process_manager().get_process(pid).is_none() {
+                        revents |= poll_events::POLLIN;
+                    }
+                } else {
+                    revents |= poll_events::POLLNVAL;
+                }
+            }
+        }
+        FdKind::Fanotify(id) => {
+            if events & poll_events::POLLIN != 0 && crate::fanotify::has_events(id) {
+                revents |= poll_events::POLLIN;
+            }
+        }
+        FdKind::Userfaultfd(id) => {
+            if events & poll_events::POLLIN != 0 && crate::userfaultfd::has_events(id) {
+                revents |= poll_events::POLLIN;
+            }
+        }
+        FdKind::TtyConsole => {
+            if events & poll_events::POLLIN != 0 && crate::drivers::tty::console_pending_read() > 0
+            {
+                revents |= poll_events::POLLIN;
+            }
+            if events & poll_events::POLLOUT != 0 {
+                revents |= poll_events::POLLOUT;
+            }
+        }
+        FdKind::PtyMaster(id) => {
+            if events & poll_events::POLLIN != 0
+                && crate::drivers::tty::pty::pending_read(id, true) > 0
+            {
+                revents |= poll_events::POLLIN;
+            }
+            if events & poll_events::POLLOUT != 0 {
+                revents |= poll_events::POLLOUT;
+            }
+        }
+        FdKind::PtySlave(id) => {
+            if events & poll_events::POLLIN != 0
+                && crate::drivers::tty::pty::pending_read(id, false) > 0
+            {
+                revents |= poll_events::POLLIN;
+            }
+            if events & poll_events::POLLOUT != 0 {
+                revents |= poll_events::POLLOUT;
+            }
+        }
+        FdKind::Epoll(_)
+        | FdKind::Inotify(_)
+        | FdKind::IoUring(_)
+        | FdKind::FsContext(_)
+        | FdKind::MountObject(_)
+        | FdKind::LandlockRuleset(_)
+        | FdKind::BpfMap(_)
+        | FdKind::BpfProg(_)
+        | FdKind::PerfEvent(_)
+        | FdKind::Userfaultfd(_)
+        | FdKind::MemfdSecret(_)
+        | FdKind::Namespace(_) => {}
     }
     revents
 }

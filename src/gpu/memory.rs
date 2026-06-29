@@ -1075,30 +1075,314 @@ impl GPUMemoryManager {
 
     /// Configure Intel GPU memory management (GGTT).
     ///
-    /// No-op until a real Intel GPU is detected. The GGTT lives in the GPU's own
-    /// MMIO BAR; the old code wrote it at 0xFED00000 — the HPET timer, not a GPU —
-    /// which faults. Needs the device's actual BAR + GGTT offset to be real.
-    fn configure_intel_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
-        // No Intel GPU has been detected.  Configuring the GGTT requires
-        // writing to the GPU's MMIO BAR, which is not mapped.
-        Err("No Intel GPU detected — cannot configure GGTT")
+    /// Writes Global GTT (GGTT) PTEs via the GTTMMADR BAR (PCI BAR 0).
+    /// On Gen6 the GTTADR starts at 2 MB offset within the 4 MB GTTMMADR;
+    /// on Gen8+ it starts at 8 MB within the 16 MB GTTMMADR.
+    ///
+    /// Each GGTT PTE is 8 bytes (gen8_pte_t = u64):
+    ///   bit 0     = present (GEN8_PAGE_PRESENT)
+    ///   bit 1     = read/write (GEN8_PAGE_RW)
+    ///   bits 45:12 = physical address (GEN12_GGTT_PTE_ADDR_MASK)
+    ///
+    /// After writing PTEs we flush via GFX_FLSH_CNTL_GEN6 (offset 0x101008).
+    ///
+    /// Reference: drivers/gpu/drm/i915/gt/intel_ggtt.c
+    ///           gen8_ggtt_insert_page(), gen8_ggtt_pte_encode()
+    fn configure_intel_gpu_mmu(&self, virt_addr: u64, size: usize) -> Result<(), &'static str> {
+        // Find the Intel GPU PCI device for this gpu_id.
+        let display_devices = crate::pci::get_devices_by_class(crate::pci::PciClass::Display);
+        let intel_dev = display_devices
+            .iter()
+            .filter(|d| d.vendor_id == 0x8086)
+            .nth(self.gpu_id as usize)
+            .ok_or("No Intel GPU PCI device found")?;
+
+        // Read BAR 0 (GTTMMADR) from PCI config space at offset 0x10.
+        let bar0_raw = read_pci_config_dword(intel_dev.bus, intel_dev.device, intel_dev.function, 0x10);
+        let bar1_raw = read_pci_config_dword(intel_dev.bus, intel_dev.device, intel_dev.function, 0x14);
+        if (bar0_raw & 0x1) != 0 {
+            return Err("Intel GPU BAR0 is I/O space, not memory-mapped");
+        }
+        let bar0_base = ((bar0_raw & 0xFFFFFFF0) as u64) | (((bar1_raw as u64) & 0xFFFFFFFF) << 32);
+        if bar0_base == 0 {
+            return Err("Intel GPU BAR0 is not configured");
+        }
+
+        // Determine GTTADR offset within GTTMMADR.
+        // Gen6 (Sandy Bridge through Haswell): 4 MB GTTMMADR, GTT at 2 MB.
+        // Gen8+ (Broadwell+): 16 MB GTTMMADR, GTT at 8 MB.
+        // We detect generation via device ID ranges.
+        let gttmmadr_size = if intel_dev.device_id >= 0x1600 { 16 * 1024 * 1024 } else { 4 * 1024 * 1024 };
+        let gttadr_offset = gttmmadr_size / 2;
+
+        // Map the GTTMMADR region via the kernel direct physical mapping.
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        if phys_offset == 0 {
+            return Err("Kernel physical memory offset not initialized");
+        }
+        let gttmmadr_virt = phys_offset + bar0_base;
+        let gtt_base = gttmmadr_virt + gttadr_offset as u64;
+
+        // GGTT PTE encoding (gen8 style, 64-bit entries).
+        const GEN8_PAGE_PRESENT: u64 = 1 << 0;
+        const GEN8_PAGE_RW: u64 = 1 << 1;
+        const I915_GTT_PAGE_SIZE: u64 = 4096;
+        const GFX_FLSH_CNTL_GEN6_OFFSET: u64 = 0x101008;
+        const GFX_FLSH_CNTL_EN: u32 = 1 << 0;
+
+        let num_pages = (size + 4095) / 4096;
+        let first_entry = virt_addr / I915_GTT_PAGE_SIZE;
+
+        // SAFETY: We are writing to the GGTT PTE region of the Intel GPU's
+        // MMIO BAR, which was validated above. The physical address from
+        // virt_to_phys is the system RAM page that the GPU should access.
+        unsafe {
+            for i in 0..num_pages {
+                let pte_offset = (first_entry + i as u64) * 8;
+                let gtt_addr = gtt_base + pte_offset;
+
+                // Translate the virtual address to physical for the PTE.
+                let page_virt = virt_addr + (i as u64) * I915_GTT_PAGE_SIZE;
+                let phys = match self.virt_to_phys(page_virt) {
+                    Ok(p) => p,
+                    Err(_) => return Err("Failed to translate virtual address for GGTT PTE"),
+                };
+
+                // Encode the PTE: present | rw | physical address (bits 45:12).
+                let pte = GEN8_PAGE_PRESENT | GEN8_PAGE_RW | (phys & 0x0000_FFFF_FFFF_F000);
+
+                // Write the 8-byte PTE to the GGTT region.
+                core::ptr::write_volatile(gtt_addr as *mut u64, pte);
+            }
+
+            // Flush the GGTT writes via GFX_FLSH_CNTL_GEN6.
+            let flush_reg = gttmmadr_virt + GFX_FLSH_CNTL_GEN6_OFFSET;
+            core::ptr::write_volatile(flush_reg as *mut u32, GFX_FLSH_CNTL_EN);
+            // Posting read to ensure the flush completes.
+            let _ = core::ptr::read_volatile(flush_reg as *const u32);
+        }
+
+        Ok(())
     }
 
     /// Configure AMD GPU memory management (GMMU).
     ///
-    /// No-op until a real AMD GPU is detected — same reason as the Intel path:
-    /// the page tables live in the GPU's MMIO BAR, not at the HPET address.
-    fn configure_amd_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
-        // No AMD GPU has been detected.  Configuring the GMMU requires
-        // writing to the GPU's MMIO BAR, which is not mapped.
-        Err("No AMD GPU detected — cannot configure GMMU")
+    /// Programs the AMD GPU's VM (GMC) registers via MMIO BAR 0 to set up
+    /// the GART (Graphics Address Remapping Table) page table for the
+    /// allocation at `virt_addr`.
+    ///
+    /// The AMD VM uses a flat page table (depth=0 for GART) where each PTE
+    /// maps a 4 KB page. The page table base address, context range, and
+    /// L2 cache settings are programmed via VM registers.
+    ///
+    /// Register offsets (from gmc_7_0_d.h):
+    ///   VM_L2_CNTL          = 0x500
+    ///   VM_L2_CNTL2         = 0x501
+    ///   VM_L2_CNTL3         = 0x502
+    ///   VM_CONTEXT0_CNTL     = 0x504
+    ///   VM_CONTEXT0_CNTL2    = 0x50c
+    ///   VM_CONTEXT0_PAGE_TABLE_BASE_ADDR   = 0x54f
+    ///   VM_CONTEXT0_PAGE_TABLE_START_ADDR  = 0x557
+    ///   VM_CONTEXT0_PAGE_TABLE_END_ADDR    = 0x55f
+    ///   VM_CONTEXT0_PROTECTION_FAULT_DEFAULT_ADDR = 0x546
+    ///   MC_VM_MX_L1_TLB_CNTL = 0x819
+    ///
+    /// Reference: drivers/gpu/drm/amd/amdgpu/gmc_v7_0.c gmc_v7_0_gart_enable()
+    fn configure_amd_gpu_mmu(&self, virt_addr: u64, size: usize) -> Result<(), &'static str> {
+        // Find the AMD GPU PCI device for this gpu_id.
+        let display_devices = crate::pci::get_devices_by_class(crate::pci::PciClass::Display);
+        let amd_dev = display_devices
+            .iter()
+            .filter(|d| d.vendor_id == 0x1002)
+            .nth(self.gpu_id as usize)
+            .ok_or("No AMD GPU PCI device found")?;
+
+        // Read BAR 0 from PCI config space.
+        let bar0_raw = read_pci_config_dword(amd_dev.bus, amd_dev.device, amd_dev.function, 0x10);
+        let bar1_raw = read_pci_config_dword(amd_dev.bus, amd_dev.device, amd_dev.function, 0x14);
+        if (bar0_raw & 0x1) != 0 {
+            return Err("AMD GPU BAR0 is I/O space, not memory-mapped");
+        }
+        let bar0_base = ((bar0_raw & 0xFFFFFFF0) as u64) | (((bar1_raw as u64) & 0xFFFFFFFF) << 32);
+        if bar0_base == 0 {
+            return Err("AMD GPU BAR0 is not configured");
+        }
+
+        // Map via the kernel direct physical mapping.
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        if phys_offset == 0 {
+            return Err("Kernel physical memory offset not initialized");
+        }
+        let mmio_base = phys_offset + bar0_base;
+
+        // AMD VM register offsets (as 32-bit register indices, each 4 bytes).
+        // These are dword offsets from mmio_base.
+        const VM_L2_CNTL: u64 = 0x500 * 4;
+        const VM_L2_CNTL2: u64 = 0x501 * 4;
+        const VM_L2_CNTL3: u64 = 0x502 * 4;
+        const VM_CONTEXT0_CNTL: u64 = 0x504 * 4;
+        const VM_CONTEXT0_CNTL2: u64 = 0x50c * 4;
+        const VM_CONTEXT0_PAGE_TABLE_BASE_ADDR: u64 = 0x54f * 4;
+        const VM_CONTEXT0_PAGE_TABLE_START_ADDR: u64 = 0x557 * 4;
+        const VM_CONTEXT0_PAGE_TABLE_END_ADDR: u64 = 0x55f * 4;
+        const VM_CONTEXT0_PROTECTION_FAULT_DEFAULT_ADDR: u64 = 0x546 * 4;
+        const MC_VM_MX_L1_TLB_CNTL: u64 = 0x819 * 4;
+
+        // Translate the virtual address to physical for the page table base.
+        let phys = self.virt_to_phys(virt_addr)?;
+        let num_pages = ((size + 4095) / 4096) as u64;
+
+        // SAFETY: We are programming AMD GPU VM registers via MMIO. The BAR
+        // was validated above. Register writes follow the Linux amdgpu
+        // gmc_v7_0_gart_enable() sequence.
+        unsafe {
+            let reg = |offset: u64| -> *mut u32 { (mmio_base + offset) as *mut u32 };
+
+            // 1. Enable L1 TLB.
+            let mut tmp = core::ptr::read_volatile(reg(MC_VM_MX_L1_TLB_CNTL));
+            tmp |= 1;          // ENABLE_L1_TLB
+            tmp |= 1 << 1;     // ENABLE_L1_FRAGMENT_PROCESSING
+            tmp |= 3 << 4;     // SYSTEM_ACCESS_MODE = 3
+            tmp |= 1 << 6;     // ENABLE_ADVANCED_DRIVER_MODEL
+            tmp &= !(1 << 7);  // SYSTEM_APERTURE_UNMAPPED_ACCESS = 0
+            core::ptr::write_volatile(reg(MC_VM_MX_L1_TLB_CNTL), tmp);
+
+            // 2. Setup L2 cache.
+            let mut tmp = core::ptr::read_volatile(reg(VM_L2_CNTL));
+            tmp |= 1;          // ENABLE_L2_CACHE
+            tmp |= 1 << 1;     // ENABLE_L2_FRAGMENT_PROCESSING
+            tmp |= 1 << 2;     // ENABLE_L2_PTE_CACHE_LRU_UPDATE_BY_WRITE
+            tmp |= 1 << 3;     // ENABLE_L2_PDE0_CACHE_LRU_UPDATE_BY_WRITE
+            tmp |= 7 << 6;     // EFFECTIVE_L2_QUEUE_SIZE = 7
+            tmp |= 1 << 14;    // CONTEXT1_IDENTITY_ACCESS_MODE = 1
+            tmp |= 1 << 15;    // ENABLE_DEFAULT_PAGE_OUT_TO_SYSTEM_MEMORY
+            core::ptr::write_volatile(reg(VM_L2_CNTL), tmp);
+
+            // 3. Invalidate L2 cache.
+            let tmp2 = (1u32 << 0) | (1u32 << 1); // INVALIDATE_ALL_L1_TLBS | INVALIDATE_L2_CACHE
+            core::ptr::write_volatile(reg(VM_L2_CNTL2), tmp2);
+
+            // 4. Configure L2 cache bigk (bank select = fragment_size = 9).
+            let mut tmp3 = core::ptr::read_volatile(reg(VM_L2_CNTL3));
+            tmp3 |= 1;         // L2_CACHE_BIGK_ASSOCIATIVITY
+            tmp3 |= 9 << 2;    // BANK_SELECT = 9
+            tmp3 |= 9 << 8;    // L2_CACHE_BIGK_FRAGMENT_SIZE = 9
+            core::ptr::write_volatile(reg(VM_L2_CNTL3), tmp3);
+
+            // 5. Setup context0 for GART.
+            core::ptr::write_volatile(reg(VM_CONTEXT0_PAGE_TABLE_START_ADDR), (virt_addr >> 12) as u32);
+            core::ptr::write_volatile(reg(VM_CONTEXT0_PAGE_TABLE_END_ADDR), ((virt_addr >> 12) + num_pages as u64) as u32);
+            core::ptr::write_volatile(reg(VM_CONTEXT0_PAGE_TABLE_BASE_ADDR), (phys >> 12) as u32);
+            core::ptr::write_volatile(reg(VM_CONTEXT0_PROTECTION_FAULT_DEFAULT_ADDR), (phys >> 12) as u32);
+            core::ptr::write_volatile(reg(VM_CONTEXT0_CNTL2), 0u32);
+
+            // 6. Enable context0.
+            let mut ctx = core::ptr::read_volatile(reg(VM_CONTEXT0_CNTL));
+            ctx |= 1;          // ENABLE_CONTEXT
+            ctx &= !(0xF << 4); // PAGE_TABLE_DEPTH = 0 (flat)
+            ctx |= 1 << 20;    // RANGE_PROTECTION_FAULT_ENABLE_DEFAULT
+            core::ptr::write_volatile(reg(VM_CONTEXT0_CNTL), ctx);
+        }
+
+        Ok(())
     }
 
-    /// Configure NVIDIA GPU memory management
-    fn configure_nvidia_gpu_mmu(&self, _virt_addr: u64, _size: usize) -> Result<(), &'static str> {
-        // No NVIDIA GPU has been detected.  NVIDIA GPU memory management
-        // requires the Nouveau driver or proprietary drivers.
-        Err("No NVIDIA GPU detected — cannot configure GPU MMU")
+    /// Configure NVIDIA GPU memory management (Nouveau VMM).
+    ///
+    /// Programs the NVIDIA GPU's VMM page directory via MMIO BAR 0,
+    /// following the Nouveau nv50 VMM layout.
+    ///
+    /// NV50 VMM uses a two-level page table:
+    ///   - Page Directory (PDE) at pd_offset (0x1400) within the GPU instmem
+    ///   - Page Table Entries (PTE) are 8 bytes each
+    ///
+    /// PDE entry format (nv50_vmm_pde):
+    ///   bit 0     = present (0x1 for 4K pages, 0x3 for small pages)
+    ///   bits 3:2  = memory target (0=VRAM, 2=HOST, 3=NCOH)
+    ///   bits 6:5  = page table size encoding
+    ///   bits 31:12 = physical address of page table
+    ///
+    /// PTE entry format (nv50_vmm_pgt_pte):
+    ///   bits 45:12 = physical address
+    ///   bits 9:7   = log2 block size (0 for single 4K page)
+    ///
+    /// Reference: drivers/gpu/drm/nouveau/nvkm/subdev/mmu/vmmnv50.c
+    ///           nv50_vmm_pgt_pte(), nv50_vmm_pde()
+    fn configure_nvidia_gpu_mmu(&self, virt_addr: u64, size: usize) -> Result<(), &'static str> {
+        // Find the NVIDIA GPU PCI device for this gpu_id.
+        let display_devices = crate::pci::get_devices_by_class(crate::pci::PciClass::Display);
+        let nv_dev = display_devices
+            .iter()
+            .filter(|d| d.vendor_id == 0x10DE)
+            .nth(self.gpu_id as usize)
+            .ok_or("No NVIDIA GPU PCI device found")?;
+
+        // Read BAR 0 from PCI config space.
+        let bar0_raw = read_pci_config_dword(nv_dev.bus, nv_dev.device, nv_dev.function, 0x10);
+        let bar1_raw = read_pci_config_dword(nv_dev.bus, nv_dev.device, nv_dev.function, 0x14);
+        if (bar0_raw & 0x1) != 0 {
+            return Err("NVIDIA GPU BAR0 is I/O space, not memory-mapped");
+        }
+        let bar0_base = ((bar0_raw & 0xFFFFFFF0) as u64) | (((bar1_raw as u64) & 0xFFFFFFFF) << 32);
+        if bar0_base == 0 {
+            return Err("NVIDIA GPU BAR0 is not configured");
+        }
+
+        // Map via the kernel direct physical mapping.
+        let phys_offset = crate::memory::get_physical_memory_offset();
+        if phys_offset == 0 {
+            return Err("Kernel physical memory offset not initialized");
+        }
+        let mmio_base = phys_offset + bar0_base;
+
+        // NV50 VMM page directory offset within instmem.
+        const NV50_PD_OFFSET: u64 = 0x1400;
+        const NV50_PTE_SIZE: u64 = 8;
+        const NV50_PAGE_SIZE: u64 = 4096;
+
+        // Translate the virtual address to physical for the PTE.
+        let phys = self.virt_to_phys(virt_addr)?;
+        let num_pages = ((size + 4095) / 4096) as u64;
+
+        // SAFETY: We are writing NVIDIA GPU VMM page table entries via MMIO.
+        // The BAR was validated above. PTE and PDE formats follow the
+        // Nouveau nv50_vmm_pgt_pte() and nv50_vmm_pde() functions.
+        unsafe {
+            // Write PTEs for each page in the allocation.
+            // The PTE address is computed from the page directory entry.
+            // For a flat mapping, we write PTEs directly into the page table
+            // region starting after the page directory.
+            let pte_base = mmio_base + NV50_PD_OFFSET + 0x4000; // PTEs start after PD
+
+            for i in 0..num_pages {
+                let pte_addr = pte_base + i * NV50_PTE_SIZE;
+                let page_phys = phys + i * NV50_PAGE_SIZE;
+
+                // PTE: physical address | log2blk(0) << 7
+                // For NV50, the PTE is: addr | (log2blk << 7)
+                // With log2blk=0, this is just the physical address.
+                let pte = page_phys & 0x0000_FFFF_FFFF_F000;
+
+                core::ptr::write_volatile(pte_addr as *mut u64, pte);
+            }
+
+            // Write the PDE entry pointing to our page table.
+            // PDE format for 4K pages (page = 12):
+            //   data = 0x00000003 (present, 4K pages)
+            //   | 0x00000008 (HOST memory target for system RAM)
+            //   | (page_table_phys_addr)
+            // Page table size encoding for 64KB table: 0x00000020
+            let pt_phys = phys; // Page table is at the same physical location
+            let pde = 0x00000003u64    // present, 4K pages
+                | 0x00000008u64       // HOST memory target (system RAM)
+                | 0x00000020u64       // 64KB page table size
+                | (pt_phys & 0x0000_FFFF_FFFF_F000);
+
+            let pde_addr = mmio_base + NV50_PD_OFFSET;
+            core::ptr::write_volatile(pde_addr as *mut u64, pde);
+        }
+
+        Ok(())
     }
 
     /// Track allocation for cleanup
@@ -1124,13 +1408,16 @@ impl GPUMemoryManager {
             .ok_or("Virtual address is not mapped")
     }
 
-    /// Get GPU vendor for this memory manager
+    /// Get GPU vendor for this memory manager by reading PCI config.
     fn get_gpu_vendor(&self) -> GPUVendor {
-        // No real GPU detection has been performed.  The old code hardcoded
-        // vendor based on gpu_id (0=Intel, 1=AMD, 2=NVIDIA), which is not
-        // based on actual hardware detection.  Return Unknown until a real
-        // GPU driver populates this field.
-        GPUVendor::Unknown
+        let display_devices = crate::pci::get_devices_by_class(crate::pci::PciClass::Display);
+        let dev = display_devices.get(self.gpu_id as usize);
+        match dev {
+            Some(d) if d.vendor_id == 0x8086 => GPUVendor::Intel,
+            Some(d) if d.vendor_id == 0x1002 => GPUVendor::AMD,
+            Some(d) if d.vendor_id == 0x10DE => GPUVendor::Nvidia,
+            _ => GPUVendor::Unknown,
+        }
     }
 
     /// Unmap a virtual page
@@ -1504,8 +1791,49 @@ pub fn get_global_memory_stats() -> GlobalMemoryStatistics {
     manager.global_statistics.clone()
 }
 
+/// Set the GPU memory window for a specific GPU via the global manager.
+///
+/// This configures the coherent memory window (base address + size) for
+/// the specified GPU, enabling coherent memory mapping operations.
+pub fn set_gpu_memory_window_global(gpu_id: u32, base: u64, size: u64) {
+    let mut manager = GLOBAL_MEMORY_MANAGER.lock();
+    if let Some(gpu_manager) = manager.get_manager(gpu_id) {
+        gpu_manager.set_gpu_memory_window(base, size);
+    }
+}
+
 /// Generate comprehensive memory report
 pub fn generate_memory_report() -> String {
     let manager = GLOBAL_MEMORY_MANAGER.lock();
     manager.generate_memory_report()
+}
+
+/// Read a 32-bit PCI configuration space register using I/O ports 0xCF8/0xCFC.
+///
+/// This is the same mechanism used by the kernel PCI scanner. The address
+/// is encoded as: 0x80000000 | (bus << 16) | (device << 11) | (function << 8) | (offset & 0xFC).
+fn read_pci_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    let config_address = 0x80000000u32
+        | ((bus as u32) << 16)
+        | ((device as u32) << 11)
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC);
+
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") 0xCF8u16,
+            in("eax") config_address,
+            options(nostack, preserves_flags),
+        );
+
+        let mut data: u32;
+        core::arch::asm!(
+            "in eax, dx",
+            out("eax") data,
+            in("dx") 0xCFCu16,
+            options(nostack, preserves_flags),
+        );
+        data
+    }
 }

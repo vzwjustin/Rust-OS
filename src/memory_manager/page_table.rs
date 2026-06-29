@@ -5,7 +5,7 @@
 use spin::Mutex;
 use x86_64::{
     structures::paging::{
-        FrameAllocator, Page, PageTableFlags as X64Flags, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Page, PageTableFlags as X64Flags, PhysFrame, Size2MiB, Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
 };
@@ -241,6 +241,41 @@ impl PageTable {
             let mut pt = self.offset_page_table();
             pt.map_to(page, frame, x64_flags, &mut *allocator)
                 .map_err(|_| VmError::InvalidOperation)?;
+        }
+        Ok(())
+    }
+
+    /// Map a virtual address to a physical address using a 2MB huge page
+    pub fn map_huge(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageTableFlags,
+    ) -> VmResult<()> {
+        use x86_64::structures::paging::Mapper;
+
+        let page = Page::<Size2MiB>::containing_address(virt);
+        let frame = PhysFrame::<Size2MiB>::containing_address(phys);
+        let x64_flags = flags.to_x64_flags();
+
+        let mut allocator = self.frame_allocator.lock();
+        unsafe {
+            let mut pt = self.offset_page_table();
+            pt.map_to(page, frame, x64_flags, &mut *allocator)
+                .map_err(|_| VmError::InvalidOperation)?;
+        }
+        Ok(())
+    }
+
+    /// Unmap a 2MB huge page
+    pub fn unmap_huge(&mut self, virt: VirtAddr) -> VmResult<()> {
+        use x86_64::structures::paging::Mapper;
+
+        let page = Page::<Size2MiB>::containing_address(virt);
+
+        unsafe {
+            let mut pt = self.offset_page_table();
+            pt.unmap(page).map_err(|_| VmError::InvalidOperation)?;
         }
         Ok(())
     }

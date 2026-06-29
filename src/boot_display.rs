@@ -156,7 +156,12 @@ fn show_service_status(service: &str, active: bool) {
 /// Print text centered on screen
 fn print_centered(text: &str) {
     let width = 80; // VGA text mode width
-    let padding = (width - text.len()) / 2;
+    let char_count = text.chars().count();
+    let padding = if width > char_count {
+        (width - char_count) / 2
+    } else {
+        0
+    };
 
     for _ in 0..padding {
         print!(" ");
@@ -175,7 +180,12 @@ fn draw_box(title: &str, width: usize) {
     println!("╗");
 
     // Title line
-    let title_padding = ((width - 4) - title.len()) / 2;
+    let char_count = title.chars().count();
+    let title_padding = if (width - 4) > char_count {
+        ((width - 4) - char_count) / 2
+    } else {
+        0
+    };
     print!("  ║");
     for _ in 0..title_padding {
         print!(" ");
@@ -186,7 +196,7 @@ fn draw_box(title: &str, width: usize) {
     for _ in 0..title_padding {
         print!(" ");
     }
-    if title.len() % 2 == 1 {
+    if char_count % 2 == 1 {
         print!(" "); // Extra space for odd titles
     }
     println!("║");

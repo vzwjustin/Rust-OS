@@ -25,7 +25,7 @@ use x86_64::{
     registers::control::Cr3,
     structures::paging::{
         mapper::MapToError, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable,
-        PageTableFlags, PhysFrame, Size4KiB, Translate,
+        PageTableFlags, PhysFrame, Size2MiB, Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
 };
@@ -454,6 +454,55 @@ impl PhysicalFrameAllocator {
             ],
             per_cpu_allocator: PerCpuAllocator::new(),
         }
+    }
+
+    /// Extend the allocator with a newly hot-added usable physical range.
+    ///
+    /// Returns the number of buddy blocks added. Used by [`crate::memory_hotplug`].
+    pub fn add_usable_range(&mut self, start: u64, end: u64) -> usize {
+        if start >= end {
+            return 0;
+        }
+
+        let start = align_up(start as usize, PAGE_SIZE) as u64;
+        let end = align_down(end as usize, PAGE_SIZE) as u64;
+        if start >= end {
+            return 0;
+        }
+
+        let mut added = 0usize;
+        let mut current = start;
+        while current < end {
+            let zone = MemoryZone::from_address(PhysAddr::new(current));
+            let zone_idx = zone as usize;
+
+            let mut order = MAX_ORDER;
+            let mut block_size = PAGE_SIZE << order;
+            while order > 0 {
+                let block_end = current + block_size as u64;
+                if current % (block_size as u64) == 0 && block_end <= end {
+                    break;
+                }
+                order -= 1;
+                block_size >>= 1;
+            }
+
+            self.buddy_lists[zone_idx][order].push(BuddyNode {
+                address: PhysAddr::new(current),
+                order,
+            });
+            self.total_frames[zone_idx] += 1 << order;
+            added += 1;
+            current += block_size as u64;
+        }
+
+        for zone_idx in 0..3 {
+            for order in 0..NUM_ORDERS {
+                self.buddy_lists[zone_idx][order]
+                    .sort_unstable_by_key(|node| node.address.as_u64());
+            }
+        }
+        added
     }
 
     /// Fast path allocation using per-CPU allocator
@@ -3158,6 +3207,18 @@ pub fn init_memory_management(
     Ok(())
 }
 
+/// Hot-add a usable physical memory range to the global frame allocator.
+pub fn hotplug_add_usable_range(start: u64, end: u64) -> Result<usize, MemoryError> {
+    let mm = get_memory_manager().ok_or(MemoryError::InvalidAddress)?;
+    let added = mm.frame_allocator.lock().add_usable_range(start, end);
+    if added == 0 {
+        return Err(MemoryError::InvalidAddress);
+    }
+    let bytes = end.saturating_sub(start) as usize;
+    mm.total_memory.fetch_add(bytes, Ordering::Relaxed);
+    Ok(added)
+}
+
 /// Get global memory manager
 pub fn get_memory_manager() -> Option<&'static MemoryManager> {
     unsafe {
@@ -3684,6 +3745,149 @@ pub fn map_mmio_region_strict(phys: usize, size: usize) -> Result<usize, &'stati
     }
 
     Ok(phys)
+}
+
+/// Size of a 2 MiB huge page (x86_64 large page).
+pub const HUGEPAGE_SIZE: u64 = 2 * 1024 * 1024;
+/// Buddy order for a single 2 MiB contiguous block (512 × 4 KiB pages).
+pub const HUGEPAGE_BUDDY_ORDER: usize = 9;
+/// Number of 4 KiB pages in one huge page.
+pub const HUGEPAGE_4K_PAGES: usize = 1 << HUGEPAGE_BUDDY_ORDER;
+
+/// Map a pre-allocated 2 MiB physical frame at a user virtual address using a
+/// PDE huge-page entry (no 4 KiB page table leaf).
+pub fn map_user_huge_page(
+    virt: usize,
+    phys: PhysAddr,
+    flags: PageTableFlags,
+) -> Result<(), &'static str> {
+    if virt as u64 % HUGEPAGE_SIZE != 0 || phys.as_u64() % HUGEPAGE_SIZE != 0 {
+        return Err("huge page addresses must be 2 MiB aligned");
+    }
+
+    let mm = get_memory_manager().ok_or("memory manager not initialized")?;
+    let mut frame_allocator = mm.frame_allocator.lock();
+    let offset = mm.physical_memory_offset;
+
+    let virt_addr = VirtAddr::new(virt as u64);
+    let p4_idx = virt_addr.p4_index();
+    let p3_idx = virt_addr.p3_index();
+    let p2_idx = virt_addr.p2_index();
+
+    let (pml4_frame, _) = Cr3::read();
+    let pml4_virt = offset + pml4_frame.start_address().as_u64();
+    let pml4 = unsafe { &mut *(pml4_virt.as_mut_ptr() as *mut PageTable) };
+
+    if !pml4[p4_idx].flags().contains(PageTableFlags::PRESENT) {
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or("out of physical frames")?;
+        unsafe {
+            core::ptr::write_bytes(
+                (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
+                0,
+                PAGE_SIZE,
+            );
+        }
+        pml4[p4_idx].set_addr(
+            frame.start_address(),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+    }
+
+    let p3_virt = offset + pml4[p4_idx].addr().as_u64();
+    let p3 = unsafe { &mut *(p3_virt.as_mut_ptr() as *mut PageTable) };
+
+    if !p3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or("out of physical frames")?;
+        unsafe {
+            core::ptr::write_bytes(
+                (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
+                0,
+                PAGE_SIZE,
+            );
+        }
+        p3[p3_idx].set_addr(
+            frame.start_address(),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+    }
+
+    let p2_virt = offset + p3[p3_idx].addr().as_u64();
+    let p2 = unsafe { &mut *(p2_virt.as_mut_ptr() as *mut PageTable) };
+
+    if p2[p2_idx].flags().contains(PageTableFlags::PRESENT) {
+        return Err("virtual huge page already mapped");
+    }
+
+    p2[p2_idx].set_addr(
+        phys,
+        flags | PageTableFlags::HUGE_PAGE | PageTableFlags::PRESENT,
+    );
+    x86_64::instructions::tlb::flush(virt_addr);
+    Ok(())
+}
+
+/// Unmap a 2 MiB user huge page. Returns the backing physical base if present.
+pub fn unmap_user_huge_page(virt: usize) -> Result<Option<PhysAddr>, &'static str> {
+    if virt as u64 % HUGEPAGE_SIZE != 0 {
+        return Err("virtual address must be 2 MiB aligned");
+    }
+
+    let mm = get_memory_manager().ok_or("memory manager not initialized")?;
+    let offset = mm.physical_memory_offset;
+    let virt_addr = VirtAddr::new(virt as u64);
+    let p4_idx = virt_addr.p4_index();
+    let p3_idx = virt_addr.p3_index();
+    let p2_idx = virt_addr.p2_index();
+
+    let (pml4_frame, _) = Cr3::read();
+    let pml4_virt = offset + pml4_frame.start_address().as_u64();
+    let pml4 = unsafe { &*(pml4_virt.as_ptr() as *const PageTable) };
+
+    if !pml4[p4_idx].flags().contains(PageTableFlags::PRESENT) {
+        return Ok(None);
+    }
+
+    let p3_virt = offset + pml4[p4_idx].addr().as_u64();
+    let p3 = unsafe { &*(p3_virt.as_ptr() as *const PageTable) };
+    if !p3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
+        return Ok(None);
+    }
+
+    let p2_virt = offset + p3[p3_idx].addr().as_u64();
+    let p2 = unsafe { &mut *(p2_virt.as_mut_ptr() as *mut PageTable) };
+    if !p2[p2_idx]
+        .flags()
+        .contains(PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE)
+    {
+        return Ok(None);
+    }
+
+    let phys = p2[p2_idx].addr();
+    p2[p2_idx].set_unused();
+    x86_64::instructions::tlb::flush(virt_addr);
+    Ok(Some(phys))
+}
+
+/// Allocate a physically contiguous 2 MiB block from the normal memory zone.
+pub fn allocate_huge_frame() -> Option<PhysAddr> {
+    let mm = get_memory_manager()?;
+    mm.allocate_contiguous_pages(HUGEPAGE_4K_PAGES, MemoryZone::Normal)
+        .map(|frame| frame.start_address())
+}
+
+/// Return a 2 MiB contiguous block to the buddy allocator.
+pub fn free_huge_frame(phys: PhysAddr) {
+    if let Some(mm) = get_memory_manager() {
+        let frame = PhysFrame::<Size4KiB>::containing_address(phys);
+        let zone = MemoryZone::from_address(phys);
+        mm.frame_allocator
+            .lock()
+            .deallocate_frames(frame, zone, HUGEPAGE_BUDDY_ORDER);
+    }
 }
 
 /// Allocate a zeroed physical frame and map it at user virtual address `virt`.

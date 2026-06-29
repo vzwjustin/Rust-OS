@@ -1,110 +1,34 @@
 //! Terminal and TTY operations
 //!
-//! This module implements Linux terminal/TTY operations including
-//! pseudoterminals (pty), terminal attributes, job control, and line discipline.
+//! Syscall-facing API; PTY/line-discipline state lives in `drivers::tty`.
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
-use spin::Mutex;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::process_ops;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::drivers::tty::{self, pty};
 use crate::process;
+
+/// Re-export termios types from the TTY driver layer.
+pub use crate::drivers::tty::{c_cflag, c_iflag, c_lflag, c_oflag, cc_index, Termios, WinSize};
 
 /// Operation counter for statistics
 static TTY_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Next pseudoterminal id.
-static NEXT_PTY_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Next synthetic fd for pty endpoints (avoid VFS fd range).
-static NEXT_PTY_FD: AtomicI32 = AtomicI32::new(0x4000);
-
-/// In-module PTY registry.
-static PTY_REGISTRY: Mutex<BTreeMap<u32, PtyPair>> = Mutex::new(BTreeMap::new());
-
-/// Map fd -> (pty_id, is_master).
-static FD_TO_PTY: Mutex<BTreeMap<i32, (u32, bool)>> = Mutex::new(BTreeMap::new());
-
-/// Per-fd termios for tty endpoints (including stdio).
-static FD_TERMIOS: Mutex<BTreeMap<i32, Termios>> = Mutex::new(BTreeMap::new());
-
-#[derive(Clone)]
-struct PtyPair {
-    id: u32,
-    termios: Termios,
-    winsize: WinSize,
-    unlocked: bool,
-    granted: bool,
-    session_id: Pid,
-    foreground_pgrp: Pid,
-    input_buf: Vec<u8>,
-    output_buf: Vec<u8>,
-    output_paused: bool,
-    input_paused: bool,
-}
-
-impl PtyPair {
-    fn new(id: u32) -> Self {
-        Self {
-            id,
-            termios: Termios::default(),
-            winsize: WinSize::default(),
-            unlocked: false,
-            granted: false,
-            session_id: process::current_pid() as Pid,
-            foreground_pgrp: process::current_pid() as Pid,
-            input_buf: Vec::new(),
-            output_buf: Vec::new(),
-            output_paused: false,
-            input_paused: false,
-        }
-    }
-}
-
-fn allocate_pty_fd() -> i32 {
-    loop {
-        let fd = NEXT_PTY_FD.fetch_add(1, Ordering::SeqCst);
-        if fd < 0 {
-            continue;
-        }
-        let map = FD_TO_PTY.lock();
-        if !map.contains_key(&fd) {
-            return fd;
-        }
-    }
-}
-
-fn create_pty_pair() -> LinuxResult<(u32, i32, i32)> {
-    let id = NEXT_PTY_ID.fetch_add(1, Ordering::SeqCst);
-    let master_fd = allocate_pty_fd();
-    let slave_fd = allocate_pty_fd();
-
-    let pair = PtyPair::new(id);
-    PTY_REGISTRY.lock().insert(id, pair);
-    FD_TO_PTY.lock().insert(master_fd, (id, true));
-    FD_TO_PTY.lock().insert(slave_fd, (id, false));
-
-    Ok((id, master_fd, slave_fd))
-}
-
 fn pty_lookup(fd: Fd) -> Option<(u32, bool)> {
-    FD_TO_PTY.lock().get(&fd).copied()
+    pty::legacy_lookup(fd)
 }
 
 fn with_pty<F, R>(fd: Fd, f: F) -> LinuxResult<R>
 where
-    F: FnOnce(&mut PtyPair, bool) -> LinuxResult<R>,
+    F: FnOnce(u32, bool) -> LinuxResult<R>,
 {
     let (pty_id, is_master) = pty_lookup(fd).ok_or(LinuxError::ENOTTY)?;
-    let mut registry = PTY_REGISTRY.lock();
-    let pair = registry.get_mut(&pty_id).ok_or(LinuxError::ENOTTY)?;
-    f(pair, is_master)
+    f(pty_id, is_master)
 }
 
 fn validate_tty_fd(fd: Fd) -> LinuxResult<()> {
@@ -118,40 +42,24 @@ fn validate_tty_fd(fd: Fd) -> LinuxResult<()> {
 }
 
 fn termios_for_fd(fd: Fd) -> LinuxResult<Termios> {
-    if let Some((pty_id, _)) = pty_lookup(fd) {
-        return PTY_REGISTRY
-            .lock()
-            .get(&pty_id)
-            .map(|p| p.termios)
-            .ok_or(LinuxError::ENOTTY);
+    if let Some((pty_id, is_master)) = pty_lookup(fd) {
+        return pty::get_termios(pty_id, is_master).ok_or(LinuxError::ENOTTY);
     }
     if fd >= 0 && fd <= 2 {
-        return Ok(FD_TERMIOS
-            .lock()
-            .get(&fd)
-            .copied()
-            .unwrap_or_else(Termios::default));
+        return Ok(tty::get_console_termios());
     }
-    Ok(FD_TERMIOS
-        .lock()
-        .get(&fd)
-        .copied()
-        .unwrap_or_else(Termios::default))
+    Ok(tty::get_console_termios())
 }
 
 fn set_termios_for_fd(fd: Fd, termios: Termios) -> LinuxResult<()> {
-    if let Some((pty_id, _)) = pty_lookup(fd) {
-        if let Some(pair) = PTY_REGISTRY.lock().get_mut(&pty_id) {
-            pair.termios = termios;
-            return Ok(());
-        }
-        return Err(LinuxError::ENOTTY);
+    if let Some((pty_id, is_master)) = pty_lookup(fd) {
+        return pty::set_termios(pty_id, is_master, termios);
     }
     if fd >= 0 && fd <= 2 {
-        FD_TERMIOS.lock().insert(fd, termios);
+        tty::set_console_termios(termios);
         return Ok(());
     }
-    FD_TERMIOS.lock().insert(fd, termios);
+    tty::set_console_termios(termios);
     Ok(())
 }
 
@@ -159,7 +67,7 @@ fn write_slave_name(id: u32, buf: *mut u8, buflen: usize) -> LinuxResult<()> {
     if buf.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let name = format!("/dev/pts/{}\0", id);
+    let name = format!("{}\0", pty::slave_name(id));
     if buflen < name.len() {
         return Err(LinuxError::ERANGE);
     }
@@ -184,14 +92,10 @@ pub fn is_pty_fd(fd: Fd) -> bool {
 
 /// Duplicate a tty/pty fd to `newfd`.
 pub fn dup_tty_fd(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
-    if let Some(mapping) = pty_lookup(oldfd) {
-        FD_TO_PTY.lock().insert(newfd, mapping);
-        return Ok(newfd);
+    if pty_lookup(oldfd).is_some() {
+        return pty::dup_legacy_fd(oldfd, newfd);
     }
     if oldfd >= 0 && oldfd <= 2 {
-        if let Some(termios) = FD_TERMIOS.lock().get(&oldfd).copied() {
-            FD_TERMIOS.lock().insert(newfd, termios);
-        }
         return Ok(newfd);
     }
     Err(LinuxError::EBADF)
@@ -200,16 +104,10 @@ pub fn dup_tty_fd(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
 /// Bytes available for read on a tty fd (for FIONREAD).
 pub fn tty_pending_read(fd: Fd) -> LinuxResult<usize> {
     if let Some((pty_id, is_master)) = pty_lookup(fd) {
-        let registry = PTY_REGISTRY.lock();
-        let pair = registry.get(&pty_id).ok_or(LinuxError::ENOTTY)?;
-        return Ok(if is_master {
-            pair.output_buf.len()
-        } else {
-            pair.input_buf.len()
-        });
+        return Ok(pty::pending_read(pty_id, is_master));
     }
     if fd >= 0 && fd <= 2 {
-        return Ok(0);
+        return Ok(tty::console_pending_read());
     }
     Err(LinuxError::ENOTTY)
 }
@@ -217,41 +115,30 @@ pub fn tty_pending_read(fd: Fd) -> LinuxResult<usize> {
 /// Get window size for a tty fd.
 pub fn tty_get_winsize(fd: Fd) -> LinuxResult<WinSize> {
     if let Some((pty_id, _)) = pty_lookup(fd) {
-        return PTY_REGISTRY
-            .lock()
-            .get(&pty_id)
-            .map(|p| p.winsize)
-            .ok_or(LinuxError::ENOTTY);
+        return pty::get_winsize(pty_id).ok_or(LinuxError::ENOTTY);
     }
     if fd >= 0 && fd <= 2 {
-        return Ok(WinSize::default());
+        return Ok(tty::get_console_winsize());
     }
     Err(LinuxError::ENOTTY)
 }
 
 /// Set window size for a tty fd.
 pub fn tty_set_winsize(fd: Fd, winsize: WinSize) -> LinuxResult<()> {
-    with_pty(fd, |pair, _| {
-        pair.winsize = winsize;
-        Ok(())
-    })
-    .or_else(|e| {
-        if e == LinuxError::ENOTTY && fd >= 0 && fd <= 2 {
-            Ok(())
-        } else {
-            Err(e)
-        }
-    })
+    if let Some((pty_id, _)) = pty_lookup(fd) {
+        return pty::set_winsize(pty_id, winsize);
+    }
+    if fd >= 0 && fd <= 2 {
+        tty::set_console_winsize(winsize);
+        return Ok(());
+    }
+    Err(LinuxError::ENOTTY)
 }
 
 /// Initialize TTY operations subsystem
 pub fn init_tty_operations() {
     TTY_OPS_COUNT.store(0, Ordering::Relaxed);
-    NEXT_PTY_ID.store(0, Ordering::Relaxed);
-    NEXT_PTY_FD.store(0x4000, Ordering::SeqCst);
-    PTY_REGISTRY.lock().clear();
-    FD_TO_PTY.lock().clear();
-    FD_TERMIOS.lock().clear();
+    tty::init();
 }
 
 /// Get number of TTY operations performed
@@ -262,171 +149,6 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     TTY_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-// ============================================================================
-// Terminal Attributes (termios)
-// ============================================================================
-
-/// Terminal control modes
-pub mod c_iflag {
-    /// Ignore BREAK condition
-    pub const IGNBRK: u32 = 0x0001;
-    /// Signal interrupt on BREAK
-    pub const BRKINT: u32 = 0x0002;
-    /// Ignore characters with parity errors
-    pub const IGNPAR: u32 = 0x0004;
-    /// Map CR to NL on input
-    pub const ICRNL: u32 = 0x0100;
-    /// Map NL to CR on input
-    pub const INLCR: u32 = 0x0040;
-    /// Enable input parity check
-    pub const INPCK: u32 = 0x0010;
-    /// Strip 8th bit off chars
-    pub const ISTRIP: u32 = 0x0020;
-    /// Enable XON/XOFF flow control on input
-    pub const IXON: u32 = 0x0400;
-    /// Enable XON/XOFF flow control on output
-    pub const IXOFF: u32 = 0x1000;
-}
-
-/// Output modes
-pub mod c_oflag {
-    /// Post-process output
-    pub const OPOST: u32 = 0x0001;
-    /// Map NL to CR-NL on output
-    pub const ONLCR: u32 = 0x0004;
-    /// Map CR to NL on output
-    pub const OCRNL: u32 = 0x0008;
-    /// No CR output at column 0
-    pub const ONOCR: u32 = 0x0010;
-    /// NL performs CR function
-    pub const ONLRET: u32 = 0x0020;
-}
-
-/// Control modes
-pub mod c_cflag {
-    /// Character size mask
-    pub const CSIZE: u32 = 0x0030;
-    /// 5 bits
-    pub const CS5: u32 = 0x0000;
-    /// 6 bits
-    pub const CS6: u32 = 0x0010;
-    /// 7 bits
-    pub const CS7: u32 = 0x0020;
-    /// 8 bits
-    pub const CS8: u32 = 0x0030;
-    /// Send two stop bits
-    pub const CSTOPB: u32 = 0x0040;
-    /// Enable receiver
-    pub const CREAD: u32 = 0x0080;
-    /// Parity enable
-    pub const PARENB: u32 = 0x0100;
-    /// Odd parity
-    pub const PARODD: u32 = 0x0200;
-    /// Hang up on last close
-    pub const HUPCL: u32 = 0x0400;
-    /// Ignore modem status lines
-    pub const CLOCAL: u32 = 0x0800;
-}
-
-/// Local modes
-pub mod c_lflag {
-    /// Enable echo
-    pub const ECHO: u32 = 0x0008;
-    /// Echo erase character as error-correcting backspace
-    pub const ECHOE: u32 = 0x0010;
-    /// Echo KILL character
-    pub const ECHOK: u32 = 0x0020;
-    /// Echo NL
-    pub const ECHONL: u32 = 0x0040;
-    /// Enable signals
-    pub const ISIG: u32 = 0x0001;
-    /// Canonical input (erase and kill processing)
-    pub const ICANON: u32 = 0x0002;
-    /// Enable extended input processing
-    pub const IEXTEN: u32 = 0x8000;
-}
-
-/// Special control characters
-pub mod cc_index {
-    /// End-of-file character
-    pub const VEOF: usize = 4;
-    /// End-of-line character
-    pub const VEOL: usize = 11;
-    /// Erase character
-    pub const VERASE: usize = 2;
-    /// Interrupt character
-    pub const VINTR: usize = 0;
-    /// Kill-line character
-    pub const VKILL: usize = 3;
-    /// Minimum number of bytes
-    pub const VMIN: usize = 6;
-    /// Quit character
-    pub const VQUIT: usize = 1;
-    /// Start character
-    pub const VSTART: usize = 8;
-    /// Stop character
-    pub const VSTOP: usize = 9;
-    /// Suspend character
-    pub const VSUSP: usize = 10;
-    /// Timeout in deciseconds
-    pub const VTIME: usize = 5;
-}
-
-/// Terminal attributes structure
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Termios {
-    /// Input modes
-    pub c_iflag: u32,
-    /// Output modes
-    pub c_oflag: u32,
-    /// Control modes
-    pub c_cflag: u32,
-    /// Local modes
-    pub c_lflag: u32,
-    /// Line discipline
-    pub c_line: u8,
-    /// Control characters
-    pub c_cc: [u8; 32],
-    /// Input speed
-    pub c_ispeed: u32,
-    /// Output speed
-    pub c_ospeed: u32,
-}
-
-impl Termios {
-    /// Create default terminal attributes
-    pub fn default() -> Self {
-        let mut termios = Termios {
-            c_iflag: c_iflag::ICRNL | c_iflag::IXON,
-            c_oflag: c_oflag::OPOST | c_oflag::ONLCR,
-            c_cflag: c_cflag::CREAD | c_cflag::CS8 | c_cflag::HUPCL,
-            c_lflag: c_lflag::ISIG
-                | c_lflag::ICANON
-                | c_lflag::ECHO
-                | c_lflag::ECHOE
-                | c_lflag::ECHOK,
-            c_line: 0,
-            c_cc: [0; 32],
-            c_ispeed: 38400,
-            c_ospeed: 38400,
-        };
-
-        termios.c_cc[cc_index::VINTR] = 3;
-        termios.c_cc[cc_index::VQUIT] = 28;
-        termios.c_cc[cc_index::VERASE] = 127;
-        termios.c_cc[cc_index::VKILL] = 21;
-        termios.c_cc[cc_index::VEOF] = 4;
-        termios.c_cc[cc_index::VSTART] = 17;
-        termios.c_cc[cc_index::VSTOP] = 19;
-        termios.c_cc[cc_index::VSUSP] = 26;
-        termios.c_cc[cc_index::VMIN] = 1;
-        termios.c_cc[cc_index::VTIME] = 0;
-
-        termios
-    }
 }
 
 // ============================================================================
@@ -501,15 +223,13 @@ pub fn tcsendbreak(fd: Fd, _duration: i32) -> LinuxResult<i32> {
 /// tcdrain - wait for output to be transmitted
 pub fn tcdrain(fd: Fd) -> LinuxResult<i32> {
     inc_ops();
-    with_pty(fd, |pair, is_master| {
-        if is_master {
-            pair.input_buf.clear();
-        } else {
-            pair.output_buf.clear();
-        }
-        Ok(())
-    })?;
-    validate_tty_fd(fd)?;
+    if let Some((pty_id, is_master)) = pty_lookup(fd) {
+        pty::drain(pty_id, is_master)?;
+    } else if fd >= 0 && fd <= 2 {
+        // Console output is synchronous on UART.
+    } else {
+        validate_tty_fd(fd)?;
+    }
     Ok(0)
 }
 
@@ -528,30 +248,11 @@ pub fn tcflush(fd: Fd, queue_selector: i32) -> LinuxResult<i32> {
     match queue_selector {
         TCIFLUSH | TCOFLUSH | TCIOFLUSH => {
             if let Some((pty_id, is_master)) = pty_lookup(fd) {
-                let mut registry = PTY_REGISTRY.lock();
-                if let Some(pair) = registry.get_mut(&pty_id) {
-                    match queue_selector {
-                        TCIFLUSH => {
-                            if is_master {
-                                pair.input_buf.clear();
-                            } else {
-                                pair.output_buf.clear();
-                            }
-                        }
-                        TCOFLUSH => {
-                            if is_master {
-                                pair.output_buf.clear();
-                            } else {
-                                pair.input_buf.clear();
-                            }
-                        }
-                        TCIOFLUSH => {
-                            pair.input_buf.clear();
-                            pair.output_buf.clear();
-                        }
-                        _ => {}
-                    }
-                }
+                pty::flush(pty_id, is_master, queue_selector)?;
+                return Ok(0);
+            }
+            if fd >= 0 && fd <= 2 {
+                tty::flush_console(queue_selector);
                 return Ok(0);
             }
             validate_tty_fd(fd)?;
@@ -577,18 +278,7 @@ pub fn tcflow(fd: Fd, action: i32) -> LinuxResult<i32> {
     match action {
         TCOOFF | TCOON | TCIOFF | TCION => {
             if let Some((pty_id, is_master)) = pty_lookup(fd) {
-                let mut registry = PTY_REGISTRY.lock();
-                if let Some(pair) = registry.get_mut(&pty_id) {
-                    match action {
-                        TCOOFF => pair.output_paused = true,
-                        TCOON => pair.output_paused = false,
-                        TCIOFF => pair.input_paused = true,
-                        TCION => pair.input_paused = false,
-                        _ => {}
-                    }
-                }
-                let _ = pty_id;
-                let _ = is_master;
+                pty::flow(pty_id, is_master, action)?;
                 return Ok(0);
             }
             validate_tty_fd(fd)?;
@@ -665,7 +355,7 @@ pub fn posix_openpt(flags: i32) -> LinuxResult<Fd> {
         return Err(LinuxError::EINVAL);
     }
 
-    let (_id, master_fd, _slave_fd) = create_pty_pair()?;
+    let (_id, master_fd, _slave_fd) = pty::create_pair()?;
     Ok(master_fd)
 }
 
@@ -677,12 +367,11 @@ pub fn grantpt(fd: Fd) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    with_pty(fd, |pair, is_master| {
+    with_pty(fd, |pty_id, is_master| {
         if !is_master {
             return Err(LinuxError::EINVAL);
         }
-        pair.granted = true;
-        Ok(())
+        pty::set_granted(pty_id)
     })?;
     Ok(0)
 }
@@ -695,12 +384,11 @@ pub fn unlockpt(fd: Fd) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    with_pty(fd, |pair, is_master| {
+    with_pty(fd, |pty_id, is_master| {
         if !is_master {
             return Err(LinuxError::EINVAL);
         }
-        pair.unlocked = true;
-        Ok(())
+        pty::set_unlocked(pty_id)
     })?;
     Ok(0)
 }
@@ -722,12 +410,7 @@ pub fn ptsname(fd: Fd, buf: *mut u8, buflen: usize) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let unlocked = PTY_REGISTRY
-        .lock()
-        .get(&pty_id)
-        .map(|p| p.unlocked)
-        .unwrap_or(false);
-    if !unlocked {
+    if !pty::is_unlocked(pty_id) {
         return Err(LinuxError::EPERM);
     }
 
@@ -749,25 +432,22 @@ pub fn openpty(
         return Err(LinuxError::EFAULT);
     }
 
-    let (pty_id, master_fd, slave_fd) = create_pty_pair()?;
+    let (pty_id, master_fd, slave_fd) = pty::create_pair()?;
 
     if !termp.is_null() {
         let termios = unsafe { *termp };
-        if let Some(pair) = PTY_REGISTRY.lock().get_mut(&pty_id) {
-            pair.termios = termios;
-            pair.granted = true;
-            pair.unlocked = true;
-        }
-    } else if let Some(pair) = PTY_REGISTRY.lock().get_mut(&pty_id) {
-        pair.granted = true;
-        pair.unlocked = true;
+        pty::set_termios(pty_id, true, termios)?;
+        pty::set_termios(pty_id, false, termios)?;
+        pty::set_granted(pty_id)?;
+        pty::set_unlocked(pty_id)?;
+    } else {
+        pty::set_granted(pty_id)?;
+        pty::set_unlocked(pty_id)?;
     }
 
     if !winp.is_null() {
         let winsize = unsafe { *winp };
-        if let Some(pair) = PTY_REGISTRY.lock().get_mut(&pty_id) {
-            pair.winsize = winsize;
-        }
+        pty::set_winsize(pty_id, winsize)?;
     }
 
     unsafe {
@@ -824,10 +504,8 @@ pub fn tcgetpgrp(fd: Fd) -> LinuxResult<Pid> {
     }
 
     if let Some((pty_id, _)) = pty_lookup(fd) {
-        return PTY_REGISTRY
-            .lock()
-            .get(&pty_id)
-            .map(|p| p.foreground_pgrp)
+        return pty::get_foreground(pty_id)
+            .map(|p| p as Pid)
             .ok_or(LinuxError::ENOTTY);
     }
 
@@ -851,11 +529,7 @@ pub fn tcsetpgrp(fd: Fd, pgrp: Pid) -> LinuxResult<i32> {
     }
 
     if let Some((pty_id, _)) = pty_lookup(fd) {
-        if let Some(pair) = PTY_REGISTRY.lock().get_mut(&pty_id) {
-            pair.foreground_pgrp = pgrp;
-            return Ok(0);
-        }
-        return Err(LinuxError::ENOTTY);
+        return pty::set_foreground(pty_id, pgrp).map(|_| 0);
     }
 
     if fd >= 0 && fd <= 2 {
@@ -874,10 +548,8 @@ pub fn tcgetsid(fd: Fd) -> LinuxResult<Pid> {
     }
 
     if let Some((pty_id, _)) = pty_lookup(fd) {
-        return PTY_REGISTRY
-            .lock()
-            .get(&pty_id)
-            .map(|p| p.session_id)
+        return pty::get_session(pty_id)
+            .map(|p| p as Pid)
             .ok_or(LinuxError::ENOTTY);
     }
 
@@ -955,34 +627,8 @@ pub fn ctermid(buf: *mut u8) -> *mut u8 {
 }
 
 // ============================================================================
-// Window Size
+// Tests (disabled)
 // ============================================================================
-
-/// Window size structure
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct WinSize {
-    /// Rows in characters
-    pub ws_row: u16,
-    /// Columns in characters
-    pub ws_col: u16,
-    /// Horizontal pixels
-    pub ws_xpixel: u16,
-    /// Vertical pixels
-    pub ws_ypixel: u16,
-}
-
-impl WinSize {
-    /// Create default window size (80x24)
-    pub const fn default() -> Self {
-        WinSize {
-            ws_row: 24,
-            ws_col: 80,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        }
-    }
-}
 
 #[cfg(any())]
 mod tests {

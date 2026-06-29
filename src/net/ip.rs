@@ -2,7 +2,10 @@
 //!
 //! This module handles Internet Protocol packet parsing, routing, and forwarding.
 
-use super::{NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer, Protocol};
+use super::{
+    netfilter, raw, NetworkAddress, NetworkError, NetworkResult, NetworkStack, PacketBuffer,
+    Protocol,
+};
 use alloc::vec::Vec;
 
 /// IPv4 header minimum size
@@ -235,8 +238,40 @@ pub fn process_ipv4_packet(
         return Err(NetworkError::InvalidPacket);
     }
 
+    let packet_for_us = is_packet_for_us(&header.destination);
+
+    // Netfilter: INPUT for local delivery, FORWARD otherwise.
+    let hook = if packet_for_us {
+        netfilter::Hook::Input
+    } else {
+        netfilter::Hook::Forward
+    };
+    let nf_info = netfilter::PacketInfo {
+        hook,
+        src: header.source,
+        dst: header.destination,
+        protocol: header.protocol,
+        in_interface: None,
+        out_interface: None,
+        is_local: packet_for_us,
+    };
+    if netfilter::check(&nf_info) == netfilter::Verdict::Drop {
+        return Ok(());
+    }
+
+    // Deliver copy to matching SOCK_RAW sockets (full IP datagram).
+    let header_len = ((header.version_ihl & 0x0f) as usize) * 4;
+    let full_datagram = {
+        let payload_end = core::cmp::min(
+            packet.length,
+            header_len + (header.total_length as usize).saturating_sub(header_len),
+        );
+        packet.data[..payload_end].to_vec()
+    };
+    let _ = raw::deliver_ipv4(header.protocol, &full_datagram, &header.destination);
+
     // Check if packet is for us
-    if !is_packet_for_us(&header.destination) {
+    if !packet_for_us {
         // Forward packet if we're a router
         return forward_ipv4_packet(network_stack, header, packet);
     }

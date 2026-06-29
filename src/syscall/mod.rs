@@ -264,9 +264,7 @@ pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
         // Time and scheduling
         SyscallNumber::Nanosleep => sys_nanosleep(context.args[0]),
         SyscallNumber::Gettimeofday => sys_gettimeofday(context.args[0]),
-        SyscallNumber::ClockGettime => {
-            sys_clock_gettime(context.args[0], context.args[1])
-        }
+        SyscallNumber::ClockGettime => sys_clock_gettime(context.args[0], context.args[1]),
         SyscallNumber::Setpriority => sys_setpriority(context.args[0] as i32),
         SyscallNumber::Getpriority => sys_getpriority(),
 
@@ -847,9 +845,8 @@ fn sys_close(fd: i32) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
-    let fd_record = process_manager.with_process_mut(current_pid, |p| {
-        p.file_descriptors.remove(&(fd as u32))
-    });
+    let fd_record =
+        process_manager.with_process_mut(current_pid, |p| p.file_descriptors.remove(&(fd as u32)));
 
     let fd_record = fd_record.flatten().ok_or(SyscallError::BadFileDescriptor)?;
 
@@ -1237,35 +1234,37 @@ fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64
 
         // Read through the live FileDescriptor so VfsHandle and VfsFile are
         // both handled correctly. Preserve the descriptor's offset.
-        let copied = match process_manager.with_process_mut(current_pid, |p| {
-            let fd_entry = p.file_descriptors.get_mut(&(fd as u32))?;
-            let file_size = fd_entry.size().ok()? as usize;
-            let available = if (offset as usize) >= file_size {
-                0
-            } else {
-                file_size - offset as usize
-            };
-            let to_read = core::cmp::min(available, length as usize);
-
-            let original_offset = fd_entry.offset();
-            fd_entry.set_offset(offset);
-
-            let mut copied = 0usize;
-            while copied < to_read {
-                let chunk_len = core::cmp::min(PAGE_SIZE, to_read - copied);
-                let dst = unsafe {
-                    core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len)
+        let copied = match process_manager
+            .with_process_mut(current_pid, |p| {
+                let fd_entry = p.file_descriptors.get_mut(&(fd as u32))?;
+                let file_size = fd_entry.size().ok()? as usize;
+                let available = if (offset as usize) >= file_size {
+                    0
+                } else {
+                    file_size - offset as usize
                 };
-                match fd_entry.read(dst) {
-                    Ok(0) => break,
-                    Ok(n) => copied += n,
-                    Err(_) => return None,
-                }
-            }
+                let to_read = core::cmp::min(available, length as usize);
 
-            fd_entry.set_offset(original_offset);
-            Some(copied)
-        }).flatten() {
+                let original_offset = fd_entry.offset();
+                fd_entry.set_offset(offset);
+
+                let mut copied = 0usize;
+                while copied < to_read {
+                    let chunk_len = core::cmp::min(PAGE_SIZE, to_read - copied);
+                    let dst =
+                        unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
+                    match fd_entry.read(dst) {
+                        Ok(0) => break,
+                        Ok(n) => copied += n,
+                        Err(_) => return None,
+                    }
+                }
+
+                fd_entry.set_offset(original_offset);
+                Some(copied)
+            })
+            .flatten()
+        {
             Some(c) => c,
             None => return free_and_fail(SyscallError::InvalidArgument),
         };
@@ -1404,9 +1403,7 @@ fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         Some(new_offset as u64)
     });
 
-    let new_offset = result
-        .flatten()
-        .ok_or(SyscallError::InvalidArgument)?;
+    let new_offset = result.flatten().ok_or(SyscallError::InvalidArgument)?;
 
     process_manager.with_process_mut(current_pid, |p| {
         p.file_offsets.insert(fd as u32, new_offset as usize);

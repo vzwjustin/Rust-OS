@@ -120,6 +120,8 @@ pub enum LinuxError {
     EIDRM = 43,
     /// No data available
     ENODATA = 61,
+    /// Value too large for data type
+    EOVERFLOW = 75,
     /// Not supported
     ENOTSUP = 95,
     /// Not a socket
@@ -142,6 +144,10 @@ pub enum LinuxError {
     ECONNREFUSED = 111,
     /// No route to host
     EHOSTUNREACH = 113,
+    /// Stale file handle
+    ESTALE = 116,
+    /// Disk quota exceeded
+    EDQUOT = 122,
     /// Protocol option not available
     ENOPROTOOPT = 92,
     /// Transport endpoint is not connected
@@ -180,6 +186,9 @@ impl LinuxError {
             21 => LinuxError::EISDIR,
             22 => LinuxError::EINVAL,
             38 => LinuxError::ENOSYS,
+            75 => LinuxError::EOVERFLOW,
+            116 => LinuxError::ESTALE,
+            122 => LinuxError::EDQUOT,
             _ => LinuxError::EINVAL,
         }
     }

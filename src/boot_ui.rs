@@ -717,7 +717,11 @@ fn detect_storage_devices() -> usize {
         .iter()
         .filter(|d| d.class_code == PciClass::MassStorage)
         .count();
-    if count == 0 { 1 } else { count }
+    if count == 0 {
+        1
+    } else {
+        count
+    }
 }
 
 fn detect_network_interfaces() -> usize {
@@ -736,10 +740,7 @@ fn detect_display_adapter() -> Option<String> {
     let devices = pci::get_all_devices();
     for dev in devices {
         if dev.class_code == PciClass::Display {
-            return Some(format!(
-                "{:04x}:{:04x}",
-                dev.vendor_id, dev.device_id
-            ));
+            return Some(format!("{:04x}:{:04x}", dev.vendor_id, dev.device_id));
         }
     }
     Some(String::from("VGA Compatible"))
@@ -1147,6 +1148,47 @@ pub fn driver_loading_progress() -> DriverLoadResult {
         }
     }
 
+    update_substage(8, "Initializing USB host...");
+    match crate::drivers::usb::init() {
+        Ok(stats) if stats.msc_enumerated > 0 => {
+            report_success(&format!(
+                "USB: {} hosts, {} MSC devices",
+                stats.host_count, stats.msc_enumerated
+            ));
+        }
+        Ok(stats) => {
+            report_success(&format!("USB: {} host controllers", stats.host_count));
+        }
+        Err(e) => report_warning("USB", e),
+    }
+
+    update_substage(8, "Initializing SCSI mid-layer...");
+    let scsi = crate::drivers::scsi::init();
+    if scsi.hosts_registered > 0 {
+        report_success(&format!(
+            "SCSI: {} hosts, {} devices",
+            scsi.hosts_registered, scsi.devices_registered
+        ));
+    }
+
+    update_substage(8, "Scanning md arrays...");
+    let md = crate::md::init();
+    if md.arrays_registered > 0 {
+        report_success(&format!("md: {} arrays registered", md.arrays_registered));
+    }
+
+    update_substage(8, "Initializing sound subsystem...");
+    match crate::sound::init() {
+        Ok(stats) if stats.dev_nodes > 0 => {
+            report_success(&format!(
+                "Sound: {} PCM nodes under /dev/snd",
+                stats.dev_nodes
+            ));
+        }
+        Ok(_) => report_warning("Sound", "No PCM devices registered"),
+        Err(e) => report_warning("Sound", e),
+    }
+
     // Network drivers
     update_substage(9, "Loading network drivers...");
     match crate::net::init() {
@@ -1253,15 +1295,19 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
             report_warning("Initramfs", "Using minimal filesystem");
         }
     }
+    crate::serial_println!("filesystem_mount: substage 4");
     update_substage(4, "Initializing storage filesystem interface...");
     crate::drivers::storage::filesystem_interface::init_filesystem_interface();
+    crate::serial_println!("filesystem_mount: fs interface done");
     report_success("Storage filesystem interface initialized");
+    crate::serial_println!("filesystem_mount: install_block_devices");
     if let Err(e) = crate::vfs::devfs::install_block_devices() {
         let reason = format!("{:?}", e);
         report_warning("Block device nodes", &reason);
     } else {
         report_success("Block device nodes registered in /dev");
     }
+    crate::serial_println!("filesystem_mount: block devices done");
 
     crate::serial_println!("filesystem_mount: calling complete_stage");
     complete_stage(BootStage::FileSystemMount);

@@ -17,9 +17,13 @@ pub mod dns;
 pub mod ethernet;
 pub mod icmp;
 pub mod ip;
+pub mod netfilter;
+pub mod raw;
+pub mod routing;
 pub mod socket;
 pub mod tcp;
 pub mod udp;
+pub mod unix;
 
 use alloc::{
     collections::BTreeMap,
@@ -374,27 +378,14 @@ pub struct InterfaceStats {
     pub dropped: u64,
 }
 
-/// Routing table entry
-#[derive(Debug, Clone)]
-pub struct RouteEntry {
-    /// Destination network
-    pub destination: NetworkAddress,
-    /// Network mask
-    pub netmask: NetworkAddress,
-    /// Gateway address
-    pub gateway: Option<NetworkAddress>,
-    /// Output interface
-    pub interface: String,
-    /// Route metric
-    pub metric: u32,
-}
+pub use routing::RouteEntry;
 
 /// Network stack manager
 pub struct NetworkStack {
     /// Network interfaces
     interfaces: RwLock<BTreeMap<String, NetworkInterface>>,
-    /// Routing table
-    routing_table: RwLock<Vec<RouteEntry>>,
+    /// IPv4 routing table
+    routing_table: routing::RoutingTable,
     /// ARP table (IP -> MAC mapping)
     arp_table: RwLock<BTreeMap<NetworkAddress, NetworkAddress>>,
     /// Socket registry
@@ -408,7 +399,7 @@ impl NetworkStack {
     pub fn new() -> Self {
         Self {
             interfaces: RwLock::new(BTreeMap::new()),
-            routing_table: RwLock::new(Vec::new()),
+            routing_table: routing::RoutingTable::new(),
             arp_table: RwLock::new(BTreeMap::new()),
             sockets: RwLock::new(BTreeMap::new()),
             next_socket_id: Mutex::new(1),
@@ -488,155 +479,61 @@ impl NetworkStack {
 
     /// Add route to routing table
     pub fn add_route(&self, route: RouteEntry) -> NetworkResult<()> {
-        let mut routing_table = self.routing_table.write();
-        routing_table.push(route.clone());
-
-        Ok(())
+        self.routing_table.add(route)
     }
 
     /// Find route for destination address with longest prefix matching
     pub fn find_route(&self, destination: &NetworkAddress) -> Option<RouteEntry> {
-        let routing_table = self.routing_table.read();
-
-        let mut best_route: Option<RouteEntry> = None;
-        let mut best_prefix_len = 0u32;
-
-        // Implement longest prefix matching
-        for route in routing_table.iter() {
-            if self.address_matches_route(destination, &route.destination, &route.netmask) {
-                let prefix_len = self.calculate_prefix_length(&route.netmask);
-
-                // Select route with longest prefix (most specific)
-                if best_route.is_none()
-                    || prefix_len > best_prefix_len
-                    || (prefix_len == best_prefix_len
-                        && route.metric < best_route.as_ref().unwrap().metric)
-                {
-                    best_route = Some(route.clone());
-                    best_prefix_len = prefix_len;
-                }
-            }
-        }
-
-        best_route
+        self.routing_table.find(destination)
     }
 
-    /// Calculate prefix length from netmask
-    fn calculate_prefix_length(&self, netmask: &NetworkAddress) -> u32 {
-        match netmask {
-            NetworkAddress::IPv4(mask) => {
-                let mask_u32 = ((mask[0] as u32) << 24)
-                    | ((mask[1] as u32) << 16)
-                    | ((mask[2] as u32) << 8)
-                    | (mask[3] as u32);
-                mask_u32.leading_ones()
-            }
-            _ => 0,
-        }
-    }
-
-    /// Enhanced route matching with subnet validation
-    fn address_matches_route(
+    /// Delete a route from the routing table.
+    pub fn delete_route(
         &self,
-        addr: &NetworkAddress,
-        dest: &NetworkAddress,
-        mask: &NetworkAddress,
+        destination: &NetworkAddress,
+        netmask: &NetworkAddress,
+        interface: &str,
+    ) -> NetworkResult<()> {
+        self.routing_table.delete(destination, netmask, interface)
+    }
+
+    /// List all routes in the routing table.
+    pub fn list_routes(&self) -> alloc::vec::Vec<RouteEntry> {
+        self.routing_table.list()
+    }
+
+    /// Handle a netlink-style route request.
+    pub fn handle_route_request(
+        &self,
+        req: routing::RouteRequest,
+    ) -> NetworkResult<alloc::vec::Vec<RouteEntry>> {
+        self.routing_table.handle_request(
+            req,
+            |iface| self.interfaces.read().contains_key(iface),
+            |iface, gw| self.gateway_reachable_on_interface(iface, gw),
+        )
+    }
+
+    /// Check whether `gateway` is reachable via `interface`.
+    pub fn gateway_reachable_on_interface(
+        &self,
+        interface: &str,
+        gateway: &NetworkAddress,
     ) -> bool {
-        match (addr, dest, mask) {
-            (NetworkAddress::IPv4(a), NetworkAddress::IPv4(d), NetworkAddress::IPv4(m)) => {
-                // Apply netmask to both addresses and compare
-                for i in 0..4 {
-                    if (a[i] & m[i]) != (d[i] & m[i]) {
-                        return false;
-                    }
-                }
-                true
-            }
-            _ => false, // IPv6 support would be added here
-        }
-    }
-
-    /// Add route with validation and conflict resolution
-    pub fn add_route_validated(&self, route: RouteEntry) -> NetworkResult<()> {
-        // Validate route parameters
-        self.validate_route(&route)?;
-
-        let mut routing_table = self.routing_table.write();
-
-        // Check for conflicting routes
-        let conflicts: Vec<_> = routing_table
-            .iter()
-            .enumerate()
-            .filter(|(_, existing_route)| {
-                existing_route.destination == route.destination
-                    && existing_route.netmask == route.netmask
-                    && existing_route.interface == route.interface
-            })
-            .map(|(index, _)| index)
-            .collect();
-
-        // Remove conflicting routes (replace with new one)
-        for &index in conflicts.iter().rev() {
-            routing_table.remove(index);
-        }
-
-        // Insert new route in sorted order (by prefix length, then metric)
-        let insert_pos = routing_table
-            .iter()
-            .position(|existing_route| {
-                let existing_prefix = self.calculate_prefix_length(&existing_route.netmask);
-                let new_prefix = self.calculate_prefix_length(&route.netmask);
-
-                existing_prefix < new_prefix
-                    || (existing_prefix == new_prefix && existing_route.metric > route.metric)
-            })
-            .unwrap_or(routing_table.len());
-
-        routing_table.insert(insert_pos, route);
-
-        Ok(())
-    }
-
-    /// Validate route entry
-    fn validate_route(&self, route: &RouteEntry) -> NetworkResult<()> {
-        // Check if interface exists
         let interfaces = self.interfaces.read();
-        if !interfaces.contains_key(&route.interface) {
-            return Err(NetworkError::InvalidAddress);
-        }
-
-        // Validate destination and netmask compatibility
-        match (&route.destination, &route.netmask) {
-            (NetworkAddress::IPv4(dest), NetworkAddress::IPv4(mask)) => {
-                // Check that destination is properly masked
-                for i in 0..4 {
-                    if (dest[i] & mask[i]) != dest[i] {
-                        return Err(NetworkError::InvalidAddress);
-                    }
-                }
-            }
-            _ => return Err(NetworkError::NotSupported),
-        }
-
-        // Validate gateway if present
-        if let Some(gateway) = &route.gateway {
-            // Gateway should be reachable through the specified interface
-            let interface = interfaces.get(&route.interface).unwrap();
-            let mut gateway_reachable = false;
-
-            for interface_ip in &interface.ip_addresses {
+        if let Some(iface) = interfaces.get(interface) {
+            for interface_ip in &iface.ip_addresses {
                 if self.is_same_subnet(interface_ip, gateway) {
-                    gateway_reachable = true;
-                    break;
+                    return true;
                 }
             }
-
-            if !gateway_reachable {
-                return Err(NetworkError::NoRoute);
-            }
         }
+        false
+    }
 
-        Ok(())
+    /// Reference to the routing table (for ioctl handlers).
+    pub fn routing_table(&self) -> &routing::RoutingTable {
+        &self.routing_table
     }
 
     /// Update ARP table with real address resolution
@@ -721,12 +618,9 @@ impl NetworkStack {
             }
         }
 
-        // If not on same subnet, use default route
-        let routing_table = self.routing_table.read();
-        for route in routing_table.iter() {
-            if self.address_matches_route(target_ip, &route.destination, &route.netmask) {
-                return Ok(route.interface.clone());
-            }
+        // If not on same subnet, use routing table longest-prefix match
+        if let Some(route) = self.routing_table.find(target_ip) {
+            return Ok(route.interface.clone());
         }
 
         // Fallback to first up interface
@@ -855,7 +749,7 @@ impl NetworkStack {
         }
 
         // Process Ethernet frame
-        ethernet::process_frame(self, packet)
+        ethernet::process_frame(self, interface_name, packet)
     }
 
     /// Send packet through interface
@@ -910,8 +804,7 @@ impl NetworkStack {
     pub fn get_stats(&self) -> NetworkStats {
         let interfaces = self.interfaces.read();
         let sockets = self.sockets.read();
-        let routing_table = self.routing_table.read();
-        let arp_table = self.arp_table.read();
+        let routes = self.routing_table.len();
 
         let mut total_rx_packets = 0;
         let mut total_rx_bytes = 0;
@@ -928,8 +821,8 @@ impl NetworkStack {
         NetworkStats {
             interfaces: interfaces.len(),
             sockets: sockets.len(),
-            routes: routing_table.len(),
-            arp_entries: arp_table.len(),
+            routes,
+            arp_entries: self.arp_table.read().len(),
             total_rx_packets,
             total_rx_bytes,
             total_tx_packets,
@@ -971,6 +864,8 @@ lazy_static! {
 
 /// Initialize the network stack
 pub fn init() -> NetworkResult<()> {
+    netfilter::init();
+
     // Create loopback interface
     let loopback = NetworkInterface {
         name: "lo".to_string(),

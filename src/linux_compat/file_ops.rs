@@ -138,11 +138,12 @@ pub(crate) fn vfs_error_to_linux(err: VfsError) -> LinuxError {
         VfsError::ReadOnly => LinuxError::EROFS,
         VfsError::NotSupported => LinuxError::ENOSYS,
         VfsError::DirectoryNotEmpty => LinuxError::ENOTEMPTY,
+        VfsError::DiskQuotaExceeded => LinuxError::EDQUOT,
     }
 }
 
 /// Convert Linux open flags to VFS open flags
-fn linux_flags_to_vfs(flags: i32) -> u32 {
+pub(crate) fn linux_flags_to_vfs(flags: i32) -> u32 {
     let mut vfs_flags = 0u32;
 
     // Access mode (bottom 2 bits)
@@ -191,6 +192,32 @@ pub(crate) fn c_str_to_string(ptr: *const u8) -> Result<String, LinuxError> {
     Ok(path)
 }
 
+fn check_landlock(path: &str, access: u64) -> LinuxResult<()> {
+    if crate::landlock::check_fs_access(process::current_pid(), path, access) {
+        Ok(())
+    } else {
+        Err(LinuxError::EACCES)
+    }
+}
+
+fn landlock_open_access(flags: i32) -> u64 {
+    let mut access = match flags & 0o3 {
+        open_flags::O_WRONLY => crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE,
+        open_flags::O_RDWR => {
+            crate::landlock::LANDLOCK_ACCESS_FS_READ_FILE
+                | crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE
+        }
+        _ => crate::landlock::LANDLOCK_ACCESS_FS_READ_FILE,
+    };
+    if flags & open_flags::O_CREAT != 0 {
+        access |= crate::landlock::LANDLOCK_ACCESS_FS_MAKE_REG;
+    }
+    if flags & open_flags::O_TRUNC != 0 {
+        access |= crate::landlock::LANDLOCK_ACCESS_FS_TRUNCATE;
+    }
+    access
+}
+
 /// Seek whence constants (standard POSIX values)
 mod seek {
     pub const SEEK_SET: i32 = 0;
@@ -202,13 +229,26 @@ mod seek {
 pub fn open(path: *const u8, flags: i32, mode: Mode) -> LinuxResult<Fd> {
     inc_ops();
 
+    let open_addr = open as *const () as u64;
+    crate::kprobes::run_probes_at(open_addr, flags as u64);
+
     let path_str = c_str_to_string(path)?;
+    check_landlock(&path_str, landlock_open_access(flags))?;
     let vfs_flags = linux_flags_to_vfs(flags);
 
-    match vfs::vfs_open(&path_str, vfs_flags, mode) {
+    let result = match vfs::vfs_open(&path_str, vfs_flags, mode) {
         Ok(fd) => Ok(fd),
         Err(e) => Err(vfs_error_to_linux(e)),
+    };
+
+    if crate::audit::is_enabled() {
+        crate::audit::audit_log_path(crate::audit::AuditOp::Open, &path_str, result.is_ok());
     }
+    if crate::trace::tracing_on() {
+        crate::trace::tracepoint_emit("file:open", result.as_ref().copied().unwrap_or(0) as u64);
+    }
+
+    result
 }
 
 /// openat - open a file relative to a directory fd
@@ -220,6 +260,7 @@ pub fn openat(dirfd: Fd, pathname: *const u8, flags: i32, mode: Mode) -> LinuxRe
     }
 
     let resolved_path = resolve_at_path(dirfd, pathname)?;
+    check_landlock(&resolved_path, landlock_open_access(flags))?;
     let vfs_flags = linux_flags_to_vfs(flags);
 
     match vfs::vfs_open(&resolved_path, vfs_flags, mode) {
@@ -247,7 +288,9 @@ pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
     let len = count.min(MAX_RW_CHUNK);
     let mut buffer = vec![0u8; len];
 
-    let bytes_read = if let Some(result) = super::special_fd::try_read(fd, &mut buffer) {
+    let bytes_read = if let Some(result) = crate::drivers::tty::try_read_fd(fd, &mut buffer) {
+        result?
+    } else if let Some(result) = super::special_fd::try_read(fd, &mut buffer) {
         result?
     } else {
         match vfs::vfs_read(fd, &mut buffer) {
@@ -259,6 +302,12 @@ pub fn read(fd: Fd, buf: *mut u8, count: usize) -> LinuxResult<isize> {
     if bytes_read > 0 {
         UserSpaceMemory::copy_to_user(buf as u64, &buffer[..bytes_read as usize])
             .map_err(|_| LinuxError::EFAULT)?;
+    }
+
+    let read_addr = read as *const () as u64;
+    crate::kprobes::run_probes_at(read_addr, fd as u64);
+    if crate::trace::tracing_on() {
+        crate::trace::tracepoint_emit("file:read", bytes_read.max(0) as u64);
     }
 
     Ok(bytes_read)
@@ -284,14 +333,33 @@ pub fn write(fd: Fd, buf: *const u8, count: usize) -> LinuxResult<isize> {
     let mut buffer = vec![0u8; len];
     UserSpaceMemory::copy_from_user(buf as u64, &mut buffer).map_err(|_| LinuxError::EFAULT)?;
 
-    if let Some(result) = super::special_fd::try_write(fd, &buffer) {
-        return result;
+    if let Some(result) = crate::drivers::tty::try_write_fd(fd, &buffer) {
+        return finish_write(result, fd);
     }
 
-    match vfs::vfs_write(fd, &buffer) {
-        Ok(n) => Ok(n as isize),
-        Err(e) => Err(vfs_error_to_linux(e)),
+    if let Some(result) = super::special_fd::try_write(fd, &buffer) {
+        return finish_write(result, fd);
     }
+
+    finish_write(
+        match vfs::vfs_write(fd, &buffer) {
+            Ok(n) => Ok(n as isize),
+            Err(e) => Err(vfs_error_to_linux(e)),
+        },
+        fd,
+    )
+}
+
+fn finish_write(result: LinuxResult<isize>, fd: Fd) -> LinuxResult<isize> {
+    let write_addr = write as *const () as u64;
+    crate::kprobes::run_probes_at(write_addr, fd as u64);
+    if crate::trace::tracing_on() {
+        crate::trace::tracepoint_emit(
+            "file:write",
+            result.as_ref().copied().unwrap_or(0).max(0) as u64,
+        );
+    }
+    result
 }
 
 /// close - close file descriptor
@@ -520,6 +588,7 @@ pub fn unlink(path: *const u8) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
+    check_landlock(&path_str, crate::landlock::LANDLOCK_ACCESS_FS_REMOVE_FILE)?;
 
     match vfs::vfs_unlink(&path_str) {
         Ok(()) => Ok(0),
@@ -537,6 +606,8 @@ pub fn link(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
 
     let old = c_str_to_string(oldpath)?;
     let new = c_str_to_string(newpath)?;
+    check_landlock(&old, crate::landlock::LANDLOCK_ACCESS_FS_REFER)?;
+    check_landlock(&new, crate::landlock::LANDLOCK_ACCESS_FS_MAKE_REG)?;
 
     match vfs::vfs_link(&old, &new) {
         Ok(_) => Ok(0),
@@ -554,6 +625,7 @@ pub fn symlink(target: *const u8, linkpath: *const u8) -> LinuxResult<i32> {
 
     let target = c_str_to_string(target)?;
     let linkpath = c_str_to_string(linkpath)?;
+    check_landlock(&linkpath, crate::landlock::LANDLOCK_ACCESS_FS_MAKE_SYM)?;
 
     match vfs::vfs_symlink(&target, &linkpath) {
         Ok(_) => Ok(0),
@@ -624,6 +696,7 @@ pub fn chmod(path: *const u8, mode: Mode) -> LinuxResult<i32> {
     }
 
     let path = c_str_to_string(path)?;
+    check_landlock(&path, crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE)?;
     vfs::vfs_chmod(&path, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -649,6 +722,10 @@ pub fn fchmodat(dirfd: Fd, path: *const u8, mode: Mode, _flags: i32) -> LinuxRes
     }
 
     let resolved_path = resolve_at_path(dirfd, path)?;
+    check_landlock(
+        &resolved_path,
+        crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE,
+    )?;
     vfs::vfs_chmod(&resolved_path, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -662,6 +739,7 @@ pub fn chown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
     }
 
     let path = c_str_to_string(path)?;
+    check_landlock(&path, crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE)?;
     vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -704,6 +782,7 @@ pub fn truncate(path: *const u8, length: Off) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
+    check_landlock(&path_str, crate::landlock::LANDLOCK_ACCESS_FS_TRUNCATE)?;
 
     // Open file with write access, truncate via O_TRUNC if length is 0, then close
     // For non-zero lengths, we need to open and use ftruncate
@@ -984,7 +1063,7 @@ pub fn getcwd(buf: *mut u8, size: usize) -> LinuxResult<*mut u8> {
 }
 
 /// Helper to resolve relative path from directory fd
-fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<String> {
+pub(crate) fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<String> {
     if pathname.is_null() {
         return Err(LinuxError::EFAULT);
     }
@@ -1177,6 +1256,8 @@ pub fn renameat2(
 
     let resolved_old = resolve_at_path(olddirfd, oldpath)?;
     let resolved_new = resolve_at_path(newdirfd, newpath)?;
+    check_landlock(&resolved_old, crate::landlock::LANDLOCK_ACCESS_FS_REFER)?;
+    check_landlock(&resolved_new, crate::landlock::LANDLOCK_ACCESS_FS_REFER)?;
 
     const RENAME_NOREPLACE: u32 = 1 << 0;
     const RENAME_EXCHANGE: u32 = 1 << 1;
@@ -1229,6 +1310,10 @@ pub fn readlinkat(dirfd: Fd, path: *const u8, buf: *mut u8, bufsiz: usize) -> Li
     }
 
     let resolved_path = resolve_at_path(dirfd, path)?;
+    check_landlock(
+        &resolved_path,
+        crate::landlock::LANDLOCK_ACCESS_FS_READ_FILE,
+    )?;
     let temp_c_str = alloc::format!("{}\0", resolved_path);
     readlink(temp_c_str.as_ptr(), buf, bufsiz)
 }
@@ -1242,6 +1327,7 @@ pub fn mkdirat(dirfd: Fd, path: *const u8, mode: Mode) -> LinuxResult<i32> {
     }
 
     let resolved_path = resolve_at_path(dirfd, path)?;
+    check_landlock(&resolved_path, crate::landlock::LANDLOCK_ACCESS_FS_MAKE_DIR)?;
     let temp_c_str = alloc::format!("{}\0", resolved_path);
     mkdir(temp_c_str.as_ptr(), mode)
 }
@@ -1255,6 +1341,12 @@ pub fn unlinkat(dirfd: Fd, path: *const u8, flags: i32) -> LinuxResult<i32> {
     }
 
     let resolved_path = resolve_at_path(dirfd, path)?;
+    let access = if flags & 0x200 != 0 {
+        crate::landlock::LANDLOCK_ACCESS_FS_REMOVE_DIR
+    } else {
+        crate::landlock::LANDLOCK_ACCESS_FS_REMOVE_FILE
+    };
+    check_landlock(&resolved_path, access)?;
     let temp_c_str = alloc::format!("{}\0", resolved_path);
     if flags & 0x200 != 0 {
         // AT_REMOVEDIR - use rmdir instead
@@ -1298,6 +1390,10 @@ pub fn symlinkat(target: *const u8, newdirfd: Fd, linkpath: *const u8) -> LinuxR
     }
 
     let resolved_linkpath = resolve_at_path(newdirfd, linkpath)?;
+    check_landlock(
+        &resolved_linkpath,
+        crate::landlock::LANDLOCK_ACCESS_FS_MAKE_SYM,
+    )?;
     let linkpath_c_str = alloc::format!("{}\0", resolved_linkpath);
     symlink(target, linkpath_c_str.as_ptr())
 }
@@ -1317,6 +1413,10 @@ pub fn fchownat(
     }
 
     let resolved_path = resolve_at_path(dirfd, path)?;
+    check_landlock(
+        &resolved_path,
+        crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE,
+    )?;
     let temp_c_str = alloc::format!("{}\0", resolved_path);
 
     // AT_SYMLINK_NO_FOLLOW (0x100) and AT_EMPTY_PATH (0x1000) are
@@ -1346,6 +1446,10 @@ pub fn utimensat(
     let _ = follow_symlinks; // VFS currently resolves symlinks unconditionally
 
     let resolved_path = resolve_at_path(dirfd, path)?;
+    check_landlock(
+        &resolved_path,
+        crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE,
+    )?;
     let mut stat = vfs::vfs_stat(&resolved_path).map_err(vfs_error_to_linux)?;
     let now = crate::time::system_time();
 
