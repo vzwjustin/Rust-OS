@@ -49,8 +49,8 @@ struct GvdbHashItem {
     value_end: u32,
 }
 
-/// Size of `struct gvdb_hash_item` including the trailing `options` pointer.
-const GVDB_HASH_ITEM_SIZE: usize = 32;
+/// Size of struct gvdb_hash_item including the trailing options field.
+const GVDB_HASH_ITEM_SIZE: usize = 28;
 
 const GVDB_SIGNATURE0: u32 = 1918981703;
 const GVDB_SIGNATURE1: u32 = 1953390953;
