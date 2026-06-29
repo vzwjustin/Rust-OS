@@ -10,21 +10,6 @@ use core::fmt;
 
 use super::{Ipv4Address, NetworkError};
 
-// Helper trait for slice to vec conversion in no_std
-trait SliceToVec<T> {
-    fn to_vec(&self) -> Vec<T>;
-}
-
-impl<T: Clone> SliceToVec<T> for [T] {
-    fn to_vec(&self) -> Vec<T> {
-        let mut vec = Vec::with_capacity(self.len());
-        for item in self {
-            vec.push(item.clone());
-        }
-        vec
-    }
-}
-
 // Helper trait for string lowercase conversion in no_std
 trait StringExt {
     fn to_lowercase(&self) -> String;
