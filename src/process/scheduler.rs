@@ -550,6 +550,10 @@ pub fn get_scheduler_stats() -> SchedulingStats {
 /// Timer tick notification to scheduler
 pub fn timer_tick(_delta_ms: u64) {
     let process_manager = super::get_process_manager();
+    let pid = process_manager.current_process();
+    if pid != 0 {
+        crate::cgroup::charge_cpu_time(pid, _delta_ms.saturating_mul(1_000_000));
+    }
     let mut scheduler = process_manager.scheduler.lock();
     scheduler.tick();
 }

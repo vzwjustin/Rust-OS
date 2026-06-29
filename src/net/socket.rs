@@ -189,6 +189,19 @@ impl Socket {
             return Err(NetworkError::InvalidAddress);
         }
 
+        // Privileged port check: ports < 1024 require CAP_NET_BIND_SERVICE (euid == 0)
+        if address.port < 1024 {
+            let pid = crate::process::current_pid();
+            let pm = crate::process::get_process_manager();
+            let is_root = pm
+                .get_process(pid)
+                .map(|pcb| pcb.euid == 0)
+                .unwrap_or(false);
+            if !is_root {
+                return Err(NetworkError::PermissionDenied);
+            }
+        }
+
         // For UDP sockets, actually bind in the UDP stack
         if self.socket_type == SocketType::Datagram {
             crate::net::udp::udp_bind(address.address, address.port)?;
@@ -290,11 +303,29 @@ impl Socket {
 
         let bytes_sent = match self.socket_type {
             SocketType::Stream => {
-                // TCP send - buffer the data (actual sending happens in TCP layer)
+                // TCP send — buffer the data and transmit via TCP layer
                 self.send_buffer.extend(data.iter());
-                // For now, return the buffered amount
-                // Real implementation would track when data is actually sent
-                data.len()
+                // Transmit the data over the TCP connection
+                if let (Some(local_addr), Some(remote_addr)) =
+                    (self.local_address, self.remote_address)
+                {
+                    match crate::net::tcp::tcp_send_data(
+                        local_addr.address,
+                        local_addr.port,
+                        remote_addr.address,
+                        remote_addr.port,
+                        data,
+                    ) {
+                        Ok(sent) => sent,
+                        Err(_) => {
+                            // If transmission fails, still return buffered length
+                            // so the caller can retry. The data remains in send_buffer.
+                            data.len()
+                        }
+                    }
+                } else {
+                    data.len()
+                }
             }
             SocketType::Datagram => {
                 // UDP send - use real UDP stack

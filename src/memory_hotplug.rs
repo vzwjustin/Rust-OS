@@ -103,22 +103,38 @@ pub fn online_region(id: u64) -> LinuxResult<()> {
     Ok(())
 }
 
-/// Take a region offline (frames are not reclaimed — mirrors partial Linux stub).
+/// Take a region offline and reclaim its frames from the allocator.
 pub fn offline_region(id: u64) -> LinuxResult<()> {
-    let mut regions = REGIONS.write();
-    let region = regions
-        .iter_mut()
-        .find(|r| r.id == id)
-        .ok_or(LinuxError::ENOENT)?;
-    if region.state != HotplugState::Online {
-        return Err(LinuxError::EINVAL);
+    let (start, size, label) = {
+        let mut regions = REGIONS.write();
+        let region = regions
+            .iter_mut()
+            .find(|r| r.id == id)
+            .ok_or(LinuxError::ENOENT)?;
+        if region.state != HotplugState::Online {
+            return Err(LinuxError::EINVAL);
+        }
+        region.state = HotplugState::GoingOffline;
+        (region.start.as_u64(), region.size, region.label.clone())
+    };
+
+    // Reclaim frames from the physical frame allocator
+    let reclaimed = crate::memory::hotplug_remove_usable_range(start, start + size)
+        .map_err(|_| LinuxError::ENOMEM)?;
+
+    {
+        let mut regions = REGIONS.write();
+        if let Some(region) = regions.iter_mut().find(|r| r.id == id) {
+            region.state = HotplugState::Offline;
+        }
     }
-    region.state = HotplugState::Offline;
-    ONLINE_BYTES.fetch_sub(region.size as usize, Ordering::Relaxed);
+
+    ONLINE_BYTES.fetch_sub(size as usize, Ordering::Relaxed);
     crate::serial_println!(
-        "[memory_hotplug] region {} marked offline ({})",
+        "[memory_hotplug] region {} offlined ({}) — {} frames reclaimed",
         id,
-        region.label
+        label,
+        reclaimed
     );
     Ok(())
 }

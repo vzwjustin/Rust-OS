@@ -49,6 +49,11 @@ pub fn dispatch_syscall(
         crate::trace::record_function_trace("dispatch_syscall", dispatch_addr, syscall_num);
     }
 
+    let pid = crate::process::current_pid();
+    if crate::ptrace::is_traced(pid) {
+        crate::ptrace::syscall_event(pid, true);
+    }
+
     let result = match crate::linux_integration::route_syscall(syscall_num, &args) {
         Ok(v) => v as i64,
         Err(e) => -(e as i64),
@@ -64,7 +69,6 @@ pub fn dispatch_syscall(
     crate::debug::trace_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, result);
 
     // Ptrace syscall exit notification
-    let pid = crate::process::current_pid();
     if crate::ptrace::is_traced(pid) {
         crate::ptrace::syscall_event(pid, false);
     }

@@ -36,8 +36,10 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
@@ -57,6 +59,22 @@ use crate::memory_manager::{
 // ============================================================================
 // Per-Process Memory Context
 // ============================================================================
+
+/// Sealed memory regions: maps start address to (end address, flags).
+/// Sealed regions cannot be munmapped, mprotected, or remapped.
+static SEALED_REGIONS: Mutex<BTreeMap<usize, (usize, u32)>> = Mutex::new(BTreeMap::new());
+
+/// Check if any part of [addr, addr+len) overlaps a sealed region.
+fn is_range_sealed(addr: usize, len: usize) -> bool {
+    let regions = SEALED_REGIONS.lock();
+    let range_end = addr + len;
+    for (&start, &(end, _)) in regions.iter() {
+        if start < range_end && addr < end {
+            return true;
+        }
+    }
+    false
+}
 
 /// Per-process memory statistics (read-only view of PCB fields)
 #[derive(Debug, Clone)]
@@ -428,10 +446,32 @@ pub fn mmap(
             .map_err(|_| LinuxError::EIO)?;
     }
 
-    // Handle MAP_POPULATE - touch pages to ensure they're allocated
+    // Handle MAP_POPULATE - pre-fault all pages in the mapping
     if flags & map::MAP_POPULATE != 0 {
-        // In a real implementation, we would walk through pages and fault them in
-        // For now, the memory manager handles this during mapping
+        let page_size = 4096usize;
+        let start_page = (result as usize) & !(page_size - 1);
+        let end = (result as usize) + length;
+        let mut va = start_page;
+        // Build x86_64 PageTableFlags from protection
+        use x86_64::structures::paging::PageTableFlags as PTF;
+        let pt_flags = {
+            let mut f = PTF::PRESENT | PTF::USER_ACCESSIBLE;
+            if protection.is_writable() {
+                f |= PTF::WRITABLE;
+            }
+            if !protection.is_executable() {
+                f |= PTF::NO_EXECUTE;
+            }
+            f
+        };
+        while va < end {
+            // For anonymous mappings, pre-allocate physical pages
+            // For file-backed mappings, pages were already populated above
+            if flags & map::MAP_ANONYMOUS != 0 {
+                let _ = crate::memory::map_user_page(va, pt_flags);
+            }
+            va += page_size;
+        }
     }
 
     // Handle MAP_LOCKED - lock pages in memory
@@ -462,6 +502,11 @@ pub fn munmap(addr: *mut u8, length: usize) -> LinuxResult<i32> {
     let addr_val = addr as usize;
     if addr_val >= 0xFFFF_8000_0000_0000 {
         return Err(LinuxError::EINVAL);
+    }
+
+    // Check if the range is sealed
+    if is_range_sealed(addr_val, length) {
+        return Err(LinuxError::EPERM);
     }
 
     if crate::hugetlb::contains_mapping(addr_val, length) {
@@ -500,6 +545,11 @@ pub fn mprotect(addr: *mut u8, length: usize, prot: i32) -> LinuxResult<i32> {
     let addr_val = addr as usize;
     if addr_val >= 0xFFFF_8000_0000_0000 {
         return Err(LinuxError::EINVAL);
+    }
+
+    // Check if the range is sealed
+    if is_range_sealed(addr_val, length) {
+        return Err(LinuxError::EPERM);
     }
 
     // Convert protection flags
@@ -1462,4 +1512,35 @@ pub fn pkey_mprotect(addr: *mut u8, len: usize, prot: i32, pkey: i32) -> LinuxRe
         return Err(LinuxError::EINVAL);
     }
     mprotect(addr, len, prot)
+}
+
+/// mseal - seal memory regions to prevent further changes
+///
+/// Sealed regions cannot be munmapped, mprotected, or remapped.
+/// This prevents malicious code from modifying memory protections.
+pub fn mseal(addr: *mut u8, len: usize, flags: u32) -> LinuxResult<i32> {
+    inc_ops();
+
+    if addr.is_null() || len == 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    // Address must be page-aligned
+    if (addr as usize) & 0xFFF != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    // Only valid flag is MSEAL_SEAL (1)
+    if flags & !1 != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let addr_val = addr as usize;
+    let end = addr_val + len;
+
+    // Register the sealed region
+    let mut regions = SEALED_REGIONS.lock();
+    regions.insert(addr_val, (end, flags));
+
+    Ok(0)
 }

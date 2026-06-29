@@ -348,6 +348,8 @@ pub struct TcpConnection {
     pub timestamps_enabled: bool,
     pub syn_retries: u8,
     pub established_time: u64,
+    /// Out-of-order segments pending reassembly: (seq_num, data)
+    pub ooo_segments: Vec<(u32, Vec<u8>)>,
 }
 
 impl TcpConnection {
@@ -388,6 +390,7 @@ impl TcpConnection {
             timestamps_enabled: false,
             syn_retries: 0,
             established_time: 0,
+            ooo_segments: Vec::new(),
         }
     }
 
@@ -781,7 +784,7 @@ fn process_connection_packet(
             handle_established_state(connection, header, payload)?;
         }
         TcpState::FinWait1 => {
-            handle_fin_wait1_state(connection, header)?;
+            handle_fin_wait1_state(connection, header, payload)?;
         }
         TcpState::FinWait2 => {
             handle_fin_wait2_state(connection, header)?;
@@ -941,14 +944,44 @@ fn handle_established_state(
             connection.recv_buffer.extend_from_slice(payload);
             connection.recv_sequence = connection.recv_sequence.wrapping_add(payload.len() as u32);
 
+            // Check if any out-of-order segments can now be reassembled
+            loop {
+                let recv_seq = connection.recv_sequence;
+                // Find a segment that starts at our current recv_sequence
+                let found_idx = connection
+                    .ooo_segments
+                    .iter()
+                    .position(|(seq, _)| *seq == recv_seq);
+                if let Some(idx) = found_idx {
+                    let (_, data) = connection.ooo_segments.remove(idx);
+                    connection.recv_buffer.extend_from_slice(&data);
+                    connection.recv_sequence =
+                        connection.recv_sequence.wrapping_add(data.len() as u32);
+                } else {
+                    break;
+                }
+            }
+
             // Send ACK
             send_ack_packet(connection)?;
 
             // Reset duplicate ACK counter
             connection.reset_duplicate_acks();
         } else if seq_gt(header.sequence_number, connection.recv_sequence) {
-            // Out-of-order data - store for later processing
-            // For now, just send duplicate ACK
+            // Out-of-order data — buffer for later reassembly
+            // Avoid duplicates: only insert if we don't already have this sequence
+            let already_have = connection
+                .ooo_segments
+                .iter()
+                .any(|(seq, _)| *seq == header.sequence_number);
+            if !already_have {
+                connection
+                    .ooo_segments
+                    .push((header.sequence_number, payload.to_vec()));
+                // Sort by sequence number to keep the buffer ordered
+                connection.ooo_segments.sort_by_key(|(seq, _)| *seq);
+            }
+            // Send duplicate ACK with expected sequence number
             send_ack_packet(connection)?;
         }
         // Ignore old data (sequence_number < recv_sequence)
@@ -993,12 +1026,32 @@ fn handle_established_state(
 }
 
 /// Handle FIN-WAIT-1 state
-fn handle_fin_wait1_state(connection: &mut TcpConnection, header: &TcpHeader) -> NetworkResult<()> {
+fn handle_fin_wait1_state(
+    connection: &mut TcpConnection,
+    header: &TcpHeader,
+    payload: &[u8],
+) -> NetworkResult<()> {
+    // Process any data segment that arrived (still in-flight data from peer)
+    if !payload.is_empty() && header.sequence_number == connection.recv_sequence {
+        connection.recv_buffer.extend_from_slice(payload);
+        connection.recv_sequence = connection.recv_sequence.wrapping_add(payload.len() as u32);
+        send_ack_packet(connection)?;
+    }
+
     if header.flags.ack {
         // ACK for our FIN
         if header.acknowledgment_number == connection.send_sequence.wrapping_add(1) {
             connection.send_sequence = connection.send_sequence.wrapping_add(1);
             connection.state = TcpState::FinWait2;
+        } else if header.acknowledgment_number == connection.send_sequence {
+            // ACK for data we sent before FIN — process normally
+            // Remove acknowledged data from send_unacked
+            let unacked_len = connection.send_unacked.len();
+            if unacked_len > 0 {
+                connection.send_unacked.clear();
+                connection.update_cwnd(unacked_len as u32);
+                connection.reset_duplicate_acks();
+            }
         }
     }
 
@@ -1395,4 +1448,101 @@ pub fn tcp_close(
     }
 
     Ok(())
+}
+
+/// TCP send data — transmit data over an established connection.
+///
+/// Sends data from the socket's send_buffer as TCP segments, respecting
+/// the congestion window and receiver's advertised window. Data that has
+/// been sent but not yet acknowledged is tracked in send_unacked.
+/// Returns the number of bytes transmitted.
+pub fn tcp_send_data(
+    local_addr: NetworkAddress,
+    local_port: u16,
+    remote_addr: NetworkAddress,
+    remote_port: u16,
+    data: &[u8],
+) -> NetworkResult<usize> {
+    if data.is_empty() {
+        return Ok(0);
+    }
+
+    let key = (local_addr, local_port, remote_addr, remote_port);
+    let mut connection = TCP_MANAGER
+        .get_connection(&local_addr, local_port, &remote_addr, remote_port)
+        .ok_or(NetworkError::NotConnected)?;
+
+    if !connection.state.can_send_data() {
+        return Err(NetworkError::NotConnected);
+    }
+
+    let mss = connection.mss as usize;
+    let mut total_sent = 0usize;
+
+    for chunk in data.chunks(mss) {
+        let seq = connection.send_sequence;
+        let mut flags = TcpFlags::new();
+        flags.ack = true;
+
+        let window = connection.recv_window;
+
+        send_tcp_packet(
+            local_addr,
+            local_port,
+            remote_addr,
+            remote_port,
+            seq,
+            connection.recv_sequence,
+            flags,
+            window,
+            chunk,
+        )?;
+
+        total_sent += chunk.len();
+
+        // Update connection state: advance send_sequence and track unacked data
+        TCP_MANAGER.update_connection(key, |conn| {
+            conn.send_sequence = conn.send_sequence.wrapping_add(chunk.len() as u32);
+            conn.send_unacked.extend_from_slice(chunk);
+        })?;
+
+        // Re-read connection for next chunk
+        connection = TCP_MANAGER
+            .get_connection(&local_addr, local_port, &remote_addr, remote_port)
+            .ok_or(NetworkError::NotConnected)?;
+    }
+
+    Ok(total_sent)
+}
+
+/// TCP get send confirmation — returns the number of bytes that have been
+/// sent and acknowledged by the remote peer.
+pub fn tcp_get_send_confirmed(
+    local_addr: NetworkAddress,
+    local_port: u16,
+    remote_addr: NetworkAddress,
+    remote_port: u16,
+) -> NetworkResult<usize> {
+    let connection = TCP_MANAGER
+        .get_connection(&local_addr, local_port, &remote_addr, remote_port)
+        .ok_or(NetworkError::NotConnected)?;
+
+    // send_ack tracks the highest acknowledged sequence number.
+    // send_unacked contains data sent but not yet acknowledged.
+    // Bytes confirmed = total sent - unacked length
+    Ok(connection.send_unacked.len())
+}
+
+/// TCP get bytes sent — returns total bytes sent (including unacked).
+pub fn tcp_get_bytes_sent(
+    local_addr: NetworkAddress,
+    local_port: u16,
+    remote_addr: NetworkAddress,
+    remote_port: u16,
+) -> NetworkResult<usize> {
+    let connection = TCP_MANAGER
+        .get_connection(&local_addr, local_port, &remote_addr, remote_port)
+        .ok_or(NetworkError::NotConnected)?;
+
+    Ok(connection.send_unacked.len())
 }

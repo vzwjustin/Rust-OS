@@ -1055,6 +1055,203 @@ impl Ext4FileSystem {
         // blocks are supported by this implementation).
         Err(FsError::NoSpaceLeft)
     }
+
+    /// Find a directory entry by name in a parent directory.
+    /// Returns (block_index, byte_offset_within_block, entry_copy) if found.
+    fn find_dir_entry(
+        &self,
+        parent_inode_num: InodeNumber,
+        name: &str,
+    ) -> FsResult<Option<(usize, usize, Ext4DirEntry2)>> {
+        let parent = self.read_inode(parent_inode_num)?;
+        let i_block = unsafe { core::ptr::addr_of!(parent.i_block).read_unaligned() };
+
+        for slot in 0..12usize {
+            let block_ptr = i_block[slot];
+            if block_ptr == 0 {
+                continue;
+            }
+            let data = self.read_block(block_ptr as u64)?;
+            let mut offset = 0usize;
+            while offset + mem::size_of::<Ext4DirEntry2>() <= data.len() {
+                let entry_ptr = unsafe { data.as_ptr().add(offset) } as *const Ext4DirEntry2;
+                let entry = unsafe { core::ptr::read_unaligned(entry_ptr) };
+                if entry.rec_len == 0 {
+                    break;
+                }
+                if entry.inode != 0
+                    && entry.name_len as usize == name.len()
+                    && offset + 8 + entry.name_len as usize <= data.len()
+                {
+                    let name_bytes = &data[offset + 8..offset + 8 + entry.name_len as usize];
+                    if name_bytes == name.as_bytes() {
+                        return Ok(Some((slot, offset, entry)));
+                    }
+                }
+                offset += entry.rec_len as usize;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Remove a directory entry by name. The entry's inode is zeroed out and
+    /// its rec_len is merged into the previous entry's rec_len (or, if it's
+    /// the first entry in the block, the inode is just zeroed).
+    fn remove_dir_entry(&self, parent_inode_num: InodeNumber, name: &str) -> FsResult<()> {
+        let parent = self.read_inode(parent_inode_num)?;
+        let i_block = unsafe { core::ptr::addr_of!(parent.i_block).read_unaligned() };
+
+        for slot in 0..12usize {
+            let block_ptr = i_block[slot];
+            if block_ptr == 0 {
+                continue;
+            }
+            let mut data = self.read_block(block_ptr as u64)?;
+            let mut offset = 0usize;
+            let mut prev_offset: Option<usize> = None;
+            while offset + mem::size_of::<Ext4DirEntry2>() <= data.len() {
+                let entry_ptr = unsafe { data.as_ptr().add(offset) } as *const Ext4DirEntry2;
+                let entry = unsafe { core::ptr::read_unaligned(entry_ptr) };
+                if entry.rec_len == 0 {
+                    break;
+                }
+                if entry.inode != 0
+                    && entry.name_len as usize == name.len()
+                    && offset + 8 + entry.name_len as usize <= data.len()
+                {
+                    let name_bytes = &data[offset + 8..offset + 8 + entry.name_len as usize];
+                    if name_bytes == name.as_bytes() {
+                        // Found the entry. Merge its rec_len into the previous entry.
+                        let removed_rec_len = entry.rec_len;
+                        if let Some(prev_off) = prev_offset {
+                            let prev_ptr =
+                                unsafe { data.as_ptr().add(prev_off) } as *const Ext4DirEntry2;
+                            let mut prev_entry = unsafe { core::ptr::read_unaligned(prev_ptr) };
+                            prev_entry.rec_len = prev_entry
+                                .rec_len
+                                .checked_add(removed_rec_len)
+                                .ok_or(FsError::InvalidArgument)?;
+                            unsafe {
+                                core::ptr::write_unaligned(
+                                    data.as_mut_ptr().add(prev_off) as *mut Ext4DirEntry2,
+                                    prev_entry,
+                                );
+                            }
+                        } else {
+                            // First entry in block — just zero the inode field.
+                            let mut zeroed = entry;
+                            zeroed.inode = 0;
+                            unsafe {
+                                core::ptr::write_unaligned(
+                                    data.as_mut_ptr().add(offset) as *mut Ext4DirEntry2,
+                                    zeroed,
+                                );
+                            }
+                        }
+                        self.write_block(block_ptr as u64, &data)?;
+
+                        // Update parent mtime
+                        let mut p = parent;
+                        p.i_mtime = self.current_time();
+                        self.write_inode(parent_inode_num, &p)?;
+                        return Ok(());
+                    }
+                }
+                prev_offset = Some(offset);
+                offset += entry.rec_len as usize;
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    /// Clear a bit in a bitmap block (free a resource).
+    fn free_bitmap_bit(&self, bitmap_block: u64, bit_index: u32) -> FsResult<()> {
+        let mut data = self.read_block(bitmap_block)?;
+        let byte_idx = (bit_index / 8) as usize;
+        let bit = bit_index % 8;
+        if byte_idx >= data.len() {
+            return Err(FsError::InvalidArgument);
+        }
+        data[byte_idx] &= !(1u8 << bit);
+        self.write_block(bitmap_block, &data)?;
+        Ok(())
+    }
+
+    /// Increment the global free-inode count in the on-disk superblock.
+    fn increment_superblock_free_inodes(&self) -> FsResult<()> {
+        let (sb_block, sb_off) = self.superblock_location();
+        let mut data = self.read_block(sb_block)?;
+        let sb_ptr = unsafe { data.as_mut_ptr().add(sb_off) } as *mut Ext4Superblock;
+        let mut sb = unsafe { core::ptr::read_unaligned(sb_ptr) };
+        sb.s_free_inodes_count = sb.s_free_inodes_count.saturating_add(1);
+        unsafe { core::ptr::write_unaligned(sb_ptr, sb) };
+        self.write_block(sb_block, &data)?;
+        Ok(())
+    }
+
+    /// Increment the global free-block count in the on-disk superblock by `count`.
+    fn increment_superblock_free_blocks(&self, count: u32) -> FsResult<()> {
+        let (sb_block, sb_off) = self.superblock_location();
+        let mut data = self.read_block(sb_block)?;
+        let sb_ptr = unsafe { data.as_mut_ptr().add(sb_off) } as *mut Ext4Superblock;
+        let mut sb = unsafe { core::ptr::read_unaligned(sb_ptr) };
+        sb.s_free_blocks_count_lo = sb.s_free_blocks_count_lo.saturating_add(count);
+        unsafe { core::ptr::write_unaligned(sb_ptr, sb) };
+        self.write_block(sb_block, &data)?;
+        Ok(())
+    }
+
+    /// Free an inode: clear its bitmap bit, update free counts, and zero the inode on disk.
+    fn free_inode(&self, inode_num: InodeNumber) -> FsResult<()> {
+        if inode_num == 0 {
+            return Err(FsError::InvalidArgument);
+        }
+        let group = ((inode_num - 1) / self.inodes_per_group as u64) as usize;
+        let index = ((inode_num - 1) % self.inodes_per_group as u64) as u32;
+
+        if group >= self.group_desc_table.len() {
+            return Err(FsError::NotFound);
+        }
+
+        let inode_bitmap_block = self.group_desc_table[group].bg_inode_bitmap_lo as u64;
+        if inode_bitmap_block == 0 {
+            return Err(FsError::IoError);
+        }
+
+        self.free_bitmap_bit(inode_bitmap_block, index)?;
+        self.increment_superblock_free_inodes()?;
+        self.adjust_group_desc_free(group, 1, 0)?;
+
+        // Zero the inode on disk
+        let zeroed: Ext4Inode = unsafe { mem::zeroed() };
+        self.write_inode(inode_num, &zeroed)?;
+        Ok(())
+    }
+
+    /// Free a data block: clear its bitmap bit and update free counts.
+    fn free_block(&self, block_num: u64) -> FsResult<()> {
+        let first_data_block = self.superblock.s_first_data_block as u64;
+        if block_num < first_data_block {
+            return Err(FsError::InvalidArgument);
+        }
+        let bpg = self.blocks_per_group as u64;
+        let group = ((block_num - first_data_block) / bpg) as usize;
+        let bit = ((block_num - first_data_block) % bpg) as u32;
+
+        if group >= self.group_desc_table.len() {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let block_bitmap_block = self.group_desc_table[group].bg_block_bitmap_lo as u64;
+        if block_bitmap_block == 0 {
+            return Err(FsError::IoError);
+        }
+
+        self.free_bitmap_bit(block_bitmap_block, bit)?;
+        self.increment_superblock_free_blocks(1)?;
+        self.adjust_group_desc_free(group, 0, 1)?;
+        Ok(())
+    }
 }
 
 impl FileSystem for Ext4FileSystem {
@@ -1277,21 +1474,177 @@ impl FileSystem for Ext4FileSystem {
         Ok(self.inode_to_metadata(inode_num, &inode))
     }
 
-    fn set_metadata(&self, _inode: InodeNumber, _metadata: &FileMetadata) -> FsResult<()> {
-        // Metadata modification requires writing back to disk
-        Err(FsError::ReadOnly)
+    fn set_metadata(&self, inode_num: InodeNumber, metadata: &FileMetadata) -> FsResult<()> {
+        let mut inode = self.read_inode(inode_num)?;
+        inode.i_mode =
+            ((inode.i_mode as u32 & 0o7770000) | metadata.permissions.to_octal() as u32) as u16;
+        inode.i_uid = metadata.uid as u16;
+        inode.i_gid = metadata.gid as u16;
+        inode.i_mtime = metadata.modified as u32;
+        inode.i_atime = metadata.accessed as u32;
+        self.write_inode(inode_num, &inode)?;
+        self.flush_dirty_blocks()?;
+        Ok(())
     }
 
-    fn mkdir(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        Err(FsError::ReadOnly)
+    fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        let (parent_path, dirname) = self.split_path(path)?;
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        let parent_inode = self.read_inode(parent_inode_num)?;
+        let parent_meta = self.inode_to_metadata(parent_inode_num, &parent_inode);
+        if parent_meta.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        if self.resolve_path(path).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let new_inode_num = self.alloc_inode()?;
+        let mode = (0o040000u32 | permissions.to_octal() as u32) as u16; // S_IFDIR | perms
+        let now = self.current_time();
+        let mut inode: Ext4Inode = unsafe { mem::zeroed() };
+        inode.i_mode = mode;
+        inode.i_uid = 0;
+        inode.i_size_lo = self.block_size; // directory starts with one block
+        inode.i_atime = now;
+        inode.i_ctime = now;
+        inode.i_mtime = now;
+        inode.i_gid = 0;
+        inode.i_links_count = 2; // . and parent
+        inode.i_blocks_lo = (self.block_size / 512) as u32;
+        inode.i_flags = 0;
+
+        // Allocate one data block for the new directory
+        let new_block = self.alloc_block()?;
+        inode.i_block[0] = new_block as u32;
+
+        // Initialize the directory block with . and .. entries
+        let block_size = self.block_size as usize;
+        let mut data = vec![0u8; block_size];
+
+        // "." entry
+        let dot = Ext4DirEntry2 {
+            inode: new_inode_num as u32,
+            rec_len: 12,
+            name_len: 1,
+            file_type: 2, // directory
+        };
+        unsafe {
+            core::ptr::write_unaligned(data.as_mut_ptr() as *mut Ext4DirEntry2, dot);
+        }
+        data[8] = b'.';
+
+        // ".." entry — rec_len spans the rest of the block
+        let dotdot = Ext4DirEntry2 {
+            inode: parent_inode_num as u32,
+            rec_len: (block_size - 12) as u16,
+            name_len: 2,
+            file_type: 2,
+        };
+        unsafe {
+            core::ptr::write_unaligned(data.as_mut_ptr().add(12) as *mut Ext4DirEntry2, dotdot);
+        }
+        data[20] = b'.';
+        data[21] = b'.';
+
+        self.write_block(new_block, &data)?;
+        self.write_inode(new_inode_num, &inode)?;
+
+        // Link the new directory into the parent
+        self.add_dir_entry(parent_inode_num, dirname, new_inode_num, 2)?;
+
+        // Increment parent's link count for the new subdirectory's ".."
+        let mut p = parent_inode;
+        p.i_links_count = p.i_links_count.saturating_add(1);
+        self.write_inode(parent_inode_num, &p)?;
+
+        self.flush_dirty_blocks()?;
+        Ok(new_inode_num)
     }
 
-    fn rmdir(&self, _path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn rmdir(&self, path: &str) -> FsResult<()> {
+        let inode_num = self.resolve_path(path)?;
+        let inode = self.read_inode(inode_num)?;
+        let meta = self.inode_to_metadata(inode_num, &inode);
+        if meta.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+
+        // Check if directory is empty (only . and ..)
+        let entries = self.read_directory_entries(&inode)?;
+        // Filter out . and ..
+        let real_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.name != "." && e.name != "..")
+            .collect();
+        if !real_entries.is_empty() {
+            return Err(FsError::DirectoryNotEmpty);
+        }
+
+        let (parent_path, dirname) = self.split_path(path)?;
+        let parent_inode_num = self.resolve_path(parent_path)?;
+
+        // Free the directory's data block(s)
+        let i_block = unsafe { core::ptr::addr_of!(inode.i_block).read_unaligned() };
+        for &block_ptr in &i_block[0..12] {
+            if block_ptr != 0 {
+                self.free_block(block_ptr as u64)?;
+            }
+        }
+
+        // Remove the directory entry from the parent
+        self.remove_dir_entry(parent_inode_num, dirname)?;
+
+        // Decrement parent's link count
+        let mut parent = self.read_inode(parent_inode_num)?;
+        parent.i_links_count = parent.i_links_count.saturating_sub(1);
+        self.write_inode(parent_inode_num, &parent)?;
+
+        // Free the inode itself
+        self.free_inode(inode_num)?;
+
+        self.flush_dirty_blocks()?;
+        Ok(())
     }
 
-    fn unlink(&self, _path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn unlink(&self, path: &str) -> FsResult<()> {
+        let inode_num = self.resolve_path(path)?;
+        let inode = self.read_inode(inode_num)?;
+        let meta = self.inode_to_metadata(inode_num, &inode);
+
+        if meta.file_type == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+
+        let (parent_path, filename) = self.split_path(path)?;
+        let parent_inode_num = self.resolve_path(parent_path)?;
+
+        // Remove the directory entry
+        self.remove_dir_entry(parent_inode_num, filename)?;
+
+        // Decrement link count
+        let mut ino = inode;
+        if ino.i_links_count > 0 {
+            ino.i_links_count -= 1;
+        }
+
+        if ino.i_links_count == 0 {
+            // No more links — free data blocks and the inode
+            let i_block = unsafe { core::ptr::addr_of!(ino.i_block).read_unaligned() };
+            for &block_ptr in &i_block[0..12] {
+                if block_ptr != 0 {
+                    self.free_block(block_ptr as u64)?;
+                }
+            }
+            self.free_inode(inode_num)?;
+        } else {
+            // Still has other hard links — just update the inode
+            ino.i_dtime = self.current_time();
+            self.write_inode(inode_num, &ino)?;
+        }
+
+        self.flush_dirty_blocks()?;
+        Ok(())
     }
 
     fn readdir(&self, inode_num: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
@@ -1305,12 +1658,180 @@ impl FileSystem for Ext4FileSystem {
         self.read_directory_entries(&inode)
     }
 
-    fn rename(&self, _old_path: &str, _new_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn rename(&self, old_path: &str, new_path: &str) -> FsResult<()> {
+        if old_path == new_path {
+            return Ok(());
+        }
+
+        let old_inode_num = self.resolve_path(old_path)?;
+        let old_inode = self.read_inode(old_inode_num)?;
+        let meta = self.inode_to_metadata(old_inode_num, &old_inode);
+
+        let (old_parent_path, old_filename) = self.split_path(old_path)?;
+        let old_parent_inode_num = self.resolve_path(old_parent_path)?;
+
+        let (new_parent_path, new_filename) = self.split_path(new_path)?;
+        let new_parent_inode_num = self.resolve_path(new_parent_path)?;
+
+        // Check if destination already exists
+        if let Ok(existing_inode) = self.resolve_path(new_path) {
+            if existing_inode == old_inode_num {
+                return Ok(());
+            }
+            let existing_meta = self.metadata(existing_inode)?;
+            if meta.file_type == FileType::Directory {
+                if existing_meta.file_type != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                // Destination directory must be empty
+                let existing_inode_obj = self.read_inode(existing_inode)?;
+                let entries = self.read_directory_entries(&existing_inode_obj)?;
+                let real: Vec<_> = entries
+                    .iter()
+                    .filter(|e| e.name != "." && e.name != "..")
+                    .collect();
+                if !real.is_empty() {
+                    return Err(FsError::DirectoryNotEmpty);
+                }
+                // Free the empty destination directory
+                let i_block =
+                    unsafe { core::ptr::addr_of!(existing_inode_obj.i_block).read_unaligned() };
+                for &bp in &i_block[0..12] {
+                    if bp != 0 {
+                        self.free_block(bp as u64)?;
+                    }
+                }
+                self.remove_dir_entry(new_parent_inode_num, new_filename)?;
+                let mut new_parent = self.read_inode(new_parent_inode_num)?;
+                new_parent.i_links_count = new_parent.i_links_count.saturating_sub(1);
+                self.write_inode(new_parent_inode_num, &new_parent)?;
+                self.free_inode(existing_inode)?;
+            } else {
+                // Overwrite existing file — remove it first
+                self.remove_dir_entry(new_parent_inode_num, new_filename)?;
+                let existing = self.read_inode(existing_inode)?;
+                if existing.i_links_count <= 1 {
+                    let i_block = unsafe { core::ptr::addr_of!(existing.i_block).read_unaligned() };
+                    for &bp in &i_block[0..12] {
+                        if bp != 0 {
+                            self.free_block(bp as u64)?;
+                        }
+                    }
+                    self.free_inode(existing_inode)?;
+                } else {
+                    let mut ei = existing;
+                    ei.i_links_count -= 1;
+                    self.write_inode(existing_inode, &ei)?;
+                }
+            }
+        }
+
+        // Add new entry pointing to the old inode
+        let file_type = match meta.file_type {
+            FileType::Regular => 1u8,
+            FileType::Directory => 2,
+            FileType::SymbolicLink => 7,
+            _ => 1,
+        };
+        self.add_dir_entry(new_parent_inode_num, new_filename, old_inode_num, file_type)?;
+
+        // Remove old entry
+        self.remove_dir_entry(old_parent_inode_num, old_filename)?;
+
+        // If directory, update .. in the moved directory
+        if meta.file_type == FileType::Directory {
+            let moved_inode = self.read_inode(old_inode_num)?;
+            let i_block = unsafe { core::ptr::addr_of!(moved_inode.i_block).read_unaligned() };
+            if i_block[0] != 0 {
+                let mut data = self.read_block(i_block[0] as u64)?;
+                // Update ".." entry (at offset 12)
+                if data.len() >= 22 {
+                    let dd_ptr = unsafe { data.as_mut_ptr().add(12) } as *mut Ext4DirEntry2;
+                    let mut dd = unsafe { core::ptr::read_unaligned(dd_ptr) };
+                    dd.inode = new_parent_inode_num as u32;
+                    unsafe {
+                        core::ptr::write_unaligned(dd_ptr, dd);
+                    }
+                    self.write_block(i_block[0] as u64, &data)?;
+                }
+            }
+
+            // If parent changed, adjust link counts
+            if old_parent_inode_num != new_parent_inode_num {
+                let mut old_parent = self.read_inode(old_parent_inode_num)?;
+                old_parent.i_links_count = old_parent.i_links_count.saturating_sub(1);
+                self.write_inode(old_parent_inode_num, &old_parent)?;
+
+                let mut new_parent = self.read_inode(new_parent_inode_num)?;
+                new_parent.i_links_count = new_parent.i_links_count.saturating_add(1);
+                self.write_inode(new_parent_inode_num, &new_parent)?;
+            }
+        }
+
+        self.flush_dirty_blocks()?;
+        Ok(())
     }
 
-    fn symlink(&self, _target: &str, _link_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn symlink(&self, target: &str, link_path: &str) -> FsResult<()> {
+        let (parent_path, linkname) = self.split_path(link_path)?;
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        let parent_inode = self.read_inode(parent_inode_num)?;
+        let parent_meta = self.inode_to_metadata(parent_inode_num, &parent_inode);
+        if parent_meta.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        if self.resolve_path(link_path).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let new_inode_num = self.alloc_inode()?;
+        let mode = (0o120000u32) as u16; // S_IFLNK
+        let now = self.current_time();
+        let target_bytes = target.as_bytes();
+        let mut inode: Ext4Inode = unsafe { mem::zeroed() };
+        inode.i_mode = mode;
+        inode.i_uid = 0;
+        inode.i_atime = now;
+        inode.i_ctime = now;
+        inode.i_mtime = now;
+        inode.i_gid = 0;
+        inode.i_links_count = 1;
+        inode.i_flags = 0;
+
+        if target_bytes.len() <= 60 {
+            // Inline symlink — store target in i_block array
+            inode.i_size_lo = target_bytes.len() as u32;
+            let block_bytes = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(inode.i_block) as *mut u8,
+                    60,
+                )
+            };
+            block_bytes[..target_bytes.len()].copy_from_slice(target_bytes);
+        } else {
+            // Long symlink — allocate a data block
+            if target_bytes.len() > self.block_size as usize * 12 {
+                return Err(FsError::NameTooLong);
+            }
+            inode.i_size_lo = target_bytes.len() as u32;
+            let block_size = self.block_size as usize;
+            let mut blocks = 0u32;
+            for (slot, chunk) in target_bytes.chunks(block_size).enumerate() {
+                let new_block = self.alloc_block()?;
+                inode.i_block[slot] = new_block as u32;
+                blocks += 1;
+
+                let mut data = vec![0u8; block_size];
+                data[..chunk.len()].copy_from_slice(chunk);
+                self.write_block(new_block, &data)?;
+            }
+            inode.i_blocks_lo = blocks * (self.block_size / 512);
+        }
+
+        self.write_inode(new_inode_num, &inode)?;
+        self.add_dir_entry(parent_inode_num, linkname, new_inode_num, 7)?; // file_type 7 = symlink
+        self.flush_dirty_blocks()?;
+        Ok(())
     }
 
     fn readlink(&self, path: &str) -> FsResult<String> {

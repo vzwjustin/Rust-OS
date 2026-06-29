@@ -166,10 +166,23 @@ struct InotifyWatch {
     mask: u32,
 }
 
+/// A single inotify event waiting to be read by userspace.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct InotifyEvent {
+    pub wd: i32,
+    pub mask: u32,
+    pub cookie: u32,
+    pub len: u32,
+    // Followed by `len` bytes of name (NUL-terminated, padded to NUL boundary)
+}
+
 struct InotifyInstance {
     flags: i32,
     watches: BTreeMap<i32, InotifyWatch>,
     next_wd: AtomicI32,
+    /// Pending events queue (event header + optional name).
+    events: alloc::collections::VecDeque<(InotifyEvent, Option<alloc::string::String>)>,
 }
 
 impl InotifyInstance {
@@ -178,8 +191,130 @@ impl InotifyInstance {
             flags,
             watches: BTreeMap::new(),
             next_wd: AtomicI32::new(1),
+            events: alloc::collections::VecDeque::new(),
         }
     }
+
+    /// Push an inotify event into the queue.
+    fn push_event(&mut self, wd: i32, mask: u32, cookie: u32, name: Option<&str>) {
+        let name_bytes = name
+            .map(|n| {
+                // Name field is NUL-terminated and padded to align to the
+                // next sizeof(struct inotify_event) boundary (16 bytes).
+                let raw_len = n.as_bytes().len() + 1; // +1 for NUL
+                let padded_len = (raw_len + 15) & !15;
+                padded_len as u32
+            })
+            .unwrap_or(0);
+
+        self.events.push_back((
+            InotifyEvent {
+                wd,
+                mask,
+                cookie,
+                len: name_bytes,
+            },
+            name.map(|n| alloc::string::String::from(n)),
+        ));
+    }
+}
+
+/// Fire an inotify event to all instances watching the given path.
+/// Called by VFS operations (create, delete, modify, etc.).
+pub fn fire_inotify_event(path: &str, mask: u32, cookie: u32, name: Option<&str>) {
+    let mut instances = INOTIFY_INSTANCES.lock();
+    for instance in instances.values_mut() {
+        // Collect matching watch descriptors first to avoid borrow conflict.
+        let matching_wds: alloc::vec::Vec<i32> = instance
+            .watches
+            .iter()
+            .filter(|(_, watch)| {
+                if watch.mask & mask == 0 {
+                    return false;
+                }
+                path == watch.path || path.starts_with(&watch.path) || watch.path == "/"
+            })
+            .map(|(wd, _)| *wd)
+            .collect();
+
+        for wd in matching_wds {
+            instance.push_event(wd, mask, cookie, name);
+        }
+    }
+}
+
+/// Read pending inotify events for a given inotify fd.
+/// Returns the number of bytes written to `buf`.
+pub fn read_inotify_events(fd: i32, buf: &mut [u8]) -> LinuxResult<isize> {
+    let id = inotify_id_for_fd(fd)?;
+    let mut instances = INOTIFY_INSTANCES.lock();
+    let instance = instances.get_mut(&id).ok_or(LinuxError::EBADF)?;
+
+    if instance.events.is_empty() {
+        return Err(LinuxError::EAGAIN);
+    }
+
+    let mut offset = 0usize;
+    while let Some((event, name)) = instance.events.front() {
+        let name_bytes = name
+            .as_ref()
+            .map(|n| {
+                let raw_len = n.as_bytes().len() + 1;
+                let padded_len = (raw_len + 15) & !15;
+                padded_len
+            })
+            .unwrap_or(0);
+        let total = 16 + name_bytes;
+
+        if offset + total > buf.len() {
+            break;
+        }
+
+        // Write event header
+        buf[offset..offset + 4].copy_from_slice(&event.wd.to_le_bytes());
+        buf[offset + 4..offset + 8].copy_from_slice(&event.mask.to_le_bytes());
+        buf[offset + 8..offset + 12].copy_from_slice(&event.cookie.to_le_bytes());
+        buf[offset + 12..offset + 16].copy_from_slice(&event.len.to_le_bytes());
+
+        // Write name if present
+        if let Some(name_str) = name {
+            let name_bytes = name_str.as_bytes();
+            let raw_len = name_bytes.len() + 1;
+            let padded_len = (raw_len + 15) & !15;
+            buf[offset + 16..offset + 16 + name_bytes.len()].copy_from_slice(name_bytes);
+            // NUL-pad the rest
+            for i in (16 + name_bytes.len())..(16 + padded_len) {
+                buf[offset + i] = 0;
+            }
+        }
+
+        offset += total;
+        instance.events.pop_front();
+    }
+
+    if offset == 0 {
+        // Event too large for buffer
+        return Err(LinuxError::EINVAL);
+    }
+
+    Ok(offset as isize)
+}
+
+/// Check if an inotify instance has pending events (for poll).
+pub fn inotify_has_events(id: u32) -> bool {
+    let instances = INOTIFY_INSTANCES.lock();
+    instances
+        .get(&id)
+        .map(|inst| !inst.events.is_empty())
+        .unwrap_or(false)
+}
+
+/// Drop inotify instance state when the special fd is closed.
+pub fn close_inotify(id: u32) {
+    INOTIFY_INSTANCES.lock().remove(&id);
+    INOTIFY_FD_MAP
+        .lock()
+        .retain(|_, instance_id| *instance_id != id);
 }
 
 /// Initialize filesystem operations subsystem
@@ -907,16 +1042,128 @@ pub fn setns(fd: Fd, nstype: i32) -> LinuxResult<i32> {
         }
     }
 
-    // Check if fd is a namespace fd — for now, accept any valid fd
-    // In a real implementation, we'd check if it's a /proc/pid/ns/* fd
-    let _kind = vfs::vfs_fd_kind(fd).map_err(|_| LinuxError::EBADF)?;
-    // Namespace switching not fully implemented — return success (no-op)
-    Ok(0)
+    let ret = crate::namespace::setns(fd, nstype as u32);
+    if ret < 0 {
+        Err(LinuxError::from_errno(-ret))
+    } else {
+        Ok(ret)
+    }
 }
 
 // ============================================================================
 // Swap Operations
 // ============================================================================
+
+/// Static table mapping swap area index → VFS file descriptor.
+/// Needed because SwapArea uses `fn` pointers, not closures.
+static SWAP_FDS: Mutex<BTreeMap<u8, i32>> = Mutex::new(BTreeMap::new());
+
+fn swap_write_page_impl(area_index: u8, slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    let fds = SWAP_FDS.lock();
+    let fd = *fds.get(&area_index).ok_or("swap area not found")?;
+    drop(fds);
+    let offset = slot.checked_mul(4096).ok_or("swap offset overflow")?;
+    let vfs = crate::vfs::get_vfs();
+    let written = vfs
+        .pwrite(fd, data, offset)
+        .map_err(|_| "swap write failed")?;
+    if written != data.len() {
+        return Err("short swap write");
+    }
+    Ok(())
+}
+
+fn swap_read_page_impl(
+    area_index: u8,
+    slot: u64,
+    data: &mut [u8; 4096],
+) -> Result<(), &'static str> {
+    let fds = SWAP_FDS.lock();
+    let fd = *fds.get(&area_index).ok_or("swap area not found")?;
+    drop(fds);
+    let offset = slot.checked_mul(4096).ok_or("swap offset overflow")?;
+    let vfs = crate::vfs::get_vfs();
+    let read = vfs
+        .pread(fd, data, offset)
+        .map_err(|_| "swap read failed")?;
+    if read != data.len() {
+        return Err("short swap read");
+    }
+    Ok(())
+}
+
+/// Generate trampoline fn pointers for swap area indices 0-7.
+/// SwapArea takes `fn` pointers, not closures, so we need one
+/// trampoline per possible area index.
+
+fn swap_write_page_0(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(0, slot, data)
+}
+fn swap_read_page_0(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(0, slot, data)
+}
+fn swap_write_page_1(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(1, slot, data)
+}
+fn swap_read_page_1(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(1, slot, data)
+}
+fn swap_write_page_2(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(2, slot, data)
+}
+fn swap_read_page_2(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(2, slot, data)
+}
+fn swap_write_page_3(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(3, slot, data)
+}
+fn swap_read_page_3(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(3, slot, data)
+}
+fn swap_write_page_4(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(4, slot, data)
+}
+fn swap_read_page_4(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(4, slot, data)
+}
+fn swap_write_page_5(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(5, slot, data)
+}
+fn swap_read_page_5(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(5, slot, data)
+}
+fn swap_write_page_6(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(6, slot, data)
+}
+fn swap_read_page_6(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(6, slot, data)
+}
+fn swap_write_page_7(slot: u64, data: &[u8; 4096]) -> Result<(), &'static str> {
+    swap_write_page_impl(7, slot, data)
+}
+fn swap_read_page_7(slot: u64, data: &mut [u8; 4096]) -> Result<(), &'static str> {
+    swap_read_page_impl(7, slot, data)
+}
+
+/// Select the write/read fn pointers for a given swap area index.
+fn swap_callbacks(
+    index: u8,
+) -> Option<(
+    fn(u64, &[u8; 4096]) -> Result<(), &'static str>,
+    fn(u64, &mut [u8; 4096]) -> Result<(), &'static str>,
+)> {
+    match index {
+        0 => Some((swap_write_page_0, swap_read_page_0)),
+        1 => Some((swap_write_page_1, swap_read_page_1)),
+        2 => Some((swap_write_page_2, swap_read_page_2)),
+        3 => Some((swap_write_page_3, swap_read_page_3)),
+        4 => Some((swap_write_page_4, swap_read_page_4)),
+        5 => Some((swap_write_page_5, swap_read_page_5)),
+        6 => Some((swap_write_page_6, swap_read_page_6)),
+        7 => Some((swap_write_page_7, swap_read_page_7)),
+        _ => None,
+    }
+}
 
 /// swapon - start swapping to file/device
 pub fn swapon(path: *const u8, swapflags: i32) -> LinuxResult<i32> {
@@ -937,20 +1184,30 @@ pub fn swapon(path: *const u8, swapflags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // Create a swap area with no-op I/O callbacks (in-memory swap)
-    // In a real system, these would read/write to the backing file/device
+    // Open the backing file/device for read/write
+    let fd = vfs
+        .open(
+            &path_str,
+            crate::vfs::OpenFlags::new(crate::vfs::OpenFlags::RDWR),
+            0,
+        )
+        .map_err(|_| LinuxError::EACCES)?;
+
     let index = {
         let areas = crate::swap::swap_stats();
-        areas.nr_areas as u8
+        u8::try_from(areas.nr_areas).map_err(|_| LinuxError::EBUSY)?
     };
 
-    let area = crate::swap::SwapArea::new(
-        index,
-        swapflags as i32,
-        nr_pages,
-        |_slot, _data| Ok(()), // write_page — no-op
-        |_slot, _data| Ok(()), // read_page — no-op
-    );
+    if index > 7 {
+        return Err(LinuxError::ENOSPC);
+    }
+
+    // Store the fd so the fn-pointer callbacks can find it
+    SWAP_FDS.lock().insert(index, fd);
+
+    let (write_fn, read_fn) = swap_callbacks(index).ok_or(LinuxError::ENOSPC)?;
+
+    let area = crate::swap::SwapArea::new(index, swapflags as i32, nr_pages, write_fn, read_fn);
     crate::swap::add_swap_area(area);
 
     Ok(0)

@@ -326,6 +326,22 @@ pub struct Vfs {
 }
 
 impl Vfs {
+    fn notify_path(path: &str, mask: u32, fd: i32) {
+        crate::linux_compat::fs_ops::fire_inotify_event(path, mask, 0, None);
+        crate::fanotify::notify_path(path, mask as u64, fd, crate::process::current_pid());
+    }
+
+    fn notify_child_path(path: &str, mask: u32, fd: i32) {
+        if let Some(pos) = path.rfind('/') {
+            let parent = if pos == 0 { "/" } else { &path[..pos] };
+            let name = &path[pos + 1..];
+            crate::linux_compat::fs_ops::fire_inotify_event(parent, mask, 0, Some(name));
+        } else {
+            crate::linux_compat::fs_ops::fire_inotify_event(path, mask, 0, None);
+        }
+        crate::fanotify::notify_path(path, mask as u64, fd, crate::process::current_pid());
+    }
+
     /// Create a new VFS instance
     pub const fn new() -> Self {
         Self {
@@ -447,6 +463,17 @@ impl Vfs {
             m.sb.sync_fs()?;
         }
         Ok(())
+    }
+
+    /// List all mount points (path strings)
+    pub fn list_mount_paths(&self) -> Vec<String> {
+        let mounts = self.mounts.read();
+        mounts.iter().map(|m| m.path.clone()).collect()
+    }
+
+    /// Get the number of mounts
+    pub fn mount_count(&self) -> usize {
+        self.mounts.read().len()
     }
 
     /// Resolve a path to an inode
@@ -589,6 +616,9 @@ impl Vfs {
             kind,
             String::from(path),
         ))?;
+        drop(file_table);
+
+        Self::notify_path(path, crate::inotify::IN_OPEN, fd);
 
         Ok(fd)
     }
@@ -610,6 +640,13 @@ impl Vfs {
         file_table.kind(fd)
     }
 
+    /// Count descriptors that reference the same fd object as `fd`.
+    pub fn fd_ref_count(&self, fd: i32) -> VfsResult<usize> {
+        let file_table = self.file_table.lock();
+        let kind = file_table.kind(fd)?;
+        Ok(file_table.kind_ref_count(&kind))
+    }
+
     /// Set flags on an existing file descriptor.
     pub fn set_fd_flags(&self, fd: i32, flags: OpenFlags) -> VfsResult<()> {
         let mut file_table = self.file_table.lock();
@@ -625,7 +662,22 @@ impl Vfs {
     /// Close a file descriptor
     pub fn close(&self, fd: i32) -> VfsResult<()> {
         let mut file_table = self.file_table.lock();
-        file_table.remove(fd)
+        let desc = file_table.get(fd)?;
+        let path = desc.path.clone();
+        let writable = desc.flags.is_writable();
+        file_table.remove(fd)?;
+        drop(file_table);
+
+        if let Some(path) = path {
+            let mask = if writable {
+                crate::inotify::IN_CLOSE_WRITE
+            } else {
+                crate::inotify::IN_CLOSE_NOWRITE
+            };
+            Self::notify_path(&path, mask, fd);
+        }
+
+        Ok(())
     }
 
     /// Read from a file descriptor
@@ -637,8 +689,16 @@ impl Vfs {
             return Err(VfsError::PermissionDenied);
         }
 
+        let path = file_desc.path.clone();
         let bytes_read = file_desc.inode.read_at(file_desc.offset, buf)?;
         file_desc.offset += bytes_read as u64;
+        drop(file_table);
+
+        if bytes_read > 0 {
+            if let Some(path) = path {
+                Self::notify_path(&path, crate::inotify::IN_ACCESS, fd);
+            }
+        }
 
         Ok(bytes_read)
     }
@@ -665,8 +725,16 @@ impl Vfs {
             crate::quota::account_write(&stat, &mount, stat.size, new_size)?;
         }
 
+        let path = file_desc.path.clone();
         let bytes_written = file_desc.inode.write_at(file_desc.offset, buf)?;
         file_desc.offset += bytes_written as u64;
+        drop(file_table);
+
+        if bytes_written > 0 {
+            if let Some(path) = path {
+                Self::notify_path(&path, crate::inotify::IN_MODIFY, fd);
+            }
+        }
 
         Ok(bytes_written)
     }
@@ -680,7 +748,17 @@ impl Vfs {
             return Err(VfsError::PermissionDenied);
         }
 
-        file_desc.inode.read_at(offset, buf)
+        let path = file_desc.path.clone();
+        let bytes_read = file_desc.inode.read_at(offset, buf)?;
+        drop(file_table);
+
+        if bytes_read > 0 {
+            if let Some(path) = path {
+                Self::notify_path(&path, crate::inotify::IN_ACCESS, fd);
+            }
+        }
+
+        Ok(bytes_read)
     }
 
     /// Write to a file descriptor at a given offset without changing the file position
@@ -699,7 +777,17 @@ impl Vfs {
             crate::quota::account_write(&stat, &mount, stat.size, new_size)?;
         }
 
-        file_desc.inode.write_at(offset, buf)
+        let path = file_desc.path.clone();
+        let bytes_written = file_desc.inode.write_at(offset, buf)?;
+        drop(file_table);
+
+        if bytes_written > 0 {
+            if let Some(path) = path {
+                Self::notify_path(&path, crate::inotify::IN_MODIFY, fd);
+            }
+        }
+
+        Ok(bytes_written)
     }
 
     /// Get the inode for a file descriptor (for ftruncate etc.)
@@ -792,6 +880,11 @@ impl Vfs {
             let _ = parent.unlink(&dirname);
             return Err(e);
         }
+        Self::notify_child_path(
+            path,
+            crate::inotify::IN_CREATE | crate::inotify::IN_ISDIR,
+            -1,
+        );
         Ok(())
     }
 
@@ -804,6 +897,7 @@ impl Vfs {
             let _ = parent.unlink(&name);
             return Err(e);
         }
+        Self::notify_child_path(path, crate::inotify::IN_CREATE, -1);
         Ok(())
     }
 
@@ -826,6 +920,12 @@ impl Vfs {
         let stat = inode.stat()?;
         parent.unlink(&dirname)?;
         crate::quota::account_unlink(&stat, &crate::quota::mount_for_path(path))?;
+        Self::notify_child_path(
+            path,
+            crate::inotify::IN_DELETE | crate::inotify::IN_ISDIR,
+            -1,
+        );
+        Self::notify_path(path, crate::inotify::IN_DELETE_SELF, -1);
         Ok(())
     }
 
@@ -836,19 +936,25 @@ impl Vfs {
         let stat = inode.stat()?;
         parent.unlink(&filename)?;
         crate::quota::account_unlink(&stat, &crate::quota::mount_for_path(path))?;
+        Self::notify_child_path(path, crate::inotify::IN_DELETE, -1);
+        Self::notify_path(path, crate::inotify::IN_DELETE_SELF, -1);
         Ok(())
     }
 
     /// Change file permissions
     pub fn chmod(&self, path: &str, mode: u32) -> VfsResult<()> {
         let inode = self.resolve_path(path)?;
-        inode.set_mode(mode)
+        inode.set_mode(mode)?;
+        Self::notify_path(path, crate::inotify::IN_ATTRIB, -1);
+        Ok(())
     }
 
     /// Change file owner and group
     pub fn chown(&self, path: &str, uid: u32, gid: u32) -> VfsResult<()> {
         let inode = self.resolve_path(path)?;
-        inode.set_owner(uid, gid)
+        inode.set_owner(uid, gid)?;
+        Self::notify_path(path, crate::inotify::IN_ATTRIB, -1);
+        Ok(())
     }
 
     /// Read directory entries
@@ -1039,6 +1145,11 @@ pub fn vfs_set_dir_cookie(fd: i32, cookie: u64) -> VfsResult<()> {
 /// Get fd kind
 pub fn vfs_fd_kind(fd: i32) -> VfsResult<FdKind> {
     VFS.fd_kind(fd)
+}
+
+/// Count descriptors that reference the same fd object as `fd`.
+pub fn vfs_fd_ref_count(fd: i32) -> VfsResult<usize> {
+    VFS.fd_ref_count(fd)
 }
 
 /// Set flags on an existing file descriptor

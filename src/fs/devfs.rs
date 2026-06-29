@@ -45,6 +45,8 @@ pub enum DeviceType {
     Rtc,
     /// Watchdog timer (/dev/watchdog)
     Watchdog,
+    /// Block storage device (/dev/vda, /dev/sda, etc.)
+    BlockStorage,
 }
 
 /// Device node information
@@ -61,6 +63,26 @@ struct DeviceNode {
 }
 
 impl DeviceNode {
+    /// Create a new block device node
+    fn new_block_device(
+        inode: InodeNumber,
+        device_type: DeviceType,
+        major: u32,
+        minor: u32,
+        permissions: FilePermissions,
+    ) -> Self {
+        let mut metadata = FileMetadata::new(inode, FileType::BlockDevice, 0);
+        metadata.permissions = permissions;
+        metadata.device_id = Some((major << 8) | minor);
+
+        Self {
+            device_type,
+            metadata,
+            major,
+            minor,
+        }
+    }
+
     /// Create a new character device node
     fn new_char_device(
         inode: InodeNumber,
@@ -301,7 +323,12 @@ impl DevFs {
         let inode = *next_inode;
         *next_inode += 1;
 
-        let node = DeviceNode::new_char_device(inode, device_type, major, minor, permissions);
+        let node = match device_type {
+            DeviceType::BlockStorage => {
+                DeviceNode::new_block_device(inode, device_type, major, minor, permissions)
+            }
+            _ => DeviceNode::new_char_device(inode, device_type, major, minor, permissions),
+        };
         devices.insert(name.to_string(), node);
         Ok(inode)
     }
@@ -450,6 +477,13 @@ impl FileSystem for DevFs {
                 buffer[..to_copy].copy_from_slice(&bytes[..to_copy]);
                 Ok(to_copy)
             }
+            DeviceType::BlockStorage => {
+                // Route through the block_io layer using major/minor.
+                let sector = offset / 512;
+                crate::block_io::read_sectors(device.major, device.minor, sector, buffer)
+                    .map_err(|_| FsError::IoError)?;
+                Ok(buffer.len())
+            }
             _ => Err(FsError::NotSupported),
         }
     }
@@ -525,6 +559,13 @@ impl FileSystem for DevFs {
             }
             DeviceType::Watchdog => {
                 crate::drivers::watchdog::kick();
+                Ok(buffer.len())
+            }
+            DeviceType::BlockStorage => {
+                // Route through the block_io layer using major/minor.
+                let sector = offset / 512;
+                crate::block_io::write_sectors(device.major, device.minor, sector, buffer)
+                    .map_err(|_| FsError::IoError)?;
                 Ok(buffer.len())
             }
             _ => Err(FsError::NotSupported),
@@ -703,6 +744,34 @@ fn get_devfs() -> FsResult<&'static DevFs> {
 /// Register the global DevFs instance (called during VFS init).
 pub fn register_devfs(devfs: &'static DevFs) {
     *GLOBAL_DEVFS.write() = Some(devfs);
+}
+
+/// Register all block_io devices as /dev nodes.
+/// Call this after devfs has been mounted and block_io has been initialized.
+pub fn register_block_devices() {
+    let devices = crate::block_io::list_block_devices();
+    for (major, minor, name, _capacity) in devices {
+        let dev_name = if name.starts_with("virtio") {
+            alloc::format!("vda{}", if minor > 0 { minor } else { 1 })
+        } else if name.starts_with("sw-blk") {
+            alloc::format!("ramdisk{}", if minor > 0 { minor } else { 0 })
+        } else {
+            alloc::format!("{}{}", name, minor)
+        };
+        let _ = create_device_node(
+            &dev_name,
+            DeviceType::BlockStorage,
+            major,
+            minor,
+            FilePermissions::from_octal(0o660),
+        );
+        crate::serial_println!(
+            "[devfs] registered /dev/{} (block, major={}, minor={})",
+            dev_name,
+            major,
+            minor
+        );
+    }
 }
 
 static GLOBAL_DEVFS: RwLock<Option<&'static DevFs>> = RwLock::new(None);

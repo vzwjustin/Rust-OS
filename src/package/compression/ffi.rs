@@ -5,8 +5,8 @@
 //! RustOS kernel allocator via the `rustos_kalloc`/`rustos_kfree` FFI
 //! functions defined below.
 
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 // ── Kernel allocator FFI (called by C kcompat.c) ──────────────────
 
@@ -59,20 +59,26 @@ pub extern "C" fn rustos_krealloc(ptr: *mut u8, _old_size: usize, new_size: usiz
 
 extern "C" {
     fn zstd_decompress(
-        src: *const u8, src_size: usize,
-        dst: *mut u8, dst_capacity: usize,
+        src: *const u8,
+        src_size: usize,
+        dst: *mut u8,
+        dst_capacity: usize,
         out_size: *mut usize,
     ) -> i32;
 
     fn bzip2_decompress(
-        src: *const u8, src_size: usize,
-        dst: *mut u8, dst_capacity: usize,
+        src: *const u8,
+        src_size: usize,
+        dst: *mut u8,
+        dst_capacity: usize,
         out_size: *mut usize,
     ) -> i32;
 
     fn xz_decompress(
-        src: *const u8, src_size: usize,
-        dst: *mut u8, dst_capacity: usize,
+        src: *const u8,
+        src_size: usize,
+        dst: *mut u8,
+        dst_capacity: usize,
         out_size: *mut usize,
     ) -> i32;
 }
@@ -88,8 +94,10 @@ pub fn zstd_decompress_safe(input: &[u8]) -> Result<Vec<u8>, &'static str> {
         let mut out_size: usize = 0;
         let ret = unsafe {
             zstd_decompress(
-                input.as_ptr(), input.len(),
-                output.as_mut_ptr(), output.len(),
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
                 &mut out_size,
             )
         };
@@ -114,8 +122,10 @@ pub fn bzip2_decompress_safe(input: &[u8]) -> Result<Vec<u8>, &'static str> {
         let mut out_size: usize = 0;
         let ret = unsafe {
             bzip2_decompress(
-                input.as_ptr(), input.len(),
-                output.as_mut_ptr(), output.len(),
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
                 &mut out_size,
             )
         };
@@ -139,8 +149,10 @@ pub fn xz_decompress_safe(input: &[u8]) -> Result<Vec<u8>, &'static str> {
         let mut out_size: usize = 0;
         let ret = unsafe {
             xz_decompress(
-                input.as_ptr(), input.len(),
-                output.as_mut_ptr(), output.len(),
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
                 &mut out_size,
             )
         };

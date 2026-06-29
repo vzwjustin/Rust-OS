@@ -474,7 +474,8 @@ impl DRMCompatLayer {
         // IRQ fires and return the actual scanout sequence.
         crate::serial_println!(
             "drm: wait_vblank on crtc {} seq {} — no vblank IRQ, returning next seq",
-            crtc_id, sequence
+            crtc_id,
+            sequence
         );
         Ok(sequence + 1)
     }

@@ -22,6 +22,51 @@ use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError}
 const FD_CLOEXEC: u32 = 1;
 const MAX_RW_CHUNK: usize = 64 * 1024;
 
+/// Resolve a path against the current process's CWD.
+/// If `path` starts with '/', it is returned as-is.
+/// Otherwise it is joined to the process CWD with proper `.`/`..` normalization.
+pub(crate) fn resolve_cwd_path(path: &str) -> String {
+    if path.starts_with('/') {
+        return normalize_path(path);
+    }
+
+    let pid = process::current_pid();
+    let cwd = process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| pcb.cwd.clone())
+        .unwrap_or_else(|| String::from("/"));
+
+    let joined = if cwd.ends_with('/') {
+        alloc::format!("{}{}", cwd, path)
+    } else {
+        alloc::format!("{}/{}", cwd, path)
+    };
+
+    normalize_path(&joined)
+}
+
+/// Normalize a path by resolving `.` and `..` components.
+fn normalize_path(path: &str) -> String {
+    let mut components: Vec<&str> = Vec::new();
+
+    for component in path.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            components.pop();
+        } else {
+            components.push(component);
+        }
+    }
+
+    if components.is_empty() {
+        String::from("/")
+    } else {
+        alloc::format!("/{}", components.join("/"))
+    }
+}
+
 fn stat_dev(vfs_stat: &vfs::Stat) -> u64 {
     match vfs_stat.inode_type {
         InodeType::CharDevice | InodeType::BlockDevice => vfs_stat.rdev,
@@ -38,6 +83,10 @@ fn populate_linux_stat(statbuf: *mut Stat, vfs_stat: &vfs::Stat) {
         (*statbuf).st_nlink = vfs_stat.nlink as u64;
         (*statbuf).st_uid = vfs_stat.uid;
         (*statbuf).st_gid = vfs_stat.gid;
+        (*statbuf).st_rdev = match vfs_stat.inode_type {
+            InodeType::CharDevice | InodeType::BlockDevice => vfs_stat.rdev,
+            _ => 0,
+        };
         (*statbuf).st_size = vfs_stat.size as Off;
         (*statbuf).st_blksize = 4096;
         (*statbuf).st_blocks = ((vfs_stat.size + 511) / 512) as i64;
@@ -233,10 +282,11 @@ pub fn open(path: *const u8, flags: i32, mode: Mode) -> LinuxResult<Fd> {
     crate::kprobes::run_probes_at(open_addr, flags as u64);
 
     let path_str = c_str_to_string(path)?;
-    check_landlock(&path_str, landlock_open_access(flags))?;
+    let resolved = resolve_cwd_path(&path_str);
+    check_landlock(&resolved, landlock_open_access(flags))?;
     let vfs_flags = linux_flags_to_vfs(flags);
 
-    let result = match vfs::vfs_open(&path_str, vfs_flags, mode) {
+    let result = match vfs::vfs_open(&resolved, vfs_flags, mode) {
         Ok(fd) => Ok(fd),
         Err(e) => Err(vfs_error_to_linux(e)),
     };
@@ -370,6 +420,10 @@ pub fn close(fd: Fd) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
+    if let Some(result) = super::special_fd::try_close(fd) {
+        result?;
+    }
+
     match vfs::vfs_close(fd) {
         Ok(()) => Ok(0),
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -428,8 +482,9 @@ pub fn stat(path: *const u8, statbuf: *mut Stat) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path_str);
 
-    match vfs::vfs_stat(&path_str) {
+    match vfs::vfs_stat(&resolved) {
         Ok(vfs_stat) => {
             populate_linux_stat(statbuf, &vfs_stat);
             Ok(0)
@@ -505,6 +560,7 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path_str);
 
     let pid = process::current_pid();
     let (uid, gid, groups) = process::get_process_manager()
@@ -512,7 +568,7 @@ pub fn access(path: *const u8, mode: i32) -> LinuxResult<i32> {
         .map(|pcb| (pcb.euid, pcb.egid, pcb.supplementary_groups.clone()))
         .ok_or(LinuxError::ESRCH)?;
 
-    match vfs::vfs_stat(&path_str) {
+    match vfs::vfs_stat(&resolved) {
         Ok(vfs_stat) => check_access_permissions(&vfs_stat, mode, uid, gid, &groups).map(|_| 0),
         Err(e) => Err(vfs_error_to_linux(e)),
     }
@@ -547,10 +603,15 @@ pub fn dup2(oldfd: Fd, newfd: Fd) -> LinuxResult<Fd> {
 
     if oldfd == newfd {
         // Verify oldfd is valid
-        match vfs::vfs_fstat(oldfd) {
+        match vfs::vfs_fd_kind(oldfd) {
             Ok(_) => return Ok(newfd),
             Err(e) => return Err(vfs_error_to_linux(e)),
         }
+    }
+
+    vfs::vfs_fd_kind(oldfd).map_err(vfs_error_to_linux)?;
+    if vfs::vfs_fd_kind(newfd).is_ok() {
+        let _ = close(newfd);
     }
 
     match vfs::get_vfs().dup2(oldfd, newfd) {
@@ -588,12 +649,12 @@ pub fn unlink(path: *const u8) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
-    check_landlock(&path_str, crate::landlock::LANDLOCK_ACCESS_FS_REMOVE_FILE)?;
+    let resolved = resolve_cwd_path(&path_str);
+    check_landlock(&resolved, crate::landlock::LANDLOCK_ACCESS_FS_REMOVE_FILE)?;
 
-    match vfs::vfs_unlink(&path_str) {
-        Ok(()) => Ok(0),
-        Err(e) => Err(vfs_error_to_linux(e)),
-    }
+    vfs::vfs_unlink(&resolved)
+        .map(|_| 0)
+        .map_err(vfs_error_to_linux)
 }
 
 /// link - create hard link
@@ -604,8 +665,8 @@ pub fn link(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let old = c_str_to_string(oldpath)?;
-    let new = c_str_to_string(newpath)?;
+    let old = resolve_cwd_path(&c_str_to_string(oldpath)?);
+    let new = resolve_cwd_path(&c_str_to_string(newpath)?);
     check_landlock(&old, crate::landlock::LANDLOCK_ACCESS_FS_REFER)?;
     check_landlock(&new, crate::landlock::LANDLOCK_ACCESS_FS_MAKE_REG)?;
 
@@ -624,7 +685,7 @@ pub fn symlink(target: *const u8, linkpath: *const u8) -> LinuxResult<i32> {
     }
 
     let target = c_str_to_string(target)?;
-    let linkpath = c_str_to_string(linkpath)?;
+    let linkpath = resolve_cwd_path(&c_str_to_string(linkpath)?);
     check_landlock(&linkpath, crate::landlock::LANDLOCK_ACCESS_FS_MAKE_SYM)?;
 
     match vfs::vfs_symlink(&target, &linkpath) {
@@ -646,8 +707,9 @@ pub fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> LinuxResult<isi
     }
 
     let path = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path);
 
-    match vfs::vfs_readlink(&path) {
+    match vfs::vfs_readlink(&resolved) {
         Ok(target) => {
             let bytes = target.as_bytes();
             let n = core::cmp::min(bytes.len(), bufsiz);
@@ -668,8 +730,8 @@ pub fn rename(oldpath: *const u8, newpath: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let old = c_str_to_string(oldpath)?;
-    let new = c_str_to_string(newpath)?;
+    let old = resolve_cwd_path(&c_str_to_string(oldpath)?);
+    let new = resolve_cwd_path(&c_str_to_string(newpath)?);
 
     match vfs::vfs_rename(&old, &new) {
         Ok(_) => Ok(0),
@@ -696,8 +758,9 @@ pub fn chmod(path: *const u8, mode: Mode) -> LinuxResult<i32> {
     }
 
     let path = c_str_to_string(path)?;
-    check_landlock(&path, crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE)?;
-    vfs::vfs_chmod(&path, mode).map_err(vfs_error_to_linux)?;
+    let resolved = resolve_cwd_path(&path);
+    check_landlock(&resolved, crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE)?;
+    vfs::vfs_chmod(&resolved, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -739,8 +802,9 @@ pub fn chown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
     }
 
     let path = c_str_to_string(path)?;
-    check_landlock(&path, crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE)?;
-    vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
+    let resolved = resolve_cwd_path(&path);
+    check_landlock(&resolved, crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE)?;
+    vfs::vfs_chown(&resolved, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -765,7 +829,8 @@ pub fn lchown(path: *const u8, owner: Uid, group: Gid) -> LinuxResult<i32> {
     }
 
     let path = c_str_to_string(path)?;
-    vfs::vfs_chown(&path, owner, group).map_err(vfs_error_to_linux)?;
+    let resolved = resolve_cwd_path(&path);
+    vfs::vfs_chown(&resolved, owner, group).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
 
@@ -782,14 +847,15 @@ pub fn truncate(path: *const u8, length: Off) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
-    check_landlock(&path_str, crate::landlock::LANDLOCK_ACCESS_FS_TRUNCATE)?;
+    let resolved = resolve_cwd_path(&path_str);
+    check_landlock(&resolved, crate::landlock::LANDLOCK_ACCESS_FS_TRUNCATE)?;
 
     // Open file with write access, truncate via O_TRUNC if length is 0, then close
     // For non-zero lengths, we need to open and use ftruncate
     if length == 0 {
         // Use O_WRONLY | O_TRUNC to truncate to zero
         let flags = VfsOpenFlags::WRONLY | VfsOpenFlags::TRUNC;
-        match vfs::vfs_open(&path_str, flags, 0) {
+        match vfs::vfs_open(&resolved, flags, 0) {
             Ok(fd) => {
                 let _ = vfs::vfs_close(fd);
                 Ok(0)
@@ -799,7 +865,7 @@ pub fn truncate(path: *const u8, length: Off) -> LinuxResult<i32> {
     } else {
         // Need to open file and manually truncate to specific length
         // Since VFS doesn't expose inode operations directly, we use ftruncate via fd
-        match vfs::vfs_open(&path_str, VfsOpenFlags::WRONLY, 0) {
+        match vfs::vfs_open(&resolved, VfsOpenFlags::WRONLY, 0) {
             Ok(fd) => {
                 let result = ftruncate(fd, length);
                 let _ = vfs::vfs_close(fd);
@@ -923,11 +989,11 @@ pub fn mkdir(path: *const u8, mode: Mode) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path_str);
 
-    match vfs::vfs_mkdir(&path_str, mode) {
-        Ok(()) => Ok(0),
-        Err(e) => Err(vfs_error_to_linux(e)),
-    }
+    vfs::vfs_mkdir(&resolved, mode)
+        .map(|_| 0)
+        .map_err(vfs_error_to_linux)
 }
 
 /// rmdir - remove a directory
@@ -939,11 +1005,11 @@ pub fn rmdir(path: *const u8) -> LinuxResult<i32> {
     }
 
     let path_str = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path_str);
 
-    match vfs::vfs_rmdir(&path_str) {
-        Ok(()) => Ok(0),
-        Err(e) => Err(vfs_error_to_linux(e)),
-    }
+    vfs::vfs_rmdir(&resolved)
+        .map(|_| 0)
+        .map_err(vfs_error_to_linux)
 }
 
 /// chdir - change current working directory
@@ -954,12 +1020,10 @@ pub fn chdir(path: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    // VFS doesn't yet track per-process current working directory
-    // This would require process-local state management
-    // For now, verify the path exists and is a directory
     let path_str = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path_str);
 
-    match vfs::vfs_stat(&path_str) {
+    match vfs::vfs_stat(&resolved) {
         Ok(stat) => {
             if stat.inode_type != InodeType::Directory {
                 return Err(LinuxError::ENOTDIR);
@@ -967,7 +1031,7 @@ pub fn chdir(path: *const u8) -> LinuxResult<i32> {
             let pid = process::current_pid();
             if process::get_process_manager()
                 .with_process_mut(pid, |pcb| {
-                    pcb.cwd = path_str;
+                    pcb.cwd = resolved.clone();
                 })
                 .is_some()
             {
@@ -1069,8 +1133,13 @@ pub(crate) fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<Str
     }
 
     let path_str = c_str_to_string(pathname)?;
-    if path_str.starts_with('/') || dirfd == AT_FDCWD {
-        return Ok(path_str);
+
+    if path_str.starts_with('/') {
+        return Ok(normalize_path(&path_str));
+    }
+
+    if dirfd == AT_FDCWD {
+        return Ok(resolve_cwd_path(&path_str));
     }
 
     // Check that dirfd is a directory
@@ -1083,19 +1152,14 @@ pub(crate) fn resolve_at_path(dirfd: Fd, pathname: *const u8) -> LinuxResult<Str
         Err(e) => return Err(vfs_error_to_linux(e)),
     }
 
-    let pid = process::current_pid();
-    let cwd = process::get_process_manager()
-        .get_process(pid)
-        .map(|pcb| pcb.cwd.clone())
-        .ok_or(LinuxError::ESRCH)?;
-
-    let full_path = if cwd.ends_with('/') {
-        alloc::format!("{}{}", cwd, path_str)
+    let dir_path = vfs::vfs_fd_directory_path(dirfd).map_err(vfs_error_to_linux)?;
+    let full_path = if dir_path.ends_with('/') {
+        alloc::format!("{}{}", dir_path, path_str)
     } else {
-        alloc::format!("{}/{}", cwd, path_str)
+        alloc::format!("{}/{}", dir_path, path_str)
     };
 
-    Ok(full_path)
+    Ok(normalize_path(&full_path))
 }
 
 /// openat2 - open a file with extended flags and attributes
@@ -1138,6 +1202,22 @@ fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) {
         s.stx_ino = vfs_stat.ino;
         s.stx_size = vfs_stat.size;
         s.stx_blocks = ((vfs_stat.size + 511) / 512) as u64;
+
+        // Device IDs: stx_dev for the containing device, stx_rdev for
+        // the file itself if it's a char/block device.
+        let dev = stat_dev(vfs_stat);
+        s.stx_dev_major = ((dev >> 8) & 0xfff) as u32;
+        s.stx_dev_minor = (dev & 0xff) as u32;
+        match vfs_stat.inode_type {
+            InodeType::CharDevice | InodeType::BlockDevice => {
+                s.stx_rdev_major = ((vfs_stat.rdev >> 8) & 0xfff) as u32;
+                s.stx_rdev_minor = (vfs_stat.rdev & 0xff) as u32;
+            }
+            _ => {
+                s.stx_rdev_major = 0;
+                s.stx_rdev_minor = 0;
+            }
+        }
 
         s.stx_atime = StatxTimestamp {
             tv_sec: vfs_stat.atime as i64,
@@ -1450,7 +1530,7 @@ pub fn utimensat(
         &resolved_path,
         crate::landlock::LANDLOCK_ACCESS_FS_WRITE_FILE,
     )?;
-    let mut stat = vfs::vfs_stat(&resolved_path).map_err(vfs_error_to_linux)?;
+    let stat = vfs::vfs_stat(&resolved_path).map_err(vfs_error_to_linux)?;
     let now = crate::time::system_time();
 
     let (new_atime, new_mtime) = if times.is_null() {
@@ -1478,10 +1558,6 @@ pub fn utimensat(
 
     vfs::vfs_set_times(&resolved_path, new_atime, new_mtime).map_err(vfs_error_to_linux)?;
 
-    // Update the cached stat so subsequent stat() reflects the new times.
-    stat.atime = new_atime;
-    stat.mtime = new_mtime;
-    stat.ctime = now;
     Ok(0)
 }
 
@@ -1507,6 +1583,141 @@ pub fn utimes(dirfd: i32, path: *const u8, times: *const [TimeVal; 2]) -> LinuxR
         }
     }
     utimensat(dirfd, path, &ts as *const [TimeSpec; 2], 0)
+}
+
+/// UtimBuf — Linux struct utimbuf for the utime syscall
+#[repr(C)]
+pub struct UtimBuf {
+    pub actime: i64,
+    pub modtime: i64,
+}
+
+/// utime - set file access and modification times (legacy)
+pub fn utime(path: *const u8, times: *const UtimBuf) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let ts = if !times.is_null() {
+        // SAFETY: times is non-null; caller provides a valid UtimBuf per ABI.
+        let tb = unsafe { &*times };
+        [
+            TimeSpec {
+                tv_sec: tb.actime,
+                tv_nsec: 0,
+            },
+            TimeSpec {
+                tv_sec: tb.modtime,
+                tv_nsec: 0,
+            },
+        ]
+    } else {
+        let now = crate::time::uptime_ns() / 1_000_000_000;
+        [
+            TimeSpec {
+                tv_sec: now as i64,
+                tv_nsec: 0,
+            },
+            TimeSpec {
+                tv_sec: now as i64,
+                tv_nsec: 0,
+            },
+        ]
+    };
+
+    utimensat(AT_FDCWD, path, &ts as *const [TimeSpec; 2], 0)
+}
+
+/// mknod - create a special or regular file
+///
+/// Linux mknod(path, mode, dev) creates a filesystem entry. The `mode`
+/// parameter encodes both permissions and file type (S_IFMT bits).
+pub fn mknod(path: *const u8, mode: u32, _dev: u64) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let path_str = c_str_to_string(path)?;
+    let resolved = resolve_cwd_path(&path_str);
+
+    // Extract file type from mode (S_IFMT = 0xF000)
+    let file_type = match mode & 0xF000 {
+        0x8000 => InodeType::File,               // S_IFREG
+        0x4000 => InodeType::Directory,          // S_IFDIR
+        0x2000 => InodeType::CharDevice,         // S_IFCHR
+        0x6000 => InodeType::BlockDevice,        // S_IFBLK
+        0x1000 => InodeType::Fifo,               // S_IFIFO
+        0xC000 => InodeType::Socket,             // S_IFSOCK
+        0xA000 => return Err(LinuxError::EPERM), // S_IFLNK — mknod cannot create symlinks
+        _ => InodeType::File,                    // Default to regular file
+    };
+
+    // Device nodes (S_IFCHR, S_IFBLK) require root (CAP_MKNOD)
+    if file_type == InodeType::CharDevice || file_type == InodeType::BlockDevice {
+        let pid = process::current_pid();
+        let pm = process::get_process_manager();
+        let is_root = pm
+            .get_process(pid)
+            .map(|pcb| pcb.euid == 0)
+            .unwrap_or(false);
+        if !is_root {
+            return Err(LinuxError::EPERM);
+        }
+    }
+
+    let perm = mode & 0o7777;
+    vfs::get_vfs()
+        .mknod(&resolved, file_type, perm)
+        .map_err(vfs_error_to_linux)?;
+
+    Ok(0)
+}
+
+/// mknodat - create a special or regular file relative to a directory fd
+pub fn mknodat(dirfd: Fd, path: *const u8, mode: u32, _dev: u64) -> LinuxResult<i32> {
+    inc_ops();
+
+    if path.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let full_path = resolve_at_path(dirfd, path)?;
+
+    // Extract file type from mode (S_IFMT = 0xF000)
+    let file_type = match mode & 0xF000 {
+        0x8000 => InodeType::File,               // S_IFREG
+        0x4000 => InodeType::Directory,          // S_IFDIR
+        0x2000 => InodeType::CharDevice,         // S_IFCHR
+        0x6000 => InodeType::BlockDevice,        // S_IFBLK
+        0x1000 => InodeType::Fifo,               // S_IFIFO
+        0xC000 => InodeType::Socket,             // S_IFSOCK
+        0xA000 => return Err(LinuxError::EPERM), // S_IFLNK — mknod cannot create symlinks
+        _ => InodeType::File,                    // Default to regular file
+    };
+
+    // Device nodes (S_IFCHR, S_IFBLK) require root (CAP_MKNOD)
+    if file_type == InodeType::CharDevice || file_type == InodeType::BlockDevice {
+        let pid = process::current_pid();
+        let pm = process::get_process_manager();
+        let is_root = pm
+            .get_process(pid)
+            .map(|pcb| pcb.euid == 0)
+            .unwrap_or(false);
+        if !is_root {
+            return Err(LinuxError::EPERM);
+        }
+    }
+
+    let perm = mode & 0o7777;
+    vfs::get_vfs()
+        .mknod(&full_path, file_type, perm)
+        .map_err(vfs_error_to_linux)?;
+
+    Ok(0)
 }
 
 /// fallocate - preallocate or deallocate space for a file
@@ -1564,17 +1775,19 @@ const LOCK_UN: i32 = 8; // Unlock
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
-/// Global advisory lock table keyed by (pid, fd).
+/// Global advisory lock table keyed by (device, inode_number).
 ///
-/// Each entry records the lock mode held by a process on a file
-/// descriptor. Conflicts are detected by scanning for overlapping
-/// locks from *other* processes. This is a simplified flock
-/// implementation: it tracks per-(pid,fd) state and enforces mutual
-/// exclusion between independent processes but does not track the
-/// underlying inode, so locks on the same file via different fds in
-/// the same process are not reconciled (matching minimal flock
-/// semantics).
-static FLOCK_TABLE: Mutex<BTreeMap<(i32, i32), i32>> = Mutex::new(BTreeMap::new());
+/// Each entry is a list of (pid, lock_mode) pairs. Conflicts are detected
+/// by scanning for overlapping locks from *other* processes on the same
+/// inode. This properly handles the case where two processes open the same
+/// file via different file descriptors.
+static FLOCK_TABLE: Mutex<BTreeMap<(u64, u64), Vec<(i32, i32)>>> = Mutex::new(BTreeMap::new());
+
+/// Get the inode identifier for a file descriptor via VFS fstat.
+fn flock_get_inode(fd: Fd) -> LinuxResult<(u64, u64)> {
+    let stat = vfs::vfs_fstat(fd).map_err(vfs_error_to_linux)?;
+    Ok((0, stat.ino))
+}
 
 /// flock - apply or remove an advisory lock on an open file
 ///
@@ -1598,27 +1811,28 @@ pub fn flock(fd: Fd, operation: i32) -> LinuxResult<i32> {
     let mode = operation & !LOCK_NB;
     let non_blocking = (operation & LOCK_NB) != 0;
 
+    let inode_key = flock_get_inode(fd)?;
+
     match mode {
         LOCK_UN => {
-            FLOCK_TABLE.lock().remove(&(pid, fd));
+            let mut table = FLOCK_TABLE.lock();
+            if let Some(holders) = table.get_mut(&inode_key) {
+                holders.retain(|&(holder_pid, _)| holder_pid != pid);
+                if holders.is_empty() {
+                    table.remove(&inode_key);
+                }
+            }
             Ok(0)
         }
         LOCK_SH | LOCK_EX => {
             let mut table = FLOCK_TABLE.lock();
 
-            // Check for conflicts with locks held by other processes.
-            // A shared lock conflicts with any exclusive lock from another pid.
-            // An exclusive lock conflicts with any lock (shared or exclusive)
-            // from another pid.
-            for (&(holder_pid, holder_fd), &holder_mode) in table.iter() {
-                if holder_pid == pid && holder_fd == fd {
-                    continue; // our own lock — we'll replace it
+            let holders = table.entry(inode_key).or_insert_with(Vec::new);
+
+            for &(holder_pid, holder_mode) in holders.iter() {
+                if holder_pid == pid {
+                    continue;
                 }
-                // Without inode tracking we conservatively treat any other
-                // lock on the same fd number as a potential conflict. In
-                // practice fd numbers are per-process so collisions across
-                // processes on the same file are not detected here; this is
-                // a known limitation of this minimal implementation.
                 let conflict = match (mode, holder_mode) {
                     (LOCK_EX, _) => true,
                     (LOCK_SH, LOCK_EX) => true,
@@ -1628,16 +1842,12 @@ pub fn flock(fd: Fd, operation: i32) -> LinuxResult<i32> {
                     if non_blocking {
                         return Err(super::EWOULDBLOCK);
                     }
-                    // Blocking flock would wait until the lock is released.
-                    // We do not have a wait queue here, so return EWOULDBLOCK
-                    // to avoid an infinite spin. Callers that truly need
-                    // blocking behavior should retry.
                     return Err(super::EWOULDBLOCK);
                 }
             }
 
-            // Grant the lock (replacing any existing lock we hold on this fd).
-            table.insert((pid, fd), mode);
+            holders.retain(|&(holder_pid, _)| holder_pid != pid);
+            holders.push((pid, mode));
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -1686,7 +1896,7 @@ pub fn close_range(first: u32, last: u32, flags: u32) -> LinuxResult<i32> {
         if (flags & CLOSE_RANGE_CLOEXEC) != 0 {
             let _ = vfs::vfs_set_fd_flags(fd, vfs::OpenFlags::CLOEXEC);
         } else {
-            let _ = vfs::vfs_close(fd);
+            let _ = close(fd);
         }
     }
     Ok(0)

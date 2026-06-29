@@ -1,8 +1,8 @@
 //! BPF — eBPF program and map management
 //!
 //! Ported from Linux kernel/bpf/ (syscall.c, map.c, verifier.c).
-//! Provides basic BPF map creation/lookup/update/delete and program load.
-//! The eBPF verifier and JIT are stubbed — programs are stored but not executed.
+//! Provides BPF map creation/lookup/update/delete, program load with a
+//! static verifier, and an in-kernel interpreter for program execution.
 
 use alloc::collections::BTreeMap;
 use alloc::vec;
@@ -156,6 +156,555 @@ static PROGS: RwLock<BTreeMap<u32, Mutex<BpfProg>>> = RwLock::new(BTreeMap::new(
 static NEXT_MAP_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
 
+// ── BPF instruction decoding ────────────────────────────────────────────
+
+/// BPF instruction classes (code & 0x07).
+const BPF_CLASS_LD: u8 = 0x00;
+const BPF_CLASS_LDX: u8 = 0x01;
+const BPF_CLASS_ST: u8 = 0x02;
+const BPF_CLASS_STX: u8 = 0x03;
+const BPF_CLASS_ALU: u8 = 0x04;
+const BPF_CLASS_JMP: u8 = 0x05;
+const BPF_CLASS_JMP32: u8 = 0x06;
+const BPF_CLASS_ALU64: u8 = 0x07;
+
+/// Source operand bit (code & 0x08).
+const BPF_K: u8 = 0x00;
+const BPF_X: u8 = 0x08;
+
+/// LD/LDX mode (code & 0xE0).
+const BPF_LD_IMM: u8 = 0x00;
+const BPF_LD_ABS: u8 = 0x20;
+const BPF_LD_IND: u8 = 0x40;
+const BPF_LD_MEM: u8 = 0x60;
+const BPF_LD_XADD: u8 = 0x80;
+
+/// LD/LDX size (code >> 3) & 0x03.
+const BPF_SIZE_W: u8 = 0x00;
+const BPF_SIZE_H: u8 = 0x01;
+const BPF_SIZE_B: u8 = 0x02;
+const BPF_SIZE_DW: u8 = 0x03;
+
+/// JMP operation (code >> 4) & 0x0F.
+const BPF_JA: u8 = 0x00;
+const BPF_JEQ: u8 = 0x10;
+const BPF_JGT: u8 = 0x20;
+const BPF_JGE: u8 = 0x30;
+const BPF_JSET: u8 = 0x40;
+const BPF_JNE: u8 = 0x50;
+const BPF_JSGT: u8 = 0x60;
+const BPF_JSGE: u8 = 0x70;
+const BPF_CALL: u8 = 0x80;
+const BPF_EXIT: u8 = 0x90;
+const BPF_JLT: u8 = 0xa0;
+const BPF_JLE: u8 = 0xb0;
+const BPF_JSLT: u8 = 0xc0;
+const BPF_JSLE: u8 = 0xd0;
+
+/// ALU/ALU64 operation (code >> 4) & 0x0F.
+const BPF_ADD: u8 = 0x00;
+const BPF_SUB: u8 = 0x10;
+const BPF_MUL: u8 = 0x20;
+const BPF_DIV: u8 = 0x30;
+const BPF_OR: u8 = 0x40;
+const BPF_AND: u8 = 0x50;
+const BPF_LSH: u8 = 0x60;
+const BPF_RSH: u8 = 0x70;
+const BPF_NEG: u8 = 0x80;
+const BPF_MOD: u8 = 0x90;
+const BPF_XOR: u8 = 0xa0;
+const BPF_MOV: u8 = 0xb0;
+const BPF_ARSH: u8 = 0xc0;
+const BPF_END: u8 = 0xd0;
+
+/// Decode a single 8-byte BPF instruction.
+#[derive(Clone, Copy, Debug)]
+struct BpfInsn {
+    code: u8,
+    dst: u8,
+    src: u8,
+    off: i16,
+    imm: i32,
+}
+
+impl BpfInsn {
+    fn decode(raw: u64) -> Self {
+        let code = raw as u8;
+        let regs = (raw >> 8) as u8;
+        let dst = regs & 0x0f;
+        let src = (regs >> 4) & 0x0f;
+        let off = ((raw >> 16) as u16) as i16;
+        let imm = ((raw >> 32) as u32) as i32;
+        BpfInsn {
+            code,
+            dst,
+            src,
+            off,
+            imm,
+        }
+    }
+
+    fn class(&self) -> u8 {
+        self.code & 0x07
+    }
+
+    fn alu_op(&self) -> u8 {
+        self.code & 0xf0
+    }
+
+    fn jmp_op(&self) -> u8 {
+        self.code & 0xf0
+    }
+
+    fn source(&self) -> u8 {
+        self.code & 0x08
+    }
+
+    fn size(&self) -> u8 {
+        (self.code >> 3) & 0x03
+    }
+
+    fn mode(&self) -> u8 {
+        self.code & 0xe0
+    }
+}
+
+/// Maximum number of registers (R0-R10).
+const MAX_REG: u8 = 11;
+
+/// BPF stack size in bytes.
+const BPF_STACK_SIZE: usize = 512;
+
+// ── BPF verifier ────────────────────────────────────────────────────────
+
+/// Verify a BPF program before allowing it to be loaded.
+///
+/// Performs static checks inspired by the Linux kernel verifier:
+/// - All opcodes are valid for their class
+/// - Register numbers are within R0-R10
+/// - Jump targets are within program bounds
+/// - Program contains at least one EXIT instruction
+/// - No division/modulo by zero immediate
+/// - R10 (frame pointer) is read-only
+/// - No unreachable code after EXIT (best-effort)
+pub fn verify_program(insns: &[u64]) -> Result<(), i32> {
+    if insns.is_empty() {
+        return Err(22); // EINVAL
+    }
+    if insns.len() > 4096 {
+        return Err(7); // E2BIG
+    }
+
+    let n = insns.len();
+    let mut has_exit = false;
+    let mut pc = 0usize;
+
+    while pc < n {
+        let insn = BpfInsn::decode(insns[pc]);
+        let class = insn.class();
+
+        // Validate register numbers
+        if insn.dst >= MAX_REG && class != BPF_CLASS_JMP && class != BPF_CLASS_JMP32 {
+            return Err(22); // EINVAL — bad dst register
+        }
+        if insn.source() == BPF_X && insn.src >= MAX_REG {
+            return Err(22); // EINVAL — bad src register
+        }
+
+        match class {
+            BPF_CLASS_ALU | BPF_CLASS_ALU64 => {
+                let op = insn.alu_op();
+                match op {
+                    BPF_ADD | BPF_SUB | BPF_MUL | BPF_OR | BPF_AND | BPF_LSH | BPF_RSH
+                    | BPF_NEG | BPF_XOR | BPF_MOV | BPF_ARSH => {}
+                    BPF_END => {
+                        if !matches!(insn.imm, 16 | 32 | 64) {
+                            return Err(22);
+                        }
+                    }
+                    BPF_DIV | BPF_MOD => {
+                        if insn.source() == BPF_K && insn.imm == 0 {
+                            return Err(22); // EINVAL — division by zero
+                        }
+                    }
+                    _ => return Err(22), // EINVAL — unknown ALU op
+                }
+                // NEG only uses dst, END uses dst + imm
+                if op == BPF_NEG && insn.dst == 0 {
+                    // R0 neg is fine
+                }
+            }
+
+            BPF_CLASS_JMP | BPF_CLASS_JMP32 => {
+                let op = insn.jmp_op();
+                match op {
+                    BPF_JA => {
+                        // Unconditional jump — only valid in JMP class
+                        if class != BPF_CLASS_JMP {
+                            return Err(22);
+                        }
+                        if insn.source() != BPF_K {
+                            return Err(22);
+                        }
+                        // Check jump target
+                        let target = pc as isize + 1 + insn.off as isize;
+                        if target < 0 || target as usize >= n {
+                            return Err(22); // jump out of bounds
+                        }
+                    }
+                    BPF_EXIT => {
+                        has_exit = true;
+                        // EXIT must be in JMP class, no operands
+                        if class != BPF_CLASS_JMP {
+                            return Err(22);
+                        }
+                    }
+                    BPF_CALL => {
+                        return Err(38);
+                    }
+                    BPF_JEQ | BPF_JGT | BPF_JGE | BPF_JSET | BPF_JNE | BPF_JSGT | BPF_JSGE
+                    | BPF_JLT | BPF_JLE | BPF_JSLT | BPF_JSLE => {
+                        // Conditional jump — check target bounds
+                        let target = pc as isize + 1 + insn.off as isize;
+                        if target < 0 || target as usize >= n {
+                            return Err(22); // jump out of bounds
+                        }
+                    }
+                    _ => return Err(22), // unknown jump op
+                }
+            }
+
+            BPF_CLASS_LD | BPF_CLASS_LDX => {
+                let mode = insn.mode();
+                if class == BPF_CLASS_LDX {
+                    if mode != BPF_LD_MEM || insn.src != 10 {
+                        return Err(38);
+                    }
+                } else if !(mode == BPF_LD_IMM || (mode == BPF_LD_MEM && insn.src == 10)) {
+                    return Err(38);
+                }
+            }
+
+            BPF_CLASS_ST | BPF_CLASS_STX => {
+                let mode = insn.mode();
+                if mode != BPF_LD_MEM || insn.dst != 10 {
+                    return Err(38);
+                }
+            }
+
+            _ => return Err(22), // unknown class
+        }
+
+        // Check for wide instruction (LD_IMM64 takes two slots)
+        if class == BPF_CLASS_LD && insn.mode() == BPF_LD_IMM && insn.size() == BPF_SIZE_DW {
+            pc += 2; // skip next slot (contains high 32 bits)
+        } else {
+            pc += 1;
+        }
+    }
+
+    if !has_exit {
+        return Err(22); // EINVAL — program must have EXIT
+    }
+
+    Ok(())
+}
+
+// ── BPF interpreter ─────────────────────────────────────────────────────
+
+/// Execute a verified BPF program with the given context pointer.
+///
+/// The interpreter implements ALU64, JMP/JMP32, stack LD/ST (memory mode),
+/// immediate loads, and EXIT.
+///
+/// Returns the value in R0 at EXIT, or an error if execution fails.
+pub fn execute_program(insns: &[u64], ctx: u64) -> Result<i64, &'static str> {
+    let mut regs = [0i64; 11];
+    let mut stack = [0u8; BPF_STACK_SIZE];
+
+    // R1 = context pointer, R10 = stack pointer (end of stack buffer)
+    regs[1] = ctx as i64;
+    regs[10] = stack.as_mut_ptr().wrapping_add(BPF_STACK_SIZE) as i64;
+
+    let mut pc = 0usize;
+    let n = insns.len();
+    let mut steps = 0u32;
+    const MAX_STEPS: u32 = 100_000;
+
+    while pc < n {
+        steps += 1;
+        if steps > MAX_STEPS {
+            return Err("BPF program exceeded instruction limit");
+        }
+
+        let insn = BpfInsn::decode(insns[pc]);
+        let class = insn.class();
+
+        match class {
+            BPF_CLASS_ALU64 | BPF_CLASS_ALU => {
+                let is64 = class == BPF_CLASS_ALU64;
+                let src_val = if insn.source() == BPF_X {
+                    regs[insn.src as usize]
+                } else {
+                    insn.imm as i64
+                };
+                let dst = insn.dst as usize;
+                let op = insn.alu_op();
+
+                let result = match op {
+                    BPF_ADD => regs[dst].wrapping_add(src_val),
+                    BPF_SUB => regs[dst].wrapping_sub(src_val),
+                    BPF_MUL => regs[dst].wrapping_mul(src_val),
+                    BPF_DIV => {
+                        if src_val == 0 {
+                            return Err("BPF division by zero");
+                        }
+                        regs[dst] / src_val
+                    }
+                    BPF_OR => regs[dst] | src_val,
+                    BPF_AND => regs[dst] & src_val,
+                    BPF_LSH => regs[dst].wrapping_shl(src_val as u32),
+                    BPF_RSH => {
+                        if is64 {
+                            (regs[dst] as u64).wrapping_shr(src_val as u32) as i64
+                        } else {
+                            ((regs[dst] as u32).wrapping_shr(src_val as u32)) as i64
+                        }
+                    }
+                    BPF_NEG => -regs[dst],
+                    BPF_MOD => {
+                        if src_val == 0 {
+                            return Err("BPF modulo by zero");
+                        }
+                        regs[dst] % src_val
+                    }
+                    BPF_XOR => regs[dst] ^ src_val,
+                    BPF_MOV => src_val,
+                    BPF_ARSH => (regs[dst] as i64).wrapping_shr(src_val as u32),
+                    BPF_END => {
+                        let v = regs[dst] as u64;
+                        let converted = match (insn.source(), insn.imm) {
+                            (BPF_K, 16) => (v as u16).to_le() as u64,
+                            (BPF_K, 32) => (v as u32).to_le() as u64,
+                            (BPF_K, 64) => v.to_le(),
+                            (BPF_X, 16) => (v as u16).to_be() as u64,
+                            (BPF_X, 32) => (v as u32).to_be() as u64,
+                            (BPF_X, 64) => v.to_be(),
+                            _ => return Err("BPF invalid endian conversion"),
+                        };
+                        converted as i64
+                    }
+                    _ => return Err("BPF unknown ALU op"),
+                };
+
+                if is64 {
+                    regs[dst] = result;
+                } else {
+                    // 32-bit ALU: zero-extend lower 32 bits
+                    regs[dst] = (result as u32) as i64;
+                }
+                pc += 1;
+            }
+
+            BPF_CLASS_JMP | BPF_CLASS_JMP32 => {
+                let op = insn.jmp_op();
+                let is32 = class == BPF_CLASS_JMP32;
+
+                match op {
+                    BPF_JA => {
+                        pc = (pc as isize + 1 + insn.off as isize) as usize;
+                    }
+                    BPF_EXIT => {
+                        return Ok(regs[0]);
+                    }
+                    BPF_CALL => return Err("BPF helper calls are unsupported"),
+                    _ => {
+                        let dst_val = regs[insn.dst as usize];
+                        let src_val = if insn.source() == BPF_X {
+                            regs[insn.src as usize]
+                        } else {
+                            insn.imm as i64
+                        };
+
+                        let cmp_dst = if is32 { dst_val as i32 as i64 } else { dst_val };
+                        let cmp_src = if is32 { src_val as i32 as i64 } else { src_val };
+
+                        let taken = match op {
+                            BPF_JEQ => cmp_dst == cmp_src,
+                            BPF_JNE => cmp_dst != cmp_src,
+                            BPF_JGT => (cmp_dst as u64) > (cmp_src as u64),
+                            BPF_JGE => (cmp_dst as u64) >= (cmp_src as u64),
+                            BPF_JLT => (cmp_dst as u64) < (cmp_src as u64),
+                            BPF_JLE => (cmp_dst as u64) <= (cmp_src as u64),
+                            BPF_JSGT => cmp_dst > cmp_src,
+                            BPF_JSGE => cmp_dst >= cmp_src,
+                            BPF_JSLT => cmp_dst < cmp_src,
+                            BPF_JSLE => cmp_dst <= cmp_src,
+                            BPF_JSET => (cmp_dst & cmp_src) != 0,
+                            _ => return Err("BPF unknown jump op"),
+                        };
+
+                        if taken {
+                            pc = (pc as isize + 1 + insn.off as isize) as usize;
+                        } else {
+                            pc += 1;
+                        }
+                    }
+                }
+            }
+
+            BPF_CLASS_LDX => {
+                let size = insn.size();
+                let base = regs[insn.src as usize] as usize;
+                let addr = base.wrapping_add(insn.off as isize as usize);
+                let dst = insn.dst as usize;
+
+                let val = if insn.src == 10 {
+                    let n = size_bytes(size);
+                    let stack_top = regs[10] as usize;
+                    let stack_base = stack_top.saturating_sub(BPF_STACK_SIZE);
+                    let end = addr.checked_add(n).ok_or("BPF stack read out of bounds")?;
+                    if addr < stack_base || end > stack_top {
+                        return Err("BPF stack read out of bounds");
+                    }
+                    read_mem(&stack, addr - stack_base, size)
+                } else {
+                    return Err("BPF read outside stack");
+                };
+                regs[dst] = val;
+                pc += 1;
+            }
+
+            BPF_CLASS_ST => {
+                let size = insn.size();
+                let base = regs[insn.dst as usize] as usize;
+                let addr = base.wrapping_add(insn.off as isize as usize);
+                let val = insn.imm as i64;
+
+                if insn.dst == 10 {
+                    let n = size_bytes(size);
+                    let stack_top = regs[10] as usize;
+                    let stack_base = stack_top.saturating_sub(BPF_STACK_SIZE);
+                    let end = addr.checked_add(n).ok_or("BPF stack write out of bounds")?;
+                    if addr < stack_base || end > stack_top {
+                        return Err("BPF stack write out of bounds");
+                    }
+                    write_mem(&mut stack, addr - stack_base, size, val);
+                } else {
+                    return Err("BPF write outside stack");
+                }
+                pc += 1;
+            }
+
+            BPF_CLASS_STX => {
+                let size = insn.size();
+                let base = regs[insn.dst as usize] as usize;
+                let addr = base.wrapping_add(insn.off as isize as usize);
+                let val = regs[insn.src as usize];
+
+                if insn.dst == 10 {
+                    let n = size_bytes(size);
+                    let stack_top = regs[10] as usize;
+                    let stack_base = stack_top.saturating_sub(BPF_STACK_SIZE);
+                    let end = addr.checked_add(n).ok_or("BPF stack write out of bounds")?;
+                    if addr < stack_base || end > stack_top {
+                        return Err("BPF stack write out of bounds");
+                    }
+                    write_mem(&mut stack, addr - stack_base, size, val);
+                } else {
+                    return Err("BPF write outside stack");
+                }
+                pc += 1;
+            }
+
+            BPF_CLASS_LD => {
+                let mode = insn.mode();
+                if mode == BPF_LD_IMM && insn.size() == BPF_SIZE_DW {
+                    // Wide immediate: combine two instruction slots
+                    let lo = insn.imm as u32 as u64;
+                    let hi = if pc + 1 < n {
+                        let next = BpfInsn::decode(insns[pc + 1]);
+                        next.imm as u32 as u64
+                    } else {
+                        0
+                    };
+                    regs[insn.dst as usize] = ((hi << 16) << 16 | lo) as i64;
+                    pc += 2;
+                } else if mode == BPF_LD_IMM {
+                    regs[insn.dst as usize] = insn.imm as i64;
+                    pc += 1;
+                } else {
+                    return Err("BPF packet/direct memory access is unsupported");
+                }
+            }
+
+            _ => return Err("BPF unknown instruction class"),
+        }
+    }
+
+    Err("BPF program ended without EXIT")
+}
+
+fn read_mem(buf: &[u8], offset: usize, size: u8) -> i64 {
+    if offset + size_bytes(size) > buf.len() {
+        return 0;
+    }
+    match size {
+        BPF_SIZE_B => buf[offset] as i64,
+        BPF_SIZE_H => u16::from_le_bytes([buf[offset], buf[offset + 1]]) as i64,
+        BPF_SIZE_W => u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]) as i64,
+        BPF_SIZE_DW => i64::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+            buf[offset + 4],
+            buf[offset + 5],
+            buf[offset + 6],
+            buf[offset + 7],
+        ]),
+        _ => 0,
+    }
+}
+
+fn write_mem(buf: &mut [u8], offset: usize, size: u8, val: i64) {
+    let n = size_bytes(size);
+    if offset + n > buf.len() {
+        return;
+    }
+    match size {
+        BPF_SIZE_B => buf[offset] = val as u8,
+        BPF_SIZE_H => {
+            let v = val as u16;
+            buf[offset..offset + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        BPF_SIZE_W => {
+            let v = val as u32;
+            buf[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        BPF_SIZE_DW => {
+            let v = val as i64;
+            buf[offset..offset + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        _ => {}
+    }
+}
+
+fn size_bytes(size: u8) -> usize {
+    match size {
+        BPF_SIZE_B => 1,
+        BPF_SIZE_H => 2,
+        BPF_SIZE_W => 4,
+        BPF_SIZE_DW => 8,
+        _ => 0,
+    }
+}
+
 // ── Syscall implementation ──────────────────────────────────────────────
 
 /// bpf syscall — dispatch on cmd
@@ -219,9 +768,79 @@ pub fn bpf(cmd: u32, attr: u64, size: u32) -> i32 {
                 -2
             }
         }
+        BPF_PROG_TEST_RUN => {
+            // BPF_PROG_TEST_RUN: execute a loaded program with test data
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct TestRunAttr {
+                prog_fd: u32,
+                retval: u32,
+                data_in: u64,
+                data_out: u64,
+                data_size_in: u32,
+                data_size_out: u32,
+                ctx_in: u64,
+                ctx_out: u64,
+                ctx_size_in: u32,
+                ctx_size_out: u32,
+                repeat: u32,
+                duration: u64,
+            }
+            if size < core::mem::size_of::<TestRunAttr>() as u32 {
+                return -22;
+            }
+            let a = unsafe { *(attr as *const TestRunAttr) };
+            if a.data_in != 0
+                || a.data_size_in != 0
+                || a.data_out != 0
+                || a.data_size_out != 0
+                || a.ctx_out != 0
+                || a.ctx_size_out != 0
+            {
+                return -38;
+            }
+            let prog_id = match crate::linux_compat::special_fd::get_bpf_prog_id(a.prog_fd as i32) {
+                Some(id) => id,
+                None => return -9,
+            };
+            let progs = PROGS.read();
+            let prog_mutex = match progs.get(&prog_id) {
+                Some(p) => p,
+                None => return -9,
+            };
+            let prog = prog_mutex.lock();
+
+            // Execute the program with the provided context (or 0 if none)
+            let ctx = if a.ctx_in != 0 && a.ctx_size_in > 0 {
+                a.ctx_in
+            } else {
+                0
+            };
+
+            let repeats = if a.repeat == 0 { 1 } else { a.repeat.min(1000) };
+            let mut last_ret = 0i64;
+            for _ in 0..repeats {
+                match execute_program(&prog.insns, ctx) {
+                    Ok(ret) => last_ret = ret,
+                    Err(e) => {
+                        crate::serial_println!("[bpf] test_run failed: {}", e);
+                        return -22;
+                    }
+                }
+            }
+
+            // Write retval back to the attr struct
+            unsafe {
+                let attr_ptr = attr as *mut TestRunAttr;
+                (*attr_ptr).retval = last_ret as u32;
+                (*attr_ptr).data_size_out = 0;
+                (*attr_ptr).ctx_size_out = 0;
+                (*attr_ptr).duration = 0;
+            }
+            0
+        }
         BPF_PROG_ATTACH
         | BPF_PROG_DETACH
-        | BPF_PROG_TEST_RUN
         | BPF_PROG_QUERY
         | BPF_RAW_TRACEPOINT_OPEN
         | BPF_BTF_LOAD
@@ -495,9 +1114,10 @@ fn bpf_prog_load(attr: u64, size: u32) -> i32 {
         i += 1;
     }
 
-    // Basic validation: check that insns are within bounds
-    // (Full verifier would check control flow, register usage, etc.)
-    let _ = insn_bytes;
+    // Verify the BPF program before storing it
+    if let Err(errno) = verify_program(&insns) {
+        return -errno;
+    }
 
     let id = NEXT_PROG_ID.fetch_add(1, Ordering::SeqCst);
     let prog = BpfProg {

@@ -783,7 +783,8 @@ impl GraphicsAccelerationEngine {
         if (bar0 & 1) != 0 {
             return Ok(false);
         }
-        let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+        let gpu_base =
+            self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
         // RENDER_RING_BASE = 0x2000
         // Read RING_CTL to verify the ring is enabled (RING_VALID bit set).
@@ -805,7 +806,8 @@ impl GraphicsAccelerationEngine {
         if (bar0 & 1) != 0 {
             return Ok(false);
         }
-        let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+        let gpu_base =
+            self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
         // mmCP_RB0_WPTR = 0x3045 (dword index)
         const CP_RB0_WPTR: u64 = 0x3045 * 4;
@@ -857,7 +859,7 @@ impl GraphicsAccelerationEngine {
     fn map_physical_to_virtual(
         &self,
         physical_addr: u64,
-        size: usize,
+        _size: usize,
     ) -> Result<u64, &'static str> {
         // Use the kernel memory manager's direct physical mapping offset
         // rather than a hardcoded constant.  The memory manager establishes
@@ -943,7 +945,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("Intel GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // BLT_RING_BASE = 0x22000
                 // Ring register offsets from engine base:
@@ -973,7 +976,10 @@ impl GraphicsAccelerationEngine {
                     core::ptr::write_volatile(reg_base.add((RING_TAIL_OFF / 4) as usize), 0);
 
                     // Set ring buffer start address.
-                    core::ptr::write_volatile(reg_base.add((RING_START_OFF / 4) as usize), ring_gpu_addr as u32);
+                    core::ptr::write_volatile(
+                        reg_base.add((RING_START_OFF / 4) as usize),
+                        ring_gpu_addr as u32,
+                    );
 
                     // Set ring control: size in pages | RING_VALID.
                     let ring_ctl = (ring_size - 4096) & RING_NR_PAGES | RING_VALID;
@@ -983,7 +989,10 @@ impl GraphicsAccelerationEngine {
                     let _ = core::ptr::read_volatile(reg_base.add((RING_CTL_OFF / 4) as usize));
                 }
 
-                crate::println!("Intel 2D BLT engine initialized (ring at 0x{:X})", ring_gpu_addr);
+                crate::println!(
+                    "Intel 2D BLT engine initialized (ring at 0x{:X})",
+                    ring_gpu_addr
+                );
             }
 
             super::GPUVendor::AMD => {
@@ -999,7 +1008,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("AMD GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // CP_RB0_WPTR = 0x3045 (dword index)
                 const CP_RB0_WPTR: u64 = 0x3045 * 4;
@@ -1025,7 +1035,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("NVIDIA GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // SAFETY: Writing NVIDIA PGRAPH registers to enable 2D engine.
                 // PGRAPH debug register at 0x40008c enables hardware context switch.
@@ -1077,7 +1088,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("Intel GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // RENDER_RING_BASE = 0x2000
                 const RENDER_RING_BASE: u64 = 0x2000;
@@ -1101,7 +1113,10 @@ impl GraphicsAccelerationEngine {
                     core::ptr::write_volatile(reg_base.add((RING_TAIL_OFF / 4) as usize), 0);
 
                     // Set ring buffer start address.
-                    core::ptr::write_volatile(reg_base.add((RING_START_OFF / 4) as usize), ring_gpu_addr as u32);
+                    core::ptr::write_volatile(
+                        reg_base.add((RING_START_OFF / 4) as usize),
+                        ring_gpu_addr as u32,
+                    );
 
                     // Set ring control: size in pages | RING_VALID.
                     let ring_ctl = (ring_size - 4096) & RING_NR_PAGES | RING_VALID;
@@ -1122,7 +1137,10 @@ impl GraphicsAccelerationEngine {
                     core::ptr::write_volatile(reg_base.add((RING_TAIL_OFF / 4) as usize), 8);
                 }
 
-                crate::println!("Intel 3D RCS engine initialized (ring at 0x{:X})", ring_gpu_addr);
+                crate::println!(
+                    "Intel 3D RCS engine initialized (ring at 0x{:X})",
+                    ring_gpu_addr
+                );
             }
 
             super::GPUVendor::AMD => {
@@ -1134,7 +1152,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("AMD GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // Verify CP is running by checking CP_RB0_WPTR.
                 const CP_RB0_WPTR: u64 = 0x3045 * 4;
@@ -1155,7 +1174,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("NVIDIA GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // SAFETY: Writing NVIDIA PGRAPH registers for 3D engine init.
                 // Reference: drivers/gpu/drm/nouveau/nvkm/engine/gr/nv50.c
@@ -1213,7 +1233,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("AMD GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // mmCP_MEC_CNTL = 0x3056 (dword index)
                 // Bit 0: MEC_ME1_HALT, Bit 1: MEC_ME2_HALT
@@ -1252,7 +1273,7 @@ impl GraphicsAccelerationEngine {
     /// NVIDIA: RTX uses Volta/Turing+ PGRAPH extensions for ray tracing.
     fn initialize_ray_tracing(
         &mut self,
-        gpu_id: u32,
+        _gpu_id: u32,
         gpu: &GPUCapabilities,
     ) -> Result<(), &'static str> {
         match gpu.vendor {
@@ -1301,7 +1322,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("Intel GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // VCS_RING_BASE = 0x12000 (Gen6+)
                 const VCS_RING_BASE: u64 = 0x12000;
@@ -1321,13 +1343,19 @@ impl GraphicsAccelerationEngine {
 
                     core::ptr::write_volatile(reg_base.add((RING_HEAD_OFF / 4) as usize), 0);
                     core::ptr::write_volatile(reg_base.add((RING_TAIL_OFF / 4) as usize), 0);
-                    core::ptr::write_volatile(reg_base.add((RING_START_OFF / 4) as usize), ring_gpu_addr as u32);
+                    core::ptr::write_volatile(
+                        reg_base.add((RING_START_OFF / 4) as usize),
+                        ring_gpu_addr as u32,
+                    );
                     let ring_ctl = (ring_size - 4096) & RING_NR_PAGES | RING_VALID;
                     core::ptr::write_volatile(reg_base.add((RING_CTL_OFF / 4) as usize), ring_ctl);
                     let _ = core::ptr::read_volatile(reg_base.add((RING_CTL_OFF / 4) as usize));
                 }
 
-                crate::println!("Intel VCS video engine initialized (ring at 0x{:X})", ring_gpu_addr);
+                crate::println!(
+                    "Intel VCS video engine initialized (ring at 0x{:X})",
+                    ring_gpu_addr
+                );
             }
 
             super::GPUVendor::AMD => {
@@ -1339,7 +1367,8 @@ impl GraphicsAccelerationEngine {
                 if (bar0 & 1) != 0 {
                     return Err("AMD GPU BAR0 is I/O space");
                 }
-                let gpu_base = self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
+                let gpu_base =
+                    self.map_physical_to_virtual((bar0 & 0xFFFFFFF0) as u64, 16 * 1024 * 1024)?;
 
                 // UVD registers start at offset 0x20000 in many AMD GPUs.
                 // mmUVD_STATUS = 0x3f00 (within UVD register block)
@@ -1349,7 +1378,10 @@ impl GraphicsAccelerationEngine {
                     if uvd_status == 0xFFFFFFFF {
                         crate::println!("AMD UVD video engine not detected (status=0xFFFFFFFF)");
                     } else {
-                        crate::println!("AMD UVD video engine detected (status=0x{:08X})", uvd_status);
+                        crate::println!(
+                            "AMD UVD video engine detected (status=0x{:08X})",
+                            uvd_status
+                        );
                     }
                 }
             }

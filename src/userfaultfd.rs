@@ -1,9 +1,9 @@
 //! userfaultfd syscall and ioctl support.
 //!
 //! This implements the fd lifecycle, API negotiation, range registration, and
-//! event queue semantics. The VM page-fault path does not yet delegate missing
-//! page faults to this module, so registrations are tracked and readable events
-//! are delivered only when a fault producer is wired to `queue_pagefault`.
+//! event queue semantics. The VM page-fault path delegates registered missing
+//! page faults here so userspace can service them with `UFFDIO_COPY`,
+//! `UFFDIO_ZEROPAGE`, and `UFFDIO_WAKE`.
 
 extern crate alloc;
 
@@ -317,6 +317,46 @@ pub fn queue_pagefault(id: u32, address: u64, flags: u64, thread_id: u32) -> Lin
         .events
         .push_back(UffdMsg::pagefault(address, flags, thread_id));
     Ok(())
+}
+
+/// Queue a page-fault event for the first userfaultfd registration covering
+/// `address`. Returns true when the fault was claimed by userfaultfd.
+pub fn handle_page_fault(address: u64, error_code: u64, thread_id: u32) -> bool {
+    let pagefault_flags = if error_code & 0x2 != 0 {
+        UFFD_PAGEFAULT_FLAG_WRITE
+    } else {
+        0
+    };
+    if pagefault_flags & !SUPPORTED_PAGEFAULT_FLAGS != 0 {
+        return false;
+    }
+
+    let mut table = USERFAULTFDS.write();
+    for state in table.values_mut() {
+        if !state.api_enabled {
+            continue;
+        }
+        let registered = state.registrations.iter().any(|reg| {
+            reg.mode & UFFDIO_REGISTER_MODE_MISSING != 0
+                && address >= reg.start
+                && address < reg.start.saturating_add(reg.len)
+        });
+        if !registered {
+            continue;
+        }
+        let already_queued = state
+            .events
+            .iter()
+            .any(|msg| msg.event == UFFD_EVENT_PAGEFAULT && msg.arg1 == address);
+        if !already_queued {
+            state
+                .events
+                .push_back(UffdMsg::pagefault(address, pagefault_flags, thread_id));
+        }
+        return true;
+    }
+
+    false
 }
 
 pub fn ioctl(fd: i32, request: u64, argp: u64) -> Option<LinuxResult<i32>> {

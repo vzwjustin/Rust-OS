@@ -477,6 +477,9 @@ pub fn fork_charge(pid: u32, new_pid: u32) -> bool {
         if !cg.controllers.pids.fork_charge() {
             return false;
         }
+        if !cg.processes.contains(&new_pid) {
+            cg.processes.push(new_pid);
+        }
     }
     // New process inherits parent's cgroup
     drop(groups);
@@ -490,6 +493,7 @@ pub fn fork_uncharge(pid: u32) {
     let mut groups = CGROUPS.write();
     if let Some(cg) = groups.get_mut(&cgroup_id) {
         cg.controllers.pids.fork_uncharge();
+        cg.processes.retain(|&p| p != pid);
     }
     drop(groups);
     PID_TO_CGROUP.write().remove(&pid);

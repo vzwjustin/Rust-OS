@@ -209,7 +209,7 @@ mod keyring;
 mod sysv_ipc;
 // Include aio (POSIX asynchronous I/O)
 mod aio;
-// Include module_loader (kernel module loading — stub)
+// Include module_loader (kernel module loading with ELF relocation)
 mod module_loader;
 // Linux audit subsystem (syscall/path event logging)
 mod audit;
@@ -223,6 +223,7 @@ mod cpufreq;
 mod cpuidle;
 mod edac;
 mod efi;
+mod irq_domain;
 mod kasan;
 mod kcsan;
 mod livepatch;
@@ -864,6 +865,18 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
+        // Initialize IRQ domain framework (hierarchical interrupt controller mapping).
+        match irq_domain::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: IRQ domain framework initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: IRQ domain init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
         // SAFETY: Debug output
         unsafe {
             early_serial_write_str("RustOS: Syscall init done, completing stage...\r\n");
@@ -890,9 +903,14 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
 
         // ========================================================================
-        // Boot Menu - Skip in graphical mode (auto-boot like native OS)
+        // Boot Menu - Skip in fast boot mode (auto-boot like native OS)
         // ========================================================================
-        let boot_selection = if early_display_ready {
+        let boot_selection = if boot_ui::boot_config().fast_boot {
+            unsafe {
+                early_serial_write_str("RustOS: Fast boot — skipping boot menu\r\n");
+            }
+            boot_ui::BootMenuSelection::NormalBoot
+        } else if early_display_ready {
             unsafe {
                 early_serial_write_str("RustOS: Showing boot menu (graphical)...\r\n");
             }
@@ -993,6 +1011,17 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
+        match drivers::init_drivers() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Linux driver subsystems initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Linux driver subsystem init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
         // SAFETY: Debug output
         unsafe {
             early_serial_write_str("RustOS: Driver loading done\r\n");
@@ -1008,6 +1037,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 early_serial_write_str("RustOS: Hot-plug init skipped\r\n");
             },
         }
+        let _ = crate::drivers::hotplug::scan_devices();
+        let _ = crate::drivers::hotplug::process_events();
 
         // Initialize the global testing framework for in-kernel test execution.
         testing_framework::init_testing_framework();
@@ -1238,8 +1269,29 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize swap subsystem
         swap::init();
 
-        // Initialize block I/O layer
+        // Initialize block I/O layer (registers virtio-blk if available)
         block_io::init();
+
+        // Register block devices in /dev (devfs must be mounted first in Phase 8)
+        crate::fs::devfs::register_block_devices();
+
+        // Scan for Linux md (RAID) arrays on storage devices and register
+        // them as block devices (major 9).  Runs after storage detection
+        // (Phase 7) and block_io init so members are available.
+        {
+            let md_result = md::init();
+            if md_result.arrays_registered > 0 {
+                crate::serial_println!(
+                    "[md] registered {} RAID arrays",
+                    md_result.arrays_registered
+                );
+                // Re-register block devices to pick up new md devices
+                crate::fs::devfs::register_block_devices();
+            }
+            for err in &md_result.errors {
+                crate::serial_println!("[md] {}", err);
+            }
+        }
 
         // Initialize cgroups
         cgroup::init();
@@ -1322,6 +1374,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize kexec
         kexec::init();
+
+        // Initialize network filesystems
+        fs::nfs_client::init();
+        fs::nfsd::init();
+        fs::cifs::init();
 
         // Verify C compression libraries (zstd, bzip2, xz) are linked and
         // the kernel allocator FFI callbacks work.
@@ -1556,6 +1613,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_u64(boot_time);
             early_serial_write_str("ms\r\n");
         }
+        kernel::mark_boot_ready();
         if !display_driver_ready {
             boot_ui::boot_complete_summary();
             boot_display::show_boot_complete(boot_time);
@@ -1716,6 +1774,7 @@ fn handle_graphics_fallback() {
 }
 
 /// Demonstrate the new error handling and logging system
+#[allow(dead_code)]
 fn demonstrate_error_handling_and_logging() {
     unsafe {
         early_serial_write_str("demo: error_handling start\r\n");
@@ -1786,6 +1845,7 @@ fn demonstrate_error_handling_and_logging() {
 }
 
 /// Demonstrate the package management system
+#[allow(dead_code)]
 fn demonstrate_package_manager() {
     println!("📦 Demonstrating Package Management System:");
 
@@ -1830,6 +1890,7 @@ fn demonstrate_package_manager() {
 }
 
 /// Demonstrate the Linux compatibility layer
+#[allow(dead_code)]
 fn demonstrate_linux_compat() {
     println!("🐧 Demonstrating Linux API Compatibility Layer:");
 
@@ -1885,6 +1946,7 @@ fn demonstrate_linux_compat() {
 }
 
 /// Demonstrate the comprehensive testing system
+#[allow(dead_code)]
 fn demonstrate_comprehensive_testing() {
     println!("🧪 Demonstrating Comprehensive Testing System:");
 
@@ -1949,6 +2011,7 @@ fn demonstrate_comprehensive_testing() {
 }
 
 /// Main desktop loop that handles keyboard input and desktop updates
+#[allow(dead_code)]
 fn desktop_main_loop() -> ! {
     let mut update_counter: u64 = 0;
     let mut last_time_display = 0u64;
@@ -2018,6 +2081,11 @@ fn desktop_main_loop() -> ! {
                     // The desktop will show uptime in its status
                 });
             }
+        }
+
+        // Poll network devices for incoming packets
+        if update_counter.is_multiple_of(1000) {
+            crate::net::poll_network();
         }
 
         update_counter += 1;
@@ -2129,6 +2197,11 @@ fn pixel_desktop_main_loop() -> ! {
         // Periodic updates
         if update_counter.is_multiple_of(1_000_000) {
             // Could update clock display here
+        }
+
+        // Poll network devices for incoming packets
+        if update_counter.is_multiple_of(1000) {
+            crate::net::poll_network();
         }
 
         update_counter = update_counter.wrapping_add(1);
@@ -2331,6 +2404,11 @@ fn modern_desktop_main_loop() -> ! {
         if update_counter.is_multiple_of(1_000_000) {
             let _ = crate::vfs::procfs::update_gnome_status();
             dbus::emit_readiness_changed_if_needed();
+        }
+
+        // Poll network devices for incoming packets
+        if update_counter.is_multiple_of(1000) {
+            crate::net::poll_network();
         }
 
         update_counter = update_counter.wrapping_add(1);

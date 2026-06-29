@@ -273,7 +273,7 @@ pub fn apply_netmask(addr: &NetworkAddress, mask: &NetworkAddress) -> NetworkAdd
 pub const SIOCADDRT: u64 = 0x890B;
 /// Linux `SIOCDELRT` — delete an IPv4 route.
 pub const SIOCDELRT: u64 = 0x890C;
-/// Linux `SIOCRTMSG` — route table changed notification (no-op ack).
+/// Linux `SIOCRTMSG` route table changed notification.
 pub const SIOCRTMSG: u64 = 0x890D;
 
 /// Parse a Linux `struct rtentry`-like blob from userspace.

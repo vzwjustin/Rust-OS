@@ -291,6 +291,14 @@ pub fn list_block_devices() -> Vec<(u32, u32, String, u64)> {
 
 /// Submit a bio to the appropriate block device.
 pub fn submit_bio(major: u32, minor: u32, bio: Bio) -> Result<(), &'static str> {
+    let pid = crate::process::current_pid();
+    if pid != 0 {
+        match bio.bi_dir {
+            BioDirection::Read => crate::cgroup::charge_blkio_read(pid, bio.bi_size as u64),
+            BioDirection::Write => crate::cgroup::charge_blkio_write(pid, bio.bi_size as u64),
+            _ => {}
+        }
+    }
     {
         let devices = BLOCK_DEVICES.read();
         let Some(dev) = devices.get(&(major, minor)) else {
@@ -485,7 +493,68 @@ impl DeadlineScheduler {
 // ── Initialization ──────────────────────────────────────────────────────
 
 pub fn init() {
+    // Register virtio-blk as a block device if available
+    if crate::drivers::virtio::blk::is_available() {
+        register_virtio_blk();
+    }
+
     crate::serial_println!("[block] block I/O layer initialized");
+}
+
+// ── VirtIO-blk adapter ──────────────────────────────────────────────────
+
+/// driver_data value used to identify the virtio-blk adapter in BlockDeviceOps.
+const VIRTIO_BLK_DRIVER_DATA: u32 = 0xDEAD_BEEF;
+
+fn virtio_blk_submit_bio(_dev_id: u32, bio: &mut Bio) -> Result<(), &'static str> {
+    match bio.bi_dir {
+        BioDirection::Read => {
+            let n = crate::drivers::virtio::blk::read_sectors(bio.bi_sector, &mut bio.bi_data)?;
+            bio.bi_status = BioStatus::Complete;
+            let _ = n;
+            Ok(())
+        }
+        BioDirection::Write => {
+            let n = crate::drivers::virtio::blk::write_sectors(bio.bi_sector, &bio.bi_data)?;
+            bio.bi_status = BioStatus::Complete;
+            let _ = n;
+            Ok(())
+        }
+        BioDirection::Flush => {
+            crate::drivers::virtio::blk::flush()?;
+            bio.bi_status = BioStatus::Complete;
+            Ok(())
+        }
+        BioDirection::Discard => {
+            bio.bi_status = BioStatus::Error;
+            Err("virtio-blk discard not supported")
+        }
+    }
+}
+
+fn virtio_blk_get_capacity(_dev_id: u32) -> u64 {
+    crate::drivers::virtio::blk::capacity_sectors().unwrap_or(0)
+}
+
+fn virtio_blk_get_name(_dev_id: u32) -> &'static str {
+    "virtio-blk"
+}
+
+/// Register the virtio-blk device in the block I/O layer.
+fn register_virtio_blk() {
+    let ops = BlockDeviceOps {
+        submit_bio: virtio_blk_submit_bio,
+        get_capacity: virtio_blk_get_capacity,
+        get_name: virtio_blk_get_name,
+        driver_data: VIRTIO_BLK_DRIVER_DATA,
+    };
+    let (major, minor) = register_block_device("virtio-blk", 0, ops);
+    crate::serial_println!(
+        "[block] virtio-blk registered (major={}, minor={}, capacity={} sectors)",
+        major,
+        minor,
+        virtio_blk_get_capacity(0)
+    );
 }
 
 // ── Stats ───────────────────────────────────────────────────────────────

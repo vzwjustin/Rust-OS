@@ -505,6 +505,64 @@ impl PhysicalFrameAllocator {
         added
     }
 
+    /// Remove a physical range from the allocator (hot-remove).
+    ///
+    /// Removes buddy blocks whose addresses overlap [start, end) from
+    /// the free lists and decrements the frame counts.  Frames that are
+    /// currently allocated (not in the free list) are not reclaimed — the
+    /// caller must ensure the range is quiesced before calling.
+    ///
+    /// Returns the number of frames removed.
+    pub fn remove_usable_range(&mut self, start: u64, end: u64) -> usize {
+        if start >= end {
+            return 0;
+        }
+        let start = align_up(start as usize, PAGE_SIZE) as u64;
+        let end = align_down(end as usize, PAGE_SIZE) as u64;
+        if start >= end {
+            return 0;
+        }
+
+        let mut removed_frames = 0usize;
+        let mut preserve_ranges = Vec::new();
+        for zone_idx in 0..3 {
+            for order in 0..NUM_ORDERS {
+                let block_size = (PAGE_SIZE << order) as u64;
+                let mut retained = Vec::new();
+                let blocks =
+                    core::mem::replace(&mut *self.buddy_lists[zone_idx][order], Vec::new());
+                for node in blocks {
+                    let addr = node.address.as_u64();
+                    let block_end = addr.saturating_add(block_size);
+                    if block_end <= start || addr >= end {
+                        retained.push(node);
+                        continue;
+                    }
+
+                    let block_frames = 1usize << order;
+                    self.total_frames[zone_idx] =
+                        self.total_frames[zone_idx].saturating_sub(block_frames);
+
+                    let overlap_start = addr.max(start);
+                    let overlap_end = block_end.min(end);
+                    removed_frames += ((overlap_end - overlap_start) as usize) / PAGE_SIZE;
+
+                    if addr < overlap_start {
+                        preserve_ranges.push((addr, overlap_start));
+                    }
+                    if overlap_end < block_end {
+                        preserve_ranges.push((overlap_end, block_end));
+                    }
+                }
+                self.buddy_lists[zone_idx][order] = CacheAligned::new(retained);
+            }
+        }
+        for (range_start, range_end) in preserve_ranges {
+            self.add_usable_range(range_start, range_end);
+        }
+        removed_frames
+    }
+
     /// Fast path allocation using per-CPU allocator
     pub fn allocate_frame_fast(&mut self, cpu_id: usize) -> Option<PhysFrame> {
         let (result, time_ns) = HighResTimer::time(|| {
@@ -3217,6 +3275,26 @@ pub fn hotplug_add_usable_range(start: u64, end: u64) -> Result<usize, MemoryErr
     let bytes = end.saturating_sub(start) as usize;
     mm.total_memory.fetch_add(bytes, Ordering::Relaxed);
     Ok(added)
+}
+
+/// Hot-remove a physical memory range from the global frame allocator.
+///
+/// Called by `memory_hotplug::offline_region` to reclaim frames when a
+/// hot-pluggable memory block is taken offline.  Returns the number of
+/// buddy blocks removed, or an error if the memory manager is not
+/// initialized or no blocks were removed.
+pub fn hotplug_remove_usable_range(start: u64, end: u64) -> Result<usize, MemoryError> {
+    let mm = get_memory_manager().ok_or(MemoryError::InvalidAddress)?;
+    let removed = mm.frame_allocator.lock().remove_usable_range(start, end);
+    if removed == 0 {
+        return Err(MemoryError::InvalidAddress);
+    }
+    let bytes = removed.saturating_mul(PAGE_SIZE);
+    mm.total_memory.fetch_sub(
+        bytes.min(mm.total_memory.load(Ordering::Relaxed)),
+        Ordering::Relaxed,
+    );
+    Ok(removed)
 }
 
 /// Get global memory manager

@@ -94,7 +94,7 @@ impl VirtualSpiFlash {
         let mut storage = [0xFFu8; 4096];
         storage[0] = 0xEF; // JEDEC manufacturer continuation
         storage[1] = 0x40;
-        storage[2] = 0x18; // Device ID placeholder
+        storage[2] = 0x18; // JEDEC capacity code
         Self {
             storage,
             write_enabled: false,

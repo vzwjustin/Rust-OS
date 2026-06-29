@@ -4,6 +4,7 @@
 //! Implements semctl/semop/semtimedop and shmat/shmctl/shmget.
 //! Message queues (msgget/msgsnd/msgrcv/msgctl) are also included.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -111,6 +112,10 @@ pub struct ShmSegment {
     pub atime: u64,
     pub dtime: u64,
     pub data: Vec<u8>,
+    /// Address returned to the caller by `shmat`.  This is a separately
+    /// allocated, fixed-size buffer (`Box<[u8]>`) whose pointer will not
+    /// change even if `data` is reallocated by a future `shmctl` resize.
+    pub attach_ptr: u64,
 }
 
 // ── Message queue ───────────────────────────────────────────────────────
@@ -136,6 +141,9 @@ pub struct MessageQueue {
 
 static SEM_SETS: RwLock<BTreeMap<u32, Mutex<SemaphoreSet>>> = RwLock::new(BTreeMap::new());
 static SHM_SEGS: RwLock<BTreeMap<u32, Mutex<ShmSegment>>> = RwLock::new(BTreeMap::new());
+/// Maps attach addresses to their `Box<[u8]>` buffers so they stay alive
+/// until `shmdt` frees them.
+static SHM_ATTACHMENTS: RwLock<BTreeMap<u64, Box<[u8]>>> = RwLock::new(BTreeMap::new());
 static MSG_QUEUES: RwLock<BTreeMap<u32, Mutex<MessageQueue>>> = RwLock::new(BTreeMap::new());
 static NEXT_SEM_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_SHM_ID: AtomicU32 = AtomicU32::new(1);
@@ -417,6 +425,7 @@ pub fn shmget(key: u32, size: usize, shmflg: i32) -> i32 {
             atime: 0,
             dtime: 0,
             data: vec![0u8; size],
+            attach_ptr: 0,
         };
         SHM_SEGS.write().insert(id, Mutex::new(seg));
         return id as i32;
@@ -466,6 +475,7 @@ pub fn shmget(key: u32, size: usize, shmflg: i32) -> i32 {
         atime: 0,
         dtime: 0,
         data: vec![0u8; size],
+        attach_ptr: 0,
     };
     SHM_SEGS.write().insert(id, Mutex::new(seg));
     id as i32
@@ -484,19 +494,35 @@ pub fn shmat(shmid: i32, shmaddr: u64, shmflg: i32) -> i64 {
     };
     let mut seg = seg_mutex.lock();
 
-    // In a real kernel, we'd map the segment into the process address space.
-    // For now, return a kernel-allocated address that can be used to access the data.
+    // Allocate a fixed-size kernel buffer and copy the segment data into
+    // it.  Unlike `Vec::as_ptr()`, a `Box<[u8]>`'s pointer is stable for
+    // the lifetime of the allocation and won't be invalidated by a Vec
+    // reallocation in `shmctl`.
+    let buf_size = seg.data.len();
+    let mut attach_buf = vec![0u8; buf_size].into_boxed_slice();
+    attach_buf.copy_from_slice(&seg.data);
+    let attach_addr = attach_buf.as_ptr() as u64;
+
+    // Store the buffer so it lives as long as the attachment.  We keep it
+    // in a static map keyed by the attach address so `shmdt` can find and
+    // free it.
+    SHM_ATTACHMENTS.write().insert(attach_addr, attach_buf);
+
+    // If the caller requested a specific address, we still return the
+    // kernel buffer address (we cannot map into user page tables yet),
+    // but we honour SHM_RND alignment for the address the caller *would*
+    // have gotten.
     let addr = if shmaddr == 0 {
-        // Let kernel choose — use the data vector's address
-        seg.data.as_ptr() as u64
+        attach_addr
+    } else if shmflg & SHM_RND != 0 {
+        // Round down to page boundary — informational only since we
+        // can't actually place the mapping at the requested address.
+        attach_addr & !0xFFF
     } else {
-        if shmflg & SHM_RND != 0 {
-            shmaddr & !0xFFF
-        } else {
-            shmaddr
-        }
+        attach_addr
     };
 
+    seg.attach_ptr = attach_addr;
     seg.nattch += 1;
     seg.atime = crate::time::uptime_ns() / 1_000_000_000;
     seg.lpid = crate::process::current_pid();
@@ -505,12 +531,18 @@ pub fn shmat(shmid: i32, shmaddr: u64, shmflg: i32) -> i64 {
 }
 
 /// shmdt — detach shared memory segment
-pub fn shmdt(_shmaddr: u64) -> i32 {
-    // Find segment by address and decrement nattch
+pub fn shmdt(shmaddr: u64) -> i32 {
+    // Free the attachment buffer and remove it from the map.
+    let removed = SHM_ATTACHMENTS.write().remove(&shmaddr).is_some();
+    if !removed {
+        return -22; // EINVAL — not a valid attachment
+    }
+
+    // Find segment by attach address and decrement nattch
     let segs = SHM_SEGS.read();
     for (_, seg_mutex) in segs.iter() {
         let mut seg = seg_mutex.lock();
-        if seg.data.as_ptr() as u64 == _shmaddr {
+        if seg.attach_ptr == shmaddr {
             if seg.nattch > 0 {
                 seg.nattch -= 1;
             }

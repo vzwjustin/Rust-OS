@@ -223,59 +223,37 @@ pub fn dispatch_syscall(context: &SyscallContext) -> SyscallResult {
         }
     }
 
-    match context.syscall_num {
-        // Process management (Linux x86_64)
-        SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit(context.args[0] as i32),
-        SyscallNumber::Fork => sys_fork(),
-        SyscallNumber::Execve => sys_exec(context.args[0], context.args[1]),
-        SyscallNumber::Wait4 => sys_wait4(context.args[0] as i32, context.args[1]),
-        SyscallNumber::GetPid => sys_getpid(),
-        SyscallNumber::GetPpid => sys_getppid(),
-        SyscallNumber::Kill => sys_kill(context.args[0] as Pid, context.args[1] as i32),
-        SyscallNumber::SchedYield => sys_yield(),
+    if context.syscall_num == SyscallNumber::Invalid {
+        return Err(SyscallError::InvalidSyscall);
+    }
 
-        // File operations
-        SyscallNumber::Open => sys_open(context.args[0], context.args[1] as u32),
-        SyscallNumber::Close => sys_close(context.args[0] as i32),
-        SyscallNumber::Read => sys_read(context.args[0] as i32, context.args[1], context.args[2]),
-        SyscallNumber::Write => sys_write(context.args[0] as i32, context.args[1], context.args[2]),
-        SyscallNumber::Lseek => sys_lseek(
-            context.args[0] as i32,
-            context.args[1] as i64,
-            context.args[2] as i32,
-        ),
-        SyscallNumber::Pipe => sys_pipe(context.args[0]),
+    crate::linux_integration::route_syscall(context.syscall_num as u64, &context.args)
+        .map_err(linux_error_to_syscall_error)
+}
 
-        // Memory management
-        SyscallNumber::Brk => sys_brk(context.args[0]),
-        SyscallNumber::Mmap => sys_mmap(
-            context.args[0],
-            context.args[1],
-            context.args[2] as i32,
-            context.args[3] as i32,
-            context.args[4] as i32,
-            context.args[5],
-        ),
-        SyscallNumber::Munmap => sys_munmap(context.args[0], context.args[1]),
-        SyscallNumber::Mprotect => {
-            sys_mprotect(context.args[0], context.args[1], context.args[2] as i32)
-        }
-
-        // Time and scheduling
-        SyscallNumber::Nanosleep => sys_nanosleep(context.args[0]),
-        SyscallNumber::Gettimeofday => sys_gettimeofday(context.args[0]),
-        SyscallNumber::ClockGettime => sys_clock_gettime(context.args[0], context.args[1]),
-        SyscallNumber::Setpriority => sys_setpriority(context.args[0] as i32),
-        SyscallNumber::Getpriority => sys_getpriority(),
-
-        // System information
-        SyscallNumber::Uname => sys_uname(context.args[0]),
-        SyscallNumber::Getcwd => sys_getcwd(context.args[0], context.args[1]),
-        SyscallNumber::Chdir => sys_chdir(context.args[0]),
-
-        // Unimplemented or invalid system calls
-        SyscallNumber::Invalid => Err(SyscallError::InvalidSyscall),
-        _ => Err(SyscallError::NotSupported),
+fn linux_error_to_syscall_error(error: crate::linux_compat::LinuxError) -> SyscallError {
+    match error {
+        crate::linux_compat::LinuxError::EPERM => SyscallError::NotPermitted,
+        crate::linux_compat::LinuxError::ENOENT => SyscallError::NotFound,
+        crate::linux_compat::LinuxError::EINTR => SyscallError::Interrupted,
+        crate::linux_compat::LinuxError::EIO => SyscallError::IoError,
+        crate::linux_compat::LinuxError::EAGAIN => SyscallError::WouldBlock,
+        crate::linux_compat::LinuxError::ENOMEM => SyscallError::OutOfMemory,
+        crate::linux_compat::LinuxError::EACCES => SyscallError::PermissionDenied,
+        crate::linux_compat::LinuxError::EFAULT => SyscallError::InvalidAddress,
+        crate::linux_compat::LinuxError::EBUSY => SyscallError::Busy,
+        crate::linux_compat::LinuxError::EEXIST => SyscallError::AlreadyExists,
+        crate::linux_compat::LinuxError::ENOTDIR => SyscallError::NotDirectory,
+        crate::linux_compat::LinuxError::EISDIR => SyscallError::IsDirectory,
+        crate::linux_compat::LinuxError::EINVAL => SyscallError::InvalidArgument,
+        crate::linux_compat::LinuxError::EMFILE => SyscallError::TooManyOpenFiles,
+        crate::linux_compat::LinuxError::EFBIG => SyscallError::FileTooLarge,
+        crate::linux_compat::LinuxError::ENOSPC => SyscallError::NoSpace,
+        crate::linux_compat::LinuxError::EXDEV => SyscallError::CrossDevice,
+        crate::linux_compat::LinuxError::EROFS => SyscallError::ReadOnly,
+        crate::linux_compat::LinuxError::ENOTEMPTY => SyscallError::DirectoryNotEmpty,
+        crate::linux_compat::LinuxError::ENOSYS => SyscallError::NotSupported,
+        _ => SyscallError::InvalidArgument,
     }
 }
 
@@ -330,9 +308,9 @@ fn sys_fork() -> SyscallResult {
 
     match integration_manager.fork_process(current_pid) {
         Ok(child_pid) => {
-            // In a real fork, we would return 0 to child and child_pid to parent
-            // For now, we return child_pid to indicate successful fork
-            // The actual return value differentiation would happen during context switch
+            // fork_process already sets child.context.rax = 0 so the child
+            // sees fork() returning 0 when it is first scheduled.  The parent
+            // (the caller) sees child_pid as the return value.
             Ok(child_pid as u64)
         }
         Err(_) => Err(SyscallError::OutOfMemory),
@@ -340,7 +318,7 @@ fn sys_fork() -> SyscallResult {
 }
 
 /// Execute a new program in the current process
-fn sys_exec(program_path_ptr: u64, _argv_ptr: u64) -> SyscallResult {
+fn sys_exec(program_path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     let process_manager = crate::process::get_process_manager();
     let current_pid = process_manager.current_process();
 
@@ -360,6 +338,17 @@ fn sys_exec(program_path_ptr: u64, _argv_ptr: u64) -> SyscallResult {
         Err(_) => return Err(SyscallError::InvalidArgument),
     };
 
+    // Copy argv from user space.  argv is a NULL-terminated array of char*
+    // pointers.  Each pointer points to a NUL-terminated string.
+    let argv: Vec<String> = if argv_ptr != 0 {
+        match copy_argv_from_user(argv_ptr) {
+            Ok(args) => args,
+            Err(_) => return Err(SyscallError::InvalidArgument),
+        }
+    } else {
+        vec![program_path.clone()]
+    };
+
     // Load program from filesystem
     let program_data = match load_program_from_filesystem(&program_path) {
         Ok(data) => data,
@@ -375,7 +364,7 @@ fn sys_exec(program_path_ptr: u64, _argv_ptr: u64) -> SyscallResult {
     use crate::process::integration::get_integration_manager;
     let integration_manager = get_integration_manager();
 
-    match integration_manager.exec_process(current_pid, &program_path, &program_data) {
+    match integration_manager.exec_process(current_pid, &program_path, &program_data, &argv) {
         Ok(()) => {
             // exec() does not return on success - the process image is replaced
             // This should not be reached in normal execution
@@ -383,6 +372,41 @@ fn sys_exec(program_path_ptr: u64, _argv_ptr: u64) -> SyscallResult {
         }
         Err(_) => Err(SyscallError::InvalidArgument),
     }
+}
+
+/// Copy a NULL-terminated array of string pointers from user space.
+/// Each entry is a pointer to a NUL-terminated C string.
+fn copy_argv_from_user(argv_ptr: u64) -> Result<Vec<String>, SyscallError> {
+    use crate::memory::user_space::UserSpaceMemory;
+
+    let mut result = Vec::new();
+    let mut offset = 0u64;
+
+    loop {
+        // Read one pointer (8 bytes on x86_64) from the argv array
+        let ptr_addr = argv_ptr + offset;
+        match SecurityValidator::validate_user_ptr(ptr_addr, 8, false) {
+            Ok(()) => {}
+            Err(_) => return Err(SyscallError::InvalidArgument),
+        }
+
+        let mut ptr_bytes = [0u8; 8];
+        match UserSpaceMemory::copy_from_user(ptr_addr, &mut ptr_bytes) {
+            Ok(()) => {}
+            Err(_) => return Err(SyscallError::InvalidArgument),
+        }
+
+        let str_ptr = u64::from_le_bytes(ptr_bytes);
+        if str_ptr == 0 {
+            break; // NULL terminator
+        }
+
+        let s = SecurityValidator::copy_string_from_user(str_ptr, 4096)?;
+        result.push(s);
+        offset += 8;
+    }
+
+    Ok(result)
 }
 
 /// Load program from filesystem

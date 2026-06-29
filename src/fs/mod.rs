@@ -449,6 +449,12 @@ pub struct Inode {
     content: Arc<RwLock<Vec<u8>>>,
 }
 
+impl PartialEq for Inode {
+    fn eq(&self, other: &Self) -> bool {
+        self.inode_number == other.inode_number && self.mount_index == other.mount_index
+    }
+}
+
 impl Inode {
     /// Create a new inode handle
     pub fn new(
@@ -770,6 +776,12 @@ pub struct MountFlags {
     pub no_suid: bool,
 }
 
+// Mount attribute bits (matching Linux mount_attr flags)
+pub const MOUNT_ATTR_RDONLY: u64 = 0x00000001;
+pub const MOUNT_ATTR_NOSUID: u64 = 0x00000002;
+pub const MOUNT_ATTR_NODEV: u64 = 0x00000004;
+pub const MOUNT_ATTR_NOEXEC: u64 = 0x00000008;
+
 impl Default for MountFlags {
     fn default() -> Self {
         Self {
@@ -854,6 +866,44 @@ impl VfsManager {
         } else {
             Err(FsError::NotFound)
         }
+    }
+
+    /// Update mount flags for an existing mount point.
+    /// `attr_set` bits are OR'd into the current flags; `attr_clr` bits
+    /// are AND'd out.
+    pub fn set_mount_flags(&self, path: &str, attr_set: u64, attr_clr: u64) -> FsResult<()> {
+        let mut mount_points = self.mount_points.write();
+        let mp = mount_points
+            .iter_mut()
+            .find(|mp| mp.path == path)
+            .ok_or(FsError::NotFound)?;
+
+        if attr_set & MOUNT_ATTR_RDONLY != 0 {
+            mp.flags.read_only = true;
+        }
+        if attr_clr & MOUNT_ATTR_RDONLY != 0 {
+            mp.flags.read_only = false;
+        }
+        if attr_set & MOUNT_ATTR_NOEXEC != 0 {
+            mp.flags.no_exec = true;
+        }
+        if attr_clr & MOUNT_ATTR_NOEXEC != 0 {
+            mp.flags.no_exec = false;
+        }
+        if attr_set & MOUNT_ATTR_NODEV != 0 {
+            mp.flags.no_dev = true;
+        }
+        if attr_clr & MOUNT_ATTR_NODEV != 0 {
+            mp.flags.no_dev = false;
+        }
+        if attr_set & MOUNT_ATTR_NOSUID != 0 {
+            mp.flags.no_suid = true;
+        }
+        if attr_clr & MOUNT_ATTR_NOSUID != 0 {
+            mp.flags.no_suid = false;
+        }
+
+        Ok(())
     }
 
     /// Find the mount point for a given path

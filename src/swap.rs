@@ -320,14 +320,24 @@ pub fn try_to_reclaim_pages(target: usize) -> usize {
     }
 
     for (vaddr, _) in to_reclaim {
-        // In a real implementation, we'd read the page data, swap it out,
-        // and free the physical frame. Here we just track the operation.
+        // Read the actual page data from memory via a volatile copy.
+        // The page is already mapped at `vaddr` in the kernel's address
+        // space, so we can copy it directly.
         let mut page_data = [0u8; PAGE_SIZE];
-        // Read page data from memory (would use the memory manager)
-        // For now, just record the swap-out
+        unsafe {
+            let src = vaddr as *const u8;
+            // SAFETY: vaddr comes from the LRU list which tracks mapped
+            // kernel pages.  We use copy_nonoverlapping to read PAGE_SIZE
+            // bytes from the source into our local buffer.
+            core::ptr::copy_nonoverlapping(src, page_data.as_mut_ptr(), PAGE_SIZE);
+        }
+
         if swap_out(vaddr, &page_data).is_ok() {
             reclaimed += 1;
-            // Free the physical frame (would call memory manager)
+            // Free the physical frame by deallocating the memory region.
+            // This returns the physical frames to the allocator.
+            use x86_64::VirtAddr;
+            let _ = crate::memory::deallocate_memory(VirtAddr::new(vaddr));
         }
     }
 

@@ -5356,8 +5356,7 @@ fn glib_smoke_hook(data: usize) {
 
 static GLIB_THREADPOOL_COUNT: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-static GLIB_TEST_COUNT: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+static GLIB_TEST_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 fn glib_threadpool_noop(_data: usize) {
     // The inline thread pool implementation executes the callback synchronously.

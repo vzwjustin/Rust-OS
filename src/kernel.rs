@@ -118,8 +118,25 @@ pub fn init() -> Result<(), &'static str> {
     register_subsystem("trace", 60, &["time", "smp"]);
     register_subsystem("kprobes", 61, &["trace", "ptrace"]);
 
+    crate::notifier::init();
+    update_subsystem_state("notifier", SubsystemState::Ready)?;
+
     KERNEL_INITIALIZED.store(true, Ordering::Release);
     Ok(())
+}
+
+/// Mark the manually initialized boot path as ready for normal operation.
+pub fn mark_boot_ready() {
+    let mut systems = SUBSYSTEMS.lock();
+    for system in systems.iter_mut() {
+        if matches!(
+            system.state,
+            SubsystemState::Uninitialized | SubsystemState::Initializing
+        ) {
+            system.state = SubsystemState::Ready;
+        }
+    }
+    KERNEL_READY.store(true, Ordering::Release);
 }
 
 /// Register a kernel subsystem
@@ -451,6 +468,9 @@ pub fn panic(info: PanicInfo) -> ! {
     // Disable interrupts
     x86_64::instructions::interrupts::disable();
 
+    let info_ptr = &info as *const PanicInfo as *mut core::ffi::c_void;
+    let _ = crate::notifier::PANIC_CHAIN.notify(1, info_ptr);
+
     // Try to print panic info if possible
     crate::println!("KERNEL PANIC!");
     crate::println!("{}", info.message);
@@ -472,6 +492,8 @@ pub fn shutdown() -> Result<(), &'static str> {
     if !KERNEL_READY.load(Ordering::Acquire) {
         return Err("Kernel not ready");
     }
+
+    let _ = crate::notifier::REBOOT_CHAIN.notify(1, core::ptr::null_mut());
 
     // Shutdown subsystems in reverse order
     let systems = {

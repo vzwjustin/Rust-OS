@@ -46,6 +46,37 @@ impl FdKind {
     pub const fn regular() -> Self {
         Self::Regular
     }
+
+    pub fn same_object(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Regular, Self::Regular) => true,
+            (Self::Directory { path: a }, Self::Directory { path: b }) => a == b,
+            (Self::PipeRead(a), Self::PipeRead(b))
+            | (Self::PipeWrite(a), Self::PipeWrite(b))
+            | (Self::EventFd(a), Self::EventFd(b))
+            | (Self::TimerFd(a), Self::TimerFd(b))
+            | (Self::Epoll(a), Self::Epoll(b))
+            | (Self::Signalfd(a), Self::Signalfd(b))
+            | (Self::Socket(a), Self::Socket(b))
+            | (Self::Inotify(a), Self::Inotify(b))
+            | (Self::Pidfd(a), Self::Pidfd(b))
+            | (Self::IoUring(a), Self::IoUring(b))
+            | (Self::Fanotify(a), Self::Fanotify(b))
+            | (Self::FsContext(a), Self::FsContext(b))
+            | (Self::MountObject(a), Self::MountObject(b))
+            | (Self::LandlockRuleset(a), Self::LandlockRuleset(b))
+            | (Self::BpfMap(a), Self::BpfMap(b))
+            | (Self::BpfProg(a), Self::BpfProg(b))
+            | (Self::PerfEvent(a), Self::PerfEvent(b))
+            | (Self::Userfaultfd(a), Self::Userfaultfd(b))
+            | (Self::MemfdSecret(a), Self::MemfdSecret(b))
+            | (Self::Namespace(a), Self::Namespace(b))
+            | (Self::PtyMaster(a), Self::PtyMaster(b))
+            | (Self::PtySlave(a), Self::PtySlave(b)) => a == b,
+            (Self::TtyConsole, Self::TtyConsole) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Open file descriptor
@@ -162,6 +193,14 @@ impl OpenFileTable {
     /// Get the fd kind if the fd is open
     pub fn kind(&self, fd: i32) -> VfsResult<FdKind> {
         Ok(self.get(fd)?.kind.clone())
+    }
+
+    /// Count open descriptors that reference the same underlying fd object.
+    pub fn kind_ref_count(&self, kind: &FdKind) -> usize {
+        self.files
+            .values()
+            .filter(|file| file.kind.same_object(kind))
+            .count()
     }
 
     /// Set flags on an existing file descriptor

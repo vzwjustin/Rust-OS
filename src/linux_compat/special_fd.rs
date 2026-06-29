@@ -54,6 +54,8 @@ struct TimerFdState {
     expires_ns: AtomicU64,
     interval_ns: u64,
     armed: AtomicU64,
+    /// Number of expirations since last successful read.
+    overrun: AtomicU64,
 }
 
 /// State for a signalfd: the signal mask to watch and the owning pid.
@@ -66,6 +68,7 @@ struct SignalFdState {
 struct EpollEntry {
     fd: i32,
     events: u32,
+    data: u64,
 }
 
 #[derive(Clone)]
@@ -314,12 +317,32 @@ pub fn try_read(fd: i32, buf: &mut [u8]) -> Option<LinuxResult<isize>> {
             }
             let table = EVENTFD_BY_ID.read();
             let event = table.get(&id)?;
-            let val = event.value.swap(0, Ordering::SeqCst);
-            if val == 0 {
-                return Some(Err(LinuxError::EAGAIN));
+            let is_semaphore = (event.flags & 0x1) != 0;
+            if is_semaphore {
+                // Semaphore mode: decrement by 1, return 1
+                loop {
+                    let val = event.value.load(Ordering::SeqCst);
+                    if val == 0 {
+                        return Some(Err(LinuxError::EAGAIN));
+                    }
+                    if event
+                        .value
+                        .compare_exchange(val, val - 1, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        buf[..8].copy_from_slice(&1u64.to_le_bytes());
+                        return Some(Ok(8));
+                    }
+                }
+            } else {
+                // Normal mode: read counter and reset to 0
+                let val = event.value.swap(0, Ordering::SeqCst);
+                if val == 0 {
+                    return Some(Err(LinuxError::EAGAIN));
+                }
+                buf[..8].copy_from_slice(&val.to_le_bytes());
+                Some(Ok(8))
             }
-            buf[..8].copy_from_slice(&val.to_le_bytes());
-            Some(Ok(8))
         }
         FdKind::TimerFd(id) => {
             if buf.len() < 8 {
@@ -333,14 +356,25 @@ pub fn try_read(fd: i32, buf: &mut [u8]) -> Option<LinuxResult<isize>> {
             {
                 return Some(Err(LinuxError::EAGAIN));
             }
-            timer.armed.store(0, Ordering::SeqCst);
-            if timer.interval_ns > 0 {
-                timer
-                    .expires_ns
-                    .store(now + timer.interval_ns, Ordering::SeqCst);
+            // Count how many intervals have passed since expiry.
+            let expires = timer.expires_ns.load(Ordering::SeqCst);
+            let interval = timer.interval_ns;
+            let expirations = if interval > 0 {
+                let elapsed = now - expires;
+                1 + elapsed / interval
+            } else {
+                1
+            };
+            // Advance expiry to the next interval boundary (or disarm if one-shot).
+            if interval > 0 {
+                let next = expires + interval * expirations;
+                timer.expires_ns.store(next, Ordering::SeqCst);
                 timer.armed.store(1, Ordering::SeqCst);
+            } else {
+                timer.armed.store(0, Ordering::SeqCst);
             }
-            buf[..8].copy_from_slice(&1u64.to_le_bytes());
+            timer.overrun.store(0, Ordering::SeqCst);
+            buf[..8].copy_from_slice(&(expirations as u64).to_le_bytes());
             Some(Ok(8))
         }
         FdKind::Socket(socket_id) => {
@@ -417,6 +451,7 @@ pub fn try_read(fd: i32, buf: &mut [u8]) -> Option<LinuxResult<isize>> {
         }
         FdKind::Userfaultfd(id) => Some(crate::userfaultfd::read_events(id, buf)),
         FdKind::MemfdSecret(_) => Some(Err(LinuxError::EINVAL)),
+        FdKind::Inotify(_) => Some(super::fs_ops::read_inotify_events(fd, buf)),
         _ => None,
     }
 }
@@ -443,8 +478,25 @@ pub fn try_write(fd: i32, buf: &[u8]) -> Option<LinuxResult<isize>> {
             let add = u64::from_le_bytes(bytes);
             let table = EVENTFD_BY_ID.read();
             let event = table.get(&id)?;
-            event.value.fetch_add(add, Ordering::SeqCst);
-            Some(Ok(8))
+            // Linux eventfd: the counter is u64 and must not overflow.
+            // If the add would cause overflow, block or return EAGAIN.
+            // Use a CAS loop to handle concurrent writes safely.
+            loop {
+                let current = event.value.load(Ordering::SeqCst);
+                match current.checked_add(add) {
+                    Some(val) if val != u64::MAX => {
+                        if event
+                            .value
+                            .compare_exchange(current, val, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                        {
+                            return Some(Ok(8));
+                        }
+                        // Retry on contention
+                    }
+                    _ => return Some(Err(LinuxError::EAGAIN)),
+                }
+            }
         }
         FdKind::Socket(socket_id) => {
             let mut sock = crate::net::network_stack().get_socket(socket_id)?;
@@ -460,6 +512,9 @@ pub fn try_write(fd: i32, buf: &[u8]) -> Option<LinuxResult<isize>> {
 /// Close special fd state if applicable.
 pub fn try_close(fd: i32) -> Option<LinuxResult<()>> {
     let kind = vfs::vfs_fd_kind(fd).ok()?;
+    if vfs::vfs_fd_ref_count(fd).unwrap_or(1) > 1 {
+        return Some(Ok(()));
+    }
     match kind {
         FdKind::PipeRead(pipe_id) => {
             let _ = get_ipc_manager().close_pipe(pipe_id, true, false);
@@ -495,6 +550,10 @@ pub fn try_close(fd: i32) -> Option<LinuxResult<()>> {
         }
         FdKind::Fanotify(id) => {
             crate::fanotify::close_instance(id);
+            Some(Ok(()))
+        }
+        FdKind::Inotify(id) => {
+            super::fs_ops::close_inotify(id);
             Some(Ok(()))
         }
         FdKind::LandlockRuleset(id) => {
@@ -567,11 +626,15 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
             }
         }
         FdKind::EventFd(id) => {
-            if events & poll_events::POLLIN != 0 {
-                if let Some(event) = EVENTFD_BY_ID.read().get(&id) {
-                    if event.value.load(Ordering::SeqCst) > 0 {
-                        revents |= poll_events::POLLIN;
-                    }
+            if let Some(event) = EVENTFD_BY_ID.read().get(&id) {
+                if events & poll_events::POLLIN != 0 && event.value.load(Ordering::SeqCst) > 0 {
+                    revents |= poll_events::POLLIN;
+                }
+                // eventfd is writable unless counter is at u64::MAX - 1
+                if events & poll_events::POLLOUT != 0
+                    && event.value.load(Ordering::SeqCst) < u64::MAX - 1
+                {
+                    revents |= poll_events::POLLOUT;
                 }
             }
         }
@@ -664,7 +727,6 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
             }
         }
         FdKind::Epoll(_)
-        | FdKind::Inotify(_)
         | FdKind::IoUring(_)
         | FdKind::FsContext(_)
         | FdKind::MountObject(_)
@@ -672,9 +734,15 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
         | FdKind::BpfMap(_)
         | FdKind::BpfProg(_)
         | FdKind::PerfEvent(_)
-        | FdKind::Userfaultfd(_)
         | FdKind::MemfdSecret(_)
         | FdKind::Namespace(_) => {}
+        FdKind::Inotify(id) => {
+            if events & poll_events::POLLIN != 0 {
+                if super::fs_ops::inotify_has_events(id) {
+                    revents |= poll_events::POLLIN;
+                }
+            }
+        }
     }
     revents
 }
@@ -756,11 +824,13 @@ pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut u8) -> LinuxResult<i32
             if event.is_null() {
                 return Err(LinuxError::EFAULT);
             }
+            // struct epoll_event (packed, 12 bytes): { u32 events; u64 data; }
             let events = unsafe { *(event as *const u32) };
+            let data = unsafe { *(event.add(4) as *const u64) };
             if state.entries.iter().any(|e| e.fd == fd) {
                 return Err(LinuxError::EEXIST);
             }
-            state.entries.push(EpollEntry { fd, events });
+            state.entries.push(EpollEntry { fd, events, data });
             Ok(0)
         }
         EPOLL_CTL_DEL => {
@@ -772,8 +842,10 @@ pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut u8) -> LinuxResult<i32
                 return Err(LinuxError::EFAULT);
             }
             let events = unsafe { *(event as *const u32) };
+            let data = unsafe { *(event.add(4) as *const u64) };
             if let Some(entry) = state.entries.iter_mut().find(|e| e.fd == fd) {
                 entry.events = events;
+                entry.data = data;
                 Ok(0)
             } else {
                 Err(LinuxError::ENOENT)
@@ -814,9 +886,11 @@ pub fn epoll_wait(epfd: i32, events: *mut u8, maxevents: i32, timeout_ms: i32) -
             if revents != 0 {
                 unsafe {
                     let off = out as usize * 12;
-                    *(events.add(off) as *mut u32) = entry.events;
-                    *(events.add(off + 4) as *mut u64) = entry.fd as u64;
-                    *(events.add(off + 8) as *mut u32) = revents;
+                    // struct epoll_event (packed, 12 bytes):
+                    //   offset 0: u32 events  (actual events that occurred)
+                    //   offset 4: u64 data    (user data from epoll_ctl)
+                    *(events.add(off) as *mut u32) = revents;
+                    *(events.add(off + 4) as *mut u64) = entry.data;
                 }
                 out += 1;
             }
@@ -915,6 +989,7 @@ pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
             expires_ns: AtomicU64::new(0),
             interval_ns: 0,
             armed: AtomicU64::new(0),
+            overrun: AtomicU64::new(0),
         },
     );
     let mut fd_flags: u32 = vfs::OpenFlags::RDWR;
@@ -1000,12 +1075,21 @@ pub fn timerfd_settime(
     let timer = table.get_mut(&id).ok_or(LinuxError::EBADF)?;
 
     if !old_value.is_null() {
+        let old_interval_ns = timer.interval_ns;
+        let old_armed = timer.armed.load(Ordering::SeqCst);
+        let old_expires = timer.expires_ns.load(Ordering::SeqCst);
+        let now = time::uptime_ns();
+        let old_remaining: u64 = if old_armed != 0 && old_expires > now {
+            old_expires - now
+        } else {
+            0
+        };
         unsafe {
             *(old_value as *mut ITimerSpec) = ITimerSpec {
-                it_interval_sec: timer.interval_ns / 1_000_000_000,
-                it_interval_nsec: timer.interval_ns % 1_000_000_000,
-                it_value_sec: 0,
-                it_value_nsec: 0,
+                it_interval_sec: old_interval_ns / 1_000_000_000,
+                it_interval_nsec: old_interval_ns % 1_000_000_000,
+                it_value_sec: old_remaining / 1_000_000_000,
+                it_value_nsec: old_remaining % 1_000_000_000,
             };
         }
     }
@@ -1038,12 +1122,21 @@ pub fn timerfd_gettime(fd: i32, curr_value: *mut u8) -> LinuxResult<i32> {
     };
     let table = TIMERFD_BY_ID.read();
     let timer = table.get(&id).ok_or(LinuxError::EBADF)?;
+    let interval_ns = timer.interval_ns;
+    let armed = timer.armed.load(Ordering::SeqCst);
+    let expires = timer.expires_ns.load(Ordering::SeqCst);
+    let now = time::uptime_ns();
+    let remaining: u64 = if armed != 0 && expires > now {
+        expires - now
+    } else {
+        0
+    };
     unsafe {
         *(curr_value as *mut ITimerSpec) = ITimerSpec {
-            it_interval_sec: timer.interval_ns / 1_000_000_000,
-            it_interval_nsec: timer.interval_ns % 1_000_000_000,
-            it_value_sec: 0,
-            it_value_nsec: 0,
+            it_interval_sec: interval_ns / 1_000_000_000,
+            it_interval_nsec: interval_ns % 1_000_000_000,
+            it_value_sec: remaining / 1_000_000_000,
+            it_value_nsec: remaining % 1_000_000_000,
         };
     }
     Ok(0)
