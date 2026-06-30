@@ -9,9 +9,10 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// Embedded initramfs data (included at compile time).
-/// Alpine Linux rootfs as uncompressed CPIO newc so boot does not depend on
-/// the kernel gzip path before userspace is mounted.
-pub static INITRAMFS_DATA: &[u8] = include_bytes!("../userspace/initramfs.cpio");
+/// Alpine Linux rootfs as gzip-compressed CPIO newc. The extractor detects
+/// gzip data and inflates it before parsing, so source checkouts only need to
+/// carry the compressed initramfs artifact.
+pub static INITRAMFS_DATA: &[u8] = include_bytes!("../userspace/initramfs.cpio.gz");
 
 /// Initramfs header and metadata
 pub struct InitramfsInfo {

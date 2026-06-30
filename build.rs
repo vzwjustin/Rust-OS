@@ -6,6 +6,7 @@ fn main() {
     // Rerun if these files change
     println!("cargo:rerun-if-changed=src/boot.s");
     println!("cargo:rerun-if-changed=link.ld");
+    println!("cargo:rerun-if-changed=userspace/initramfs.cpio.gz");
 
     // Guarantee the embedded initramfs archive exists before rustc reaches the
     // `include_bytes!` in src/initramfs.rs.
