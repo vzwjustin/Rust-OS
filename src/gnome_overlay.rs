@@ -46,10 +46,16 @@ pub fn install(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     install_socket(&runtime, "bus", DBUS_SESSION_SOCKET)?;
     install_socket(&runtime, "wayland-0", WAYLAND_SOCKET)?;
 
-    socket_ops::prebind_unix_socket(DBUS_SESSION_SOCKET, socket_ops::UnixSocketRole::DbusSession)
-        .map_err(|_| vfs::VfsError::IoError)?;
-    socket_ops::prebind_unix_socket(WAYLAND_SOCKET, socket_ops::UnixSocketRole::WaylandDisplay)
-        .map_err(|_| vfs::VfsError::IoError)?;
+    socket_ops::prebind_unix_socket(
+        DBUS_SESSION_SOCKET,
+        crate::net::unix::UnixSocketRole::DbusSession,
+    )
+    .map_err(|_| vfs::VfsError::IoError)?;
+    socket_ops::prebind_unix_socket(
+        WAYLAND_SOCKET,
+        crate::net::unix::UnixSocketRole::WaylandDisplay,
+    )
+    .map_err(|_| vfs::VfsError::IoError)?;
 
     OVERLAY_READY.store(true, core::sync::atomic::Ordering::Release);
 

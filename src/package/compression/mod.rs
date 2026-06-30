@@ -76,12 +76,15 @@ pub fn decompress(data: &[u8]) -> PackageResult<Vec<u8>> {
 
     match format {
         CompressionFormat::Gzip => GzipDecoder::decode(data),
-        CompressionFormat::Xz => ffi::xz_decompress_safe(data)
-            .map_err(|e| PackageError::ExtractionError(e.into())),
-        CompressionFormat::Zstd => ffi::zstd_decompress_safe(data)
-            .map_err(|e| PackageError::ExtractionError(e.into())),
-        CompressionFormat::Bzip2 => ffi::bzip2_decompress_safe(data)
-            .map_err(|e| PackageError::ExtractionError(e.into())),
+        CompressionFormat::Xz => {
+            ffi::xz_decompress_safe(data).map_err(|e| PackageError::ExtractionError(e.into()))
+        }
+        CompressionFormat::Zstd => {
+            ffi::zstd_decompress_safe(data).map_err(|e| PackageError::ExtractionError(e.into()))
+        }
+        CompressionFormat::Bzip2 => {
+            ffi::bzip2_decompress_safe(data).map_err(|e| PackageError::ExtractionError(e.into()))
+        }
         CompressionFormat::None => Ok(data.to_vec()),
     }
 }

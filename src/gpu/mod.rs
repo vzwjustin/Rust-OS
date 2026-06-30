@@ -3571,7 +3571,8 @@ impl GPUSystem {
         if self.status != GPUStatus::Ready {
             return Err("GPU system not ready");
         }
-        let gpu_idx = self.active_gpu_index
+        let gpu_idx = self
+            .active_gpu_index
             .ok_or("No active GPU detected — cannot initialize hardware acceleration")?;
         let gpu = &self.detected_gpus[gpu_idx];
 
@@ -3591,7 +3592,8 @@ impl GPUSystem {
 
         // Read BAR0 (MMIO aperture) and BAR2 (GPU memory aperture).
         let bar0 = read_pci_config_dword_for(pci_dev.bus, pci_dev.device, pci_dev.function, 0x10);
-        let bar0_hi = read_pci_config_dword_for(pci_dev.bus, pci_dev.device, pci_dev.function, 0x14);
+        let bar0_hi =
+            read_pci_config_dword_for(pci_dev.bus, pci_dev.device, pci_dev.function, 0x14);
         if (bar0 & 1) != 0 {
             return Err("GPU BAR0 is I/O space, not memory-mapped");
         }
@@ -3599,7 +3601,8 @@ impl GPUSystem {
 
         // Read BAR2 (GPU memory / aperture) at PCI offset 0x18.
         let bar2 = read_pci_config_dword_for(pci_dev.bus, pci_dev.device, pci_dev.function, 0x18);
-        let bar2_hi = read_pci_config_dword_for(pci_dev.bus, pci_dev.device, pci_dev.function, 0x1C);
+        let bar2_hi =
+            read_pci_config_dword_for(pci_dev.bus, pci_dev.device, pci_dev.function, 0x1C);
         let bar2_base = if (bar2 & 1) == 0 {
             ((bar2 & 0xFFFFFFF0) as u64) | (((bar2_hi as u64) & 0xFFFFFFFF) << 32)
         } else {
@@ -3618,21 +3621,23 @@ impl GPUSystem {
 
         // Set up the GPU memory window via the global memory manager.
         use crate::gpu::memory::{allocate_gpu_memory, MemoryFlags};
-        crate::gpu::memory::set_gpu_memory_window_global(gpu_idx as u32, bar0_base, aperture_size as u64);
+        crate::gpu::memory::set_gpu_memory_window_global(
+            gpu_idx as u32,
+            bar0_base,
+            aperture_size as u64,
+        );
 
         // Allocate a DMA buffer for the framebuffer in GPU-accessible memory.
         // This allows the GPU's blit engine to read/write the framebuffer.
         let fb_size = framebuffer_info.size;
-        let _fb_dma_handle = allocate_gpu_memory(
-            gpu_idx as u32,
-            fb_size,
-            4096,
-            MemoryFlags::DEFAULT,
-        ).map_err(|e| {
-            // If GPU memory allocation fails, we can still use software rendering.
-            // Return an error so the caller knows to fall back.
-            e
-        })?;
+        let _fb_dma_handle =
+            allocate_gpu_memory(gpu_idx as u32, fb_size, 4096, MemoryFlags::DEFAULT).map_err(
+                |e| {
+                    // If GPU memory allocation fails, we can still use software rendering.
+                    // Return an error so the caller knows to fall back.
+                    e
+                },
+            )?;
 
         // If the GPU has a BAR2 memory aperture, map the framebuffer into it
         // so the GPU can directly access the framebuffer pixels.
@@ -3658,7 +3663,10 @@ impl GPUSystem {
                     // In a real driver, this would be a GPU blit command,
                     // but for initialization we just ensure the mapping works.
                     for i in 0..core::cmp::min(fb_size, 4096) {
-                        core::ptr::write_volatile(aperture_ptr.add(i), core::ptr::read_volatile(fb_ptr.add(i)));
+                        core::ptr::write_volatile(
+                            aperture_ptr.add(i),
+                            core::ptr::read_volatile(fb_ptr.add(i)),
+                        );
                     }
                 }
 

@@ -1098,8 +1098,10 @@ impl GPUMemoryManager {
             .ok_or("No Intel GPU PCI device found")?;
 
         // Read BAR 0 (GTTMMADR) from PCI config space at offset 0x10.
-        let bar0_raw = read_pci_config_dword(intel_dev.bus, intel_dev.device, intel_dev.function, 0x10);
-        let bar1_raw = read_pci_config_dword(intel_dev.bus, intel_dev.device, intel_dev.function, 0x14);
+        let bar0_raw =
+            read_pci_config_dword(intel_dev.bus, intel_dev.device, intel_dev.function, 0x10);
+        let bar1_raw =
+            read_pci_config_dword(intel_dev.bus, intel_dev.device, intel_dev.function, 0x14);
         if (bar0_raw & 0x1) != 0 {
             return Err("Intel GPU BAR0 is I/O space, not memory-mapped");
         }
@@ -1112,7 +1114,11 @@ impl GPUMemoryManager {
         // Gen6 (Sandy Bridge through Haswell): 4 MB GTTMMADR, GTT at 2 MB.
         // Gen8+ (Broadwell+): 16 MB GTTMMADR, GTT at 8 MB.
         // We detect generation via device ID ranges.
-        let gttmmadr_size = if intel_dev.device_id >= 0x1600 { 16 * 1024 * 1024 } else { 4 * 1024 * 1024 };
+        let gttmmadr_size = if intel_dev.device_id >= 0x1600 {
+            16 * 1024 * 1024
+        } else {
+            4 * 1024 * 1024
+        };
         let gttadr_offset = gttmmadr_size / 2;
 
         // Map the GTTMMADR region via the kernel direct physical mapping.
@@ -1240,22 +1246,22 @@ impl GPUMemoryManager {
 
             // 1. Enable L1 TLB.
             let mut tmp = core::ptr::read_volatile(reg(MC_VM_MX_L1_TLB_CNTL));
-            tmp |= 1;          // ENABLE_L1_TLB
-            tmp |= 1 << 1;     // ENABLE_L1_FRAGMENT_PROCESSING
-            tmp |= 3 << 4;     // SYSTEM_ACCESS_MODE = 3
-            tmp |= 1 << 6;     // ENABLE_ADVANCED_DRIVER_MODEL
-            tmp &= !(1 << 7);  // SYSTEM_APERTURE_UNMAPPED_ACCESS = 0
+            tmp |= 1; // ENABLE_L1_TLB
+            tmp |= 1 << 1; // ENABLE_L1_FRAGMENT_PROCESSING
+            tmp |= 3 << 4; // SYSTEM_ACCESS_MODE = 3
+            tmp |= 1 << 6; // ENABLE_ADVANCED_DRIVER_MODEL
+            tmp &= !(1 << 7); // SYSTEM_APERTURE_UNMAPPED_ACCESS = 0
             core::ptr::write_volatile(reg(MC_VM_MX_L1_TLB_CNTL), tmp);
 
             // 2. Setup L2 cache.
             let mut tmp = core::ptr::read_volatile(reg(VM_L2_CNTL));
-            tmp |= 1;          // ENABLE_L2_CACHE
-            tmp |= 1 << 1;     // ENABLE_L2_FRAGMENT_PROCESSING
-            tmp |= 1 << 2;     // ENABLE_L2_PTE_CACHE_LRU_UPDATE_BY_WRITE
-            tmp |= 1 << 3;     // ENABLE_L2_PDE0_CACHE_LRU_UPDATE_BY_WRITE
-            tmp |= 7 << 6;     // EFFECTIVE_L2_QUEUE_SIZE = 7
-            tmp |= 1 << 14;    // CONTEXT1_IDENTITY_ACCESS_MODE = 1
-            tmp |= 1 << 15;    // ENABLE_DEFAULT_PAGE_OUT_TO_SYSTEM_MEMORY
+            tmp |= 1; // ENABLE_L2_CACHE
+            tmp |= 1 << 1; // ENABLE_L2_FRAGMENT_PROCESSING
+            tmp |= 1 << 2; // ENABLE_L2_PTE_CACHE_LRU_UPDATE_BY_WRITE
+            tmp |= 1 << 3; // ENABLE_L2_PDE0_CACHE_LRU_UPDATE_BY_WRITE
+            tmp |= 7 << 6; // EFFECTIVE_L2_QUEUE_SIZE = 7
+            tmp |= 1 << 14; // CONTEXT1_IDENTITY_ACCESS_MODE = 1
+            tmp |= 1 << 15; // ENABLE_DEFAULT_PAGE_OUT_TO_SYSTEM_MEMORY
             core::ptr::write_volatile(reg(VM_L2_CNTL), tmp);
 
             // 3. Invalidate L2 cache.
@@ -1264,23 +1270,32 @@ impl GPUMemoryManager {
 
             // 4. Configure L2 cache bigk (bank select = fragment_size = 9).
             let mut tmp3 = core::ptr::read_volatile(reg(VM_L2_CNTL3));
-            tmp3 |= 1;         // L2_CACHE_BIGK_ASSOCIATIVITY
-            tmp3 |= 9 << 2;    // BANK_SELECT = 9
-            tmp3 |= 9 << 8;    // L2_CACHE_BIGK_FRAGMENT_SIZE = 9
+            tmp3 |= 1; // L2_CACHE_BIGK_ASSOCIATIVITY
+            tmp3 |= 9 << 2; // BANK_SELECT = 9
+            tmp3 |= 9 << 8; // L2_CACHE_BIGK_FRAGMENT_SIZE = 9
             core::ptr::write_volatile(reg(VM_L2_CNTL3), tmp3);
 
             // 5. Setup context0 for GART.
-            core::ptr::write_volatile(reg(VM_CONTEXT0_PAGE_TABLE_START_ADDR), (virt_addr >> 12) as u32);
-            core::ptr::write_volatile(reg(VM_CONTEXT0_PAGE_TABLE_END_ADDR), ((virt_addr >> 12) + num_pages as u64) as u32);
+            core::ptr::write_volatile(
+                reg(VM_CONTEXT0_PAGE_TABLE_START_ADDR),
+                (virt_addr >> 12) as u32,
+            );
+            core::ptr::write_volatile(
+                reg(VM_CONTEXT0_PAGE_TABLE_END_ADDR),
+                ((virt_addr >> 12) + num_pages as u64) as u32,
+            );
             core::ptr::write_volatile(reg(VM_CONTEXT0_PAGE_TABLE_BASE_ADDR), (phys >> 12) as u32);
-            core::ptr::write_volatile(reg(VM_CONTEXT0_PROTECTION_FAULT_DEFAULT_ADDR), (phys >> 12) as u32);
+            core::ptr::write_volatile(
+                reg(VM_CONTEXT0_PROTECTION_FAULT_DEFAULT_ADDR),
+                (phys >> 12) as u32,
+            );
             core::ptr::write_volatile(reg(VM_CONTEXT0_CNTL2), 0u32);
 
             // 6. Enable context0.
             let mut ctx = core::ptr::read_volatile(reg(VM_CONTEXT0_CNTL));
-            ctx |= 1;          // ENABLE_CONTEXT
+            ctx |= 1; // ENABLE_CONTEXT
             ctx &= !(0xF << 4); // PAGE_TABLE_DEPTH = 0 (flat)
-            ctx |= 1 << 20;    // RANGE_PROTECTION_FAULT_ENABLE_DEFAULT
+            ctx |= 1 << 20; // RANGE_PROTECTION_FAULT_ENABLE_DEFAULT
             core::ptr::write_volatile(reg(VM_CONTEXT0_CNTL), ctx);
         }
 
