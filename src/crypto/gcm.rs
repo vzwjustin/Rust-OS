@@ -13,7 +13,6 @@
 
 use super::aes::{encrypt_block, expand_key, AesContext, BLOCK_SIZE};
 use super::algapi::CryptoError;
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// GCM authentication tag length in bytes.
@@ -48,57 +47,63 @@ fn gctr(ctx: &AesContext, icb: [u8; BLOCK_SIZE], data: &[u8]) -> Vec<u8> {
 }
 
 /// Multiply two blocks in GF(2^128) (SP 800-38D §6.3, "Algorithm 1").
+///
+/// Branchless: the per-bit accumulate and the reduction are selected with
+/// bitwise masks rather than `if`, so the running time does not depend on the
+/// bits of `x` (ciphertext/AAD-derived) or `h` (the secret hash key). A
+/// data-dependent branch here would leak `h` through branch-predictor / cache
+/// timing.
 fn gf_mul(x: &[u8; BLOCK_SIZE], h: &[u8; BLOCK_SIZE]) -> [u8; BLOCK_SIZE] {
     let mut z = [0u8; BLOCK_SIZE];
     let mut v = *h;
     for i in 0..128 {
-        // bit i of x, most-significant bit first
-        if (x[i / 8] >> (7 - (i % 8))) & 1 == 1 {
-            for j in 0..BLOCK_SIZE {
-                z[j] ^= v[j];
-            }
+        // Accumulate v iff bit i of x (MSB first) is set — masked, not branched.
+        let bit = (x[i / 8] >> (7 - (i % 8))) & 1;
+        let mask = 0u8.wrapping_sub(bit); // 0x00 or 0xFF
+        for j in 0..BLOCK_SIZE {
+            z[j] ^= v[j] & mask;
         }
-        // v >>= 1 over the 128-bit big-endian value; reduce if the bit shifted
-        // out of the low end was set.
+        // v >>= 1 over the 128-bit big-endian value; reduce (XOR R into the
+        // high byte) iff the bit shifted out of the low end was set.
         let lsb = v[BLOCK_SIZE - 1] & 1;
+        let reduce_mask = 0u8.wrapping_sub(lsb);
         for j in (1..BLOCK_SIZE).rev() {
             v[j] = (v[j] >> 1) | ((v[j - 1] & 1) << 7);
         }
-        v[0] >>= 1;
-        if lsb == 1 {
-            v[0] ^= 0xe1;
-        }
+        v[0] = (v[0] >> 1) ^ (0xe1 & reduce_mask);
     }
     z
 }
 
-/// GHASH_H over `data`, which must already be a multiple of the block size.
-fn ghash(h: &[u8; BLOCK_SIZE], data: &[u8]) -> [u8; BLOCK_SIZE] {
+/// Compute GHASH_H over AAD ‖ pad ‖ C ‖ pad ‖ [len(AAD)]64 ‖ [len(C)]64
+/// (bit lengths, big-endian) in a streaming fashion.
+///
+/// GHASH is a block-by-block accumulator, so it is computed directly over the
+/// caller's buffers with zero heap allocation and no copying of the inputs —
+/// only a 16-byte stack block for the final (possibly partial) chunk of each
+/// segment and the length block.
+fn compute_ghash(h: &[u8; BLOCK_SIZE], aad: &[u8], ciphertext: &[u8]) -> [u8; BLOCK_SIZE] {
     let mut y = [0u8; BLOCK_SIZE];
-    for chunk in data.chunks(BLOCK_SIZE) {
-        for j in 0..chunk.len() {
-            y[j] ^= chunk[j];
+    let mut absorb = |segment: &[u8], y: &mut [u8; BLOCK_SIZE]| {
+        for chunk in segment.chunks(BLOCK_SIZE) {
+            let mut block = [0u8; BLOCK_SIZE];
+            block[..chunk.len()].copy_from_slice(chunk);
+            for j in 0..BLOCK_SIZE {
+                y[j] ^= block[j];
+            }
+            *y = gf_mul(y, h);
         }
-        y = gf_mul(&y, h);
-    }
-    y
-}
+    };
+    absorb(aad, &mut y);
+    absorb(ciphertext, &mut y);
 
-/// Build the GHASH input: AAD ‖ pad ‖ C ‖ pad ‖ [len(AAD)]64 ‖ [len(C)]64
-/// (bit lengths, big-endian).
-fn ghash_blocks(aad: &[u8], ciphertext: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(aad);
-    while buf.len() % BLOCK_SIZE != 0 {
-        buf.push(0);
+    let mut len_block = [0u8; BLOCK_SIZE];
+    len_block[0..8].copy_from_slice(&((aad.len() as u64) * 8).to_be_bytes());
+    len_block[8..16].copy_from_slice(&((ciphertext.len() as u64) * 8).to_be_bytes());
+    for j in 0..BLOCK_SIZE {
+        y[j] ^= len_block[j];
     }
-    buf.extend_from_slice(ciphertext);
-    while buf.len() % BLOCK_SIZE != 0 {
-        buf.push(0);
-    }
-    buf.extend_from_slice(&((aad.len() as u64) * 8).to_be_bytes());
-    buf.extend_from_slice(&((ciphertext.len() as u64) * 8).to_be_bytes());
-    buf
+    gf_mul(&y, h)
 }
 
 /// Compute J0 for a 96-bit nonce: IV ‖ 0^31 ‖ 1 (SP 800-38D §7.1).
@@ -133,7 +138,7 @@ pub fn aes_gcm_seal(
     inc32(&mut counter);
     let ciphertext = gctr(&ctx, counter, plaintext);
 
-    let s = ghash(&h, &ghash_blocks(aad, &ciphertext));
+    let s = compute_ghash(&h, aad, &ciphertext);
     let tag = gctr(&ctx, j0, &s); // == s XOR E_K(J0)
 
     let mut out = ciphertext;
@@ -167,13 +172,20 @@ pub fn aes_gcm_open(
     let h = encrypt_block(&ctx, &[0u8; BLOCK_SIZE]);
     let j0 = j0_from_nonce(nonce);
 
-    let s = ghash(&h, &ghash_blocks(aad, ciphertext));
+    let s = compute_ghash(&h, aad, ciphertext);
     let expected = gctr(&ctx, j0, &s);
 
-    // Constant-time tag comparison.
+    // Constant-time tag comparison. Bind both operands to fixed-size arrays so
+    // the loop carries no bounds checks (which would be data-independent here
+    // anyway, but this keeps the comparison provably branchless).
+    let expected_tag: &[u8; GCM_TAG_LEN] = expected[..GCM_TAG_LEN]
+        .try_into()
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
+    let actual_tag: &[u8; GCM_TAG_LEN] =
+        tag.try_into().map_err(|_| CryptoError::AuthenticationFailed)?;
     let mut diff = 0u8;
     for i in 0..GCM_TAG_LEN {
-        diff |= expected[i] ^ tag[i];
+        diff |= expected_tag[i] ^ actual_tag[i];
     }
     if diff != 0 {
         return Err(CryptoError::AuthenticationFailed);
