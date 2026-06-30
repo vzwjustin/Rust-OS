@@ -409,7 +409,14 @@ pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxR
         let written = vfs::vfs_write(out_fd, &buf[..n]).map_err(vfs_error_to_linux)?;
         total += written;
         if !offset.is_null() {
-            cur_offset += n as u64;
+            // Advance only by bytes actually transferred, not bytes read, or a
+            // short write would skip unwritten input and corrupt *offset.
+            cur_offset += written as u64;
+        }
+        if written < n {
+            // Output could not accept the whole chunk; stop so the input offset
+            // reflects exactly what was transferred.
+            break;
         }
         if n < to_read {
             break;

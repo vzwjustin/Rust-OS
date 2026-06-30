@@ -1274,7 +1274,11 @@ impl StorageDriver for AhciDriver {
             return Err(StorageError::BufferTooSmall);
         }
 
-        if sector_count > 65536 {
+        // Reject 65536+ : execute_command sizes the DMA buffer from `count as
+        // u16`, and 65536 truncates to 0 (a zero-length buffer for a full
+        // transfer -> overflow). This impl does not use the ATA 0-means-65536
+        // convention, so cap at 65535 sectors per command.
+        if sector_count >= 65536 {
             return Err(StorageError::TransferTooLarge);
         }
 
@@ -1296,7 +1300,11 @@ impl StorageDriver for AhciDriver {
             return Err(StorageError::BufferTooSmall);
         }
 
-        if sector_count > 65536 {
+        // Reject 65536+ : execute_command sizes the DMA buffer from `count as
+        // u16`, and 65536 truncates to 0 (a zero-length buffer for a full
+        // transfer -> overflow). This impl does not use the ATA 0-means-65536
+        // convention, so cap at 65535 sectors per command.
+        if sector_count >= 65536 {
             return Err(StorageError::TransferTooLarge);
         }
 

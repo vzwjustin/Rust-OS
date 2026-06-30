@@ -473,16 +473,22 @@ impl FileSystem for RamFs {
             return Err(FsError::NotADirectory);
         }
 
-        // Update access time
+        // Update access time and snapshot the (name, inode) pairs. Collecting
+        // here ends the mutable borrow of dir_inode so the directory-entry
+        // lookups below can re-borrow `inodes` immutably — re-locking the same
+        // non-reentrant RwLock (a second self.inodes.read()) would deadlock.
         dir_inode.metadata.accessed = get_current_time();
+        let entry_list: Vec<(alloc::string::String, InodeNumber)> = dir_inode
+            .entries
+            .iter()
+            .map(|(name, &entry_inode)| (name.clone(), entry_inode))
+            .collect();
 
-        let inodes_read = self.inodes.read();
         let mut entries = Vec::new();
-
-        for (name, &entry_inode) in &dir_inode.entries {
-            if let Some(entry_inode_data) = inodes_read.get(&entry_inode) {
+        for (name, entry_inode) in entry_list {
+            if let Some(entry_inode_data) = inodes.get(&entry_inode) {
                 entries.push(DirectoryEntry {
-                    name: name.clone(),
+                    name,
                     inode: entry_inode,
                     file_type: entry_inode_data.metadata.file_type,
                 });

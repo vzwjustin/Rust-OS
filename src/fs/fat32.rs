@@ -702,8 +702,12 @@ impl Fat32FileSystem {
                 let value_bytes = (value & 0x0FFFFFFF).to_le_bytes();
                 buffer[entry_offset..entry_offset + 4].copy_from_slice(&value_bytes);
 
-                write_storage_sectors(self.device_id, fat_sector as u64, &buffer)
-                    .map_err(|_| FsError::IoError)?;
+                write_storage_sectors(
+                    self.device_id,
+                    self.sector_base + fat_sector as u64,
+                    &buffer,
+                )
+                .map_err(|_| FsError::IoError)?;
             }
         }
 
@@ -718,8 +722,12 @@ impl Fat32FileSystem {
 
             for (cluster, data) in dirty_clusters {
                 let start_sector = self.cluster_to_sector(cluster);
-                write_storage_sectors(self.device_id, start_sector as u64, &data)
-                    .map_err(|_| FsError::IoError)?;
+                write_storage_sectors(
+                    self.device_id,
+                    self.sector_base + start_sector as u64,
+                    &data,
+                )
+                .map_err(|_| FsError::IoError)?;
             }
         }
 
