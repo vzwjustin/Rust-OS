@@ -135,6 +135,15 @@ impl PidNamespace {
     pub fn local_pid(&self, global_pid: u32) -> u32 {
         self.pid_map.get(&global_pid).copied().unwrap_or(global_pid)
     }
+
+    /// Resolve a namespace-local PID back to the global (kernel) PID.
+    /// Returns `None` if the local PID is not mapped in this namespace.
+    pub fn resolve_local_pid(&self, local_pid: u32) -> Option<u32> {
+        self.pid_map
+            .iter()
+            .find(|(_, &v)| v == local_pid)
+            .map(|(&k, _)| k)
+    }
 }
 
 // ── Mount namespace ─────────────────────────────────────────────────────
@@ -703,4 +712,57 @@ pub fn list_namespaces(pid: u32) -> Vec<(String, u64, Option<u64>)> {
     result.push((String::from("cgroup"), ns.cgroup.id, ns.cgroup.parent));
 
     result
+}
+
+// ── Isolation enforcement helpers ────────────────────────────────────────
+
+/// Translate a namespace-local (virtual) PID to the global kernel PID.
+///
+/// Returns `None` when `virtual_pid` is not mapped in `ns` (process not
+/// visible from within this PID namespace).
+pub fn resolve_pid(virtual_pid: u32, ns: &PidNamespace) -> Option<u32> {
+    ns.resolve_local_pid(virtual_pid)
+}
+
+/// Resolve `path` against a mount namespace.
+///
+/// Checks whether any mount point in `mnt_ns` is a prefix of `path`.  If a
+/// match is found the path is considered namespace-local; otherwise it falls
+/// through to the global VFS.  Returns the effective path string to use for
+/// the VFS lookup.
+pub fn resolve_path<'a>(path: &'a str, mnt_ns: &MountNamespace) -> &'a str {
+    for entry in &mnt_ns.mounts {
+        // A mount point with a matching prefix "claims" this path.
+        if path.starts_with(entry.target.as_str()) {
+            return path;
+        }
+    }
+    // No override — use the global VFS path unchanged.
+    path
+}
+
+/// Get the hostname stored in a UTS namespace directly.
+pub fn get_uts_hostname(uts_ns: &UtsNamespace) -> &str {
+    &uts_ns.nodename
+}
+
+/// Set the hostname on a UTS namespace directly (namespace-local operation).
+pub fn set_uts_hostname(uts_ns: &mut UtsNamespace, name: &str) {
+    uts_ns.nodename = String::from(name);
+}
+
+/// Map a namespace-local UID to the parent (global) UID using the user
+/// namespace UID mappings.  Returns the unmapped UID if no mapping exists.
+pub fn map_uid(uid: u32, user_ns: &UserNamespace) -> u32 {
+    user_ns.map_uid_up(uid)
+}
+
+/// Map a namespace-local GID to the parent (global) GID.
+pub fn map_gid(gid: u32, user_ns: &UserNamespace) -> u32 {
+    for entry in &user_ns.gid_map {
+        if gid >= entry.first_child && gid < entry.first_child + entry.count {
+            return entry.first_parent + (gid - entry.first_child);
+        }
+    }
+    gid
 }
