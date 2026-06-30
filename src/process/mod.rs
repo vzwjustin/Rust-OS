@@ -13,6 +13,8 @@ pub mod context;
 pub mod dynamic_linker;
 pub mod elf_loader;
 pub mod exec;
+pub mod exit;
+pub mod fork;
 pub mod integration;
 pub mod ipc;
 pub mod scheduler;
@@ -284,6 +286,10 @@ pub struct ProcessControlBlock {
     pub wake_time: Option<u64>,
     /// Signal handlers
     pub signal_handlers: BTreeMap<u32, u64>,
+    /// Signal flags (SA_* bits) per signal number
+    pub signal_flags: BTreeMap<u32, u64>,
+    /// Signal restorer function per signal number
+    pub signal_restorer: BTreeMap<u32, u64>,
     /// Pending signals
     pub pending_signals: alloc::vec::Vec<u32>,
     /// Program entry point address
@@ -626,6 +632,8 @@ impl ProcessControlBlock {
             file_offsets: BTreeMap::new(),
             wake_time: None,
             signal_handlers: BTreeMap::new(),
+            signal_flags: BTreeMap::new(),
+            signal_restorer: BTreeMap::new(),
             pending_signals: alloc::vec::Vec::new(),
             entry_point: 0,
 

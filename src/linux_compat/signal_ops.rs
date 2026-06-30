@@ -260,10 +260,18 @@ pub fn sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> 
             .get_process(pid)
             .and_then(|pcb| pcb.signal_handlers.get(&(signum as u32)).copied())
             .unwrap_or(sig_action::SIG_DFL as u64);
+        let old_flags = process_manager
+            .get_process(pid)
+            .and_then(|pcb| pcb.signal_flags.get(&(signum as u32)).copied())
+            .unwrap_or(0);
+        let old_restorer = process_manager
+            .get_process(pid)
+            .and_then(|pcb| pcb.signal_restorer.get(&(signum as u32)).copied())
+            .unwrap_or(0);
         unsafe {
             (*oldact).sa_handler = old_handler as usize;
-            (*oldact).sa_flags = 0;
-            (*oldact).sa_restorer = 0;
+            (*oldact).sa_flags = old_flags as u32;
+            (*oldact).sa_restorer = old_restorer as usize;
             (*oldact).sa_mask = signal_mask_for(pid);
         }
     }
@@ -271,8 +279,12 @@ pub fn sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> 
     if !act.is_null() {
         unsafe {
             let handler = (*act).sa_handler as u64;
+            let flags = (*act).sa_flags as u64;
+            let restorer = (*act).sa_restorer as u64;
             process_manager.with_process_mut(pid, |pcb| {
                 pcb.signal_handlers.insert(signum as u32, handler);
+                pcb.signal_flags.insert(signum as u32, flags);
+                pcb.signal_restorer.insert(signum as u32, restorer);
             });
         }
     }

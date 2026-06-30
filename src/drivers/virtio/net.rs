@@ -18,9 +18,17 @@ use spin::Mutex;
 /// virtio-net feature bits
 const VIRTIO_NET_F_CSUM: u64 = 1 << 0;
 const VIRTIO_NET_F_GUEST_CSUM: u64 = 1 << 1;
+const VIRTIO_NET_F_MTU: u64 = 1 << 3;
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
 const VIRTIO_NET_F_MRG_RXBUF: u64 = 1 << 15;
 const VIRTIO_NET_F_STATUS: u64 = 1 << 16;
+const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;
+const VIRTIO_NET_F_CTRL_RX: u64 = 1 << 18;
+const VIRTIO_NET_F_CTRL_VLAN: u64 = 1 << 19;
+const VIRTIO_NET_F_MQ: u64 = 1 << 22;
+
+const VIRTIO_NET_S_LINK_UP: u16 = 1;
+const VIRTIO_NET_S_ANNOUNCE: u16 = 2;
 
 /// virtio-net header (mandatory prefix for all packets)
 #[repr(C)]
@@ -41,6 +49,53 @@ pub struct VirtioNetConfig {
     pub status: u16,
     pub max_virtqueue_pairs: u16,
     pub mtu: u16,
+}
+
+/// Normalized virtio-net capabilities from negotiated feature bits.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VirtioNetCapabilities {
+    pub checksum_offload: bool,
+    pub guest_checksum: bool,
+    pub mac_config: bool,
+    pub status_config: bool,
+    pub mtu_config: bool,
+    pub control_queue: bool,
+    pub rx_mode_control: bool,
+    pub vlan_control: bool,
+    pub multiqueue: bool,
+    pub mergeable_rx_buffers: bool,
+    pub max_mtu: u16,
+    pub queue_pairs: u16,
+}
+
+impl VirtioNetCapabilities {
+    pub fn from_features(features: u64, max_mtu: u16, queue_pairs: u16) -> Self {
+        Self {
+            checksum_offload: (features & VIRTIO_NET_F_CSUM) != 0,
+            guest_checksum: (features & VIRTIO_NET_F_GUEST_CSUM) != 0,
+            mac_config: (features & VIRTIO_NET_F_MAC) != 0,
+            status_config: (features & VIRTIO_NET_F_STATUS) != 0,
+            mtu_config: (features & VIRTIO_NET_F_MTU) != 0,
+            control_queue: (features & VIRTIO_NET_F_CTRL_VQ) != 0,
+            rx_mode_control: (features & VIRTIO_NET_F_CTRL_RX) != 0,
+            vlan_control: (features & VIRTIO_NET_F_CTRL_VLAN) != 0,
+            multiqueue: (features & VIRTIO_NET_F_MQ) != 0,
+            mergeable_rx_buffers: (features & VIRTIO_NET_F_MRG_RXBUF) != 0,
+            max_mtu,
+            queue_pairs,
+        }
+    }
+}
+
+/// Decode the virtio-net config status field.
+pub fn decode_virtio_net_status(status: u16, status_feature: bool) -> (bool, bool) {
+    if !status_feature {
+        return (true, false);
+    }
+    (
+        (status & VIRTIO_NET_S_LINK_UP) != 0,
+        (status & VIRTIO_NET_S_ANNOUNCE) != 0,
+    )
 }
 
 /// Queue indices for virtio-net
@@ -107,17 +162,23 @@ fn reap_tx_completions(tx_queue: &mut VirtQueue) {
 pub struct VirtioNet {
     transport: VirtioTransport,
     mac_address: MacAddress,
+    features: u64,
+    capabilities: VirtioNetCapabilities,
     rx_queue: Option<VirtQueue>,
     tx_queue: Option<VirtQueue>,
-    /// Receive buffer storage
-    rx_buffers: Vec<[u8; PACKET_BUF_SIZE]>,
+    /// Receive buffer storage.  Each buffer is boxed so its DMA address remains
+    /// stable even if the Vec metadata moves.
+    rx_buffers: Vec<Box<[u8; PACKET_BUF_SIZE]>>,
 }
 
 impl VirtioNet {
     /// Create and initialize a virtio-net device
     pub fn new(transport: VirtioTransport) -> Result<Self, &'static str> {
-        // Negotiate features: we want MAC address support
-        let driver_features = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_GUEST_CSUM;
+        // Negotiate only the common virtio-net features this driver implements.
+        // Do not request MRG_RXBUF unless the larger header format is wired.
+        let device_features = transport.read_device_features();
+        let driver_features = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_MTU;
+        let negotiated_features = device_features & driver_features;
         transport.init_device(driver_features)?;
 
         // Read MAC address from device config
@@ -130,6 +191,24 @@ impl VirtioNet {
         if mac.iter().all(|&b| b == 0) {
             mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
         }
+
+        let configured_mtu = if (negotiated_features & VIRTIO_NET_F_MTU) != 0 {
+            read_config16(&transport, 10)
+        } else {
+            1500
+        };
+        let max_mtu = if configured_mtu >= 68 {
+            configured_mtu.min(1500)
+        } else {
+            1500
+        };
+        let queue_pairs = if (negotiated_features & VIRTIO_NET_F_MQ) != 0 {
+            read_config16(&transport, 8).max(1)
+        } else {
+            1
+        };
+        let capabilities =
+            VirtioNetCapabilities::from_features(negotiated_features, max_mtu, queue_pairs);
 
         crate::serial_println!(
             "virtio-net: MAC={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -150,9 +229,7 @@ impl VirtioNet {
         };
         let rx_notify_off = {
             // Read notify_off from common config after selecting queue
-            let notify_off =
-                unsafe { core::ptr::read_volatile((transport.common_base + 30) as *const u16) };
-            notify_off
+            transport.selected_queue_notify_off()
         };
         let mut rx_queue = VirtQueue::new(rx_size, rx_notify_off)?;
         transport.setup_queue(&rx_queue);
@@ -165,19 +242,21 @@ impl VirtioNet {
             tx_size.min(QUEUE_SIZE)
         };
         let tx_notify_off = {
-            let notify_off =
-                unsafe { core::ptr::read_volatile((transport.common_base + 30) as *const u16) };
-            notify_off
+            transport.selected_queue_notify_off()
         };
         let tx_queue = VirtQueue::new(tx_size, tx_notify_off)?;
         transport.setup_queue(&tx_queue);
 
-        // Allocate RX buffers and fill the receive queue
-        let mut rx_buffers = Vec::new();
-        for i in 0..rx_size as usize {
-            let buf = [0u8; PACKET_BUF_SIZE];
-            rx_buffers.push(buf);
+        // Allocate all RX buffers before publishing any DMA descriptors.  The
+        // boxed backing storage keeps each buffer's address stable for the
+        // lifetime of the descriptor, and preallocating avoids Vec growth while
+        // descriptors are visible to the device.
+        let mut rx_buffers = Vec::with_capacity(rx_size as usize);
+        for _ in 0..rx_size as usize {
+            rx_buffers.push(Box::new([0u8; PACKET_BUF_SIZE]));
+        }
 
+        for i in 0..rx_size as usize {
             let buf_phys = super::virt_to_phys(rx_buffers[i].as_ptr() as usize);
             let desc_idx = i as u16;
             rx_queue.set_desc(
@@ -203,6 +282,8 @@ impl VirtioNet {
         Ok(VirtioNet {
             transport,
             mac_address: mac,
+            features: negotiated_features,
+            capabilities,
             rx_queue: Some(rx_queue),
             tx_queue: Some(tx_queue),
             rx_buffers,
@@ -214,8 +295,20 @@ impl VirtioNet {
         self.mac_address
     }
 
+    pub fn capabilities(&self) -> VirtioNetCapabilities {
+        self.capabilities
+    }
+
     /// Send a packet
     pub fn send(&mut self, data: &[u8]) -> Result<(), &'static str> {
+        if data.is_empty() {
+            return Err("virtio-net: empty packet");
+        }
+        let hdr_len = core::mem::size_of::<VirtioNetHdr>();
+        if data.len() > self.capabilities.max_mtu as usize + 14 || data.len() + hdr_len > PACKET_BUF_SIZE {
+            return Err("virtio-net: packet too large");
+        }
+
         let tx_queue = self.tx_queue.as_mut().unwrap();
 
         // Allocate a descriptor
@@ -250,7 +343,7 @@ impl VirtioNet {
             );
         }
 
-        let total_len = core::mem::size_of::<VirtioNetHdr>() + data.len();
+        let total_len = hdr_len + data.len();
         let buf_phys = super::virt_to_phys(buffers[buf_idx].as_ptr() as usize);
 
         tx_queue.set_desc(desc_idx, buf_phys, total_len as u32, 0, 0);
@@ -282,7 +375,7 @@ impl VirtioNet {
 
         let hdr_size = core::mem::size_of::<VirtioNetHdr>();
         let packet_len = _len as usize;
-        if packet_len <= hdr_size {
+        if packet_len <= hdr_size || packet_len > PACKET_BUF_SIZE {
             // Re-submit the buffer
             let buf_phys = super::virt_to_phys(self.rx_buffers[buf_idx].as_ptr() as usize);
             rx_queue.set_desc(
@@ -319,13 +412,15 @@ impl VirtioNet {
 
     /// Check link status
     pub fn link_up(&self) -> bool {
-        if self.transport.device_base != 0 {
-            let status = self.transport.read_device_config8(6) as u16;
-            (status & 1) == 1
-        } else {
-            true
-        }
+        let status = read_config16(&self.transport, 6);
+        decode_virtio_net_status(status, (self.features & VIRTIO_NET_F_STATUS) != 0).0
     }
+}
+
+fn read_config16(transport: &VirtioTransport, offset: u32) -> u16 {
+    let lo = transport.read_device_config8(offset) as u16;
+    let hi = transport.read_device_config8(offset + 1) as u16;
+    lo | (hi << 8)
 }
 
 const TX_BUF_SENTINEL: u16 = u16::MAX;
@@ -427,23 +522,25 @@ impl NetworkDevice for VirtioNetDevice {
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
+        let virtio_caps = with_virtio_net(|net| net.capabilities()).unwrap_or_default();
+        let max_mtu = if virtio_caps.max_mtu == 0 { 1500 } else { virtio_caps.max_mtu };
         DeviceCapabilities {
-            max_mtu: 1500,
+            max_mtu,
             min_mtu: 68,
-            hw_checksum: false,
-            supports_checksum_offload: false,
+            hw_checksum: virtio_caps.checksum_offload,
+            supports_checksum_offload: virtio_caps.checksum_offload || virtio_caps.guest_checksum,
             scatter_gather: true,
             tso: false,
             supports_tso: false,
             supports_lro: false,
-            rss: false,
-            vlan: false,
-            supports_vlan: false,
+            rss: virtio_caps.multiqueue,
+            vlan: virtio_caps.vlan_control,
+            supports_vlan: virtio_caps.vlan_control,
             jumbo_frames: false,
             supports_jumbo_frames: false,
-            multicast_filter: false,
-            max_tx_queues: 1,
-            max_rx_queues: 1,
+            multicast_filter: virtio_caps.rx_mode_control,
+            max_tx_queues: virtio_caps.queue_pairs.max(1),
+            max_rx_queues: virtio_caps.queue_pairs.max(1),
         }
     }
 
@@ -452,7 +549,8 @@ impl NetworkDevice for VirtioNetDevice {
     }
 
     fn set_mtu(&mut self, mtu: u16) -> NetworkResult<()> {
-        if mtu < 68 {
+        let max_mtu = with_virtio_net(|net| net.capabilities().max_mtu).unwrap_or(1500);
+        if mtu < 68 || mtu > max_mtu {
             return Err(NetworkError::InvalidArgument);
         }
         self.mtu = mtu;

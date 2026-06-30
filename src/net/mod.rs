@@ -26,13 +26,78 @@ pub mod tcp;
 pub mod udp;
 pub mod unix;
 
+// Linux-mirror network subsystems
+pub mod sixlowpan;
+pub mod eight02;
+pub mod eight021q;
+pub mod ninep;
+pub mod atm;
+pub mod batman_adv;
+pub mod bluetooth;
+pub mod bpf;
+pub mod bridge;
+pub mod can;
+pub mod ceph;
+pub mod core;
+pub mod dcb;
+pub mod devlink;
+pub mod dns_resolver;
+pub mod dsa;
+pub mod ethtool;
+pub mod handshake;
+pub mod hsr;
+pub mod ieee802154;
+pub mod ife;
+pub mod ipv4;
+pub mod ipv6;
+pub mod iucv;
+pub mod kcm;
+pub mod key;
+pub mod l2tp;
+pub mod l3mdev;
+pub mod lapb;
+pub mod llc;
+pub mod mac80211;
+pub mod mac802154;
+pub mod mctp;
+pub mod mpls;
+pub mod mptcp;
+pub mod ncsi;
+pub mod netlabel;
+pub mod netlink;
+pub mod nfc;
+pub mod nsh;
+pub mod openvswitch;
+pub mod packet;
+pub mod phonet;
+pub mod psample;
+pub mod psp;
+pub mod qrtr;
+pub mod rds;
+pub mod rfkill;
+pub mod rxrpc;
+pub mod sched;
+pub mod sctp;
+pub mod shaper;
+pub mod smc;
+pub mod strparser;
+pub mod sunrpc;
+pub mod switchdev;
+pub mod tipc;
+pub mod tls;
+pub mod vmw_vsock;
+pub mod wireless;
+pub mod x25;
+pub mod xdp;
+pub mod xfrm;
+
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
-use core::fmt;
+use ::core::fmt;
 use lazy_static::lazy_static;
 use spin::{Mutex, RwLock};
 
@@ -896,6 +961,71 @@ lazy_static! {
 /// Initialize the network stack
 pub fn init() -> NetworkResult<()> {
     netfilter::init();
+
+    // Initialize Linux-mirror net subsystems
+    sixlowpan::init().ok();
+    eight02::init().ok();
+    eight021q::init().ok();
+    ninep::init().ok();
+    atm::init().ok();
+    batman_adv::init().ok();
+    bluetooth::init().ok();
+    bpf::init().ok();
+    bridge::init().ok();
+    can::init().ok();
+    ceph::init().ok();
+    core::init().ok();
+    dcb::init().ok();
+    devlink::init().ok();
+    dns_resolver::init().ok();
+    dsa::init().ok();
+    ethtool::init().ok();
+    handshake::init().ok();
+    hsr::init().ok();
+    ieee802154::init().ok();
+    ife::init().ok();
+    ipv4::init().ok();
+    ipv6::init().ok();
+    iucv::init().ok();
+    kcm::init().ok();
+    key::init().ok();
+    l2tp::init().ok();
+    l3mdev::init().ok();
+    lapb::init().ok();
+    llc::init().ok();
+    mac80211::init().ok();
+    mac802154::init().ok();
+    mctp::init().ok();
+    mpls::init().ok();
+    mptcp::init().ok();
+    ncsi::init().ok();
+    netlabel::init().ok();
+    netlink::init().ok();
+    nfc::init().ok();
+    nsh::init().ok();
+    openvswitch::init().ok();
+    packet::init().ok();
+    phonet::init().ok();
+    psample::init().ok();
+    psp::init().ok();
+    qrtr::init().ok();
+    rds::init().ok();
+    rfkill::init().ok();
+    rxrpc::init().ok();
+    sched::init().ok();
+    sctp::init().ok();
+    shaper::init().ok();
+    smc::init().ok();
+    strparser::init().ok();
+    sunrpc::init().ok();
+    switchdev::init().ok();
+    tipc::init().ok();
+    tls::init().ok();
+    vmw_vsock::init().ok();
+    wireless::init().ok();
+    x25::init().ok();
+    xdp::init().ok();
+    xfrm::init().ok();
 
     // Create loopback interface
     let loopback = NetworkInterface {

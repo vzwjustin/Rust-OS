@@ -59,6 +59,16 @@ impl DeviceDescriptor {
         if b.len() < Self::SIZE {
             return Err("device descriptor too short");
         }
+        if b[0] as usize != Self::SIZE || b[1] != super::hcd::DESC_DEVICE {
+            return Err("malformed device descriptor header");
+        }
+        let max_packet = b[7];
+        if !matches!(max_packet, 8 | 16 | 32 | 64) {
+            return Err("invalid ep0 max packet size");
+        }
+        if b[17] == 0 {
+            return Err("device has no configurations");
+        }
         Ok(DeviceDescriptor {
             length: b[0],
             descriptor_type: b[1],
@@ -98,6 +108,19 @@ impl ConfigurationDescriptor {
         if b.len() < Self::SIZE {
             return Err("config descriptor too short");
         }
+        if b[0] as usize != Self::SIZE || b[1] != super::hcd::DESC_CONFIGURATION {
+            return Err("malformed config descriptor header");
+        }
+        let total_length = u16::from_le_bytes([b[2], b[3]]);
+        if total_length < Self::SIZE as u16 {
+            return Err("config total length too short");
+        }
+        if b[4] == 0 {
+            return Err("config has no interfaces");
+        }
+        if b[7] & 0x80 == 0 {
+            return Err("config attributes missing reserved bit");
+        }
         Ok(ConfigurationDescriptor {
             length: b[0],
             descriptor_type: b[1],
@@ -132,6 +155,9 @@ impl InterfaceDescriptor {
         if b.len() < Self::SIZE {
             return Err("interface descriptor too short");
         }
+        if b[0] as usize != Self::SIZE || b[1] != super::hcd::DESC_INTERFACE {
+            return Err("malformed interface descriptor header");
+        }
         Ok(InterfaceDescriptor {
             length: b[0],
             descriptor_type: b[1],
@@ -163,6 +189,21 @@ impl EndpointDescriptor {
     pub fn parse(b: &[u8]) -> Result<Self, &'static str> {
         if b.len() < Self::SIZE {
             return Err("endpoint descriptor too short");
+        }
+        if b[0] as usize != Self::SIZE || b[1] != super::hcd::DESC_ENDPOINT {
+            return Err("malformed endpoint descriptor header");
+        }
+        let endpoint_number = b[2] & 0x0f;
+        if endpoint_number == 0 || endpoint_number > 15 {
+            return Err("invalid endpoint address");
+        }
+        let transfer_type = b[3] & 0x03;
+        if transfer_type == 0 {
+            return Err("control endpoint descriptor not allowed in configuration");
+        }
+        let max_packet_size = u16::from_le_bytes([b[4], b[5]]) & 0x07ff;
+        if max_packet_size == 0 {
+            return Err("endpoint max packet size is zero");
         }
         Ok(EndpointDescriptor {
             length: b[0],
@@ -202,14 +243,21 @@ pub struct ParsedConfiguration {
 /// Walk a concatenated configuration blob (config + interfaces + endpoints).
 pub fn parse_configuration(blob: &[u8]) -> Result<ParsedConfiguration, &'static str> {
     let config = ConfigurationDescriptor::parse(blob)?;
+    if blob.len() < config.total_length as usize {
+        return Err("configuration blob shorter than wTotalLength");
+    }
+    if config.length as usize != ConfigurationDescriptor::SIZE {
+        return Err("unexpected configuration descriptor length");
+    }
     let mut interfaces: Vec<ParsedInterface> = Vec::new();
     let mut offset = config.length as usize;
+    let end = config.total_length as usize;
 
-    while offset + 2 <= blob.len() {
+    while offset + 2 <= end {
         let len = blob[offset] as usize;
         let dtype = blob[offset + 1];
-        if len == 0 || offset + len > blob.len() {
-            break;
+        if len < 2 || offset + len > end {
+            return Err("malformed descriptor in configuration");
         }
         match dtype {
             t if t == super::hcd::DESC_INTERFACE => {
@@ -223,11 +271,22 @@ pub fn parse_configuration(blob: &[u8]) -> Result<ParsedConfiguration, &'static 
                 let ep = EndpointDescriptor::parse(&blob[offset..offset + len])?;
                 if let Some(last) = interfaces.last_mut() {
                     last.endpoints.push(ep);
+                } else {
+                    return Err("endpoint before interface");
                 }
             }
             _ => {} // class-specific descriptor (e.g. HID) — skipped here
         }
         offset += len;
+    }
+
+    if interfaces.len() != config.num_interfaces as usize {
+        return Err("interface count mismatch");
+    }
+    for iface in &interfaces {
+        if iface.endpoints.len() != iface.descriptor.num_endpoints as usize {
+            return Err("endpoint count mismatch");
+        }
     }
 
     Ok(ParsedConfiguration {

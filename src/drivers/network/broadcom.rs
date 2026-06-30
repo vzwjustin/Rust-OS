@@ -4,8 +4,8 @@
 //! and other Broadcom Gigabit Ethernet controllers.
 
 use super::{
-    DeviceCapabilities, DeviceState, DeviceType, EnhancedNetworkStats, ExtendedNetworkCapabilities,
-    NetworkDriver, NetworkStats,
+    record_nic_event, DeviceCapabilities, DeviceState, DeviceType, EnhancedNetworkStats,
+    ExtendedNetworkCapabilities, LinkStatus, NetworkDriver, NetworkStats, NicEvent,
 };
 use crate::net::{MacAddress, NetworkError};
 use alloc::boxed::Box;
@@ -401,6 +401,28 @@ pub const BCM_TXBD_PROD_INDEX: u32 = 0x2710;
 // Transmit BD Ring Consumer Index (mailbox)
 pub const BCM_TXBD_CONS_INDEX: u32 = 0x2720;
 
+const BCM_MAC_STATUS_LINK_UP: u32 = 0x01;
+const BCM_MAC_STATUS_FULL_DUPLEX: u32 = 0x02;
+const BCM_MAC_STATUS_SPEED_100: u32 = 0x08;
+const BCM_MAC_STATUS_SPEED_1000: u32 = 0x10;
+const BCM_MAC_EVENT_LINK_CHANGE: u32 = 0x01;
+const BCM_MAC_EVENT_RX_ERROR: u32 = 0x02;
+const BCM_MAC_EVENT_TX_ERROR: u32 = 0x04;
+
+pub fn decode_bcm_link_status(mac_status: u32) -> LinkStatus {
+    if (mac_status & BCM_MAC_STATUS_LINK_UP) == 0 {
+        return LinkStatus::DOWN;
+    }
+    let speed = if (mac_status & BCM_MAC_STATUS_SPEED_1000) != 0 {
+        1000
+    } else if (mac_status & BCM_MAC_STATUS_SPEED_100) != 0 {
+        100
+    } else {
+        10
+    };
+    LinkStatus::up(speed, (mac_status & BCM_MAC_STATUS_FULL_DUPLEX) != 0)
+}
+
 /// Broadcom driver implementation
 #[derive(Debug)]
 pub struct BroadcomDriver {
@@ -441,11 +463,18 @@ impl BroadcomDriver {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.max_mtu = 9000;
         capabilities.hw_checksum = true;
+        capabilities.supports_checksum_offload = true;
         capabilities.scatter_gather = true;
         capabilities.vlan = true;
+        capabilities.supports_vlan = true;
         capabilities.jumbo_frames = true;
+        capabilities.supports_jumbo_frames = true;
         capabilities.tso = device_info.supports_tso;
+        capabilities.supports_tso = device_info.supports_tso;
         capabilities.rss = device_info.supports_rss;
+        capabilities.multicast_filter = true;
+        capabilities.max_tx_queues = device_info.queue_count as u16;
+        capabilities.max_rx_queues = device_info.queue_count as u16;
 
         let mut extended_capabilities = ExtendedNetworkCapabilities::default();
         extended_capabilities.base = capabilities;
@@ -874,7 +903,7 @@ impl NetworkDriver for BroadcomDriver {
 
     fn is_link_up(&self) -> bool {
         let mac_status = self.read_reg(BCM_MAC_STATUS);
-        (mac_status & 0x01) != 0 // Link up bit
+        decode_bcm_link_status(mac_status).link_up
     }
 
     fn get_link_status(&self) -> (bool, u32, bool) {
@@ -886,17 +915,7 @@ impl NetworkDriver for BroadcomDriver {
         }
 
         // Read link speed and duplex from MAC status register
-        let mac_status = self.read_reg(BCM_MAC_STATUS);
-        let speed = if (mac_status & 0x10) != 0 {
-            1000
-        } else if (mac_status & 0x08) != 0 {
-            100
-        } else {
-            10
-        };
-        let full_duplex = (mac_status & 0x02) != 0;
-
-        (true, speed, full_duplex)
+        decode_bcm_link_status(self.read_reg(BCM_MAC_STATUS)).as_tuple()
     }
 
     fn set_promiscuous(&mut self, enabled: bool) -> Result<(), NetworkError> {
@@ -956,9 +975,14 @@ impl NetworkDriver for BroadcomDriver {
         // Read and handle MAC events
         let mac_event = self.read_reg(BCM_MAC_EVENT);
 
-        if (mac_event & 0x01) != 0 {
-            // Link state change
-            self.stats.link_changes += 1;
+        if (mac_event & BCM_MAC_EVENT_LINK_CHANGE) != 0 {
+            record_nic_event(&mut self.stats, NicEvent::LinkChange);
+        }
+        if (mac_event & BCM_MAC_EVENT_RX_ERROR) != 0 {
+            record_nic_event(&mut self.stats, NicEvent::RxError);
+        }
+        if (mac_event & BCM_MAC_EVENT_TX_ERROR) != 0 {
+            record_nic_event(&mut self.stats, NicEvent::TxError);
         }
 
         // Clear events
@@ -975,6 +999,8 @@ pub fn create_broadcom_driver(
     base_addr: u64,
     irq: u8,
 ) -> Option<(Box<dyn NetworkDriver>, ExtendedNetworkCapabilities)> {
+    super::classify_common_nic(vendor_id, device_id)?;
+
     // Find matching device in database
     let device_info = BROADCOM_DEVICES
         .iter()
@@ -990,6 +1016,9 @@ pub fn create_broadcom_driver(
 
 /// Check if PCI device is a Broadcom NetXtreme controller
 pub fn is_broadcom_device(vendor_id: u16, device_id: u16) -> bool {
+    if super::classify_common_nic(vendor_id, device_id).is_none() {
+        return false;
+    }
     BROADCOM_DEVICES
         .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id)
@@ -1000,6 +1029,7 @@ pub fn get_broadcom_device_info(
     vendor_id: u16,
     device_id: u16,
 ) -> Option<&'static BroadcomDeviceInfo> {
+    super::classify_common_nic(vendor_id, device_id)?;
     BROADCOM_DEVICES
         .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)

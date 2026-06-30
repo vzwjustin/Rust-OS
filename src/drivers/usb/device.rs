@@ -52,6 +52,10 @@ fn respond_descriptor(blob: &[u8], setup: SetupPacket, data: Option<&mut [u8]>) 
     }
 }
 
+const HID_REQ_GET_REPORT: u8 = 0x01;
+const HID_REQ_SET_IDLE: u8 = 0x0A;
+const HID_REQ_SET_PROTOCOL: u8 = 0x0B;
+
 // ── Virtual HID boot keyboard ───────────────────────────────────────────
 
 /// Boot-protocol HID keyboard that replays a short canned key sequence on its
@@ -59,6 +63,8 @@ fn respond_descriptor(blob: &[u8], setup: SetupPacket, data: Option<&mut [u8]>) 
 pub struct VirtualHidKeyboard {
     address: u8,
     configured: bool,
+    boot_protocol: bool,
+    idle_rate: u8,
     interrupt_in_ep: u8,
     /// Pre-loaded 8-byte boot reports, popped one per interrupt-IN.
     reports: Vec<[u8; 8]>,
@@ -78,6 +84,8 @@ impl VirtualHidKeyboard {
         VirtualHidKeyboard {
             address: 0,
             configured: false,
+            boot_protocol: true,
+            idle_rate: 0,
             interrupt_in_ep,
             reports,
             cursor: 0,
@@ -166,6 +174,28 @@ impl VirtualDevice for VirtualHidKeyboard {
                     _ => TransferResult::stall(),
                 }
             }
+            HID_REQ_SET_PROTOCOL => {
+                self.boot_protocol = setup.value == 0;
+                TransferResult::ok(0)
+            }
+            HID_REQ_SET_IDLE => {
+                self.idle_rate = (setup.value >> 8) as u8;
+                TransferResult::ok(0)
+            }
+            HID_REQ_GET_REPORT => {
+                let report = self
+                    .reports
+                    .get(self.cursor)
+                    .copied()
+                    .unwrap_or([0u8; 8]);
+                if let Some(buf) = data {
+                    let n = core::cmp::min(buf.len(), report.len());
+                    buf[..n].copy_from_slice(&report[..n]);
+                    TransferResult::ok(n)
+                } else {
+                    TransferResult::ok(0)
+                }
+            }
             _ => TransferResult::ok(0),
         }
     }
@@ -175,11 +205,163 @@ impl VirtualDevice for VirtualHidKeyboard {
     }
 
     fn interrupt(&mut self, endpoint: u8, buf: &mut [u8]) -> TransferResult {
-        if endpoint != self.interrupt_in_ep || !self.configured {
+        if endpoint != self.interrupt_in_ep || !self.configured || !self.boot_protocol {
             return TransferResult::stall();
         }
         if self.cursor >= self.reports.len() {
             // NAK modelled as a zero-length transfer (no new report).
+            return TransferResult::ok(0);
+        }
+        let report = self.reports[self.cursor];
+        self.cursor += 1;
+        let n = core::cmp::min(buf.len(), report.len());
+        buf[..n].copy_from_slice(&report[..n]);
+        TransferResult::ok(n)
+    }
+}
+
+// ── Virtual HID boot mouse ──────────────────────────────────────────────
+
+/// Boot-protocol HID mouse with a small deterministic report stream.
+pub struct VirtualHidMouse {
+    address: u8,
+    configured: bool,
+    boot_protocol: bool,
+    idle_rate: u8,
+    interrupt_in_ep: u8,
+    reports: Vec<[u8; 4]>,
+    cursor: usize,
+}
+
+impl VirtualHidMouse {
+    pub fn new(interrupt_in_ep: u8) -> Self {
+        let reports = vec![
+            [0, 8, 0, 0],  // move right
+            [1, 0, 0, 0],  // left button down
+            [0, 0, 0, 0],  // release
+            [0, 0, 0, 1],  // wheel up
+        ];
+        Self {
+            address: 0,
+            configured: false,
+            boot_protocol: true,
+            idle_rate: 0,
+            interrupt_in_ep,
+            reports,
+            cursor: 0,
+        }
+    }
+
+    fn device_descriptor(&self) -> descriptor::DeviceDescriptor {
+        descriptor::DeviceDescriptor {
+            length: descriptor::DeviceDescriptor::SIZE as u8,
+            descriptor_type: DESC_DEVICE,
+            usb_version: 0x0200,
+            device_class: class::PER_INTERFACE,
+            device_subclass: 0,
+            device_protocol: 0,
+            max_packet_size0: 8,
+            vendor_id: 0x046D,
+            product_id: 0xC077,
+            device_version: 0x0100,
+            manufacturer_index: 0,
+            product_index: 0,
+            serial_index: 0,
+            num_configurations: 1,
+        }
+    }
+
+    fn configuration_blob(&self) -> Vec<u8> {
+        let total: u16 = 9 + 9 + 9 + 7;
+        let mut b = Vec::with_capacity(total as usize);
+        b.extend_from_slice(&[
+            9,
+            DESC_CONFIGURATION,
+            total as u8,
+            (total >> 8) as u8,
+            1,
+            1,
+            0,
+            0xA0,
+            50,
+        ]);
+        // Interface descriptor: HID, boot subclass, mouse protocol.
+        b.extend_from_slice(&[
+            9, 0x04, 0, 0, 1, class::HID, 0x01, 0x02, 0,
+        ]);
+        // HID class descriptor with a compact boot-mouse report descriptor.
+        b.extend_from_slice(&[9, 0x21, 0x11, 0x01, 0x00, 1, 0x22, 52, 0]);
+        b.extend_from_slice(&[
+            7,
+            0x05,
+            self.interrupt_in_ep,
+            0x03,
+            4,
+            0,
+            10,
+        ]);
+        b
+    }
+}
+
+impl VirtualDevice for VirtualHidMouse {
+    fn speed(&self) -> UsbSpeed {
+        UsbSpeed::Low
+    }
+
+    fn control(&mut self, setup: SetupPacket, data: Option<&mut [u8]>) -> TransferResult {
+        match setup.request {
+            REQ_SET_ADDRESS => {
+                self.address = setup.value as u8;
+                TransferResult::ok(0)
+            }
+            REQ_SET_CONFIGURATION => {
+                self.configured = setup.value != 0;
+                TransferResult::ok(0)
+            }
+            REQ_GET_DESCRIPTOR => {
+                let desc_type = (setup.value >> 8) as u8;
+                match desc_type {
+                    DESC_DEVICE => respond_descriptor(&self.device_descriptor().to_bytes(), setup, data),
+                    DESC_CONFIGURATION => respond_descriptor(&self.configuration_blob(), setup, data),
+                    _ => TransferResult::stall(),
+                }
+            }
+            HID_REQ_SET_PROTOCOL => {
+                self.boot_protocol = setup.value == 0;
+                TransferResult::ok(0)
+            }
+            HID_REQ_SET_IDLE => {
+                self.idle_rate = (setup.value >> 8) as u8;
+                TransferResult::ok(0)
+            }
+            HID_REQ_GET_REPORT => {
+                let report = self
+                    .reports
+                    .get(self.cursor)
+                    .copied()
+                    .unwrap_or([0u8; 4]);
+                if let Some(buf) = data {
+                    let n = core::cmp::min(buf.len(), report.len());
+                    buf[..n].copy_from_slice(&report[..n]);
+                    TransferResult::ok(n)
+                } else {
+                    TransferResult::ok(0)
+                }
+            }
+            _ => TransferResult::ok(0),
+        }
+    }
+
+    fn bulk(&mut self, _endpoint: u8, _dir: TransferDirection, _buf: &mut [u8]) -> TransferResult {
+        TransferResult::stall()
+    }
+
+    fn interrupt(&mut self, endpoint: u8, buf: &mut [u8]) -> TransferResult {
+        if endpoint != self.interrupt_in_ep || !self.configured || !self.boot_protocol {
+            return TransferResult::stall();
+        }
+        if self.cursor >= self.reports.len() {
             return TransferResult::ok(0);
         }
         let report = self.reports[self.cursor];

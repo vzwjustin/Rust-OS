@@ -1,19 +1,12 @@
 //! # virtio-pci modern transport
 //!
-//! Implements the modern (VirtIO 1.x) virtio-over-PCI transport. The PCI BARs
-//! that a real device exposes are modeled here with an in-memory backing
-//! (`MmioRegion`) so the transport — capability layout, common/notify/ISR/
-//! device-config structures, the status/feature handshake, and queue
-//! programming — is fully exercisable and testable without hardware.
-//!
-//! A discovered PCI function is bound to a `virtio::software::VirtioDevice`,
-//! giving an end-to-end path from "PCI capability parsing" down to the split
-//! virtqueue datapath.
+//! Implements helpers for the modern (VirtIO 1.x) virtio-over-PCI transport.
+//! The in-memory `MmioRegion` model is retained for tests, but driver init no
+//! longer publishes a synthetic PCI function as real boot hardware.
 //!
 //! Mirrors Linux's `drivers/virtio/virtio_pci_modern.c`.
 
-use crate::drivers::virtio::software::{NetLoopback, VirtioDevice};
-use alloc::boxed::Box;
+use crate::drivers::virtio::software::VirtioDevice;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
@@ -425,28 +418,9 @@ pub fn device_count() -> usize {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    // Bind a sample virtio-net function over the modern PCI transport, driving
-    // the capability/MMIO model and the full feature handshake.
-    use crate::drivers::virtio::software::{VIRTIO_NET_F_MAC, VIRTIO_NET_F_STATUS};
-    let dev_features = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
-    let device = VirtioDevice::new("virtio-net-pci", dev_features, Box::new(NetLoopback::new()));
-    let id = bind_function(
-        "virtio-net-pci",
-        0x1AF4,
-        0x1041,
-        VirtioPciTransport::Modern,
-        1,
-        dev_features,
-        dev_features,
-        device,
-    )?;
-    let feat = negotiated_features(id).unwrap_or(0);
-    let st = get_status(id).unwrap_or(0);
     crate::serial_println!(
-        "virtio_pci: {} modern function(s) bound (net feat=0x{:X}, status=0x{:02X})",
-        device_count(),
-        feat,
-        st
+        "virtio_pci: transport helpers ready ({} hardware function(s) bound)",
+        device_count()
     );
     Ok(())
 }

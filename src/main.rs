@@ -34,6 +34,16 @@ unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
 // Include compiler intrinsics for missing symbols (memcpy/memset/memcmp/memmove)
 mod intrinsics;
 
+// Linux rust/kernel/ ports (memory management + I/O abstractions)
+mod page;       // page constants, Page, PageRange, BorrowedPage
+mod uaccess;    // UserPtr, UserSlice, copy_from/to_user
+mod iov;        // IoVec, IovIter, import_iovec
+mod scatterlist; // ScatterList, SgTable, DmaDirection
+mod io;         // MMIO r/w, port I/O, memory barriers, IoMem, IoRegister
+mod dma;        // DmaCoherent, dma_sync_*, ioremap, DmaPool
+mod kalloc;     // AllocFlags, GFP_*, kmalloc/kfree/kzalloc/krealloc/vmalloc
+mod linux_rust; // Linux rust/kernel/ utility ports (sizes, bits, ioctl, bitmap, bitfield, etc.)
+
 // Include VGA buffer module for better output
 mod vga_buffer;
 // Include print module for print! and println! macros
@@ -102,6 +112,8 @@ mod notifier;
 mod usermodehelper;
 // Include process management
 mod process;
+// Include POSIX signal subsystem
+mod signal;
 // Include process manager (high-level process APIs)
 mod process_manager;
 // Include scheduler
@@ -132,6 +144,7 @@ mod linux_integration;
 mod memory_manager;
 // Include VFS and initramfs for Linux userspace
 mod initramfs;
+mod kernel_cmdline;
 mod sysfs;
 mod vfs;
 // Include ELF loader for binary execution
@@ -159,6 +172,12 @@ mod user_sched;
 mod wayland;
 // Include SoftIRQ and workqueue subsystem (deferred work, interrupt bottom halves)
 mod softirq;
+// Kernel thread (kthread) subsystem — mirrors Linux kernel/kthread.c
+mod kthread;
+// Full Linux-compatible workqueue subsystem (work_struct, delayed_work, named WQs)
+mod workqueue;
+// Locking primitives — mutex, rwsem, semaphore, rtmutex, completion
+mod locking;
 // Include futex (fast userspace mutexes)
 mod futex;
 // Include epoll (I/O event multiplexing)

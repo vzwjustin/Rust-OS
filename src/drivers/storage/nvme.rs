@@ -404,8 +404,12 @@ pub struct NvmeDriver {
     cq_phase: u32,
     io_sq_base: u64,
     io_cq_base: u64,
+    io_sq_virt: u64,
+    io_cq_virt: u64,
     next_command_id: u16,
     // Admin queue tracking
+    admin_sq_base: u64,
+    admin_cq_base: u64,
     admin_sq_tail: u16,
     admin_cq_head: u16,
     admin_cq_phase: u32,
@@ -436,7 +440,11 @@ impl NvmeDriver {
             cq_phase: 1,   // Start with phase 1
             io_sq_base: 0, // Will be set during queue initialization
             io_cq_base: 0, // Will be set during queue initialization
+            io_sq_virt: 0,
+            io_cq_virt: 0,
             next_command_id: 1,
+            admin_sq_base: 0,
+            admin_cq_base: 0,
             admin_sq_tail: 0,
             admin_cq_head: 0,
             admin_cq_phase: 1,
@@ -506,13 +514,88 @@ impl NvmeDriver {
         id
     }
 
+    fn nvme_status_to_error(status: u16) -> StorageError {
+        let sc = ((status >> 1) & 0xff) as u8;
+        match sc {
+            0x00 => StorageError::HardwareError,
+            0x02 | 0x80 => StorageError::InvalidSector,
+            0x04 => StorageError::DeviceBusy,
+            0x05 => StorageError::InvalidSector,
+            0x0b => StorageError::NotSupported,
+            _ => StorageError::HardwareError,
+        }
+    }
+
+    fn dma_phys(virt: usize) -> Result<u64, StorageError> {
+        use crate::memory::get_memory_manager;
+        use x86_64::VirtAddr;
+        let mm = get_memory_manager().ok_or(StorageError::HardwareError)?;
+        mm.translate_addr(VirtAddr::new(virt as u64))
+            .ok_or(StorageError::HardwareError)
+            .map(|p| p.as_u64())
+    }
+
+    fn submit_admin_command(&mut self, mut cmd: NvmeSqe) -> Result<u32, StorageError> {
+        if self.admin_sq_base == 0 || self.admin_cq_base == 0 {
+            return Err(StorageError::HardwareError);
+        }
+        let cmd_id = self.get_next_command_id();
+        cmd.cdw0 = (cmd.cdw0 & !0xffff_0000) | ((cmd_id as u32) << 16);
+        let sqe = self.admin_sq_tail;
+        unsafe {
+            let ptr = (self.admin_sq_base + sqe as u64 * core::mem::size_of::<NvmeSqe>() as u64)
+                as *mut NvmeSqe;
+            core::ptr::write_volatile(ptr, cmd);
+        }
+        self.admin_sq_tail = (self.admin_sq_tail + 1) % self.max_queue_entries;
+        self.write_doorbell(0, false, self.admin_sq_tail as u32);
+
+        let mut timeout = 1_000_000u32;
+        loop {
+            unsafe {
+                let cqe = (self.admin_cq_base
+                    + self.admin_cq_head as u64 * core::mem::size_of::<NvmeCqe>() as u64)
+                    as *const u32;
+                let dw0 = core::ptr::read_volatile(cqe);
+                let dw2 = core::ptr::read_volatile(cqe.add(2));
+                let dw3 = core::ptr::read_volatile(cqe.add(3));
+                let cid = (dw3 & 0xffff) as u16;
+                let status_field = (dw3 >> 16) as u16;
+                let phase = (status_field & 1) as u32;
+                if phase == self.admin_cq_phase {
+                    if cid != cmd_id {
+                        return Err(StorageError::HardwareError);
+                    }
+                    let status = status_field >> 1;
+                    let _sq_head = dw2 & 0xffff;
+                    self.admin_cq_head = (self.admin_cq_head + 1) % self.max_queue_entries;
+                    if self.admin_cq_head == 0 {
+                        self.admin_cq_phase ^= 1;
+                    }
+                    self.write_doorbell(0, true, self.admin_cq_head as u32);
+                    if status != 0 {
+                        return Err(Self::nvme_status_to_error(status_field));
+                    }
+                    return Ok(dw0);
+                }
+            }
+            if timeout == 0 {
+                return Err(StorageError::Timeout);
+            }
+            timeout -= 1;
+            core::hint::spin_loop();
+        }
+    }
+
     /// Initialize NVMe controller
     fn init_controller(&mut self) -> Result<(), StorageError> {
         // Read controller capabilities
         let cap = self.read_reg(NvmeReg::Cap);
 
         // Extract capabilities
-        self.max_queue_entries = ((cap & 0xffff) + 1) as u16;
+        let mqes = ((cap & 0xffff) + 1).min(64) as u16;
+        self.max_queue_entries = mqes;
+        self.queue_depth = core::cmp::min(self.max_queue_entries, 64);
         self.doorbell_stride = 4 << ((cap >> 32) & 0xf); // DSTRD field
 
         // Check if controller supports NVM command set
@@ -567,6 +650,8 @@ impl NvmeDriver {
         }
         let asq_phys = dma_ptr as u64;
         let acq_phys = asq_phys + ((asq_bytes + 0xFFF) & !0xFFF) as u64;
+        self.admin_sq_base = asq_phys;
+        self.admin_cq_base = acq_phys;
 
         // Program ASQ and ACQ base addresses
         self.write_reg(NvmeReg::Asq, asq_phys);
@@ -599,6 +684,7 @@ impl NvmeDriver {
         // Identify controller and namespaces
         self.identify_controller()?;
         self.identify_namespaces()?;
+        self.init_io_queues()?;
 
         self.state = StorageDeviceState::Ready;
         Ok(())
@@ -611,103 +697,37 @@ impl NvmeDriver {
         let dma_buf =
             DmaBuffer::allocate(4096, DMA_ALIGNMENT).map_err(|_| StorageError::HardwareError)?;
 
-        let buffer_phys = {
-            use crate::memory::get_memory_manager;
-            use x86_64::VirtAddr;
-            let virt_addr = VirtAddr::new(dma_buf.virtual_addr() as u64);
-            let mm = get_memory_manager().ok_or(StorageError::HardwareError)?;
-            mm.translate_addr(virt_addr)
-                .ok_or(StorageError::HardwareError)?
-                .as_u64()
+        let buffer_phys = Self::dma_phys(dma_buf.virtual_addr() as usize)?;
+
+        let cmd = NvmeSqe {
+            cdw0: NvmeOpcode::Identify as u32,
+            nsid: 0,
+            cdw2: 0,
+            cdw3: 0,
+            mptr: 0,
+            dptr: [buffer_phys, 0],
+            cdw10: 0x01,
+            cdw11: 0,
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
         };
-
-        // Get admin SQ base
-        let admin_sq_base = self.read_reg(NvmeReg::Asq);
-        if admin_sq_base == 0 {
-            return Err(StorageError::HardwareError);
-        }
-
-        let command_id = self.get_next_command_id();
-        let sq_entry = self.admin_sq_tail;
-
-        // Build Identify Controller command (opcode 0x06, CNS=0x01)
-        unsafe {
-            let sq_ptr = (admin_sq_base + (sq_entry as u64 * 64)) as *mut u64;
-            *sq_ptr = 0x06u64 | ((command_id as u64) << 16); // DW0: opcode + CID
-            *sq_ptr.add(1) = 0; // DW1: NSID=0 for controller identify
-            *sq_ptr.add(2) = 0; // DW2
-            *sq_ptr.add(3) = 0; // DW3
-            *sq_ptr.add(4) = 0; // DW4: metadata ptr
-            *sq_ptr.add(5) = 0; // DW5
-            *sq_ptr.add(6) = buffer_phys; // DW6: PRP1
-            *sq_ptr.add(7) = 0; // DW7: PRP2
-                                // DW8-9: reserved
-            *sq_ptr.add(8) = 0;
-            *sq_ptr.add(9) = 0;
-            // DW10: CNS=0x01 (Identify Controller)
-            *sq_ptr.add(10) = 0x01;
-            // DW11-15: reserved
-            *sq_ptr.add(11) = 0;
-            *sq_ptr.add(12) = 0;
-            *sq_ptr.add(13) = 0;
-            *sq_ptr.add(14) = 0;
-            *sq_ptr.add(15) = 0;
-        }
-
-        // Advance admin SQ tail and ring doorbell
-        self.admin_sq_tail = (self.admin_sq_tail + 1) % self.max_queue_entries;
-        let db_offset = 0x1000u32; // Admin SQ doorbell (queue 0 submission)
-        self.write_reg_raw(db_offset, self.admin_sq_tail as u32);
-
-        // Wait for completion on admin CQ
-        let admin_cq_base = self.read_reg(NvmeReg::Acq);
-        if admin_cq_base == 0 {
-            return Err(StorageError::HardwareError);
-        }
-
-        let mut timeout = 1_000_000u32;
-        loop {
-            unsafe {
-                let cq_ptr = (admin_cq_base + (self.admin_cq_head as u64 * 16)) as *const u32;
-                let dw3 = core::ptr::read_volatile(cq_ptr.add(3));
-                let phase = (dw3 >> 16) & 1;
-
-                if phase == self.admin_cq_phase {
-                    let status = (dw3 >> 17) & 0x7FF;
-                    if status != 0 {
-                        return Err(StorageError::HardwareError);
-                    }
-
-                    // Advance admin CQ head
-                    self.admin_cq_head = (self.admin_cq_head + 1) % self.max_queue_entries;
-                    if self.admin_cq_head == 0 {
-                        self.admin_cq_phase = 1 - self.admin_cq_phase;
-                    }
-
-                    // Ring admin CQ doorbell
-                    self.write_reg_raw(0x1004, self.admin_cq_head as u32);
-                    break;
-                }
-            }
-            if timeout == 0 {
-                return Err(StorageError::Timeout);
-            }
-            timeout -= 1;
-            core::hint::spin_loop();
-        }
+        self.submit_admin_command(cmd)?;
 
         // Parse identify controller data from DMA buffer
         // The identify data is at offset 0 in the DMA buffer
         let buf_ptr = dma_buf.virtual_addr() as *const u8;
 
         unsafe {
-            // Byte 77: OACS (Offset 77-78, little-endian)
-            let oacs = *(buf_ptr.add(77) as *const u16);
-            // Bit 2 of OACS indicates SMART support
-            self.capabilities.supports_smart = (oacs & (1 << 1)) != 0;
+            let oacs = core::ptr::read_unaligned(buf_ptr.add(256) as *const u16);
+            // NVMe SMART/Health log (log page 0x02) is mandatory for NVM
+            // controllers; OACS is still parsed for optional admin features.
+            let _oacs = oacs;
+            self.capabilities.supports_smart = true;
 
             // Byte 519: ONCS (Offset 519-520)
-            let oncs = *(buf_ptr.add(519) as *const u16);
+            let oncs = core::ptr::read_unaligned(buf_ptr.add(520) as *const u16);
             // Bit 0 of ONCS indicates Dataset Management (TRIM) support
             self.capabilities.supports_trim = (oncs & 0x01) != 0;
 
@@ -728,9 +748,10 @@ impl NvmeDriver {
             );
 
             // Read max transfer size from MDTS (byte 77+4=81)
-            let mdts = *buf_ptr.add(77 + 4);
+            let mdts = *buf_ptr.add(77);
             if mdts > 0 {
-                self.capabilities.max_transfer_size = 1 << (12 + mdts);
+                let shift = core::cmp::min(12 + mdts as u32, 31);
+                self.capabilities.max_transfer_size = 1u32 << shift;
             } else {
                 self.capabilities.max_transfer_size = 128 * 1024;
             }
@@ -749,115 +770,53 @@ impl NvmeDriver {
         let dma_buf =
             DmaBuffer::allocate(4096, DMA_ALIGNMENT).map_err(|_| StorageError::HardwareError)?;
 
-        let buffer_phys = {
-            use crate::memory::get_memory_manager;
-            use x86_64::VirtAddr;
-            let virt_addr = VirtAddr::new(dma_buf.virtual_addr() as u64);
-            let mm = get_memory_manager().ok_or(StorageError::HardwareError)?;
-            mm.translate_addr(virt_addr)
-                .ok_or(StorageError::HardwareError)?
-                .as_u64()
+        let buffer_phys = Self::dma_phys(dma_buf.virtual_addr() as usize)?;
+
+        let cmd = NvmeSqe {
+            cdw0: NvmeOpcode::Identify as u32,
+            nsid: 1,
+            cdw2: 0,
+            cdw3: 0,
+            mptr: 0,
+            dptr: [buffer_phys, 0],
+            cdw10: 0x00,
+            cdw11: 0,
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
         };
-
-        let admin_sq_base = self.read_reg(NvmeReg::Asq);
-        if admin_sq_base == 0 {
-            return Err(StorageError::HardwareError);
-        }
-
-        let command_id = self.get_next_command_id();
-        let sq_entry = self.admin_sq_tail;
-
-        // Build Identify Namespace command (opcode 0x06, CNS=0x02, NSID=1)
-        unsafe {
-            let sq_ptr = (admin_sq_base + (sq_entry as u64 * 64)) as *mut u64;
-            *sq_ptr = 0x06u64 | ((command_id as u64) << 16); // DW0: opcode + CID
-            *sq_ptr.add(1) = 1u64; // DW1: NSID=1 (first namespace)
-            *sq_ptr.add(2) = 0;
-            *sq_ptr.add(3) = 0;
-            *sq_ptr.add(4) = 0;
-            *sq_ptr.add(5) = 0;
-            *sq_ptr.add(6) = buffer_phys; // DW6: PRP1
-            *sq_ptr.add(7) = 0; // DW7: PRP2
-            *sq_ptr.add(8) = 0;
-            *sq_ptr.add(9) = 0;
-            *sq_ptr.add(10) = 0x02; // DW10: CNS=0x02 (Identify Namespace)
-            *sq_ptr.add(11) = 0;
-            *sq_ptr.add(12) = 0;
-            *sq_ptr.add(13) = 0;
-            *sq_ptr.add(14) = 0;
-            *sq_ptr.add(15) = 0;
-        }
-
-        // Advance admin SQ tail and ring doorbell
-        self.admin_sq_tail = (self.admin_sq_tail + 1) % self.max_queue_entries;
-        self.write_reg_raw(0x1000u32, self.admin_sq_tail as u32);
-
-        // Wait for completion on admin CQ
-        let admin_cq_base = self.read_reg(NvmeReg::Acq);
-        if admin_cq_base == 0 {
-            return Err(StorageError::HardwareError);
-        }
-
-        let mut timeout = 1_000_000u32;
-        loop {
-            unsafe {
-                let cq_ptr = (admin_cq_base + (self.admin_cq_head as u64 * 16)) as *const u32;
-                let dw3 = core::ptr::read_volatile(cq_ptr.add(3));
-                let phase = (dw3 >> 16) & 1;
-
-                if phase == self.admin_cq_phase {
-                    let status = (dw3 >> 17) & 0x7FF;
-                    if status != 0 {
-                        // Namespace 1 might not exist; use defaults
-                        self.namespace_count = 1;
-                        self.active_namespace = 1;
-                        self.capabilities.capacity_bytes = 1024 * 1024 * 1024;
-                        self.capabilities.sector_size = 512;
-                        self.capabilities.max_transfer_size = 128 * 1024;
-                        self.capabilities.max_queue_depth = self.max_queue_entries;
-                        self.capabilities.supports_ncq = true;
-                        return Ok(());
-                    }
-
-                    self.admin_cq_head = (self.admin_cq_head + 1) % self.max_queue_entries;
-                    if self.admin_cq_head == 0 {
-                        self.admin_cq_phase = 1 - self.admin_cq_phase;
-                    }
-                    self.write_reg_raw(0x1004, self.admin_cq_head as u32);
-                    break;
-                }
-            }
-            if timeout == 0 {
-                return Err(StorageError::Timeout);
-            }
-            timeout -= 1;
-            core::hint::spin_loop();
-        }
+        self.submit_admin_command(cmd)?;
 
         // Parse identify namespace data from DMA buffer
         let buf_ptr = dma_buf.virtual_addr() as *const u8;
 
         unsafe {
             // NSZE (Namespace Size): bytes 0-7 (number of logical blocks)
-            let nsze = *(buf_ptr as *const u64);
+            let nsze = core::ptr::read_unaligned(buf_ptr as *const u64);
+            if nsze == 0 {
+                return Err(StorageError::DeviceNotFound);
+            }
 
             // NCAP (Namespace Capacity): bytes 8-15
-            let _ncap = *(buf_ptr.add(8) as *const u64);
+            let _ncap = core::ptr::read_unaligned(buf_ptr.add(8) as *const u64);
 
             // LBA Format: byte 26 (LBA data size index in LBAF array)
             // The LBAF array starts at offset 128, each entry is 4 bytes
             // lbaf[0] = offset 128: bits[23:16] = ms, bits[15:0] = lbads (2^lbads = sector size)
-            let lbaf_index = *buf_ptr.add(26) as usize;
+            let lbaf_index = (*buf_ptr.add(26) & 0x0f) as usize;
             let lbaf_offset = 128 + (lbaf_index * 4);
-            let lbaf_entry = *(buf_ptr.add(lbaf_offset) as *const u32);
-            let lbads = ((lbaf_entry >> 16) & 0xFFFF) as u32;
+            let lbaf_entry = core::ptr::read_unaligned(buf_ptr.add(lbaf_offset) as *const u32);
+            let lbads = ((lbaf_entry >> 16) & 0xFF) as u32;
             let sector_size = if lbads > 0 { 1u32 << lbads } else { 512 };
+            if sector_size < 512 || !sector_size.is_power_of_two() {
+                return Err(StorageError::HardwareError);
+            }
 
             self.namespace_count = 1;
             self.active_namespace = 1;
             self.capabilities.capacity_bytes = nsze * (sector_size as u64);
             self.capabilities.sector_size = sector_size;
-            self.capabilities.max_transfer_size = 128 * 1024;
             self.capabilities.max_queue_depth = self.max_queue_entries;
             self.capabilities.supports_ncq = true;
 
@@ -869,6 +828,66 @@ impl NvmeDriver {
             );
         }
 
+        Ok(())
+    }
+
+    fn init_io_queues(&mut self) -> Result<(), StorageError> {
+        if self.max_queue_entries < 2 {
+            return Err(StorageError::HardwareError);
+        }
+        let qd = self.queue_depth.max(2);
+        self.queue_depth = qd;
+        let sq_bytes = qd as usize * core::mem::size_of::<NvmeSqe>();
+        let cq_bytes = qd as usize * core::mem::size_of::<NvmeCqe>();
+        let total = ((sq_bytes + 0xFFF) & !0xFFF) + ((cq_bytes + 0xFFF) & !0xFFF);
+        let layout = alloc::alloc::Layout::from_size_align(total, 4096)
+            .map_err(|_| StorageError::HardwareError)?;
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err(StorageError::HardwareError);
+        }
+        let sq_phys = Self::dma_phys(ptr as usize)?;
+        let cq_ptr = unsafe { ptr.add((sq_bytes + 0xFFF) & !0xFFF) };
+        let cq_phys = Self::dma_phys(cq_ptr as usize)?;
+        self.io_sq_base = sq_phys;
+        self.io_cq_base = cq_phys;
+        self.io_sq_virt = ptr as u64;
+        self.io_cq_virt = cq_ptr as u64;
+        self.current_sq_tail = 0;
+        self.current_cq_head = 0;
+        self.cq_phase = 1;
+
+        let create_cq = NvmeSqe {
+            cdw0: NvmeOpcode::CreateIoCq as u32,
+            nsid: 0,
+            cdw2: 0,
+            cdw3: 0,
+            mptr: 0,
+            dptr: [cq_phys, 0],
+            cdw10: 1 | (((qd - 1) as u32) << 16),
+            cdw11: 1, // physically contiguous, interrupts disabled
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
+        };
+        self.submit_admin_command(create_cq)?;
+
+        let create_sq = NvmeSqe {
+            cdw0: NvmeOpcode::CreateIoSq as u32,
+            nsid: 0,
+            cdw2: 0,
+            cdw3: 0,
+            mptr: 0,
+            dptr: [sq_phys, 0],
+            cdw10: 1 | (((qd - 1) as u32) << 16),
+            cdw11: 1 | (1 << 16), // physically contiguous, CQID=1
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
+        };
+        self.submit_admin_command(create_sq)?;
         Ok(())
     }
 
@@ -895,30 +914,31 @@ impl NvmeDriver {
         let command_id = self.get_next_command_id();
 
         // Get submission queue base address
-        let sq_base = self.io_sq_base;
-        if sq_base == 0 {
+        let sq_base = self.io_sq_virt;
+        if sq_base == 0 || self.io_cq_virt == 0 {
             return Err(StorageError::HardwareError);
         }
 
         // Allocate DMA buffer for data transfer - BEFORE unsafe block so it stays alive
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
-        let buffer_size = (block_count as usize) * (self.capabilities.sector_size as usize);
-        let mut _dma_buffer = DmaBuffer::allocate(buffer_size, DMA_ALIGNMENT)
-            .map_err(|_| StorageError::HardwareError)?;
+        let buffer_size = if matches!(opcode, NvmeIoOpcode::Flush) {
+            0
+        } else {
+            (block_count as usize) * (self.capabilities.sector_size as usize)
+        };
+        let mut _dma_buffer = if buffer_size > 0 {
+            Some(DmaBuffer::allocate(buffer_size, DMA_ALIGNMENT)
+                .map_err(|_| StorageError::HardwareError)?)
+        } else {
+            None
+        };
 
         // Translate virtual address to physical for hardware DMA
-        let buffer_phys = {
-            use crate::memory::get_memory_manager;
-            use x86_64::VirtAddr;
-
-            let virt_addr = VirtAddr::new(_dma_buffer.virtual_addr() as u64);
-            let memory_manager = get_memory_manager().ok_or(StorageError::HardwareError)?;
-
-            memory_manager
-                .translate_addr(virt_addr)
-                .ok_or(StorageError::HardwareError)?
-                .as_u64()
+        let buffer_phys = if let Some(ref dma) = _dma_buffer {
+            Self::dma_phys(dma.virtual_addr() as usize)?
+        } else {
+            0
         };
 
         // For writes, stage the caller's data into the DMA buffer before the
@@ -928,56 +948,40 @@ impl NvmeDriver {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     data_ptr as *const u8,
-                    _dma_buffer.virtual_addr() as *mut u8,
+                    _dma_buffer.as_ref().unwrap().virtual_addr() as *mut u8,
                     n,
                 );
             }
         }
 
         unsafe {
-            let sq_entry_ptr = (sq_base + (sq_entry as u64 * 64)) as *mut u64; // Each SQ entry is 64 bytes
-
-            // Command DWord 0: Opcode and Command ID
-            *sq_entry_ptr = (opcode as u64) | ((command_id as u64) << 16);
-
-            // Command DWord 1: Namespace ID (assuming namespace 1)
-            *sq_entry_ptr.add(1) = 1u64;
-
-            // Command DWords 2-3: Reserved
-            *sq_entry_ptr.add(2) = 0;
-            *sq_entry_ptr.add(3) = 0;
-
-            // Command DWords 4-5: Metadata pointer (not used)
-            *sq_entry_ptr.add(4) = 0;
-            *sq_entry_ptr.add(5) = 0;
-
-            // 2. Set up data pointers (PRPs)
-            *sq_entry_ptr.add(6) = buffer_phys; // PRP1
-            *sq_entry_ptr.add(7) = 0; // PRP2 (not needed for small transfers)
-
-            // Command DWords 10-11: Starting LBA
-            *sq_entry_ptr.add(10) = lba;
-            *sq_entry_ptr.add(11) = 0;
-
-            // Command DWord 12: Number of logical blocks (0-based)
-            *sq_entry_ptr.add(12) = (block_count - 1) as u64;
-
-            // Command DWords 13-15: Command-specific
-            *sq_entry_ptr.add(13) = 0;
-            *sq_entry_ptr.add(14) = 0;
-            *sq_entry_ptr.add(15) = 0;
+            let sq_entry_ptr = (sq_base + (sq_entry as u64 * 64)) as *mut NvmeSqe;
+            let cmd = NvmeSqe {
+                cdw0: (opcode as u32) | ((command_id as u32) << 16),
+                nsid: self.active_namespace,
+                cdw2: 0,
+                cdw3: 0,
+                mptr: 0,
+                dptr: [buffer_phys, 0],
+                cdw10: lba as u32,
+                cdw11: (lba >> 32) as u32,
+                cdw12: if matches!(opcode, NvmeIoOpcode::Flush) { 0 } else { (block_count - 1) as u32 },
+                cdw13: 0,
+                cdw14: 0,
+                cdw15: 0,
+            };
+            core::ptr::write_volatile(sq_entry_ptr, cmd);
         }
 
         // Update submission queue tail
         self.current_sq_tail = (self.current_sq_tail + 1) % self.queue_depth;
 
         // 3. Ring submission queue doorbell
-        let doorbell_offset = 0x1000; // Queue 0 submission doorbell
-        self.write_reg_raw(doorbell_offset as u32, self.current_sq_tail as u32);
+        self.write_doorbell(1, false, self.current_sq_tail as u32);
 
         // 4. Wait for completion queue entry
         let mut timeout = 1000000; // Timeout counter
-        let cq_base = self.io_cq_base;
+        let cq_base = self.io_cq_virt;
 
         while timeout > 0 {
             unsafe {
@@ -986,10 +990,14 @@ impl NvmeDriver {
                 let phase = (dw3 >> 16) & 1;
 
                 if phase == self.cq_phase {
+                    let completed_cid = (dw3 & 0xffff) as u16;
+                    if completed_cid != command_id {
+                        return Err(StorageError::HardwareError);
+                    }
                     // Completion found - check status
                     let status = (dw3 >> 17) & 0x7FF;
                     if status != 0 {
-                        return Err(StorageError::HardwareError);
+                        return Err(Self::nvme_status_to_error((dw3 >> 16) as u16));
                     }
 
                     // Update completion queue head
@@ -1009,8 +1017,7 @@ impl NvmeDriver {
         }
 
         // 5. Ring completion queue doorbell
-        let cq_doorbell_offset = 0x1000 + (4 << self.doorbell_stride); // Queue 0 completion doorbell
-        self.write_reg_raw(cq_doorbell_offset as u32, self.current_cq_head as u32);
+        self.write_doorbell(1, true, self.current_cq_head as u32);
 
         // For reads, copy the DMA buffer back into the caller's buffer now that
         // the device has filled it.
@@ -1018,7 +1025,7 @@ impl NvmeDriver {
             let n = core::cmp::min(data_len, buffer_size);
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    _dma_buffer.virtual_addr() as *const u8,
+                    _dma_buffer.as_ref().unwrap().virtual_addr() as *const u8,
                     data_ptr,
                     n,
                 );
@@ -1114,14 +1121,28 @@ impl StorageDriver for NvmeDriver {
         }
 
         let sector_size = self.capabilities.sector_size as usize;
+        if sector_size == 0 || buffer.len() % sector_size != 0 {
+            return Err(StorageError::BufferTooSmall);
+        }
         let sector_count = buffer.len() / sector_size;
 
         if sector_count == 0 {
             return Err(StorageError::BufferTooSmall);
         }
 
-        if sector_count > 65536 {
+        if sector_count > u16::MAX as usize {
             return Err(StorageError::TransferTooLarge);
+        }
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
+            return Err(StorageError::TransferTooLarge);
+        }
+
+        let end = start_sector
+            .checked_add(sector_count as u64)
+            .ok_or(StorageError::InvalidSector)?;
+        let total = self.capabilities.capacity_bytes / self.capabilities.sector_size as u64;
+        if total != 0 && end > total {
+            return Err(StorageError::InvalidSector);
         }
 
         // Convert sector to LBA (assuming 1:1 mapping for simplicity)
@@ -1146,14 +1167,28 @@ impl StorageDriver for NvmeDriver {
         }
 
         let sector_size = self.capabilities.sector_size as usize;
+        if sector_size == 0 || buffer.len() % sector_size != 0 {
+            return Err(StorageError::BufferTooSmall);
+        }
         let sector_count = buffer.len() / sector_size;
 
         if sector_count == 0 {
             return Err(StorageError::BufferTooSmall);
         }
 
-        if sector_count > 65536 {
+        if sector_count > u16::MAX as usize {
             return Err(StorageError::TransferTooLarge);
+        }
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
+            return Err(StorageError::TransferTooLarge);
+        }
+
+        let end = start_sector
+            .checked_add(sector_count as u64)
+            .ok_or(StorageError::InvalidSector)?;
+        let total = self.capabilities.capacity_bytes / self.capabilities.sector_size as u64;
+        if total != 0 && end > total {
+            return Err(StorageError::InvalidSector);
         }
 
         let lba = start_sector;
@@ -1214,111 +1249,35 @@ impl StorageDriver for NvmeDriver {
             return Err(StorageError::NotSupported);
         }
 
-        // Production implementation: Execute Get Log Page command for SMART data
-
-        // Build admin command for Get Log Page (SMART data)
-        let command_id = self.get_next_command_id();
-        let admin_sq_base = self.read_reg(NvmeReg::Asq); // Admin submission queue base
-
-        if admin_sq_base == 0 {
-            return Err(StorageError::HardwareError);
-        }
-
-        // Allocate buffer for SMART data - Production DMA allocation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
         let dma_buffer =
             DmaBuffer::allocate(512, DMA_ALIGNMENT).map_err(|_| StorageError::HardwareError)?;
-
-        // Translate virtual address to physical for hardware DMA
-        let buffer_phys = {
-            use crate::memory::get_memory_manager;
-            use x86_64::VirtAddr;
-
-            let virt_addr = VirtAddr::new(dma_buffer.virtual_addr() as u64);
-            let memory_manager = get_memory_manager().ok_or(StorageError::HardwareError)?;
-
-            memory_manager
-                .translate_addr(virt_addr)
-                .ok_or(StorageError::HardwareError)?
-                .as_u64()
+        let buffer_phys = Self::dma_phys(dma_buffer.virtual_addr() as usize)?;
+        let cmd = NvmeSqe {
+            cdw0: NvmeOpcode::GetLogPage as u32,
+            nsid: 0xFFFF_FFFF,
+            cdw2: 0,
+            cdw3: 0,
+            mptr: 0,
+            dptr: [buffer_phys, 0],
+            cdw10: 0x02 | (((512 / 4 - 1) as u32) << 16),
+            cdw11: 0,
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
         };
-
-        unsafe {
-            let sq_entry_ptr = admin_sq_base as *mut u64;
-
-            // Command DWord 0: Opcode (Get Log Page = 0x02) and Command ID
-            *sq_entry_ptr = 0x02u64 | ((command_id as u64) << 16);
-
-            // Command DWord 1: Namespace ID (0xFFFFFFFF for controller)
-            *sq_entry_ptr.add(1) = 0xFFFFFFFFu64;
-
-            // Command DWords 2-3: Reserved
-            *sq_entry_ptr.add(2) = 0;
-            *sq_entry_ptr.add(3) = 0;
-
-            // Command DWords 4-5: Metadata pointer (not used)
-            *sq_entry_ptr.add(4) = 0;
-            *sq_entry_ptr.add(5) = 0;
-
-            // Command DWords 6-7: Data pointer (PRP1/PRP2)
-            *sq_entry_ptr.add(6) = buffer_phys;
-            *sq_entry_ptr.add(7) = 0;
-
-            // Command DWords 8-9: Reserved
-            *sq_entry_ptr.add(8) = 0;
-            *sq_entry_ptr.add(9) = 0;
-
-            // Command DWord 10: Log Page Identifier (0x02 = SMART/Health) and length
-            *sq_entry_ptr.add(10) = 0x02u64 | ((511u64) << 16); // Log ID + Number of DWORDs - 1
-
-            // Command DWords 11-15: Reserved/Log-specific
-            for i in 11..16 {
-                *sq_entry_ptr.add(i) = 0;
-            }
-        }
-
-        // Ring admin submission queue doorbell
-        self.write_doorbell(0, false, 1); // Admin queue ID = 0, submission doorbell
-
-        // Wait for completion
-        let mut timeout = 1000000;
-        let admin_cq_base = self.read_reg(NvmeReg::Acq);
-
-        while timeout > 0 {
-            unsafe {
-                let cq_entry_ptr = admin_cq_base as *const u32;
-                let dw3 = core::ptr::read_volatile(cq_entry_ptr.add(3));
-                let phase = (dw3 >> 16) & 1;
-
-                if phase == 1 {
-                    // Admin queue phase is typically 1
-                    // Check status
-                    let status = (dw3 >> 17) & 0x7FF;
-                    if status != 0 {
-                        return Err(StorageError::HardwareError);
-                    }
-                    break;
-                }
-            }
-            timeout -= 1;
-        }
-
-        if timeout == 0 {
-            return Err(StorageError::Timeout);
-        }
+        self.submit_admin_command(cmd)?;
 
         // Read SMART data from buffer
         let mut smart_data = vec![0u8; 512];
         unsafe {
-            let data_ptr = buffer_phys as *const u8;
+            let data_ptr = dma_buffer.virtual_addr() as *const u8;
             for i in 0..512 {
                 smart_data[i] = core::ptr::read_volatile(data_ptr.add(i));
             }
         }
-
-        // Ring admin completion queue doorbell
-        self.write_doorbell(0, true, 1); // Admin queue ID = 0, completion doorbell
 
         Ok(smart_data)
     }

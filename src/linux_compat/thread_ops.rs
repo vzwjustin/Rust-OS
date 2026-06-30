@@ -16,9 +16,9 @@ use super::{LinuxError, LinuxResult};
 use crate::process;
 
 /// FS base MSR (x86_64)
-const MSR_FS_BASE: u32 = 0xC000_0100;
+const MSR_FS_BASE: u32 = crate::arch::x86::msr::MSR_FS_BASE;
 /// GS base MSR (x86_64)
-const MSR_GS_BASE: u32 = 0xC000_0101;
+const MSR_GS_BASE: u32 = crate::arch::x86::msr::MSR_GS_BASE;
 
 static CLEAR_CHILD_TID: AtomicU64 = AtomicU64::new(0);
 
@@ -751,22 +751,19 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
 pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
     inc_ops();
 
-    const ARCH_SET_GS: i32 = 0x1001;
-    const ARCH_SET_FS: i32 = 0x1002;
-    const ARCH_GET_FS: i32 = 0x1003;
-    const ARCH_GET_GS: i32 = 0x1004;
+    use crate::arch::x86::prctl;
 
     let tid = current_tid();
 
     match code {
-        ARCH_SET_FS => {
+        prctl::ARCH_SET_FS => {
             TLS_FS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_FS_BASE, addr);
             }
             Ok(0)
         }
-        ARCH_GET_FS => {
+        prctl::ARCH_GET_FS => {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
@@ -776,20 +773,35 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
             }
             Ok(0)
         }
-        ARCH_SET_GS => {
+        prctl::ARCH_SET_GS => {
             TLS_GS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_GS_BASE, addr);
             }
             Ok(0)
         }
-        ARCH_GET_GS => {
+        prctl::ARCH_GET_GS => {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
             let base = TLS_GS_BASE.read().get(&tid).copied().unwrap_or(0);
             unsafe {
                 *(addr as *mut u64) = base;
+            }
+            Ok(0)
+        }
+        prctl::ARCH_GET_CPUID => {
+            if addr == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            unsafe {
+                *(addr as *mut u64) = 1;
+            }
+            Ok(0)
+        }
+        prctl::ARCH_SET_CPUID => {
+            if addr != 0 && addr != 1 {
+                return Err(LinuxError::EINVAL);
             }
             Ok(0)
         }

@@ -2,6 +2,8 @@
 //!
 //! Real CPU detection and architecture-specific features
 
+pub mod x86;
+
 use alloc::string::{String, ToString};
 use core::arch::x86_64::{__cpuid, __cpuid_count, _xgetbv};
 
@@ -20,6 +22,13 @@ pub struct CpuInfo {
 /// CPU feature flags
 #[derive(Debug, Clone, Copy)]
 pub struct CpuFeatures {
+    pub fpu: bool,
+    pub mmx: bool,
+    pub tsc: bool,
+    pub cmov: bool,
+    pub pat: bool,
+    pub clflush: bool,
+    pub fxsr: bool,
     pub sse: bool,
     pub sse2: bool,
     pub sse3: bool,
@@ -148,6 +157,13 @@ fn detect_cpu_features() {
 
         let features = CpuFeatures {
             // CPUID.01H:EDX
+            fpu: cpuid1.edx & (1 << 0) != 0,
+            mmx: cpuid1.edx & (1 << 23) != 0,
+            tsc: cpuid1.edx & (1 << 4) != 0,
+            cmov: cpuid1.edx & (1 << 15) != 0,
+            pat: cpuid1.edx & (1 << 16) != 0,
+            clflush: cpuid1.edx & (1 << 19) != 0,
+            fxsr: cpuid1.edx & (1 << 24) != 0,
             sse: cpuid1.edx & (1 << 25) != 0,
             sse2: cpuid1.edx & (1 << 26) != 0,
 
