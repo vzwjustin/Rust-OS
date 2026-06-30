@@ -96,6 +96,10 @@ impl UnixPathListener {
     fn pop_dgram(&self) -> Option<UnixDgramMessage> {
         self.dgram_inbox.lock().pop_front()
     }
+
+    fn has_dgram(&self) -> bool {
+        !self.dgram_inbox.lock().is_empty()
+    }
 }
 
 /// Per-fd Unix socket state.
@@ -127,6 +131,29 @@ pub fn is_unix_fd(fd: i32) -> bool {
 /// Lookup endpoint state for an fd.
 pub fn get_endpoint(fd: i32) -> Option<UnixSocketEnd> {
     UNIX_SOCKET_FDS.read().get(&fd).cloned()
+}
+
+/// Returns true when a Unix socket fd has data available to read. Used by the
+/// poll/select layer, which otherwise treats these fds as plain regular files
+/// (always-ready) and would spin clients against a perpetual POLLIN.
+pub fn poll_readable(fd: i32) -> bool {
+    let Some(end) = UNIX_SOCKET_FDS.read().get(&fd).cloned() else {
+        return false;
+    };
+    match end.sock_type {
+        // Connected stream fds carry a real pipe. Listener fds have pipe_id == 0
+        // and will read as "no data" here; that's fine while the compositor is
+        // in-kernel and accepts synchronously, but would need accept-readiness
+        // wiring if the server ever moved to a separate accept loop.
+        UnixSocketType::Stream => get_ipc_manager().pipe_has_data(end.pipe_id),
+        UnixSocketType::Datagram => end
+            .bound_path
+            .as_deref()
+            .or(end.path.as_deref())
+            .and_then(lookup_listener)
+            .map(|listener| listener.has_dgram())
+            .unwrap_or(false),
+    }
 }
 
 /// Pre-bind a Unix socket path for kernel-provided services (D-Bus, Wayland).
@@ -325,6 +352,18 @@ pub fn accept(fd: i32) -> Result<i32, i32> {
     Ok(client_fd)
 }
 
+/// Returns true for roles whose server is an in-kernel dispatcher (D-Bus,
+/// Wayland). For these the connection pipe is a *server→client* channel only:
+/// the client's request bytes are consumed directly by the dispatcher and must
+/// never be written into the readable buffer, otherwise the client reads its
+/// own request back as if it were a server event and immediately desyncs.
+fn is_bridged_role(role: UnixSocketRole) -> bool {
+    matches!(
+        role,
+        UnixSocketRole::WaylandDisplay | UnixSocketRole::DbusSession | UnixSocketRole::DbusSystem
+    )
+}
+
 /// Stream send or datagram sendto.
 pub fn send(fd: i32, data: &[u8], dest_path: Option<&str>) -> Result<usize, i32> {
     let end = UNIX_SOCKET_FDS.read().get(&fd).cloned().ok_or(-9)?;
@@ -334,17 +373,29 @@ pub fn send(fd: i32, data: &[u8], dest_path: Option<&str>) -> Result<usize, i32>
             if data.is_empty() {
                 return Ok(0);
             }
-            let ipc = get_ipc_manager();
-            ipc.pipe_write(end.pipe_id, data).map_err(|_| -32).map(|n| {
-                if end.role == UnixSocketRole::DbusSession {
-                    maybe_dispatch_dbus(data, end.pipe_id);
-                } else if end.role == UnixSocketRole::DbusSystem {
-                    maybe_dispatch_dbus_system(data, end.pipe_id);
-                } else if end.role == UnixSocketRole::WaylandDisplay {
+            match end.role {
+                // Bridged roles: hand the request straight to the in-kernel
+                // dispatcher. It writes any reply/events into the pipe, which
+                // is the channel the client reads from. The request itself is
+                // NOT written into the pipe (no echo).
+                UnixSocketRole::WaylandDisplay => {
                     maybe_dispatch_wayland(data, end.pipe_id);
+                    Ok(data.len())
                 }
-                n
-            })
+                UnixSocketRole::DbusSession => {
+                    maybe_dispatch_dbus(data, end.pipe_id);
+                    Ok(data.len())
+                }
+                UnixSocketRole::DbusSystem => {
+                    maybe_dispatch_dbus_system(data, end.pipe_id);
+                    Ok(data.len())
+                }
+                // Generic peer-to-peer stream socket: the pipe is the transport.
+                UnixSocketRole::Generic => {
+                    let ipc = get_ipc_manager();
+                    ipc.pipe_write(end.pipe_id, data).map_err(|_| -32)
+                }
+            }
         }
         UnixSocketType::Datagram => {
             let target = dest_path.or(end.connected_path.as_deref()).ok_or(-57)?; // ENOTCONN
@@ -370,8 +421,18 @@ pub fn recv(fd: i32, buf: &mut [u8]) -> Result<(usize, Option<String>), i32> {
             }
             let ipc = get_ipc_manager();
             match ipc.pipe_read(end.pipe_id, buf) {
+                Ok(0) | Err(_) => {
+                    // No server→client bytes buffered. Bridged clients
+                    // (libwayland, libdbus) are non-blocking and treat a
+                    // zero-byte read as EOF/disconnect; report EAGAIN so they
+                    // retry instead of tearing down the connection.
+                    if is_bridged_role(end.role) {
+                        Err(-11) // EAGAIN
+                    } else {
+                        Ok((0, None))
+                    }
+                }
                 Ok(n) => Ok((n, None)),
-                Err(_) => Ok((0, None)),
             }
         }
         UnixSocketType::Datagram => {

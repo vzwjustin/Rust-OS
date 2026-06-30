@@ -1234,6 +1234,100 @@ pub fn smoke_check() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// End-to-end smoke test of the *real userspace transport path*.
+///
+/// Unlike [`smoke_check`], which calls [`process_wire_request`] directly, this
+/// drives the full AF_UNIX socket round-trip the way an external Wayland client
+/// (libwayland) does: `socket()` → `connect(/run/user/0/wayland-0)` →
+/// `send(get_registry)` → `recv()`. It asserts that the client reads back a
+/// real `wl_registry` reply and **not** its own request echoed — the regression
+/// that previously made the bridge unusable for real clients.
+pub fn real_client_smoke() -> Result<(), &'static str> {
+    use crate::net::unix::{self, UnixSocketType};
+
+    if !crate::wayland::is_ready() {
+        return Err("Wayland compositor not ready");
+    }
+    let path = crate::gnome_overlay::WAYLAND_SOCKET;
+    if !unix::is_prebound(path) {
+        return Err("Wayland socket not pre-bound");
+    }
+
+    // socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC)
+    let fd = unix::create_socket_fd(UnixSocketType::Stream, true, true)
+        .map_err(|_| "socket() failed")?;
+
+    // connect(fd, "/run/user/0/wayland-0")
+    if unix::connect(fd, path).is_err() {
+        return Err("connect() to Wayland socket failed");
+    }
+
+    // wl_display.get_registry(new_id = 2)
+    let registry_id: u32 = 2;
+    let request = Message::new(DISPLAY_OBJECT_ID, 1, vec![Arg::NewId(registry_id)]).encode();
+
+    let sent = unix::send(fd, &request, None).map_err(|_| "send(get_registry) failed")?;
+    if sent != request.len() {
+        return Err("send(get_registry) was short");
+    }
+
+    let mut buf = [0u8; 256];
+    let (n, _) = unix::recv(fd, &mut buf).map_err(|_| {
+        // EAGAIN here means the dispatcher wrote nothing back: the server→client
+        // channel is broken.
+        "recv() returned no reply (transport regression)"
+    })?;
+    if n < super::MessageHeader::SIZE {
+        return Err("recv() reply too short to be a Wayland message");
+    }
+
+    // Echo regression guard: the bytes read back must not be our own request.
+    if n >= request.len() && buf[..request.len()] == request[..] {
+        return Err("client read back its own request (echo regression)");
+    }
+
+    // The reply must be addressed to the registry object we just created
+    // (wl_registry.global events), not to the wl_display request object.
+    let reply_object = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    if reply_object != registry_id {
+        return Err("reply not addressed to the requested wl_registry object");
+    }
+
+    // Bind a global through the socket: wl_registry.bind(wl_compositor) and
+    // confirm the compositor created the bound object for this connection. This
+    // exercises the "bind globals" leg of the milestone over the real transport.
+    let compositor_id: u32 = 3;
+    let bind = Message::new(
+        registry_id,
+        0, // wl_registry.bind
+        vec![
+            Arg::UInt(1), // global name
+            Arg::String(String::from(interfaces::WL_COMPOSITOR)),
+            Arg::UInt(4), // version
+            Arg::NewId(compositor_id),
+        ],
+    )
+    .encode();
+    unix::send(fd, &bind, None).map_err(|_| "send(wl_registry.bind) failed")?;
+
+    let pipe_id = unix::get_endpoint(fd)
+        .map(|end| end.pipe_id)
+        .ok_or("socket endpoint vanished after bind")?;
+    let client_id = pipe_client_id(pipe_id).ok_or("no Wayland client for connection")?;
+    let bound = compositor()
+        .get_client(client_id)
+        .and_then(|client| client.objects.get(&compositor_id))
+        .map(|object| object.interface == interfaces::WL_COMPOSITOR)
+        .unwrap_or(false);
+    if !bound {
+        return Err("wl_registry.bind did not bind wl_compositor over the socket");
+    }
+
+    // Tear down the connection so repeated boots don't accumulate clients.
+    detach_connection(pipe_id);
+    Ok(())
+}
+
 /// Forward queued kernel input events to connected Wayland clients.
 pub fn poll_kernel_input() {
     use crate::drivers::input_manager::{self, InputEvent};

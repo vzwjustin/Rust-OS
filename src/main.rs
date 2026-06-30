@@ -540,7 +540,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     match arch::init() {
         Ok(()) => {
             kernel::mark_subsystem_ready("arch");
-            unsafe { early_serial_write_str("RustOS: CPU architecture detected\r\n"); }
+            unsafe {
+                early_serial_write_str("RustOS: CPU architecture detected\r\n");
+            }
         }
         Err(e) => {
             kernel::mark_subsystem_failed("arch");
@@ -761,7 +763,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         ) {
             Ok(()) => {
                 kernel::mark_subsystem_ready("memory");
-                unsafe { early_serial_write_str("RustOS: Paging memory manager initialized\r\n"); }
+                unsafe {
+                    early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
+                }
             }
             Err(e) => {
                 kernel::mark_subsystem_failed("memory");
@@ -843,6 +847,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kernel::mark_subsystem_ready("gdt");
         interrupts::init();
         kernel::mark_subsystem_ready("interrupts");
+        // APIC is initialized inside interrupts::init() — mark it here.
+        kernel::mark_subsystem_ready("apic");
         boot_ui::report_success("GDT and interrupts configured");
 
         // Initialize SMP subsystem (APIC base, BSP CPU data).
@@ -1232,11 +1238,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
             }
         }
-        // Initialize the dynamic linker (needed for ELF loading with shared libraries).
-        process::dynamic_linker::init_dynamic_linker();
-        unsafe {
-            early_serial_write_str("RustOS: Dynamic linker initialized\r\n");
-        }
         match glib::smoke_check_spawn() {
             Ok(()) => unsafe {
                 early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
@@ -1254,19 +1255,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
             Err(e) => unsafe {
                 early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-        unsafe {
-            early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
-        }
-        match security::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Security subsystem initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Security init FAILED: ");
                 early_serial_write_str(e);
                 early_serial_write_str("\r\n");
             },
@@ -1507,12 +1495,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kernel::mark_subsystem_ready("kasan");
         kcsan::init();
         kernel::mark_subsystem_ready("kcsan");
-        of::init();
+        // of::init() is called from drivers::init_drivers().
         kernel::mark_subsystem_ready("of");
 
-        // Initialize global notifier chains (panic, reboot, CPU).
-        // Must run before power::init() which uses PM notifier chains.
-        notifier::init();
+        // notifier::init() is called from kernel::init().
+        // Notifier chains must be ready before power::init() which uses PM notifier chains.
 
         power::init();
         kernel::mark_subsystem_ready("power");
@@ -1534,11 +1521,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kernel::mark_subsystem_ready("module_loader");
         livepatch::init();
         kernel::mark_subsystem_ready("livepatch");
-        edac::init();
+        // edac::init() and nvdimm::init() are called from drivers::init_drivers().
         kernel::mark_subsystem_ready("edac");
         mfd::init();
         kernel::mark_subsystem_ready("mfd");
-        nvdimm::init();
         kernel::mark_subsystem_ready("nvdimm");
 
         // Initialize audit, trace, and kprobes
@@ -1719,6 +1705,19 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
+        // Verify the real userspace Wayland transport (socket connect → send →
+        // recv round-trip), the path an external client like gnome-shell uses.
+        match wayland::server::real_client_smoke() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Wayland real-client transport OK\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Wayland real-client transport FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
+        }
+
         // Log GNOME readiness after all foundation subsystems are initialized
         gnome::log_boot_readiness();
         let _ = crate::vfs::procfs::update_gnome_status();
@@ -1860,6 +1859,32 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         } else {
             crate::linux_compat::desktop::SessionBoot::Desktop
         };
+        let drm_mode_configured = use_graphics_desktop
+            && crate::gpu::opensource::drm_compat::configure_primary_mode(
+                graphics_result.width as u32,
+                graphics_result.height as u32,
+                graphics_result.bpp as u32,
+            )
+            .is_ok();
+        if drm_mode_configured {
+            crate::serial_println!(
+                "drm/kms: primary mode configured {}x{}x{}",
+                graphics_result.width,
+                graphics_result.height,
+                graphics_result.bpp
+            );
+        }
+        let drm_kms_ready =
+            use_graphics_desktop && drm_mode_configured && crate::vfs::drmfs::smoke_check().is_ok();
+        crate::linux_compat::desktop::mark_graphical_boot(
+            session_boot,
+            graphics_result.framebuffer_ready,
+            drm_kms_ready,
+            graphics_result.gpu_accelerated,
+            graphics_result.width,
+            graphics_result.height,
+            graphics_result.bpp,
+        );
 
         let mut userspace_spawned = false;
         if boot_config.prefer_userspace_init
@@ -1887,7 +1912,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         } else if boot_config.verbose {
             unsafe {
                 early_serial_write_str(
-                    "RustOS: no userspace init (or disabled), using kernel desktop only\r\n",
+                    "RustOS: no userspace init (or disabled), using kernel desktop fallback\r\n",
                 );
             }
         }

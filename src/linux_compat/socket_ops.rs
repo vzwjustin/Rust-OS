@@ -461,7 +461,6 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
 
     // msghdr layout: { void *msg_name, socklen_t msg_namelen,
     //   struct iovec *msg_iov, size_t msg_iovlen, void *msg_control, size_t msg_controllen, int msg_flags }
-    let socket_id = fd_to_socket_id(sockfd)?;
     let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
 
     let (msg_name, msg_namelen, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
@@ -469,6 +468,42 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EFAULT);
     }
 
+    // AF_UNIX (D-Bus / Wayland bridge). libwayland flushes its outbound buffer
+    // exclusively through sendmsg, so this is the primary client→compositor
+    // write path. Gather all iovecs into one contiguous buffer (Wayland wire
+    // messages must be delivered intact) and hand it to the unix transport.
+    //
+    // NOTE: SCM_RIGHTS ancillary fds in msg_control (e.g. the wl_shm.create_pool
+    // buffer fd) are not yet imported into the compositor — that is the next
+    // milestone (client-buffer rendering). Handshake, registry bind, surface
+    // creation and configure all work without it.
+    if unix::is_unix_fd(sockfd) {
+        let mut data = Vec::new();
+        for i in 0..msg_iovlen {
+            let iov = copy_iovec_from_user(msg_iov, i)?;
+            if iov.iov_base.is_null() && iov.iov_len > 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            if iov.iov_len == 0 {
+                continue;
+            }
+            let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
+            let mut chunk = vec![0u8; copy_len];
+            UserSpaceMemory::copy_from_user(iov.iov_base as u64, &mut chunk)
+                .map_err(|_| LinuxError::EFAULT)?;
+            data.extend_from_slice(&chunk);
+        }
+        let dest_path = if msg_name.is_null() {
+            None
+        } else {
+            Some(parse_unix_path(msg_name as *const SockAddr, msg_namelen)?)
+        };
+        return unix::send(sockfd, &data, dest_path.as_deref())
+            .map_err(unix_err)
+            .map(|n| n as isize);
+    }
+
+    let socket_id = fd_to_socket_id(sockfd)?;
     let mut total_sent = 0usize;
     for i in 0..msg_iovlen {
         let iov = copy_iovec_from_user(msg_iov, i)?;
@@ -670,12 +705,21 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
             let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
             let mut buffer = vec![0u8; copy_len];
             match unix::recv(sockfd, &mut buffer) {
+                Ok((0, _)) => break,
                 Ok((n, _)) => {
                     UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
                         .map_err(|_| LinuxError::EFAULT)?;
                     total_read += n;
                 }
-                Err(_) => break,
+                // No data this round. If we have not copied anything yet,
+                // surface the error (EAGAIN for the non-blocking bridge) so the
+                // client retries rather than seeing a 0-byte read as EOF.
+                Err(e) => {
+                    if total_read == 0 {
+                        return Err(unix_err(e));
+                    }
+                    break;
+                }
             }
         }
 
