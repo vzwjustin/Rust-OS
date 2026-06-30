@@ -1,7 +1,9 @@
-//! F2FS read-only mount framework.
+//! F2FS mount framework with in-memory write support.
 //!
 //! Parses the on-disk superblock, resolves inodes via the NAT, and supports
 //! root directory listing and file reads through direct data blocks.
+//! Write operations use an in-memory overlay that takes precedence over
+//! on-disk data, mirroring F2FS log-structured semantics in RAM.
 
 use super::{
     get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
@@ -93,11 +95,17 @@ struct F2fsNode {
     gid: u32,
     links: u32,
     is_dir: bool,
+    /// On-disk block addresses (used by the disk read path).
     data_blocks: Vec<u32>,
     rel_path: String,
+    /// In-memory overlay data (None = read from disk, Some = use this).
+    mem_data: Option<Vec<u8>>,
+    /// In-memory directory entries for nodes not yet on disk.
+    mem_entries: Option<BTreeMap<String, InodeNumber>>,
+    permissions: FilePermissions,
 }
 
-/// Read-only F2FS filesystem backed by a block device.
+/// F2FS filesystem backed by a block device with in-memory write overlay.
 #[derive(Debug)]
 pub struct F2fsFileSystem {
     device_id: u32,
@@ -136,6 +144,7 @@ impl F2fsFileSystem {
         };
 
         let root = fs.read_inode_node(sb.root_ino)?;
+        let perm = FilePermissions::from_octal((root.mode & 0o7777) as u16);
         fs.inodes.write().insert(
             1,
             F2fsNode {
@@ -149,6 +158,9 @@ impl F2fsFileSystem {
                 is_dir: root.is_dir,
                 data_blocks: root.data_blocks,
                 rel_path: String::new(),
+                mem_data: None,
+                mem_entries: None,
+                permissions: perm,
             },
         );
 
@@ -229,6 +241,9 @@ impl F2fsFileSystem {
             is_dir,
             data_blocks,
             rel_path: String::new(),
+            mem_data: None,
+            mem_entries: None,
+            permissions: FilePermissions::from_octal((mode & 0o7777) as u16),
         })
     }
 
@@ -240,6 +255,7 @@ impl F2fsFileSystem {
             .ok_or(FsError::NotFound)
     }
 
+    /// Allocate a new inode number and insert the node.
     fn alloc_inode(&self, node: F2fsNode, rel_path: &str) -> InodeNumber {
         let mut next = self.next_inode.write();
         let ino = *next;
@@ -251,15 +267,46 @@ impl F2fsFileSystem {
         ino
     }
 
-    fn resolve_path(&self, rel_path: &str) -> FsResult<InodeNumber> {
-        if rel_path.is_empty() {
+    fn alloc_inode_num(&self) -> InodeNumber {
+        let mut next = self.next_inode.write();
+        let ino = *next;
+        *next += 1;
+        ino
+    }
+
+    /// Resolve a path by calling lookup_in_dir for each component.
+    fn resolve_path(&self, path: &str) -> FsResult<InodeNumber> {
+        let rel = path.strip_prefix('/').unwrap_or(path);
+        if rel.is_empty() {
             return Ok(1);
         }
-        let mut current = 1u64;
-        for component in rel_path.split('/').filter(|c| !c.is_empty()) {
+        let mut current: InodeNumber = 1;
+        for component in rel.split('/').filter(|c| !c.is_empty()) {
             current = self.lookup_in_dir(current, component)?;
         }
         Ok(current)
+    }
+
+    fn resolve_parent_path(&self, path: &str) -> FsResult<(InodeNumber, String)> {
+        let rel = path.strip_prefix('/').unwrap_or(path);
+        if rel.is_empty() {
+            return Err(FsError::InvalidArgument);
+        }
+        let parts: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
+        if parts.is_empty() {
+            return Err(FsError::InvalidArgument);
+        }
+        let filename = parts.last().unwrap().to_string();
+        if filename.len() > 255 {
+            return Err(FsError::NameTooLong);
+        }
+        let parent_ino = if parts.len() == 1 {
+            1
+        } else {
+            let parent_path = format!("/{}", parts[..parts.len() - 1].join("/"));
+            self.resolve_path(&parent_path)?
+        };
+        Ok((parent_ino, filename))
     }
 
     fn lookup_in_dir(&self, dir_inode: InodeNumber, name: &str) -> FsResult<InodeNumber> {
@@ -267,6 +314,13 @@ impl F2fsFileSystem {
         if !dir.is_dir {
             return Err(FsError::NotADirectory);
         }
+        // In-memory entries take priority
+        if let Some(ref mem_ents) = dir.mem_entries {
+            if let Some(&ino) = mem_ents.get(name) {
+                return Ok(ino);
+            }
+        }
+        // On-disk entries
         for entry in self.read_dir_entries(&dir)? {
             if entry.name == name {
                 return Ok(entry.inode);
@@ -284,7 +338,8 @@ impl F2fsFileSystem {
                 if dentry_off + 4 > block.len() {
                     break;
                 }
-                let ino = u32::from_le_bytes(block[dentry_off..dentry_off + 4].try_into().unwrap());
+                let ino =
+                    u32::from_le_bytes(block[dentry_off..dentry_off + 4].try_into().unwrap());
                 if ino == 0 {
                     continue;
                 }
@@ -327,6 +382,18 @@ impl F2fsFileSystem {
         if node.is_dir {
             return Err(FsError::IsADirectory);
         }
+        // In-memory data takes priority
+        if let Some(ref data) = node.mem_data {
+            let off = offset as usize;
+            if off >= data.len() {
+                return Ok(0);
+            }
+            let avail = data.len() - off;
+            let to_copy = core::cmp::min(buffer.len(), avail);
+            buffer[..to_copy].copy_from_slice(&data[off..off + to_copy]);
+            return Ok(to_copy);
+        }
+        // On-disk read
         if offset >= node.size {
             return Ok(0);
         }
@@ -346,12 +413,63 @@ impl F2fsFileSystem {
             buffer[copied..copied + take].copy_from_slice(&block[start..start + take]);
             copied += take;
             pos = 0;
-            if copied >= buffer.len() || (offset as u64 + copied as u64) >= node.size {
+            if copied >= buffer.len() || (offset + copied as u64) >= node.size {
                 break;
             }
         }
         let max = (node.size - offset) as usize;
         Ok(core::cmp::min(copied, max))
+    }
+
+    fn create_node(
+        &self,
+        path: &str,
+        is_dir: bool,
+        permissions: FilePermissions,
+    ) -> FsResult<InodeNumber> {
+        let (parent_ino, filename) = self.resolve_parent_path(path)?;
+        let new_ino = self.alloc_inode_num();
+        let mut inodes = self.inodes.write();
+
+        let parent = inodes.get_mut(&parent_ino).ok_or(FsError::NotFound)?;
+        if !parent.is_dir {
+            return Err(FsError::NotADirectory);
+        }
+        if let Some(ref mem_ents) = parent.mem_entries {
+            if mem_ents.contains_key(&filename) {
+                return Err(FsError::AlreadyExists);
+            }
+        }
+        let mem_ents = parent.mem_entries.get_or_insert_with(BTreeMap::new);
+        mem_ents.insert(filename.clone(), new_ino);
+
+        let parent_rel = parent.rel_path.clone();
+        let rel_path = if parent_rel.is_empty() {
+            filename
+        } else {
+            format!("{}/{}", parent_rel, filename)
+        };
+
+        let mode: u16 = if is_dir { 0o040755 } else { 0o100644 };
+        inodes.insert(
+            new_ino,
+            F2fsNode {
+                inode: new_ino,
+                nid: 0,
+                mode,
+                size: 0,
+                uid: 0,
+                gid: 0,
+                links: if is_dir { 2 } else { 1 },
+                is_dir,
+                data_blocks: Vec::new(),
+                rel_path,
+                mem_data: Some(Vec::new()),
+                mem_entries: if is_dir { Some(BTreeMap::new()) } else { None },
+                permissions,
+            },
+        );
+        Ok(new_ino)
     }
 }
 
@@ -372,8 +490,8 @@ impl FileSystem for F2fsFileSystem {
         })
     }
 
-    fn create(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        Err(FsError::ReadOnly)
+    fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        self.create_node(path, false, permissions)
     }
 
     fn open(&self, path: &str, _flags: OpenFlags) -> FsResult<InodeNumber> {
@@ -386,8 +504,57 @@ impl FileSystem for F2fsFileSystem {
         self.read_file_data(&node, offset, buffer)
     }
 
-    fn write(&self, _inode: InodeNumber, _offset: u64, _buffer: &[u8]) -> FsResult<usize> {
-        Err(FsError::ReadOnly)
+    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
+        // Promote disk-backed node to in-memory overlay before taking write lock
+        // so we don't need to call read_block while holding the write lock.
+        let existing_data: Option<Vec<u8>> = {
+            let inodes = self.inodes.read();
+            let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
+            if node.is_dir {
+                return Err(FsError::IsADirectory);
+            }
+            if node.mem_data.is_none() {
+                // Read existing on-disk content into a Vec
+                let mut existing = vec![0u8; node.size as usize];
+                let block_size = self.block_size as usize;
+                let mut dst_off = 0usize;
+                for &block_addr in &node.data_blocks {
+                    if dst_off >= existing.len() {
+                        break;
+                    }
+                    let sectors_per_block = self.block_size as u64 / 512;
+                    let sector =
+                        self.sector_base + (block_addr as u64) * sectors_per_block;
+                    let mut blk = vec![0u8; block_size];
+                    if read_storage_sectors(self.device_id, sector, &mut blk).is_ok() {
+                        let take =
+                            core::cmp::min(blk.len(), existing.len() - dst_off);
+                        existing[dst_off..dst_off + take]
+                            .copy_from_slice(&blk[..take]);
+                        dst_off += take;
+                    }
+                }
+                Some(existing)
+            } else {
+                None // Already has in-memory data; will update under write lock
+            }
+        };
+
+        let mut inodes = self.inodes.write();
+        let node = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
+        // Install promoted data if needed
+        if let Some(existing) = existing_data {
+            node.mem_data = Some(existing);
+        }
+        let data = node.mem_data.as_mut().unwrap();
+        let off = offset as usize;
+        let end = off + buffer.len();
+        if end > data.len() {
+            data.resize(end, 0);
+        }
+        data[off..end].copy_from_slice(buffer);
+        node.size = data.len() as u64;
+        Ok(buffer.len())
     }
 
     fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
@@ -401,7 +568,7 @@ impl FileSystem for F2fsFileSystem {
                 FileType::Regular
             },
             size: node.size,
-            permissions: FilePermissions::from_octal((node.mode & 0o7777) as u16),
+            permissions: node.permissions,
             uid: node.uid,
             gid: node.gid,
             created: now,
@@ -412,20 +579,73 @@ impl FileSystem for F2fsFileSystem {
         })
     }
 
-    fn set_metadata(&self, _inode: InodeNumber, _metadata: &FileMetadata) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn set_metadata(&self, inode: InodeNumber, metadata: &FileMetadata) -> FsResult<()> {
+        let mut inodes = self.inodes.write();
+        let node = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
+        node.size = metadata.size;
+        node.permissions = metadata.permissions;
+        node.uid = metadata.uid;
+        node.gid = metadata.gid;
+        node.links = metadata.link_count;
+        Ok(())
     }
 
-    fn mkdir(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        Err(FsError::ReadOnly)
+    fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        self.create_node(path, true, permissions)
     }
 
-    fn rmdir(&self, _path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn rmdir(&self, path: &str) -> FsResult<()> {
+        let ino = self.resolve_path(path)?;
+        let (parent_ino, filename) = self.resolve_parent_path(path)?;
+        let mut inodes = self.inodes.write();
+        {
+            let node = inodes.get(&ino).ok_or(FsError::NotFound)?;
+            if !node.is_dir {
+                return Err(FsError::NotADirectory);
+            }
+            let mem_empty = node
+                .mem_entries
+                .as_ref()
+                .map(|e| e.is_empty())
+                .unwrap_or(true);
+            let disk_empty = node.data_blocks.is_empty();
+            if !mem_empty || !disk_empty {
+                return Err(FsError::DirectoryNotEmpty);
+            }
+        }
+        inodes.remove(&ino);
+        if let Some(parent) = inodes.get_mut(&parent_ino) {
+            if let Some(ref mut mem_ents) = parent.mem_entries {
+                mem_ents.remove(&filename);
+            }
+        }
+        Ok(())
     }
 
-    fn unlink(&self, _path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn unlink(&self, path: &str) -> FsResult<()> {
+        let ino = self.resolve_path(path)?;
+        let (parent_ino, filename) = self.resolve_parent_path(path)?;
+        let mut inodes = self.inodes.write();
+        {
+            let node = inodes.get(&ino).ok_or(FsError::NotFound)?;
+            if node.is_dir {
+                return Err(FsError::IsADirectory);
+            }
+        }
+        if let Some(parent) = inodes.get_mut(&parent_ino) {
+            if let Some(ref mut mem_ents) = parent.mem_entries {
+                mem_ents.remove(&filename);
+            }
+        }
+        let remove = {
+            let node = inodes.get_mut(&ino).ok_or(FsError::NotFound)?;
+            node.links = node.links.saturating_sub(1);
+            node.links == 0
+        };
+        if remove {
+            inodes.remove(&ino);
+        }
+        Ok(())
     }
 
     fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
@@ -433,15 +653,83 @@ impl FileSystem for F2fsFileSystem {
         if !node.is_dir {
             return Err(FsError::NotADirectory);
         }
-        self.read_dir_entries(&node)
+        let mut out = Vec::new();
+        // In-memory entries
+        if let Some(ref mem_ents) = node.mem_entries {
+            let inodes = self.inodes.read();
+            for (name, &child_ino) in mem_ents {
+                if let Some(child) = inodes.get(&child_ino) {
+                    out.push(DirectoryEntry {
+                        name: name.clone(),
+                        inode: child_ino,
+                        file_type: if child.is_dir {
+                            FileType::Directory
+                        } else {
+                            FileType::Regular
+                        },
+                    });
+                }
+            }
+        }
+        // On-disk entries
+        let mut disk_entries = self.read_dir_entries(&node)?;
+        out.append(&mut disk_entries);
+        Ok(out)
     }
 
-    fn rename(&self, _old_path: &str, _new_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn rename(&self, old_path: &str, new_path: &str) -> FsResult<()> {
+        let ino = self.resolve_path(old_path)?;
+        let (old_parent_ino, old_name) = self.resolve_parent_path(old_path)?;
+        let (new_parent_ino, new_name) = self.resolve_parent_path(new_path)?;
+        if new_name.len() > 255 {
+            return Err(FsError::NameTooLong);
+        }
+        let mut inodes = self.inodes.write();
+        // Remove from old parent
+        if let Some(old_parent) = inodes.get_mut(&old_parent_ino) {
+            if let Some(ref mut mem_ents) = old_parent.mem_entries {
+                mem_ents.remove(&old_name);
+            }
+        }
+        // Evict destination if it exists
+        let victim_ino = inodes
+            .get(&new_parent_ino)
+            .and_then(|p| p.mem_entries.as_ref())
+            .and_then(|e| e.get(&new_name))
+            .copied();
+        if let Some(v_ino) = victim_ino {
+            let remove = if let Some(victim) = inodes.get_mut(&v_ino) {
+                victim.links = victim.links.saturating_sub(1);
+                victim.links == 0
+            } else {
+                false
+            };
+            if remove {
+                inodes.remove(&v_ino);
+            }
+        }
+        // Insert into new parent
+        if let Some(new_parent) = inodes.get_mut(&new_parent_ino) {
+            let mem_ents = new_parent.mem_entries.get_or_insert_with(BTreeMap::new);
+            mem_ents.insert(new_name.clone(), ino);
+        }
+        // Update rel_path
+        let new_parent_rel = inodes
+            .get(&new_parent_ino)
+            .map(|p| p.rel_path.clone())
+            .unwrap_or_default();
+        if let Some(node) = inodes.get_mut(&ino) {
+            node.rel_path = if new_parent_rel.is_empty() {
+                new_name
+            } else {
+                format!("{}/{}", new_parent_rel, new_name)
+            };
+        }
+        Ok(())
     }
 
     fn symlink(&self, _target: &str, _link_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+        Err(FsError::NotSupported)
     }
 
     fn readlink(&self, _path: &str) -> FsResult<String> {
