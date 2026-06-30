@@ -1410,6 +1410,9 @@ impl AhciDriver {
     }
 
     pub fn get_smart_data(&mut self, port: u8) -> Result<Vec<u8>, StorageError> {
+        if port >= 32 {
+            return Err(StorageError::HardwareError);
+        }
         // SMART READ DATA: ATA command 0xB0, features=0xD0, LBA=0xC24F8C0
         // The 512-byte SMART data is returned in the DMA buffer
         let mut smart_data = vec![0u8; 512];
