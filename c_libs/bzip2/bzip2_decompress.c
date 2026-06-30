@@ -126,8 +126,12 @@ static int bz_huffman_decode(BitReaderBE *br, const BzHuffman *h) {
 }
 
 /* ── BWT inverse ────────────────────────────────────────────────── */
-static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
-                        uint8_t *out) {
+static int bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
+                       uint8_t *out) {
+    /* orig_ptr is read straight from the (attacker-controlled) block header and
+     * used to index next[]; reject anything outside the block. */
+    if (orig_ptr < 0 || orig_ptr >= bwt_size) return -1;
+
     /* Build the T vector (character counts) */
     int count[256];
     kmemset(count, 0, sizeof(count));
@@ -140,10 +144,10 @@ static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
 
     /* Build the next vector */
     int *next = (int *)kmalloc(sizeof(int) * bwt_size);
-    if (!next) return;
+    if (!next) return -1;
 
     int *bucket = (int *)kmalloc(sizeof(int) * 256);
-    if (!bucket) { kfree(next); return; }
+    if (!bucket) { kfree(next); return -1; }
     kmemset(bucket, 0, sizeof(int) * 256);
 
     for (int i = 0; i < bwt_size; i++) {
@@ -161,6 +165,7 @@ static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
 
     kfree(bucket);
     kfree(next);
+    return 0;
 }
 
 /* ── MTF inverse ────────────────────────────────────────────────── */
@@ -372,7 +377,11 @@ int bzip2_decompress(const uint8_t *src, size_t src_size,
             uint8_t *raw_buf = (uint8_t *)kmalloc(max_block + 20);
             if (!raw_buf) { kfree(bwt_buf); return -1; }
 
-            bwt_inverse(bwt_buf, mtf_pos, orig_ptr, raw_buf);
+            if (bwt_inverse(bwt_buf, mtf_pos, orig_ptr, raw_buf) != 0) {
+                kfree(bwt_buf);
+                kfree(raw_buf);
+                return -1;
+            }
             kfree(bwt_buf);
 
             /* RLE inverse */

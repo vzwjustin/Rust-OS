@@ -217,9 +217,12 @@ static uint32_t lzma_decode_dist(RangeDecoder *rd, LzmaState *s, int len) {
     if (slot < 14) {
         /* Use distance decoder */
         uint32_t base = dist - num_direct - 1;
+        const size_t pd_entries = sizeof(s->pos_decoders) / sizeof(s->pos_decoders[0]);
         int v = 0;
         for (int i = 0; i < num_direct; i++) {
-            /* Use pos_decoders */
+            /* Guard against indexing past the (fixed-size) pos_decoders table
+             * on crafted input; 0xFFFFFFFF is the caller's error sentinel. */
+            if ((size_t)(base + v) >= pd_entries) return 0xFFFFFFFFu;
             v = (v << 1) | rd_decode_bit(rd, &s->pos_decoders[base + v]);
         }
         dist += v;
@@ -238,9 +241,17 @@ static uint32_t lzma_decode_dist(RangeDecoder *rd, LzmaState *s, int len) {
 static int lzma_decode_literal(RangeDecoder *rd, LzmaState *s,
                                uint8_t prev_byte, int lit_state,
                                uint8_t *out) {
-    /* Simple literal decoding without match context */
-    uint16_t *probs = &s->lit[lit_state * 0x300];
     (void)prev_byte;
+    /* The literal probability table is sized for a single context (lit[0x300]).
+     * Reject literal states that would index past it instead of reading/writing
+     * out of bounds. NOTE: full LZMA support needs this table sized
+     * 0x300 << (lc+lp); until then streams using lc/lp are refused rather than
+     * silently corrupting memory. */
+    const size_t lit_entries = sizeof(s->lit) / sizeof(s->lit[0]);
+    if (lit_state < 0 || (size_t)lit_state * 0x300 + 0x300 > lit_entries) {
+        return -1;
+    }
+    uint16_t *probs = &s->lit[lit_state * 0x300];
 
     int symbol = 1;
     for (int i = 0; i < 8; i++)
@@ -273,6 +284,11 @@ static int lzma2_decode(const uint8_t *src, size_t src_size,
             /* End of stream */
             break;
         }
+
+        /* Every non-terminator chunk header reads 4 more bytes (two 16-bit
+         * size fields). Validate before touching them — the size check at the
+         * bottom only covered the payload, not these header reads. */
+        if (pos + 4 > src_size) return -1;
 
         int reset_dict = 0, reset_state = 0, reset_probs = 0;
         int uncompressed_size;
@@ -338,7 +354,9 @@ static int lzma2_decode(const uint8_t *src, size_t src_size,
                 int lit_state = ((int)(out_pos & (lit_pos_state - 1)) << lc) |
                                 (prev >> (8 - lc));
                 uint8_t lit;
-                lzma_decode_literal(&rd, &s, prev, lit_state, &lit);
+                if (lzma_decode_literal(&rd, &s, prev, lit_state, &lit) != 0) {
+                    return -1;
+                }
                 if (out_pos >= dst_cap) return -1;
                 dst[out_pos++] = lit;
                 if (state < 4) s.state = 0;
