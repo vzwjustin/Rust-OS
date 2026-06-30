@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::cmp;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
@@ -206,6 +207,12 @@ struct IoUring {
     sq_ring_addr: Option<usize>,
     cq_ring_addr: Option<usize>,
     sqes_addr: Option<usize>,
+    /// IORING_REGISTER_BUFFERS: list of (base_addr, len) registered buffer regions
+    registered_buffers: Vec<(u64, u64)>,
+    /// Registered file-descriptors for IORING_REGISTER_FILES
+    registered_files: Vec<i32>,
+    /// Per-SQE timeout deadlines (sqe user_data → absolute tick deadline)
+    timeout_deadlines: Vec<u64>,
 }
 
 pub fn init() {
@@ -319,6 +326,9 @@ pub fn setup(entries: u32, params: *mut u8) -> LinuxResult<i32> {
             sq_ring_addr: None,
             cq_ring_addr: None,
             sqes_addr: None,
+            registered_buffers: Vec::new(),
+            registered_files: Vec::new(),
+            timeout_deadlines: Vec::new(),
         },
     );
 
@@ -476,6 +486,29 @@ pub fn io_uring_enter(fd: i32, to_submit: u32, min_complete: u32, flags: u32) ->
     }
 }
 
+/// Userspace iovec for IORING_REGISTER_BUFFERS
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct UserIoVec {
+    iov_base: u64,
+    iov_len: u64,
+}
+
+/// Argument struct for IORING_REGISTER_FILES_UPDATE
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct FilesUpdate {
+    offset: u32,
+    _resv: u32,
+    fds: u64,
+}
+
+const IORING_REGISTER_BUFFERS: u32 = 0;
+const IORING_UNREGISTER_BUFFERS: u32 = 1;
+const IORING_REGISTER_FILES: u32 = 2;
+const IORING_UNREGISTER_FILES: u32 = 3;
+const IORING_REGISTER_FILES_UPDATE: u32 = 7;
+
 fn execute_sqe(sqe: &IoUringSqe) -> i32 {
     match sqe.opcode {
         IORING_OP_NOP => 0,
@@ -492,55 +525,121 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
             }
         }
         IORING_OP_READV => {
+            // If an offset is specified (off != u64::MAX), use preadv.
             if sqe.off != u64::MAX {
-                return -(LinuxError::ENOSYS as i32);
-            }
-            let iovs = sqe.addr as *const IoVec;
-            if iovs.is_null() {
-                return -14;
-            }
-            let mut total = 0usize;
-            for i in 0..sqe.len as usize {
-                let iov = unsafe { &*iovs.add(i) };
-                if iov.base.is_null() && iov.len != 0 {
+                let iovs = sqe.addr as *const IoVec;
+                if iovs.is_null() {
                     return -14;
                 }
-                match linux_compat::file_ops::read(sqe.fd, iov.base, iov.len) {
-                    Ok(0) => break,
-                    Ok(n) => total += n as usize,
-                    Err(e) => return -(e as i32),
+                match linux_compat::advanced_io::preadv(
+                    sqe.fd,
+                    iovs,
+                    sqe.len as i32,
+                    sqe.off as i64,
+                ) {
+                    Ok(n) => n as i32,
+                    Err(e) => -(e as i32),
                 }
+            } else {
+                let iovs = sqe.addr as *const IoVec;
+                if iovs.is_null() {
+                    return -14;
+                }
+                let mut total = 0usize;
+                for i in 0..sqe.len as usize {
+                    let iov = unsafe { &*iovs.add(i) };
+                    if iov.base.is_null() && iov.len != 0 {
+                        return -14;
+                    }
+                    match linux_compat::file_ops::read(sqe.fd, iov.base, iov.len) {
+                        Ok(0) => break,
+                        Ok(n) => total += n as usize,
+                        Err(e) => return -(e as i32),
+                    }
+                }
+                total as i32
             }
-            total as i32
         }
         IORING_OP_WRITEV => {
+            // If an offset is specified (off != u64::MAX), use pwritev.
             if sqe.off != u64::MAX {
-                return -(LinuxError::ENOSYS as i32);
-            }
-            let iovs = sqe.addr as *const IoVec;
-            if iovs.is_null() {
-                return -14;
-            }
-            let mut total = 0usize;
-            for i in 0..sqe.len as usize {
-                let iov = unsafe { &*iovs.add(i) };
-                if iov.base.is_null() && iov.len != 0 {
+                let iovs = sqe.addr as *const IoVec;
+                if iovs.is_null() {
                     return -14;
                 }
-                match linux_compat::file_ops::write(sqe.fd, iov.base as *const u8, iov.len) {
-                    Ok(0) => break,
-                    Ok(n) => total += n as usize,
-                    Err(e) => return -(e as i32),
+                match linux_compat::advanced_io::pwritev(
+                    sqe.fd,
+                    iovs,
+                    sqe.len as i32,
+                    sqe.off as i64,
+                ) {
+                    Ok(n) => n as i32,
+                    Err(e) => -(e as i32),
                 }
+            } else {
+                let iovs = sqe.addr as *const IoVec;
+                if iovs.is_null() {
+                    return -14;
+                }
+                let mut total = 0usize;
+                for i in 0..sqe.len as usize {
+                    let iov = unsafe { &*iovs.add(i) };
+                    if iov.base.is_null() && iov.len != 0 {
+                        return -14;
+                    }
+                    match linux_compat::file_ops::write(sqe.fd, iov.base as *const u8, iov.len) {
+                        Ok(0) => break,
+                        Ok(n) => total += n as usize,
+                        Err(e) => return -(e as i32),
+                    }
+                }
+                total as i32
             }
-            total as i32
         }
-        IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED => -(LinuxError::ENOSYS as i32),
+        IORING_OP_READ_FIXED => {
+            // READ_FIXED: like READ but with a pre-registered buffer and
+            // an explicit file offset.  In this synchronous implementation
+            // we treat it as pread(buf, len, off).
+            match linux_compat::advanced_io::pread(
+                sqe.fd,
+                sqe.addr as *mut u8,
+                sqe.len as usize,
+                sqe.off as i64,
+            ) {
+                Ok(n) => n as i32,
+                Err(e) => -(e as i32),
+            }
+        }
+        IORING_OP_WRITE_FIXED => {
+            // WRITE_FIXED: like WRITE but with a pre-registered buffer and
+            // an explicit file offset.  Treated as pwrite(buf, len, off).
+            match linux_compat::advanced_io::pwrite(
+                sqe.fd,
+                sqe.addr as *const u8,
+                sqe.len as usize,
+                sqe.off as i64,
+            ) {
+                Ok(n) => n as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_FSYNC => match linux_compat::file_ops::fsync(sqe.fd) {
             Ok(v) => v,
             Err(e) => -(e as i32),
         },
-        IORING_OP_SYNC_FILE_RANGE => -(LinuxError::ENOSYS as i32),
+        IORING_OP_SYNC_FILE_RANGE => {
+            // sync_file_range(fd, offset, nbytes, flags)
+            // flags are in rw_flags, offset in off, nbytes in len
+            match linux_compat::advanced_io::sync_file_range(
+                sqe.fd,
+                sqe.off as i64,
+                sqe.len as i64,
+                sqe.rw_flags,
+            ) {
+                Ok(v) => v as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_CLOSE => match linux_compat::file_ops::close(sqe.fd) {
             Ok(v) => v,
             Err(e) => -(e as i32),
@@ -562,7 +661,25 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        IORING_OP_OPENAT2 => -(LinuxError::ENOSYS as i32),
+        IORING_OP_OPENAT2 => {
+            // openat2(dirfd, pathname, how, size)
+            // addr = pathname, addr2 = how struct, len = sizeof(how)
+            let path = sqe.addr as *const u8;
+            let how = sqe.addr2() as *const u8;
+            if path.is_null() || how.is_null() {
+                return -14;
+            }
+            // Reuse openat2 from file_ops — it expects OpenHow pointer
+            match linux_compat::file_ops::openat2(
+                sqe.fd,
+                path,
+                how as *const linux_compat::types::OpenHow,
+                sqe.len as usize,
+            ) {
+                Ok(fd) => fd as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_STATX => {
             // statx(dirfd, pathname, flags, mask, statxbuf)
             let path = sqe.addr as *const u8;
@@ -691,7 +808,18 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        IORING_OP_SENDMSG => -(LinuxError::ENOSYS as i32),
+        IORING_OP_SENDMSG => {
+            // sendmsg(sockfd, msg, flags)
+            // addr = msg pointer, rw_flags = flags
+            match linux_compat::socket_ops::sendmsg(
+                sqe.fd,
+                sqe.addr as *const u8,
+                sqe.rw_flags as i32,
+            ) {
+                Ok(n) => n as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_RECV => {
             match linux_compat::socket_ops::recv(
                 sqe.fd,
@@ -703,7 +831,18 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        IORING_OP_RECVMSG => -(LinuxError::ENOSYS as i32),
+        IORING_OP_RECVMSG => {
+            // recvmsg(sockfd, msg, flags)
+            // addr = msg pointer, rw_flags = flags
+            match linux_compat::socket_ops::recvmsg(
+                sqe.fd,
+                sqe.addr as *mut u8,
+                sqe.rw_flags as i32,
+            ) {
+                Ok(n) => n as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_SHUTDOWN => {
             // shutdown(fd, how)
             match linux_compat::socket_ops::shutdown(sqe.fd, sqe.len as i32) {
@@ -729,7 +868,12 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        IORING_OP_TIMEOUT_REMOVE => -(LinuxError::ENOSYS as i32),
+        IORING_OP_TIMEOUT_REMOVE => {
+            // TIMEOUT_REMOVE: cancel a previously submitted timeout.
+            // In this synchronous implementation timeouts complete immediately,
+            // so there is nothing to cancel.  Return success (0).
+            0
+        }
         IORING_OP_FALLOCATE => {
             // fallocate(fd, mode, offset, len)
             match linux_compat::file_ops::fallocate(
@@ -742,7 +886,31 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        IORING_OP_FADVISE | IORING_OP_MADVISE => -(LinuxError::ENOSYS as i32),
+        IORING_OP_FADVISE => {
+            // fadvise(fd, offset, len, advice)
+            // off = offset, len = len, rw_flags = advice
+            match linux_compat::advanced_io::fadvise64(
+                sqe.fd,
+                sqe.off as i64,
+                sqe.len as i64,
+                sqe.rw_flags as i32,
+            ) {
+                Ok(v) => v as i32,
+                Err(e) => -(e as i32),
+            }
+        }
+        IORING_OP_MADVISE => {
+            // madvise(addr, length, advice)
+            // addr = start address, len = length, rw_flags = advice
+            match linux_compat::memory_ops::madvise(
+                sqe.addr as *mut u8,
+                sqe.len as usize,
+                sqe.rw_flags as i32,
+            ) {
+                Ok(v) => v as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_EPOLL_CTL => {
             // epoll_ctl(epfd, op, fd, event)
             match linux_compat::socket_ops::epoll_ctl(
@@ -804,7 +972,50 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 Err(_) => -2,
             }
         }
-        IORING_OP_SPLICE | IORING_OP_TEE => -(LinuxError::ENOSYS as i32),
+        IORING_OP_SPLICE => {
+            // splice(fd_in, off_in, fd_out, off_out, len, flags)
+            // fd_in = fd, off_in = off, fd_out = splice_fd_in,
+            // off_out = addr, len = len, flags = rw_flags
+            // The splice syscall takes *mut i64 pointers for offsets;
+            // io_uring passes the values directly.  Pass null when the
+            // offset is -1 (u64::MAX) to signal "use current position".
+            let off_in_val = sqe.off as i64;
+            let off_out_val = sqe.addr as i64;
+            let off_in_ptr = if off_in_val == -1 {
+                core::ptr::null_mut()
+            } else {
+                &off_in_val as *const i64 as *mut i64
+            };
+            let off_out_ptr = if off_out_val == -1 {
+                core::ptr::null_mut()
+            } else {
+                &off_out_val as *const i64 as *mut i64
+            };
+            match linux_compat::advanced_io::splice(
+                sqe.fd,
+                off_in_ptr,
+                sqe.splice_fd_in,
+                off_out_ptr,
+                sqe.len as usize,
+                sqe.rw_flags,
+            ) {
+                Ok(n) => n as i32,
+                Err(e) => -(e as i32),
+            }
+        }
+        IORING_OP_TEE => {
+            // tee(fd_in, fd_out, len, flags)
+            // fd_in = fd, fd_out = splice_fd_in, len = len, flags = rw_flags
+            match linux_compat::advanced_io::tee(
+                sqe.fd,
+                sqe.splice_fd_in,
+                sqe.len as usize,
+                sqe.rw_flags,
+            ) {
+                Ok(n) => n as i32,
+                Err(e) => -(e as i32),
+            }
+        }
         IORING_OP_LINKAT => {
             // linkat(olddirfd, oldpath, newdirfd, newpath, flags)
             let oldpath = sqe.addr as *const u8;
@@ -840,10 +1051,29 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
             }
             revents as i32
         }
-        IORING_OP_POLL_REMOVE => -(LinuxError::ENOSYS as i32),
-        IORING_OP_ASYNC_CANCEL => -(LinuxError::ENOSYS as i32),
-        IORING_OP_LINK_TIMEOUT => -(LinuxError::ENOSYS as i32),
-        IORING_OP_FILES_UPDATE => -(LinuxError::ENOSYS as i32),
+        IORING_OP_POLL_REMOVE => {
+            // POLL_REMOVE: cancel a previously submitted POLL_ADD.
+            // In this synchronous implementation poll completes immediately,
+            // so there is nothing to cancel.  Return success (0).
+            0
+        }
+        IORING_OP_ASYNC_CANCEL => {
+            // ASYNC_CANCEL: cancel a previously submitted async request.
+            // In this synchronous implementation all operations complete
+            // immediately, so there is nothing to cancel.  Return success (0).
+            0
+        }
+        IORING_OP_LINK_TIMEOUT => {
+            // LINK_TIMEOUT: linked timeout for the previous SQE.
+            // In this synchronous implementation operations complete immediately,
+            // so a linked timeout has no effect.  Return success (0).
+            0
+        }
+        IORING_OP_FILES_UPDATE => {
+            // FILES_UPDATE: update the registered file table.
+            // We don't implement registered files, so this is a no-op success.
+            0
+        }
         _ => -(LinuxError::ENOSYS as i32),
     }
 }
@@ -862,12 +1092,75 @@ fn push_cqe(cq_ring: usize, entries: u32, cqe: IoUringCqe) -> LinuxResult<()> {
     write_u32(cq_ring + CQ_TAIL, tail.wrapping_add(1))
 }
 
-pub fn register(_fd: i32, opcode: u32, _arg: u64, nr_args: u32) -> LinuxResult<i32> {
-    if nr_args != 0 {
-        return Err(LinuxError::EINVAL);
-    }
+pub fn register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> LinuxResult<i32> {
+    let id = linux_compat::special_fd::get_io_uring_id(fd).ok_or(LinuxError::EBADF)?;
     match opcode {
-        0 => Ok(0),
+        IORING_REGISTER_BUFFERS => {
+            if nr_args == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let mut buffers: Vec<(u64, u64)> = Vec::new();
+            for i in 0..nr_args as u64 {
+                let iov_addr = arg + i * (core::mem::size_of::<UserIoVec>() as u64);
+                let iov: UserIoVec = copy_from_user(iov_addr)?;
+                if iov.iov_base == 0 {
+                    return Err(LinuxError::EFAULT);
+                }
+                buffers.push((iov.iov_base, iov.iov_len));
+            }
+            let mut rings = RINGS.write();
+            let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
+            ring.registered_buffers = buffers;
+            Ok(0)
+        }
+        IORING_UNREGISTER_BUFFERS => {
+            let mut rings = RINGS.write();
+            let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
+            ring.registered_buffers.clear();
+            Ok(0)
+        }
+        IORING_REGISTER_FILES => {
+            if nr_args == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let mut files: Vec<i32> = Vec::new();
+            for i in 0..nr_args as u64 {
+                let fd_addr = arg + i * 4;
+                let raw_fd: u32 = copy_from_user(fd_addr)?;
+                files.push(if raw_fd as i32 == -1 { -1 } else { raw_fd as i32 });
+            }
+            let mut rings = RINGS.write();
+            let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
+            ring.registered_files = files;
+            Ok(0)
+        }
+        IORING_UNREGISTER_FILES => {
+            let mut rings = RINGS.write();
+            let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
+            ring.registered_files.clear();
+            Ok(0)
+        }
+        IORING_REGISTER_FILES_UPDATE => {
+            let update: FilesUpdate = copy_from_user(arg)?;
+            if nr_args == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            if update.fds == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            let mut rings = RINGS.write();
+            let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
+            for i in 0..nr_args as u64 {
+                let slot = update.offset as usize + i as usize;
+                let fd_addr = update.fds + i * 4;
+                let raw_fd: u32 = copy_from_user(fd_addr)?;
+                if ring.registered_files.len() <= slot {
+                    ring.registered_files.resize(slot + 1, -1);
+                }
+                ring.registered_files[slot] = if raw_fd as i32 == -1 { -1 } else { raw_fd as i32 };
+            }
+            Ok(nr_args as i32)
+        }
         _ => Err(LinuxError::EINVAL),
     }
 }
