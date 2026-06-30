@@ -396,12 +396,76 @@ pub fn userspace_init_available() -> bool {
     find_userspace_init().is_some()
 }
 
+/// Native Rust PID 1 — a static ET_EXEC built from `userspace/init/`, embedded in
+/// the kernel image. This is the boot-to-desktop-in-Rust path: our own code runs
+/// as a real Ring-3 process, no external binaries / musl / dynamic linker.
+static NATIVE_INIT_ELF: &[u8] = include_bytes!("../userspace/init.elf");
+
+/// Write the embedded native init ELF to `path` (creating/truncating), returning
+/// the byte count written or an error string for diagnostics.
+fn write_native_init_to(path: &str) -> Result<usize, &'static str> {
+    // NOTE: this kernel's VFS OpenFlags are NOT the Linux ABI numbers — use the
+    // kernel's own constants (CREAT=0x100, TRUNC=0x400), exactly as the cpio
+    // extractor does, or the create bit silently goes unset.
+    use crate::vfs::OpenFlags;
+    let flags = OpenFlags::WRONLY | OpenFlags::CREAT | OpenFlags::TRUNC;
+
+    // Remove any pre-existing entry (e.g. a busybox symlink) so we write a
+    // fresh regular file instead of following / clobbering a link.
+    let _ = crate::vfs::vfs_unlink(path);
+
+    let fd = crate::vfs::vfs_open(path, flags, 0o755).map_err(|_| "open")?;
+    let wrote = crate::vfs::vfs_write(fd, NATIVE_INIT_ELF);
+    let _ = crate::vfs::vfs_close(fd);
+    match wrote {
+        Ok(n) if n == NATIVE_INIT_ELF.len() => Ok(n),
+        Ok(_) => Err("short-write"),
+        Err(_) => Err("write"),
+    }
+}
+
+/// Install the embedded native Rust init, replacing any initramfs-provided init.
+/// Tries `/sbin/init` first (canonical), then `/init` (the path whose parent `/`
+/// is always resolvable, mirroring a Linux initramfs). Returns the path that the
+/// native init was actually written to, so the caller execs exactly what we
+/// installed instead of falling through to busybox.
+pub fn install_native_init() -> Option<&'static str> {
+    // Diagnostics: confirm the rootfs is populated and writable where we expect.
+    let sbin_present = crate::vfs::vfs_stat("/sbin").is_ok();
+    let mkdir_res = crate::vfs::vfs_mkdir("/sbin", 0o755);
+    crate::serial_println!(
+        "init: install probe: /sbin present={} mkdir={:?}",
+        sbin_present,
+        mkdir_res
+    );
+
+    // Linux execs the initramfs `/init` (ramdisk_execute_command) FIRST, then
+    // falls back to /sbin/init (init/main.c kernel_init). Mirror that order.
+    for &path in &["/init", "/sbin/init"] {
+        match write_native_init_to(path) {
+            Ok(n) => {
+                crate::serial_println!("init: installed native Rust init at {} ({} bytes)", path, n);
+                return Some(path);
+            }
+            Err(reason) => {
+                crate::serial_println!("init: could not install native init at {}: {}", path, reason);
+            }
+        }
+    }
+    None
+}
+
 /// Spawn a Linux-style init fallback via `linux_compat::desktop` while the kernel
 /// compositor loop keeps running.
 pub fn spawn_userspace_init(
     boot: crate::linux_compat::desktop::SessionBoot,
 ) -> Result<u32, InitramfsError> {
-    let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
+    // Prefer the native Rust init: install it and exec exactly what we wrote.
+    // Only fall back to a rootfs-provided init if the native install fails.
+    let path = match install_native_init() {
+        Some(p) => p,
+        None => find_userspace_init().ok_or(InitramfsError::InitNotFound)?,
+    };
     crate::linux_compat::desktop::spawn_session_init(path, boot)
         .map_err(|_| InitramfsError::ExtractionFailed)
 }

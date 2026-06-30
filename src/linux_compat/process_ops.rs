@@ -337,12 +337,6 @@ fn fs_error_to_linux(err: crate::fs::FsError) -> LinuxError {
     }
 }
 
-/// Write a u64 onto the descending stack and return the new stack pointer.
-unsafe fn push_u64(sp: &mut u64, value: u64) {
-    *sp = sp.wrapping_sub(8);
-    (*sp as *mut u64).write(value);
-}
-
 /// Write a null-terminated string onto the descending stack; return its address.
 unsafe fn push_cstring(sp: &mut u64, s: &str) -> u64 {
     let bytes = s.as_bytes();
@@ -414,7 +408,6 @@ fn build_linux_initial_stack(
     }
 
     let execfn_addr = unsafe { push_cstring(&mut sp, exec_path) };
-    sp &= !0xF;
 
     let phdr_addr = compute_phdr_addr(loaded, header);
 
@@ -456,40 +449,46 @@ fn build_linux_initial_stack(
         (auxv::AT_NULL, 0),
     ];
 
-    let stack_qwords =
-        auxv_entries.len() * 2 + 1 + env_addrs.len() + 1 + arg_addrs.len() + 1;
-    if stack_qwords % 2 != 0 {
-        unsafe {
-            push_u64(&mut sp, 0);
-        }
-    }
+    // All strings (argv, envp, random, execfn) are now on the stack and `sp`
+    // is at an arbitrary (string-length-dependent) offset. Mirror Linux's
+    // create_elf_tables(): compute the final argc address ONCE by reserving
+    // room for every fixed-size word, then aligning DOWN to 16 — Linux's
+    // STACK_ROUND(sp, items) == (sp - items) & ~15. This guarantees argc lands
+    // 16-byte aligned (SysV AMD64 entry ABI), regardless of string lengths.
+    let n_words: u64 = 1                                   // argc
+        + (arg_addrs.len() as u64 + 1)                     // argv pointers + NULL
+        + (env_addrs.len() as u64 + 1)                     // envp pointers + NULL
+        + (auxv_entries.len() as u64 * 2); // auxv (tag,val) pairs
 
-    for &(tag, val) in auxv_entries.iter().rev() {
-        unsafe {
-            push_u64(&mut sp, val);
-            push_u64(&mut sp, tag);
-        }
-    }
+    let argc_addr = sp.wrapping_sub(n_words * 8) & !0xF;
 
+    // Write the table upward from argc_addr: argc, argv[], NULL, envp[], NULL, auxv[].
+    let mut cur = argc_addr;
     unsafe {
-        push_u64(&mut sp, 0);
-        for &addr in env_addrs.iter().rev() {
-            push_u64(&mut sp, addr);
+        write_u64_at(&mut cur, argv.len() as u64);
+        for &addr in arg_addrs.iter() {
+            write_u64_at(&mut cur, addr);
         }
-
-        push_u64(&mut sp, 0);
-        for &addr in arg_addrs.iter().rev() {
-            push_u64(&mut sp, addr);
+        write_u64_at(&mut cur, 0); // argv NULL terminator
+        for &addr in env_addrs.iter() {
+            write_u64_at(&mut cur, addr);
         }
-
-        push_u64(&mut sp, argv.len() as u64);
+        write_u64_at(&mut cur, 0); // envp NULL terminator
+        for &(tag, val) in auxv_entries.iter() {
+            write_u64_at(&mut cur, tag);
+            write_u64_at(&mut cur, val);
+        }
     }
 
-    if sp % 16 != 0 {
-        return Err(LinuxError::EINVAL);
-    }
+    // argc_addr is 16-aligned by construction; the entry ABI is satisfied.
+    Ok(argc_addr)
+}
 
-    Ok(sp)
+/// Write a u64 at `*cur` (a user virtual address) and advance the cursor by 8.
+#[inline]
+unsafe fn write_u64_at(cur: &mut u64, val: u64) {
+    core::ptr::write(*cur as *mut u64, val);
+    *cur = cur.wrapping_add(8);
 }
 
 struct ResolvedExec {
