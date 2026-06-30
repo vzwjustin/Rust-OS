@@ -366,7 +366,10 @@ impl FileSystem for OverlayFs {
         let upper_path = alloc::format!("{}/{}", self.upper_dir, node.rel_path);
         let old_stat = crate::vfs::vfs_lstat(&upper_path).map_err(|_| FsError::IoError)?;
         let mount = overlay_quota_mount(&upper_path);
-        let new_size = core::cmp::max(old_stat.size, offset + buffer.len() as u64);
+        let write_end = offset
+            .checked_add(buffer.len() as u64)
+            .ok_or(FsError::InvalidArgument)?;
+        let new_size = core::cmp::max(old_stat.size, write_end);
         crate::quota::account_write(&old_stat, &mount, old_stat.size, new_size)
             .map_err(map_quota_err)?;
 

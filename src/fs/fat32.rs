@@ -1073,7 +1073,11 @@ impl Fat32FileSystem {
                     | (dir_entry.first_cluster_lo as u32);
                 if first_cluster == target_cluster {
                     let mut updated = dir_entry;
-                    updated.file_size = core::cmp::max(updated.file_size, size);
+                    // Set the size the caller computed (it already accounts for
+                    // non-extending writes). max() here pinned the size to its
+                    // high-water mark, so truncations and smaller overwrites
+                    // could never shrink the file, leaving stale trailing data.
+                    updated.file_size = size;
                     return self.update_dir_entry(cluster_num, offset, &updated);
                 }
 

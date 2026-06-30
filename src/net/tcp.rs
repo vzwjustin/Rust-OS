@@ -743,12 +743,13 @@ pub fn process_packet(
             )?;
         } else {
             // Send RST for non-existent connection
-            send_rst_packet(
+            send_rst_for_segment(
                 dst_ip,
                 header.dest_port,
                 src_ip,
                 header.source_port,
-                header.sequence_number.wrapping_add(1),
+                &header,
+                0,
             )?;
         }
     }
@@ -806,12 +807,13 @@ fn process_connection_packet(
         }
         TcpState::Closed => {
             // Connection is closed, send RST
-            send_rst_packet(
+            send_rst_for_segment(
                 connection.local_addr,
                 connection.local_port,
                 connection.remote_addr,
                 connection.remote_port,
-                header.sequence_number.wrapping_add(1),
+                header,
+                0,
             )?;
         }
     }
@@ -1017,8 +1019,14 @@ fn handle_established_state(
         }
     }
 
-    // Handle FIN
-    if header.flags.fin {
+    // Handle FIN — only when it is the next in-sequence octet. A segment can
+    // carry payload + FIN; if that payload arrived out of order (buffered above
+    // without advancing recv_sequence) the FIN is not yet in sequence, and
+    // consuming it would skip RCV.NXT past the buffered data (losing it) and
+    // desynchronize sequence numbers.
+    if header.flags.fin
+        && header.sequence_number.wrapping_add(payload.len() as u32) == connection.recv_sequence
+    {
         connection.recv_sequence = connection.recv_sequence.wrapping_add(1);
         connection.state = TcpState::CloseWait;
         send_ack_packet(connection)?;
@@ -1194,12 +1202,13 @@ fn handle_new_connection(
     // Check if there is a listening socket for this local address/port.
     // If not, send a RST to reject the connection attempt.
     if !TCP_MANAGER.is_listening(&local_addr, local_port) {
-        send_rst_packet(
+        send_rst_for_segment(
             local_addr,
             local_port,
             remote_addr,
             remote_port,
-            header.sequence_number.wrapping_add(1),
+            header,
+            0,
         )?;
         return Err(NetworkError::ConnectionRefused);
     }
@@ -1262,6 +1271,44 @@ fn send_ack_packet(connection: &TcpConnection) -> NetworkResult<()> {
 }
 
 /// Send RST packet
+/// Generate a RST in response to an incoming `header`, per RFC 9293 §3.5.2:
+/// if the segment carried an ACK, reset with SEQ = SEG.ACK and no ACK bit;
+/// otherwise reset with SEQ = 0, ACK = SEG.SEQ + SEG.LEN and the ACK bit set
+/// (SYN and FIN each contribute 1 to SEG.LEN). Sending SEG.SEQ+1 in the SEQ
+/// field with no ACK bit (the previous behavior) is discarded by compliant
+/// peers' acceptability checks.
+fn send_rst_for_segment(
+    local_addr: NetworkAddress,
+    local_port: u16,
+    remote_addr: NetworkAddress,
+    remote_port: u16,
+    header: &TcpHeader,
+    payload_len: u32,
+) -> NetworkResult<()> {
+    let mut flags = TcpFlags::new();
+    flags.rst = true;
+    let (seq, ack) = if header.flags.ack {
+        (header.acknowledgment_number, 0)
+    } else {
+        flags.ack = true;
+        let seg_len = payload_len
+            + if header.flags.syn { 1 } else { 0 }
+            + if header.flags.fin { 1 } else { 0 };
+        (0, header.sequence_number.wrapping_add(seg_len))
+    };
+    send_tcp_packet(
+        local_addr,
+        local_port,
+        remote_addr,
+        remote_port,
+        seq,
+        ack,
+        flags,
+        0,
+        &[],
+    )
+}
+
 fn send_rst_packet(
     local_addr: NetworkAddress,
     local_port: u16,
