@@ -38,6 +38,7 @@ pub mod common;
 pub mod connection;
 pub mod connid;
 pub mod crypto;
+pub mod endpoint;
 pub mod frame;
 pub mod packet;
 pub mod path;
@@ -48,6 +49,7 @@ pub mod timer;
 pub use common::{QUIC_VERSION_1, QUIC_VERSION_2};
 pub use connection::{ConnState, Connection, Role};
 pub use connid::ConnectionId;
+pub use endpoint::{DemuxResult, QuicEndpoint};
 pub use packet::{parse_header, PacketHeader};
 
 /// IP protocol number used by the in-kernel QUIC socket family
