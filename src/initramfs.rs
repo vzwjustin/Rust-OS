@@ -333,11 +333,55 @@ pub fn userspace_init_available() -> bool {
     find_userspace_init().is_some()
 }
 
+/// Native Rust PID 1 — a static ET_EXEC built from `userspace/init/`, embedded in
+/// the kernel image. This is the boot-to-desktop-in-Rust path: our own code runs
+/// as a real Ring-3 process, no external binaries / musl / dynamic linker.
+static NATIVE_INIT_ELF: &[u8] = include_bytes!("../userspace/init.elf");
+
+/// Install the embedded native Rust init at `/sbin/init`, replacing any
+/// initramfs-provided init (e.g. the busybox symlink). Returns true on success.
+pub fn install_native_init() -> bool {
+    const O_WRONLY: u32 = 1;
+    const O_CREAT: u32 = 64;
+    const O_TRUNC: u32 = 512;
+
+    let _ = crate::vfs::vfs_mkdir("/sbin", 0o755);
+    // Remove the existing /sbin/init (a symlink to /bin/busybox in the stock
+    // rootfs) so we write a fresh regular file instead of following the link.
+    let _ = crate::vfs::vfs_unlink("/sbin/init");
+
+    match crate::vfs::vfs_open("/sbin/init", O_WRONLY | O_CREAT | O_TRUNC, 0o755) {
+        Ok(fd) => {
+            let wrote = crate::vfs::vfs_write(fd, NATIVE_INIT_ELF);
+            let _ = crate::vfs::vfs_close(fd);
+            match wrote {
+                Ok(n) if n == NATIVE_INIT_ELF.len() => {
+                    crate::serial_println!(
+                        "init: installed native Rust /sbin/init ({} bytes)",
+                        NATIVE_INIT_ELF.len()
+                    );
+                    true
+                }
+                other => {
+                    crate::serial_println!("init: native /sbin/init write incomplete: {:?}", other);
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            crate::serial_println!("init: could not open /sbin/init for write: {:?}", e);
+            false
+        }
+    }
+}
+
 /// Spawn a Linux-style init fallback via `linux_compat::desktop` while the kernel
 /// compositor loop keeps running.
 pub fn spawn_userspace_init(
     boot: crate::linux_compat::desktop::SessionBoot,
 ) -> Result<u32, InitramfsError> {
+    // Prefer the native Rust init: install it at /sbin/init before resolving.
+    install_native_init();
     let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
     crate::linux_compat::desktop::spawn_session_init(path, boot)
         .map_err(|_| InitramfsError::ExtractionFailed)
