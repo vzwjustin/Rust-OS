@@ -40,9 +40,11 @@ pub mod connid;
 pub mod crypto;
 pub mod endpoint;
 pub mod frame;
+pub mod keys;
 pub mod packet;
 pub mod path;
 pub mod pnspace;
+pub mod protection;
 pub mod stream;
 pub mod timer;
 

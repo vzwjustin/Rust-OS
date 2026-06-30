@@ -7,6 +7,7 @@ pub mod aes;
 pub mod algapi;
 pub mod gcm;
 pub mod hash;
+pub mod hkdf;
 pub mod sha256;
 
 pub use algapi::{
