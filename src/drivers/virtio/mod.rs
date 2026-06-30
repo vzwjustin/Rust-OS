@@ -676,10 +676,27 @@ fn init_software_samples() {
 }
 
 /// Initialize all VirtIO devices found on the PCI bus
+/// Publish representative virtio devices into the unified device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("virtio-net0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("virtio", "virtio-net0", "virtio,net") {
+        let _ = base::set_property(id, "subsystem", "virtio");
+        let _ = base::set_property(id, "device_type", "network");
+    }
+    if let Ok(id) = base::register_device_simple("virtio", "virtio-blk0", "virtio,blk") {
+        let _ = base::set_property(id, "subsystem", "virtio");
+        let _ = base::set_property(id, "device_type", "block");
+    }
+}
+
 pub fn init() -> Result<(), &'static str> {
     // Always bring up the transport-agnostic software/loopback datapath so the
     // virtqueue stack is exercised even on machines with no virtio hardware.
     init_software_samples();
+    publish_to_base();
 
     let transports = scan_virtio_devices();
 

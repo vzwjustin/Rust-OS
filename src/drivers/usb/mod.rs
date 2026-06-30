@@ -404,7 +404,24 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
         msc_enumerated
     );
 
+    publish_to_base();
     Ok(stats)
+}
+
+/// Publish representative USB devices into the unified device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("usb-kbd0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("usb", "usb-kbd0", "usb,hid-keyboard") {
+        let _ = base::set_property(id, "subsystem", "usb");
+        let _ = base::set_property(id, "device_type", "hid");
+    }
+    if let Ok(id) = base::register_device_simple("usb", "usb-disk0", "usb,mass-storage") {
+        let _ = base::set_property(id, "subsystem", "usb");
+        let _ = base::set_property(id, "device_type", "mass-storage");
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
