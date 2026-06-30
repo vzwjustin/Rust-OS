@@ -441,6 +441,12 @@ impl Scheduler {
         &self.stats
     }
 
+    /// Returns true when the current time slice has counted down to zero,
+    /// indicating that the running process should be preempted.
+    pub fn time_slice_expired(&self) -> bool {
+        self.current_time_slice == 0
+    }
+
     /// Set scheduling algorithm
     pub fn set_algorithm(&mut self, algorithm: SchedulingAlgorithm) {
         self.algorithm = algorithm;
@@ -563,6 +569,26 @@ pub fn timer_tick(_delta_ms: u64) {
 pub fn yield_cpu() {
     crate::user_sched::service_pending(yield_cpu_sched_tail as *const () as u64);
     yield_cpu_sched_tail();
+}
+
+/// Called from the timer ISR (after EOI) to preempt if the current process has
+/// exhausted its time slice.  `time::timer_tick()` already called `scheduler.tick()`
+/// via the integration layer, so we only need to check expiry here and context-switch.
+/// Must be async-signal-safe: no allocation, no blocking owned locks.
+pub fn tick_and_maybe_preempt() {
+    let process_manager = super::get_process_manager();
+    let expired = {
+        // try_lock avoids deadlock if the ISR fires while someone else holds the
+        // scheduler lock (rare, but possible on the same CPU before SMP).
+        if let Some(sched) = process_manager.scheduler.try_lock() {
+            sched.time_slice_expired()
+        } else {
+            false
+        }
+    };
+    if expired {
+        yield_cpu_tail();
+    }
 }
 
 extern "C" fn yield_cpu_sched_tail() {

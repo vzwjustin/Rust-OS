@@ -931,10 +931,21 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         crate::softirq::run_workqueue();
     }
 
-    // Route EOI through notify_irq_eoi so it reaches the Local APIC when the
-    // system is running in APIC mode. EOIing the (masked) PIC directly left
-    // the LAPIC ISR bit set, blocking all further interrupts after one tick.
-    notify_irq_eoi(InterruptIndex::Timer);
+    unsafe {
+        // Send EOI directly to PIC port 0x20
+        core::arch::asm!(
+            "mov al, 0x20",
+            "out 0x20, al",
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    // After EOI, give the scheduler a chance to preempt the current process.
+    // Only attempt this if the process subsystem has been initialized — calling
+    // into the scheduler before init risks deadlocks on uninitialized locks.
+    if crate::process::PROCESS_SUBSYSTEM_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
+        crate::process::scheduler::tick_and_maybe_preempt();
+    }
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -1083,18 +1094,21 @@ fn attempt_swap_in_page(fault_address: x86_64::VirtAddr) -> Result<(), &'static 
     // it at the fault address.
     crate::serial_println!("Demand paging: allocating new page at {:?}", fault_address);
 
-    // Find the region containing this address to get the protection flags.
-    let region = memory_manager
+    // Determine the protection flags for the new page.  If the address belongs
+    // to a known VMA, use its flags; otherwise fall back to user read/write
+    // (no-execute) which is safe for anonymous demand pages.
+    let protection = memory_manager
         .find_region(fault_address)
-        .ok_or("No memory region found for demand page")?;
+        .map(|r| r.protection)
+        .unwrap_or(crate::memory::MemoryProtection::USER_DATA);
 
     // Allocate memory at the fault address. This maps a new zeroed
-    // page at the specified virtual address with the region's protection.
+    // page at the specified virtual address with the determined protection.
     crate::memory::allocate_memory_at(
         fault_address,
         4096,
         crate::memory::MemoryRegionType::UserData,
-        region.protection,
+        protection,
     )
     .map_err(|e| match e {
         crate::memory::MemoryError::OutOfMemory => "Out of memory during demand paging",
