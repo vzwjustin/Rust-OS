@@ -6,6 +6,7 @@ fn main() {
     // Rerun if these files change
     println!("cargo:rerun-if-changed=src/boot.s");
     println!("cargo:rerun-if-changed=link.ld");
+    println!("cargo:rerun-if-changed=userspace/initramfs.cpio.gz");
 
     // ── Compile C compression libraries ──────────────────────────
     // These provide zstd, bzip2, and xz/lzma2 decompression for the
