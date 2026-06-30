@@ -57,6 +57,8 @@ pub enum CryptoError {
     InvalidKeySize,
     InvalidBlockAlignment,
     InvalidIvLength,
+    /// AEAD tag verification failed (ciphertext or AAD tampered).
+    AuthenticationFailed,
 }
 
 impl CryptoError {
@@ -67,6 +69,7 @@ impl CryptoError {
             Self::InvalidKeySize => "invalid key size",
             Self::InvalidBlockAlignment => "data length not block-aligned",
             Self::InvalidIvLength => "invalid IV length",
+            Self::AuthenticationFailed => "AEAD authentication failed",
         }
     }
 }

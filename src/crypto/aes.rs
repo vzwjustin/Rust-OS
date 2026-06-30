@@ -48,7 +48,7 @@ const RCON: [u32; 11] = [
     0x80000000, 0x1b000000, 0x36000000,
 ];
 
-struct AesContext {
+pub(crate) struct AesContext {
     round_keys: Vec<u32>,
     rounds: usize,
 }
@@ -78,7 +78,7 @@ fn rot_word(word: u32) -> u32 {
     (word << 8) | (word >> 24)
 }
 
-fn expand_key(key: &[u8]) -> AesContext {
+pub(crate) fn expand_key(key: &[u8]) -> AesContext {
     let nk = key.len() / 4;
     let rounds = nk + 6;
     let key_words = 4 * (rounds + 1);
@@ -223,7 +223,7 @@ fn inv_mix_columns(state: &mut [u8; BLOCK_SIZE]) {
     }
 }
 
-fn encrypt_block(ctx: &AesContext, block: &[u8; BLOCK_SIZE]) -> [u8; BLOCK_SIZE] {
+pub(crate) fn encrypt_block(ctx: &AesContext, block: &[u8; BLOCK_SIZE]) -> [u8; BLOCK_SIZE] {
     let mut state = *block;
     add_round_key(&mut state, &ctx.round_keys[0..4]);
 

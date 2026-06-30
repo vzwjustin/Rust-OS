@@ -5,6 +5,7 @@
 
 pub mod aes;
 pub mod algapi;
+pub mod gcm;
 pub mod hash;
 pub mod sha256;
 
