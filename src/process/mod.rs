@@ -1348,6 +1348,11 @@ pub fn nice_to_priority(nice: i32) -> Priority {
 /// Global process manager instance
 static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
+/// Set to true once the process subsystem (scheduler + processes) is fully initialized.
+/// The timer ISR checks this before calling the scheduler to avoid races during boot.
+pub static PROCESS_SUBSYSTEM_INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Get the global process manager
 pub fn get_process_manager() -> &'static ProcessManager {
     &PROCESS_MANAGER
@@ -1366,6 +1371,9 @@ pub fn init() -> Result<(), &'static str> {
 
     // Initialize integration with other kernel systems
     integration::init()?;
+
+    // Signal that the process subsystem is fully ready for timer-driven preemption.
+    PROCESS_SUBSYSTEM_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
 
     Ok(())
 }
