@@ -303,6 +303,72 @@ pub fn encode_stream(
     Some(off + data.len())
 }
 
+/// Encode a single-byte PING frame.
+pub fn encode_ping(buf: &mut [u8]) -> Option<usize> {
+    encode_varint(frame_type::PING, buf)
+}
+
+/// Encode a HANDSHAKE_DONE frame (server → client, 1-RTT).
+pub fn encode_handshake_done(buf: &mut [u8]) -> Option<usize> {
+    encode_varint(frame_type::HANDSHAKE_DONE, buf)
+}
+
+/// Encode a MAX_DATA frame advertising the connection-level flow-control limit.
+pub fn encode_max_data(max: u64, buf: &mut [u8]) -> Option<usize> {
+    let mut off = encode_varint(frame_type::MAX_DATA, buf)?;
+    off += encode_varint(max, &mut buf[off..])?;
+    Some(off)
+}
+
+/// Encode an ACK frame (RFC 9000 §19.3). `ranges` are the `(gap, ack_range_len)`
+/// pairs after the first range, in descending packet-number order.
+pub fn encode_ack(
+    largest: u64,
+    ack_delay: u64,
+    first_range: u64,
+    ranges: &[(u64, u64)],
+    buf: &mut [u8],
+) -> Option<usize> {
+    let mut off = encode_varint(frame_type::ACK, buf)?;
+    off += encode_varint(largest, &mut buf[off..])?;
+    off += encode_varint(ack_delay, &mut buf[off..])?;
+    off += encode_varint(ranges.len() as u64, &mut buf[off..])?;
+    off += encode_varint(first_range, &mut buf[off..])?;
+    for &(gap, len) in ranges {
+        off += encode_varint(gap, &mut buf[off..])?;
+        off += encode_varint(len, &mut buf[off..])?;
+    }
+    Some(off)
+}
+
+/// Encode a CONNECTION_CLOSE frame. `application` selects the 0x1d (application)
+/// vs 0x1c (transport) type; `frame_type_field` is ignored for the
+/// application variant.
+pub fn encode_connection_close(
+    error_code: u64,
+    frame_type_field: u64,
+    reason: &[u8],
+    application: bool,
+    buf: &mut [u8],
+) -> Option<usize> {
+    let ty = if application {
+        frame_type::CONNECTION_CLOSE_APP
+    } else {
+        frame_type::CONNECTION_CLOSE
+    };
+    let mut off = encode_varint(ty, buf)?;
+    off += encode_varint(error_code, &mut buf[off..])?;
+    if !application {
+        off += encode_varint(frame_type_field, &mut buf[off..])?;
+    }
+    off += encode_varint(reason.len() as u64, &mut buf[off..])?;
+    if buf.len() < off + reason.len() {
+        return None;
+    }
+    buf[off..off + reason.len()].copy_from_slice(reason);
+    Some(off + reason.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +398,29 @@ mod tests {
                 assert_eq!(data, b"hello");
             }
             _ => panic!("expected stream frame"),
+        }
+    }
+
+    #[test]
+    fn ack_frame_roundtrip() {
+        let mut buf = [0u8; 32];
+        // Largest 100, first range covers 100..=98, then one more range.
+        let n = encode_ack(100, 3, 2, &[(1, 4)], &mut buf).unwrap();
+        let (f, consumed) = parse_frame(&buf[..n]).unwrap();
+        assert_eq!(consumed, n);
+        match f {
+            Frame::Ack {
+                largest,
+                delay,
+                first_range,
+                ranges,
+            } => {
+                assert_eq!(largest, 100);
+                assert_eq!(delay, 3);
+                assert_eq!(first_range, 2);
+                assert_eq!(ranges, alloc::vec![(1u64, 4u64)]);
+            }
+            _ => panic!("expected ack frame"),
         }
     }
 
