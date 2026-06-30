@@ -283,7 +283,6 @@ pub fn queue_command(
 
 pub fn init() -> ScsiScanResult {
     let result = scan_hosts();
-    publish_to_base();
     result
 }
 

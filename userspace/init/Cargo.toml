@@ -1,0 +1,19 @@
+[package]
+name = "rustos-init"
+version = "0.1.0"
+edition = "2021"
+description = "RustOS native PID 1 / boot-stage userspace programs (static ELF, no_std)"
+
+[[bin]]
+name = "rustos-init"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+debug = false
+strip = false
+
+[profile.dev]
+panic = "abort"

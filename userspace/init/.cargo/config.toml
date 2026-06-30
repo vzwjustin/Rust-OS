@@ -1,0 +1,13 @@
+# Isolate this userspace crate from the kernel's root .cargo/config.toml
+# (which targets x86_64-rustos.json). We build a static ET_EXEC for the
+# kernel's user ABI using the bare-metal x86_64-unknown-none target.
+
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "link-arg=-Tlink.ld",
+    "-C", "link-arg=--no-dynamic-linker",
+]
