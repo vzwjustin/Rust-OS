@@ -104,9 +104,11 @@ pub fn poll_send(conn: &mut Connection, now: u64) -> Option<Vec<u8>> {
         let mut retransmit_payload = None;
         for i in 0..conn.retransmit_queue.len() {
             if conn.retransmit_queue[i].0 == EncryptionLevel::OneRtt {
-                let (_, frames) = conn.retransmit_queue.remove(i);
-                retransmit_payload = Some(frames);
-                break;
+                if conn.retransmit_queue[i].1.len() <= budget {
+                    let (_, frames) = conn.retransmit_queue.remove(i);
+                    retransmit_payload = Some(frames);
+                    break;
+                }
             }
         }
         if let Some(frames) = retransmit_payload {

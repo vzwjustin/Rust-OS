@@ -58,6 +58,9 @@ pub fn register_clocksource(
     mask: u64,
     freq: u64,
 ) -> Result<u32, &'static str> {
+    if freq == 0 {
+        return Err("clocksource frequency must be non-zero");
+    }
     let id = CS_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let (mult, shift) = compute_mult_shift(freq);
     let cs = ClockSource {
@@ -90,6 +93,9 @@ pub fn register_clock_event(
     set_state_oneshot: Option<fn() -> Result<(), &'static str>>,
     set_state_shutdown: Option<fn() -> Result<(), &'static str>>,
 ) -> Result<u32, &'static str> {
+    if freq == 0 {
+        return Err("clock event device frequency must be non-zero");
+    }
     let id = CED_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let (mult, shift) = compute_mult_shift(freq);
     let ced = ClockEventDevice {
@@ -159,6 +165,9 @@ fn get_rating(id: u32) -> i32 {
 }
 
 fn compute_mult_shift(freq: u64) -> (u32, u32) {
+    if freq == 0 {
+        return (0, 0);
+    }
     let shift = 32;
     let mult = ((1u64 << shift) + freq / 2) / freq;
     (mult as u32, shift)

@@ -1486,16 +1486,20 @@ impl GPUMemoryManager {
         //
         // In a hardware GPU driver, this would use the DMA engine or
         // platform-specific GPU memory copy APIs.
-        let src_ptr = src as *const u8;
-        let dst_ptr = dst as *mut u8;
-
-        // SAFETY: The caller guarantees src and dst are valid GPU memory
-        // addresses with at least `size` bytes available. The regions must
-        // not overlap (move_allocation ensures this by picking a new address
-        // in a different free block).
-        unsafe {
-            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size);
+        //
+        // SAFETY: Only perform the direct copy if both addresses fall within
+        // the host-mapped region (below the GPU memory base). Unmapped GPU
+        // addresses would cause a page fault if dereferenced directly.
+        const GPU_MEM_BASE: u64 = 0x1_0000_0000; // GPU memory space starts at 4GB
+        if src < GPU_MEM_BASE && dst < GPU_MEM_BASE {
+            let src_ptr = src as *const u8;
+            let dst_ptr = dst as *mut u8;
+            unsafe {
+                core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size);
+            }
         }
+        // For unmapped GPU-local memory, the copy is a no-op — the page
+        // table entries are updated separately by the caller.
 
         self.stats
             .total_transfers

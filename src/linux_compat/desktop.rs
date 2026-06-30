@@ -69,6 +69,7 @@ pub fn mark_graphical_boot(
     let _ = crate::vfs::vfs_mkdir("/run/udev/data", 0o755);
     let _ = crate::vfs::vfs_mkdir("/run/user", 0o755);
     let _ = crate::vfs::vfs_mkdir("/run/user/0", 0o700);
+    let _ = crate::vfs::vfs_mkdir("/run/rustos", 0o755);
     let _ = crate::vfs::vfs_mkdir("/tmp", 0o1777);
     let _ = crate::vfs::vfs_mkdir("/tmp/.X11-unix", 0o1777);
 

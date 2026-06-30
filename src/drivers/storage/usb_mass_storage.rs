@@ -279,12 +279,11 @@ impl UsbMassStorageDriver {
 
     /// Get next transaction tag
     fn next_tag(&mut self) -> u32 {
-        let tag = self.tag_counter;
         self.tag_counter = self.tag_counter.wrapping_add(1);
         if self.tag_counter == 0 {
             self.tag_counter = 1;
         }
-        tag
+        self.tag_counter
     }
 
     fn validate_transport(&self) -> Result<(), StorageError> {
