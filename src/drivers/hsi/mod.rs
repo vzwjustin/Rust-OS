@@ -400,6 +400,17 @@ fn null_remove(_client_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("hsi: subsystem ready");
+    if !HSI_CTRLS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ctrl_id = register_controller("sw-hsi", 1)?;
+    let ops = software_hsi_port_ops();
+    let port_id = create_port(ctrl_id, "sw-hsi-port-0", ops)?;
+    crate::serial_println!(
+        "hsi: software controller registered (id={}, port={})",
+        ctrl_id,
+        port_id
+    );
     Ok(())
 }

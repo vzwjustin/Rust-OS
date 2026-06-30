@@ -23,8 +23,19 @@ pub struct EnumeratedDevice {
     pub port: u8,
     pub slot: u8,
     pub address: u8,
+    pub state: EnumerationStep,
     pub device: DeviceDescriptor,
     pub config: ParsedConfiguration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnumerationStep {
+    Connected,
+    Reset,
+    SlotEnabled,
+    Addressed,
+    Described,
+    Configured,
 }
 
 fn get_descriptor(
@@ -59,14 +70,30 @@ pub fn enumerate_port(
     if !status.connected {
         return Ok(None);
     }
+    if !status.powered {
+        return Err("usb: connected port is not powered");
+    }
+    if address == 0 || address > 127 {
+        return Err("usb: invalid device address");
+    }
 
     // 1. Reset the port and allocate a device slot.
     hc.reset_port(port)?;
+    let status = hc.port_status(port)?;
+    if !status.enabled {
+        return Err("usb: port did not enable after reset");
+    }
     let slot = hc.enable_slot(port)?;
 
     // 2. Read the first 8 bytes of the device descriptor to learn EP0 size.
     let mut dev_hdr = [0u8; 8];
-    get_descriptor(hc, slot, DESC_DEVICE, 0, &mut dev_hdr)?;
+    let hdr_len = get_descriptor(hc, slot, DESC_DEVICE, 0, &mut dev_hdr)?;
+    if hdr_len < 8 || dev_hdr[0] != DeviceDescriptor::SIZE as u8 || dev_hdr[1] != DESC_DEVICE {
+        return Err("usb: malformed initial device descriptor");
+    }
+    if !matches!(dev_hdr[7], 8 | 16 | 32 | 64) {
+        return Err("usb: invalid ep0 packet size");
+    }
 
     // 3. Assign the device address.
     let set_addr = SetupPacket {
@@ -83,16 +110,22 @@ pub fn enumerate_port(
 
     // 4. Read the full device descriptor.
     let mut dev_buf = [0u8; DeviceDescriptor::SIZE];
-    get_descriptor(hc, slot, DESC_DEVICE, 0, &mut dev_buf)?;
+    if get_descriptor(hc, slot, DESC_DEVICE, 0, &mut dev_buf)? != DeviceDescriptor::SIZE {
+        return Err("usb: short device descriptor");
+    }
     let device = DeviceDescriptor::parse(&dev_buf)?;
 
     // 5. Read the configuration descriptor header, then the whole blob.
     let mut cfg_hdr = [0u8; ConfigurationDescriptor::SIZE];
-    get_descriptor(hc, slot, DESC_CONFIGURATION, 0, &mut cfg_hdr)?;
+    if get_descriptor(hc, slot, DESC_CONFIGURATION, 0, &mut cfg_hdr)? != ConfigurationDescriptor::SIZE {
+        return Err("usb: short configuration descriptor header");
+    }
     let cfg = ConfigurationDescriptor::parse(&cfg_hdr)?;
-    let total = cfg.total_length.max(ConfigurationDescriptor::SIZE as u16) as usize;
+    let total = cfg.total_length as usize;
     let mut cfg_buf = vec![0u8; total];
-    get_descriptor(hc, slot, DESC_CONFIGURATION, 0, &mut cfg_buf)?;
+    if get_descriptor(hc, slot, DESC_CONFIGURATION, 0, &mut cfg_buf)? != total {
+        return Err("usb: short configuration descriptor");
+    }
     let config = parse_configuration(&cfg_buf)?;
 
     // 6. Select the configuration.
@@ -112,6 +145,7 @@ pub fn enumerate_port(
         port,
         slot,
         address,
+        state: EnumerationStep::Configured,
         device,
         config,
     }))
@@ -139,7 +173,7 @@ pub fn enumerate_all(hc: &mut dyn HostController) -> Vec<EnumeratedDevice> {
                         .unwrap_or(0)
                 );
                 devices.push(dev);
-                address += 1;
+                address = address.saturating_add(1);
             }
             Ok(None) => {}
             Err(e) => crate::serial_println!("usb: enumeration failed on port {}: {}", port, e),

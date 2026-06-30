@@ -45,12 +45,19 @@ impl ProcessQueue {
     }
 
     fn remove_process(&mut self, pid: Pid) -> bool {
-        if let Some(pos) = self.processes.iter().position(|&p| p == pid) {
-            self.processes.remove(pos);
-            true
-        } else {
-            false
+        let mut removed = false;
+        let mut index = 0;
+
+        while index < self.processes.len() {
+            if self.processes[index] == pid {
+                self.processes.remove(index);
+                removed = true;
+            } else {
+                index += 1;
+            }
         }
+
+        removed
     }
 
     fn next_process(&mut self) -> Option<Pid> {
@@ -58,6 +65,7 @@ impl ProcessQueue {
     }
 
     fn rotate_to_back(&mut self, pid: Pid) {
+        self.remove_process(pid);
         self.processes.push_back(pid);
     }
 
@@ -175,8 +183,16 @@ impl Scheduler {
         Ok(())
     }
 
+    fn remove_from_all_queues(&mut self, pid: Pid) {
+        for queue in self.queues.values_mut() {
+            queue.remove_process(pid);
+        }
+    }
+
     /// Add a process to the scheduler
     pub fn add_process(&mut self, pid: Pid, priority: Priority) -> Result<(), &'static str> {
+        self.remove_from_all_queues(pid);
+
         // Add process info
         self.process_info.insert(
             pid,
@@ -203,11 +219,8 @@ impl Scheduler {
     /// Remove a process from the scheduler
     pub fn remove_process(&mut self, pid: Pid) -> Result<(), &'static str> {
         // Remove from process info
-        if let Some(info) = self.process_info.remove(&pid) {
-            // Remove from queue
-            if let Some(queue) = self.queues.get_mut(&info.priority) {
-                queue.remove_process(pid);
-            }
+        if self.process_info.remove(&pid).is_some() {
+            self.remove_from_all_queues(pid);
 
             // If this was the current process, clear it
             if self.current_process == Some(pid) {
@@ -226,10 +239,7 @@ impl Scheduler {
         if let Some(info) = self.process_info.get_mut(&pid) {
             info.blocked = true;
 
-            // Remove from queue
-            if let Some(queue) = self.queues.get_mut(&info.priority) {
-                queue.remove_process(pid);
-            }
+            self.remove_from_all_queues(pid);
 
             // If this was the current process, clear it
             if self.current_process == Some(pid) {
@@ -248,9 +258,12 @@ impl Scheduler {
         if let Some(info) = self.process_info.get_mut(&pid) {
             info.blocked = false;
             info.ready_time = get_system_time();
+            let priority = info.priority;
+
+            self.remove_from_all_queues(pid);
 
             // Add back to queue
-            if let Some(queue) = self.queues.get_mut(&info.priority) {
+            if let Some(queue) = self.queues.get_mut(&priority) {
                 queue.add_process(pid);
             }
         } else {
@@ -265,6 +278,19 @@ impl Scheduler {
         self.stats.scheduling_decisions += 1;
         let current_time = get_system_time();
 
+        if let Some(current_pid) = self.current_process {
+            let current_is_runnable = self
+                .process_info
+                .get(&current_pid)
+                .map(|info| !info.blocked)
+                .unwrap_or(false);
+
+            if !current_is_runnable {
+                self.current_process = None;
+                self.current_time_slice = 0;
+            }
+        }
+
         // Check if current process should be preempted
         let should_preempt = self.should_preempt(current_time);
 
@@ -277,7 +303,9 @@ impl Scheduler {
         if let Some(current_pid) = self.current_process {
             if let Some(info) = self.process_info.get(&current_pid) {
                 if !info.blocked {
-                    if let Some(queue) = self.queues.get_mut(&info.priority) {
+                    let priority = info.priority;
+                    self.remove_from_all_queues(current_pid);
+                    if let Some(queue) = self.queues.get_mut(&priority) {
                         queue.rotate_to_back(current_pid);
                     }
                 }
@@ -353,9 +381,14 @@ impl Scheduler {
     /// Round-robin scheduling
     fn round_robin_schedule(&mut self) -> Option<Pid> {
         // Find first non-empty queue
+        let process_info = &self.process_info;
         for (_, queue) in self.queues.iter_mut() {
-            if !queue.is_empty() {
-                return queue.next_process();
+            while let Some(pid) = queue.next_process() {
+                if let Some(info) = process_info.get(&pid) {
+                    if !info.blocked {
+                        return Some(pid);
+                    }
+                }
             }
         }
         None
@@ -364,9 +397,14 @@ impl Scheduler {
     /// Priority-based scheduling
     fn priority_schedule(&mut self) -> Option<Pid> {
         // Start from highest priority queue
+        let process_info = &self.process_info;
         for (_, queue) in self.queues.iter_mut() {
-            if !queue.is_empty() {
-                return queue.next_process();
+            while let Some(pid) = queue.next_process() {
+                if let Some(info) = process_info.get(&pid) {
+                    if !info.blocked {
+                        return Some(pid);
+                    }
+                }
             }
         }
         None
@@ -387,6 +425,10 @@ impl Scheduler {
             let aging_threshold = queue.time_slice.saturating_mul(AGING_FACTOR) as u64;
             for &pid in &queue.processes {
                 if let Some(info) = self.process_info.get(&pid) {
+                    if info.blocked {
+                        continue;
+                    }
+
                     let wait_time = now.saturating_sub(info.ready_time);
                     if wait_time > aging_threshold {
                         // Promote to the next higher priority if possible
@@ -463,27 +505,24 @@ impl Scheduler {
         pid: Pid,
         new_priority: Priority,
     ) -> Result<(), &'static str> {
-        if let Some(info) = self.process_info.get_mut(&pid) {
-            let old_priority = info.priority;
+        let blocked = if let Some(info) = self.process_info.get_mut(&pid) {
             info.priority = new_priority;
-
-            // Move process between queues if not blocked
-            if !info.blocked {
-                // Remove from old queue
-                if let Some(old_queue) = self.queues.get_mut(&old_priority) {
-                    old_queue.remove_process(pid);
-                }
-
-                // Add to new queue
-                if let Some(new_queue) = self.queues.get_mut(&new_priority) {
-                    new_queue.add_process(pid);
-                }
-            }
-
-            Ok(())
+            info.blocked
         } else {
-            Err("Process not found")
+            return Err("Process not found");
+        };
+
+        // Move process between queues if not blocked
+        if !blocked {
+            self.remove_from_all_queues(pid);
+
+            // Add to new queue
+            if let Some(new_queue) = self.queues.get_mut(&new_priority) {
+                new_queue.add_process(pid);
+            }
         }
+
+        Ok(())
     }
 
     /// Tick the scheduler (called by timer interrupt)

@@ -320,6 +320,12 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("peci: subsystem ready");
+    if !PECI_CTRLS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_peci_ops();
+    let ctrl_id = register_controller("sw-peci", ops, 0x1)?;
+    crate::serial_println!("peci: software controller registered (id={})", ctrl_id);
     Ok(())
 }

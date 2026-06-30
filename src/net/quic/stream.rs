@@ -38,8 +38,16 @@ pub fn stream_kind(stream_id: u64) -> (StreamInitiator, StreamDir) {
 
 /// Compose the Nth stream ID for the given initiator/direction.
 pub fn make_stream_id(index: u64, initiator: StreamInitiator, dir: StreamDir) -> u64 {
-    let init_bit = if initiator == StreamInitiator::Server { 1 } else { 0 };
-    let dir_bit = if dir == StreamDir::Unidirectional { 2 } else { 0 };
+    let init_bit = if initiator == StreamInitiator::Server {
+        1
+    } else {
+        0
+    };
+    let dir_bit = if dir == StreamDir::Unidirectional {
+        2
+    } else {
+        0
+    };
     (index << 2) | dir_bit | init_bit
 }
 

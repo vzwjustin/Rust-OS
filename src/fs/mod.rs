@@ -1269,6 +1269,15 @@ pub fn init() -> FsResult<()> {
         VFS_MANAGER.mount("/", root_fs, MountFlags::default())?;
     }
 
+    ensure_dir("/dev", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/tmp", FilePermissions::from_octal(0o1777))?;
+    ensure_dir("/proc", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/sys", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/home", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/usr", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/var", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/run", FilePermissions::from_octal(0o755))?;
+
     // Mount devfs at /dev — leak the box to get a stable instance for
     // dynamic device registration, then mount a thin wrapper around it.
     let dev_fs = Box::new(devfs::DevFs::new());
@@ -1288,17 +1297,14 @@ pub fn init() -> FsResult<()> {
     let huge_fs = Box::new(crate::hugetlb::HugetlbFs::new());
     VFS_MANAGER.mount("/dev/hugepages", huge_fs, MountFlags::default())?;
 
-    // Create standard directories (only if using RAM filesystem)
-    if !root_mounted {
-        VFS_MANAGER.mkdir("/tmp", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/proc", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/sys", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/home", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/usr", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/var", FilePermissions::from_octal(0o755))?;
-    }
-
     Ok(())
+}
+
+fn ensure_dir(path: &str, permissions: FilePermissions) -> FsResult<()> {
+    match VFS_MANAGER.mkdir(path, permissions) {
+        Ok(()) | Err(FsError::AlreadyExists) => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Mount a filesystem from a storage device

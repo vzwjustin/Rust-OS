@@ -133,8 +133,10 @@ mod tests {
         let okm = hkdf_expand(&prk, &info, 42);
         assert_eq!(
             okm,
-            h("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf\
-               34007208d5b887185865")
+            h(
+                "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf\
+               34007208d5b887185865"
+            )
         );
     }
 }

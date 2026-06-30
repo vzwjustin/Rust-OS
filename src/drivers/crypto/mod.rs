@@ -103,15 +103,25 @@ static ALG_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 static TFM_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 static CRYPTO_ALGS: RwLock<BTreeMap<u32, CryptoAlg>> = RwLock::new(BTreeMap::new());
+static CRYPTO_TFMS: RwLock<BTreeMap<u32, CryptoTfm>> = RwLock::new(BTreeMap::new());
 
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Register a crypto algorithm (Linux `crypto_register_alg`).
 pub fn register_algorithm(alg: CryptoAlg) -> Result<u32, &'static str> {
+    validate_algorithm(&alg)?;
+    let mut algs = CRYPTO_ALGS.write();
+    if algs
+        .values()
+        .any(|a| a.name == alg.name || a.driver_name == alg.driver_name)
+    {
+        return Err("Crypto algorithm already registered");
+    }
+
     let id = ALG_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut alg = alg;
     alg.id = id;
-    CRYPTO_ALGS.write().insert(id, alg);
+    algs.insert(id, alg);
     Ok(id)
 }
 
@@ -129,8 +139,12 @@ pub fn alloc_tfm(alg_name: &str) -> Result<u32, &'static str> {
     let alg_id = find_algorithm(alg_name)?;
     let tfm_id = TFM_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let (type_, blocksize, digestsize) = {
-        let algs = CRYPTO_ALGS.read();
-        let alg = algs.get(&alg_id).ok_or("Crypto algorithm not found")?;
+        let mut algs = CRYPTO_ALGS.write();
+        let alg = algs.get_mut(&alg_id).ok_or("Crypto algorithm not found")?;
+        alg.refcount = alg
+            .refcount
+            .checked_add(1)
+            .ok_or("Crypto algorithm refcount overflow")?;
         (alg.type_, alg.blocksize, alg.digestsize)
     };
 
@@ -152,10 +166,55 @@ pub fn alloc_tfm(alg_name: &str) -> Result<u32, &'static str> {
         },
     };
 
-    // Store the tfm in a static registry (we use the alg registry as a proxy)
-    // In a real implementation, we'd have a separate tfm registry
-    let _ = tfm;
+    // Store the tfm in the transform registry
+    CRYPTO_TFMS.write().insert(tfm_id, tfm);
     Ok(tfm_id)
+}
+
+/// Free a crypto transform (Linux `crypto_free_tfm`).
+pub fn free_tfm(tfm_id: u32) -> Result<(), &'static str> {
+    let tfm = CRYPTO_TFMS
+        .write()
+        .remove(&tfm_id)
+        .ok_or("Crypto tfm not found")?;
+    let mut algs = CRYPTO_ALGS.write();
+    let alg = algs
+        .get_mut(&tfm.alg_id)
+        .ok_or("Crypto algorithm not found")?;
+    alg.refcount = alg.refcount.saturating_sub(1);
+    Ok(())
+}
+
+/// Get a crypto transform by ID.
+pub fn get_tfm(tfm_id: u32) -> Result<(u32, String, CryptoType), &'static str> {
+    let tfms = CRYPTO_TFMS.read();
+    let tfm = tfms.get(&tfm_id).ok_or("Crypto tfm not found")?;
+    Ok((tfm.alg_id, tfm.alg_name.clone(), tfm.type_))
+}
+
+/// Set the key on a crypto transform (Linux `crypto_skcipher_setkey`).
+pub fn tfm_setkey(tfm_id: u32, key: &[u8]) -> Result<(), &'static str> {
+    let (alg_id, alg_name, type_) = {
+        let tfms = CRYPTO_TFMS.read();
+        let tfm = tfms.get(&tfm_id).ok_or("Crypto tfm not found")?;
+        (tfm.alg_id, tfm.alg_name.clone(), tfm.type_)
+    };
+    validate_key(&alg_name, key)?;
+
+    {
+        let algs = CRYPTO_ALGS.read();
+        let alg = algs.get(&alg_id).ok_or("Crypto algorithm not found")?;
+        match (&alg.ops, type_) {
+            (CryptoOps::Skcipher(ops), CryptoType::Skcipher) => (ops.setkey)(key)?,
+            (CryptoOps::Aead(ops), CryptoType::Aead) => (ops.setkey)(key)?,
+            _ => return Err("Crypto transform does not accept keys"),
+        }
+    }
+
+    let mut tfms = CRYPTO_TFMS.write();
+    let tfm = tfms.get_mut(&tfm_id).ok_or("Crypto tfm not found")?;
+    tfm.key = Vec::from(key);
+    Ok(())
 }
 
 /// Compute a hash digest (Linux `crypto_ahash_digest`).
@@ -167,6 +226,9 @@ pub fn hash_digest(alg_name: &str, data: &[u8], out: &mut [u8]) -> Result<(), &'
             .find(|(_, a)| a.name == alg_name)
             .ok_or("Crypto algorithm not found")?
             .1;
+        if out.len() < alg.digestsize as usize {
+            return Err("Crypto digest buffer too small");
+        }
         match &alg.ops {
             CryptoOps::Hash(hash_ops) => hash_ops.digest,
             CryptoOps::Aead(_) | CryptoOps::Skcipher(_) | CryptoOps::_Rng(_) => {
@@ -186,6 +248,7 @@ pub fn skcipher_encrypt(alg_name: &str, data: &mut [u8], iv: &[u8]) -> Result<()
             .find(|(_, a)| a.name == alg_name)
             .ok_or("Crypto algorithm not found")?
             .1;
+        validate_skcipher_request(alg, data.len(), iv.len())?;
         match &alg.ops {
             CryptoOps::Skcipher(skc_ops) => skc_ops.encrypt,
             _ => return Err("Algorithm is not a skcipher"),
@@ -203,6 +266,7 @@ pub fn skcipher_decrypt(alg_name: &str, data: &mut [u8], iv: &[u8]) -> Result<()
             .find(|(_, a)| a.name == alg_name)
             .ok_or("Crypto algorithm not found")?
             .1;
+        validate_skcipher_request(alg, data.len(), iv.len())?;
         match &alg.ops {
             CryptoOps::Skcipher(skc_ops) => skc_ops.decrypt,
             _ => return Err("Algorithm is not a skcipher"),
@@ -213,6 +277,10 @@ pub fn skcipher_decrypt(alg_name: &str, data: &mut [u8], iv: &[u8]) -> Result<()
 
 /// Generate random bytes (Linux `crypto_rng_generate`).
 pub fn rng_generate(alg_name: &str, buf: &mut [u8]) -> Result<usize, &'static str> {
+    if buf.is_empty() {
+        return Err("Crypto RNG output buffer empty");
+    }
+
     let gen_fn = {
         let algs = CRYPTO_ALGS.read();
         let alg = algs
@@ -240,6 +308,62 @@ pub fn list_algorithms() -> Vec<(u32, String, CryptoType, u32)> {
 /// Count registered algorithms.
 pub fn algorithm_count() -> usize {
     CRYPTO_ALGS.read().len()
+}
+
+fn validate_algorithm(alg: &CryptoAlg) -> Result<(), &'static str> {
+    if alg.name.trim().is_empty() || alg.driver_name.trim().is_empty() {
+        return Err("Crypto algorithm name required");
+    }
+
+    match (&alg.ops, alg.type_) {
+        (CryptoOps::Hash(_), CryptoType::Hash | CryptoType::Ahash | CryptoType::Shash) => {
+            if alg.digestsize == 0 || alg.blocksize == 0 {
+                return Err("Invalid hash algorithm sizes");
+            }
+        }
+        (CryptoOps::Skcipher(_), CryptoType::Skcipher) => {
+            if alg.blocksize == 0 {
+                return Err("Invalid skcipher block size");
+            }
+        }
+        (CryptoOps::Aead(_), CryptoType::Aead) => {
+            if alg.blocksize == 0 {
+                return Err("Invalid AEAD block size");
+            }
+        }
+        (CryptoOps::_Rng(_), CryptoType::_rng) => {}
+        _ => return Err("Crypto algorithm type/op mismatch"),
+    }
+
+    Ok(())
+}
+
+fn validate_key(alg_name: &str, key: &[u8]) -> Result<(), &'static str> {
+    if key.is_empty() {
+        return Err("Crypto key required");
+    }
+    if alg_name.contains("aes") && !matches!(key.len(), 16 | 24 | 32) {
+        return Err("Invalid AES key size");
+    }
+    Ok(())
+}
+
+fn validate_skcipher_request(
+    alg: &CryptoAlg,
+    data_len: usize,
+    iv_len: usize,
+) -> Result<(), &'static str> {
+    let blocksize = alg.blocksize as usize;
+    if blocksize == 0 {
+        return Err("Invalid skcipher block size");
+    }
+    if data_len == 0 || data_len % blocksize != 0 {
+        return Err("Crypto data is not block aligned");
+    }
+    if iv_len != blocksize {
+        return Err("Invalid skcipher IV size");
+    }
+    Ok(())
 }
 
 // ── Software crypto implementations ─────────────────────────────────────
@@ -377,9 +501,15 @@ pub fn software_rng_alg() -> CryptoAlg {
 
 pub fn init() -> Result<(), &'static str> {
     // Register algorithms
-    register_algorithm(software_sha256_alg())?;
-    register_algorithm(software_aes_cbc_alg())?;
-    register_algorithm(software_rng_alg())?;
+    if find_algorithm("sha256").is_err() {
+        register_algorithm(software_sha256_alg())?;
+    }
+    if find_algorithm("aes-cbc").is_err() {
+        register_algorithm(software_aes_cbc_alg())?;
+    }
+    if find_algorithm("sw-rng").is_err() {
+        register_algorithm(software_rng_alg())?;
+    }
 
     // Test SHA-256
     let mut hash_out = [0u8; 32];

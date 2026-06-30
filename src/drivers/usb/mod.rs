@@ -11,10 +11,9 @@
 //!                      configure).
 //!   * [`class`]      — HID boot and Bulk-Only-Transport class drivers.
 //!
-//! [`init`] builds a software controller, attaches the two virtual devices,
-//! enumerates them end to end and exercises both transfer paths. It also keeps
-//! the legacy PCI scan and the soft mass-storage device registered with the
-//! storage manager so existing callers (`msc_execute_scsi`) keep working.
+//! [`init`] probes real PCI xHCI controllers and records only hardware-backed
+//! host controllers. The in-memory controller and virtual HID/BOT devices stay
+//! available as test helpers and are not published as real hardware.
 
 pub mod class;
 pub mod descriptor;
@@ -23,19 +22,14 @@ pub mod hcd;
 pub mod hub;
 pub mod xhci;
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
 use device::SoftDisk;
 
-use super::storage::usb_mass_storage::{
-    create_usb_mass_storage_driver_with_host, is_usb_mass_storage_device, CommandStatusWrapper,
-    UsbMscProtocol,
-};
+use super::storage::usb_mass_storage::{is_usb_mass_storage_device, CommandStatusWrapper};
 use super::storage::StorageError;
 
 // ── xHCI register model (PCI discovery) ─────────────────────────────────
@@ -85,11 +79,13 @@ struct UsbDeviceEntry {
 }
 
 static NEXT_HOST_ID: AtomicU32 = AtomicU32::new(1);
+#[cfg(test)]
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(1);
 
 static XHCI_HOSTS: RwLock<alloc::vec::Vec<XhciHost>> = RwLock::new(alloc::vec::Vec::new());
 static USB_DEVICES: RwLock<BTreeMap<u32, UsbDeviceEntry>> = RwLock::new(BTreeMap::new());
 /// Software xHCI controllers indexed by id.
+#[cfg(test)]
 static CONTROLLERS: RwLock<BTreeMap<u32, xhci::XhciController>> = RwLock::new(BTreeMap::new());
 static USB_INITIALIZED: RwLock<bool> = RwLock::new(false);
 /// Cached stats from the last successful `init()` so `get_stats()` reports the
@@ -149,8 +145,9 @@ fn probe_xhci_controller(dev: &crate::pci::PciDevice) -> Result<XhciHost, &'stat
     })
 }
 
-// ── Legacy soft mass-storage (storage-manager integration) ──────────────
+// ── Legacy soft mass-storage backing store ──────────────────────────────
 
+#[cfg(test)]
 fn register_soft_msc_device(host_id: u32, size_mb: u32) -> u32 {
     let dev_id = NEXT_DEVICE_ID.fetch_add(1, Ordering::SeqCst);
     USB_DEVICES.write().insert(
@@ -184,66 +181,25 @@ pub fn msc_execute_scsi(
         .execute_scsi(command, data_length, direction_in, buffer, tag)
 }
 
-fn enumerate_on_host(host: &XhciHost) -> usize {
-    let dev_id = register_soft_msc_device(host.id, 64);
-    let driver = create_usb_mass_storage_driver_with_host(
-        dev_id,
-        0x1234,
-        0x5678,
-        0x06,
-        UsbMscProtocol::BulkOnly as u8,
-        Some(format!("usb-msc-{}", host.location)),
-    );
-
-    let timestamp = crate::time::get_system_time_ms();
-    let register_result: Option<Result<u32, StorageError>> =
-        super::storage::with_storage_manager(|mgr| -> Result<u32, StorageError> {
-            let storage_id = mgr.register_device(
-                driver,
-                String::from("RustOS USB Soft MSC"),
-                format!("USB-{}", host.location),
-                String::from("1.0"),
-                timestamp,
-            )?;
-            if let Some(device) = mgr.get_device_mut(storage_id) {
-                device.driver.init()?;
-            }
-            Ok(storage_id)
-        });
-
-    match register_result {
-        Some(Ok(storage_id)) => {
-            crate::serial_println!(
-                "usb: MSC on {} host={} usb_dev={} storage={}",
-                host.location,
-                host.id,
-                dev_id,
-                storage_id
-            );
-            1
-        }
-        Some(Err(e)) => {
-            crate::serial_println!("usb: MSC register failed: {:?}", e);
-            0
-        }
-        None => 0,
-    }
-}
-
-// ── Software USB stack exercise ─────────────────────────────────────────
+// ── Software USB stack exercise (tests only) ────────────────────────────
 
 /// Build a virtual controller, enumerate the attached devices and run both a
 /// HID interrupt poll and a BOT read/write round-trip. Returns the controller
 /// id together with the number of HID devices and BOT round-trips that worked.
+#[cfg(test)]
 fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
+    use alloc::boxed::Box;
+
     let mut controller = xhci::XhciController::new("soft-xhci", 4);
     controller.run();
 
     // Port 1: boot keyboard (interrupt-IN endpoint 0x81).
     let _ = controller.attach(1, Box::new(device::VirtualHidKeyboard::new(0x81)));
-    // Port 2: BOT flash disk (bulk-IN 0x82, bulk-OUT 0x02), 8 MiB.
+    // Port 2: boot mouse (interrupt-IN endpoint 0x83).
+    let _ = controller.attach(2, Box::new(device::VirtualHidMouse::new(0x83)));
+    // Port 3: BOT flash disk (bulk-IN 0x82, bulk-OUT 0x02), 8 MiB.
     let _ = controller.attach(
-        2,
+        3,
         Box::new(device::VirtualBotDisk::new(8, 0x82, 0x02)),
     );
 
@@ -251,20 +207,22 @@ fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
 
     let mut hid_devices = 0usize;
     let mut bot_devices = 0usize;
+    let _ = crate::drivers::hid::init();
 
     for dev in &enumerated {
         if let Some(hid) = class::hid::bind(dev) {
-            match hid.poll_keyboard(&mut controller) {
-                Ok(Some(report)) => {
+            let _ = hid.configure_boot_protocol(&mut controller);
+            match hid.poll_and_dispatch(&mut controller) {
+                Ok(true) => {
                     crate::serial_println!(
-                        "usb-hid: keyboard slot={} ep={:#x} first_key={:?}",
+                        "usb-hid: boot device slot={} ep={:#x} proto={}",
                         hid.slot,
                         hid.interrupt_in_ep,
-                        report.first_key()
+                        hid.interface_protocol
                     );
                     hid_devices += 1;
                 }
-                Ok(None) => {
+                Ok(false) => {
                     hid_devices += 1;
                 }
                 Err(e) => crate::serial_println!("usb-hid: poll failed: {}", e),
@@ -291,6 +249,7 @@ fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
 }
 
 /// Run INQUIRY → READ CAPACITY → WRITE(10) → READ(10) and verify the data.
+#[cfg(test)]
 fn exercise_bot(
     hc: &mut dyn hcd::HostController,
     bot: &mut class::storage::BotDevice,
@@ -330,7 +289,6 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
 
     let pci_devices = crate::pci::list_devices();
     let mut hosts = alloc::vec::Vec::new();
-    let mut msc_enumerated = 0usize;
 
     for dev in pci_devices.iter() {
         if dev.class != XHCI_PCI_CLASS
@@ -351,7 +309,6 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
                     host.max_ports,
                     host.hci_version
                 );
-                msc_enumerated += enumerate_on_host(&host);
                 hosts.push(host);
             }
             Err(e) => {
@@ -360,68 +317,28 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
         }
     }
 
-    if hosts.is_empty() {
-        let host = XhciHost {
-            id: NEXT_HOST_ID.fetch_add(1, Ordering::SeqCst),
-            location: String::from("soft"),
-            vendor_id: 0,
-            device_id: 0,
-            mmio_base: 0,
-            cap_length: 0,
-            hci_version: 0x0100,
-            max_slots: 32,
-            max_ports: 8,
-            state: UsbHostState::Running,
-        };
-        msc_enumerated += enumerate_on_host(&host);
-        hosts.push(host);
-        crate::serial_println!("usb: soft xHCI host (no PCI controller)");
-    }
-
     *XHCI_HOSTS.write() = hosts;
 
-    // Bring up the software USB stack and exercise the transfer paths.
-    let (_ctrl_id, hid_devices, bot_devices) = build_and_exercise_virtual_stack();
-    let enumerated_devices = hid_devices + bot_devices;
-
     let stats = UsbInitStats {
-        host_count: XHCI_HOSTS.read().len() + CONTROLLERS.read().len(),
+        host_count: XHCI_HOSTS.read().len(),
         device_count: USB_DEVICES.read().len(),
-        msc_enumerated,
-        enumerated_devices,
-        hid_devices,
-        bot_devices,
+        msc_enumerated: 0,
+        enumerated_devices: 0,
+        hid_devices: 0,
+        bot_devices: 0,
     };
     *LAST_STATS.write() = stats;
 
     crate::serial_println!(
-        "usb: ready hosts={} soft-ctrl={} enum={} hid={} bot={} msc={}",
+        "usb: ready hosts={} enum={} hid={} bot={} msc={}",
         XHCI_HOSTS.read().len(),
-        CONTROLLERS.read().len(),
-        enumerated_devices,
-        hid_devices,
-        bot_devices,
-        msc_enumerated
+        stats.enumerated_devices,
+        stats.hid_devices,
+        stats.bot_devices,
+        stats.msc_enumerated
     );
 
-    publish_to_base();
     Ok(stats)
-}
-
-/// Publish representative USB devices into the unified device model.
-fn publish_to_base() {
-    use crate::drivers::base;
-    if base::device_exists("usb-kbd0") {
-        return;
-    }
-    if let Ok(id) = base::register_device_simple("usb", "usb-kbd0", "usb,hid-keyboard") {
-        let _ = base::set_property(id, "subsystem", "usb");
-        let _ = base::set_property(id, "device_type", "hid");
-    }
-    if let Ok(id) = base::register_device_simple("usb", "usb-disk0", "usb,mass-storage") {
-        let _ = base::set_property(id, "subsystem", "usb");
-        let _ = base::set_property(id, "device_type", "mass-storage");
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -437,13 +354,13 @@ pub struct UsbInitStats {
 pub fn get_stats() -> UsbInitStats {
     let mut stats = *LAST_STATS.read();
     // Reflect live registry sizes in case they changed since init.
-    stats.host_count = XHCI_HOSTS.read().len() + CONTROLLERS.read().len();
+    stats.host_count = XHCI_HOSTS.read().len();
     stats.device_count = USB_DEVICES.read().len();
     stats
 }
 
 pub fn host_count() -> usize {
-    XHCI_HOSTS.read().len() + CONTROLLERS.read().len()
+    XHCI_HOSTS.read().len()
 }
 
 pub fn is_mass_storage_device(class: u8, subclass: u8, protocol: u8) -> bool {

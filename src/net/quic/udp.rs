@@ -49,12 +49,7 @@ pub fn with_endpoint<R>(port: u16, f: impl FnOnce(&mut QuicEndpoint) -> R) -> Op
 /// Deliver an inbound UDP payload carrying a QUIC packet.
 ///
 /// Returns `true` if a QUIC endpoint recognized and consumed the datagram.
-pub fn deliver(
-    local_port: u16,
-    _src: NetworkAddress,
-    _src_port: u16,
-    payload: &[u8],
-) -> bool {
+pub fn deliver(local_port: u16, _src: NetworkAddress, _src_port: u16, payload: &[u8]) -> bool {
     let mut ports = QUIC_PORTS.write();
     let endpoint = match ports.get_mut(&local_port) {
         Some(ep) => ep,

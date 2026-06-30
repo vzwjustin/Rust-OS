@@ -98,6 +98,21 @@ impl QuicEndpoint {
         }
         DemuxResult::Dropped
     }
+
+    /// Migrate a connection's routing key in the endpoint registry.
+    pub fn migrate_connection_cid(
+        &mut self,
+        old_cid: &ConnectionId,
+        new_cid: ConnectionId,
+    ) -> bool {
+        if let Some(mut conn) = self.connections.remove(old_cid.as_bytes()) {
+            conn.update_local_cid(new_cid.clone());
+            self.connections.insert(new_cid.as_bytes().to_vec(), conn);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

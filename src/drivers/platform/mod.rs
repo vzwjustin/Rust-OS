@@ -5,6 +5,14 @@
 //! `drivers/base/platform.c` with driver matching, probe/remove lifecycle,
 //! and resource (IRQ, memory) management.
 
+// Trait-based platform driver API (mirrors `include/linux/platform_device.h`).
+pub mod traits;
+pub use traits::{
+    platform_device_register, platform_device_unregister, platform_driver_register,
+    platform_driver_unregister, platform_get_irq, platform_get_resource, PlatformDeviceId,
+    PlatformDriver, PlatformResourceFlags, TraitPlatformDevice, TraitPlatformResource,
+};
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

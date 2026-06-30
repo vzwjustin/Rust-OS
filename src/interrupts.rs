@@ -436,11 +436,7 @@ extern "x86-interrupt" fn page_fault_handler(
     {
         let pid = crate::process::current_pid();
         if pid != 0
-            && crate::userfaultfd::handle_page_fault(
-                fault_address.as_u64(),
-                error_code.bits(),
-                pid,
-            )
+            && crate::userfaultfd::handle_page_fault(fault_address.as_u64(), error_code.bits(), pid)
         {
             if crate::process::get_process_manager()
                 .block_process(pid)

@@ -131,9 +131,9 @@ impl FileTypeUtils {
     /// Detect file type from filename extension
     pub fn from_extension(extension: &str) -> FileType {
         match crate::glib::ascii_strdown(extension).as_str() {
-            // Always return Regular for files with extensions
-            // In a real implementation, this might distinguish between
-            // different types of files, but for now we keep it simple
+            "lnk" | "symlink" => FileType::SymbolicLink,
+            "sock" => FileType::Socket,
+            "fifo" | "pipe" => FileType::NamedPipe,
             _ => FileType::Regular,
         }
     }

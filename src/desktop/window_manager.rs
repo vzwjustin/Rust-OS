@@ -80,6 +80,8 @@ pub mod colors {
     pub const WINDOW_SHADOW: Color = Color::rgb(8, 4, 12);
     pub const TITLE_BAR_ACTIVE: Color = Color::rgb(119, 41, 83);
     pub const TITLE_BAR_INACTIVE: Color = Color::rgb(90, 90, 90);
+    pub const TITLE_INACTIVE_TOP: Color = Color::rgb(100, 100, 100);
+    pub const TITLE_INACTIVE_BOTTOM: Color = Color::rgb(70, 70, 70);
     pub const BORDER_ACTIVE: Color = Color::rgb(233, 84, 32);
     pub const BORDER_INACTIVE: Color = Color::rgb(120, 120, 120);
     pub const TEXT_COLOR: Color = Color::rgb(28, 28, 28);
@@ -247,6 +249,7 @@ pub struct Window {
     pub z_order: usize,
     pub content_lines: Vec<&'static str, MAX_CONTENT_LINES>,
     pub scroll_offset: usize,
+    pub workspace: u8,
 }
 
 /// Button structure
@@ -316,6 +319,7 @@ impl Window {
             z_order: 0,
             content_lines: Vec::new(),
             scroll_offset: 0,
+            workspace: 0,
         }
     }
 }
@@ -366,7 +370,7 @@ pub struct WindowManager {
     next_button_id: usize,
     focused_window: Option<WindowId>,
     desktop_rect: Rect,
-    needs_redraw: bool,
+    pub(super) needs_redraw: bool,
     cursor: Cursor,
     dragging_window: Option<WindowId>,
     drag_offset: (usize, usize),
@@ -417,6 +421,22 @@ pub struct WindowManager {
     gnome_osd_until: u64,
     /// Uptime second when monitor labels should disappear.
     gnome_monitor_labels_until: u64,
+    /// Notification system state
+    pub(super) notifications: super::widgets::NotificationSystem,
+    /// Alt-tab switcher state
+    pub(super) alt_tab: super::widgets::AltTabSwitcher,
+    /// Power dialog state
+    pub(super) power_dialog: super::widgets::PowerDialog,
+    /// Calendar / notification center dropdown open?
+    pub(super) calendar_open: bool,
+    /// Quick-settings toggle grid
+    pub(super) quick_toggles: heapless::Vec<super::widgets::QuickToggle, 6>,
+    /// Battery state
+    pub(super) battery: super::widgets::BatteryState,
+    /// Brightness level (0-100)
+    pub(super) brightness: u8,
+    /// Volume level (0-100)
+    pub(super) volume: u8,
 }
 
 impl WindowManager {
@@ -477,6 +497,14 @@ impl WindowManager {
             gnome_osd_text: HString::new(),
             gnome_osd_until: 0,
             gnome_monitor_labels_until: 0,
+            notifications: super::widgets::NotificationSystem::new(),
+            alt_tab: super::widgets::AltTabSwitcher::new(),
+            power_dialog: super::widgets::PowerDialog::new(),
+            calendar_open: false,
+            quick_toggles: super::widgets::default_toggles(true, false, true, false),
+            battery: super::widgets::BatteryState::none(),
+            brightness: 80,
+            volume: 60,
         }
     }
 
@@ -584,6 +612,10 @@ impl WindowManager {
         }
         if self.gnome_monitor_labels_until != 0 && second >= self.gnome_monitor_labels_until {
             self.gnome_monitor_labels_until = 0;
+        }
+        self.notifications.tick();
+        if self.notifications.banner_id.is_some() {
+            self.needs_redraw = true;
         }
         self.needs_redraw = true;
     }
@@ -1501,6 +1533,11 @@ impl WindowManager {
             return;
         }
         self.current_workspace = workspace % WORKSPACE_COUNT as u8;
+        for window in &mut self.windows {
+            if window.state != WindowState::Closed {
+                window.visible = window.workspace == self.current_workspace;
+            }
+        }
         self.needs_redraw = true;
     }
 
@@ -2014,7 +2051,19 @@ impl WindowManager {
 
         match key {
             27 => {
-                if self.activities_open || self.quick_settings_open {
+                if self.alt_tab.open {
+                    self.alt_tab.close();
+                    self.needs_redraw = true;
+                    true
+                } else if self.power_dialog.open {
+                    self.power_dialog.close();
+                    self.needs_redraw = true;
+                    true
+                } else if self.calendar_open {
+                    self.calendar_open = false;
+                    self.needs_redraw = true;
+                    true
+                } else if self.activities_open || self.quick_settings_open {
                     self.activities_open = false;
                     self.quick_settings_open = false;
                     self.needs_redraw = true;
@@ -2024,25 +2073,53 @@ impl WindowManager {
                 }
             }
             b'\t' => {
-                let window_count = self.windows.len();
-                if window_count == 0 {
-                    return false;
+                if self.alt_tab.open {
+                    self.alt_tab.next();
+                    self.needs_redraw = true;
+                    return true;
                 }
 
-                let start = self
-                    .focused_window
-                    .and_then(|id| self.windows.iter().position(|window| window.id == id))
-                    .unwrap_or(window_count);
-
-                for offset in 1..=window_count {
-                    let index = (start + window_count - offset) % window_count;
-                    let window = &self.windows[index];
-                    if window.visible && window.state != WindowState::Closed {
-                        return self.bring_to_front(window.id);
+                let mut open_wins: Vec<WindowId, 64> = Vec::new();
+                for w in &self.windows {
+                    if w.visible && w.state != WindowState::Closed {
+                        let _ = open_wins.push(w.id);
                     }
                 }
-
+                if open_wins.is_empty() {
+                    return false;
+                }
+                self.alt_tab.open(&open_wins);
+                self.needs_redraw = true;
+                true
+            }
+            13 => {
+                if self.alt_tab.open {
+                    if let Some(wid) = self.alt_tab.current() {
+                        self.alt_tab.close();
+                        self.needs_redraw = true;
+                        return self.bring_to_front(wid);
+                    }
+                    self.alt_tab.close();
+                    self.needs_redraw = true;
+                    return true;
+                }
                 false
+            }
+            b'p' | b'P' => {
+                if !self.power_dialog.open {
+                    self.power_dialog.open();
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            b'n' | b'N' => {
+                self.notifications.push(
+                    "System",
+                    "Welcome to RustOS",
+                    "Desktop environment is ready.",
+                );
+                self.needs_redraw = true;
+                true
             }
             b'a' | b'A' => {
                 self.activities_open = !self.activities_open;
@@ -2163,6 +2240,17 @@ impl WindowManager {
 
     /// Handle mouse down
     pub fn handle_mouse_down(&mut self, x: usize, y: usize, button: MouseButton) -> bool {
+        // Close alt-tab on any click
+        if self.alt_tab.open {
+            if let Some(wid) = self.alt_tab.current() {
+                self.alt_tab.close();
+                self.bring_to_front(wid);
+            } else {
+                self.alt_tab.close();
+            }
+            self.needs_redraw = true;
+        }
+
         // Handle context menu clicks first
         if self.handle_context_menu_click(x, y) {
             return true;
@@ -2171,6 +2259,103 @@ impl WindowManager {
         // App grid is modal: it absorbs all clicks while open.
         if self.app_grid_open {
             self.handle_app_grid_click(x, y);
+            return true;
+        }
+
+        // Power dialog is modal
+        if self.power_dialog.open {
+            if let Some(action) = super::widgets::power_dialog_action_at(
+                &self.power_dialog,
+                self.desktop_rect.width,
+                self.desktop_rect.height,
+                x, y,
+            ) {
+                self.power_dialog.close();
+                match action {
+                    super::widgets::PowerAction::Shutdown => {
+                        crate::serial_println!("Power: shutdown requested");
+                    }
+                    super::widgets::PowerAction::Restart => {
+                        crate::serial_println!("Power: restart requested");
+                    }
+                    super::widgets::PowerAction::Logoff => {
+                        crate::serial_println!("Power: logoff requested");
+                    }
+                    super::widgets::PowerAction::Cancel => {}
+                }
+                self.needs_redraw = true;
+            }
+            return true;
+        }
+
+        // Calendar dropdown is modal
+        if self.calendar_open {
+            let pw = 360;
+            let px = self.desktop_rect.width.saturating_sub(pw + 8);
+            let py = MENU_BAR_HEIGHT + 4;
+            let panel = Rect::new(px, py, pw, 420);
+            if panel.contains(x, y) {
+                // Check clear button
+                let clear_x = px + pw - 60;
+                if Rect::new(clear_x, py + 40, 44, 18).contains(x, y) {
+                    self.notifications.clear_all();
+                    self.needs_redraw = true;
+                }
+            } else {
+                self.calendar_open = false;
+                self.needs_redraw = true;
+            }
+            return true;
+        }
+
+        // Quick settings toggle clicks
+        if self.quick_settings_open {
+            let panel_w = 280;
+            let panel_x = self.desktop_rect.width.saturating_sub(panel_w + 8);
+            let panel_y = self.menu_bar_rect.height + 8;
+            if let Some(tid) = super::widgets::toggle_at_point(
+                &self.quick_toggles, panel_x, panel_y, panel_w, x, y,
+            ) {
+                for tog in &mut self.quick_toggles {
+                    if tog.id == tid {
+                        tog.active = !tog.active;
+                        match tid {
+                            super::widgets::ToggleId::DoNotDisturb => {
+                                self.notifications.do_not_disturb = tog.active;
+                            }
+                            _ => {}
+                        }
+                        break;
+                    }
+                }
+                self.needs_redraw = true;
+                return true;
+            }
+            // Power button in quick settings
+            let pw_btn = Rect::new(panel_x + panel_w - 44, panel_y + 340, 32, 32);
+            if pw_btn.contains(x, y) {
+                self.power_dialog.open();
+                self.quick_settings_open = false;
+                self.needs_redraw = true;
+                return true;
+            }
+        }
+
+        // Clock click → calendar dropdown
+        let font = crate::graphics::get_default_font();
+        let clock = Self::format_clock();
+        let clock_w = clock.len() * font.char_width;
+        let clock_rect = Rect::new(
+            self.menu_bar_rect.x + self.menu_bar_rect.width.saturating_sub(clock_w + 12),
+            self.menu_bar_rect.y + 5,
+            clock_w + 8,
+            20,
+        );
+        if clock_rect.contains(x, y) {
+            self.calendar_open = !self.calendar_open;
+            self.quick_settings_open = false;
+            self.activities_open = false;
+            self.needs_redraw = true;
             return true;
         }
 
@@ -2426,6 +2611,40 @@ impl WindowManager {
 
         if self.gnome_osd_until != 0 {
             self.render_gnome_osd();
+        }
+
+        // Widget overlays
+        super::widgets::render_banner(&self.notifications, self.desktop_rect.width);
+
+        if self.calendar_open {
+            super::widgets::render_calendar_dropdown(
+                &self.notifications,
+                self.desktop_rect.width,
+                self.calendar_open,
+            );
+        }
+
+        if self.alt_tab.open {
+            let mut titles: Vec<(WindowId, &str), 64> = Vec::new();
+            for w in &self.windows {
+                if w.visible && w.state != WindowState::Closed {
+                    let _ = titles.push((w.id, w.title));
+                }
+            }
+            super::widgets::render_alt_tab(
+                &self.alt_tab,
+                &titles,
+                self.desktop_rect.width,
+                self.desktop_rect.height,
+            );
+        }
+
+        if self.power_dialog.open {
+            super::widgets::render_power_dialog(
+                &self.power_dialog,
+                self.desktop_rect.width,
+                self.desktop_rect.height,
+            );
         }
 
         // Render context menu on top
@@ -3155,6 +3374,76 @@ impl WindowManager {
             colors::TEXT_COLOR_WHITE,
             font,
         );
+
+        // Workspace thumbnails strip (GNOME-style, right side)
+        let ws_thumb_w = 120;
+        let ws_thumb_h = 68;
+        let ws_strip_x = overlay.x + overlay.width.saturating_sub(ws_thumb_w + 18);
+        let ws_strip_y = overlay.y + 42;
+        crate::graphics::draw_text(
+            "Workspaces",
+            ws_strip_x,
+            ws_strip_y,
+            colors::MENU_BAR_ICON,
+            font,
+        );
+        for i in 0..WORKSPACE_COUNT {
+            let ty = ws_strip_y + 20 + i * (ws_thumb_h + 8);
+            if ty + ws_thumb_h > overlay.y + overlay.height {
+                break;
+            }
+            let thumb = Rect::new(ws_strip_x, ty, ws_thumb_w, ws_thumb_h);
+            let is_current = i == self.current_workspace as usize;
+            let bg = if is_current {
+                Color::rgb(50, 50, 60)
+            } else {
+                Color::rgb(36, 36, 42)
+            };
+            crate::graphics::framebuffer::fill_rect(thumb, bg);
+            let border = if is_current {
+                colors::DOCK_ICON_ACCENT
+            } else {
+                Color::rgb(60, 60, 68)
+            };
+            crate::graphics::framebuffer::draw_rect(thumb, border, if is_current { 2 } else { 1 });
+
+            // Mini window indicators inside thumbnail
+            let win_count = self
+                .windows
+                .iter()
+                .filter(|w| w.state != WindowState::Closed && w.workspace == i as u8)
+                .count();
+            if win_count > 0 {
+                let mini_w = 20;
+                let mini_h = 12;
+                let mini_x = thumb.x + 6;
+                let mini_y = thumb.y + 6;
+                for j in 0..win_count.min(4) {
+                    let mx = mini_x + j * (mini_w + 2);
+                    crate::graphics::framebuffer::fill_rect(
+                        Rect::new(mx, mini_y, mini_w, mini_h),
+                        Color::rgb(80, 80, 100),
+                    );
+                    crate::graphics::framebuffer::draw_rect(
+                        Rect::new(mx, mini_y, mini_w, mini_h),
+                        Color::rgb(100, 100, 120),
+                        1,
+                    );
+                }
+            }
+
+            let label = format!("WS {}", i + 1);
+            crate::graphics::draw_text(
+                &label,
+                thumb.x + 6,
+                thumb.y + ws_thumb_h.saturating_sub(font.char_height + 4),
+                if is_current { colors::TEXT_COLOR_WHITE } else { colors::MENU_BAR_ICON },
+                font,
+            );
+        }
+
+        // Window previews (left area, with mini title bars)
+        let win_area_w = overlay.width.saturating_sub(ws_thumb_w + 48);
         crate::graphics::draw_text(
             "Windows",
             overlay.x + 18,
@@ -3182,16 +3471,41 @@ impl WindowManager {
                 Self::shade_color(tile_color, -20),
             );
             crate::graphics::framebuffer::draw_rect(tile, colors::BORDER_INACTIVE, 1);
+
+            // Mini title bar inside preview
+            let mini_title = Rect::new(tile.x, tile.y, tile.width, 16);
+            self.fill_vertical_gradient(
+                mini_title,
+                if window.focused { colors::TITLE_ACTIVE_TOP } else { colors::TITLE_INACTIVE_TOP },
+                if window.focused { colors::TITLE_ACTIVE_BOTTOM } else { colors::TITLE_INACTIVE_BOTTOM },
+            );
             crate::graphics::draw_text(
                 window.title,
-                tile.x + 10,
-                tile.y + 10,
+                tile.x + 6,
+                tile.y + 3,
                 colors::TEXT_COLOR_WHITE,
                 font,
             );
 
+            // Mini window content placeholder
+            let content = Rect::new(tile.x + 2, tile.y + 18, tile.width - 4, tile.height - 20);
+            crate::graphics::framebuffer::fill_rect(content, Color::rgb(50, 50, 56));
+
+            // Draw a few lines to simulate content
+            for line_i in 0..3 {
+                let line_y = content.y + 6 + line_i * 14;
+                if line_y + 8 > content.y + content.height {
+                    break;
+                }
+                let line_w = (content.width - 12) * (3 - line_i) / 3;
+                crate::graphics::framebuffer::fill_rect(
+                    Rect::new(content.x + 6, line_y, line_w, 6),
+                    Color::rgb(80, 80, 90),
+                );
+            }
+
             x += 196;
-            if x + 180 > overlay.x + overlay.width {
+            if x + 180 > overlay.x + win_area_w {
                 x = overlay.x + 18;
                 y += 112;
             }
@@ -3206,7 +3520,7 @@ impl WindowManager {
             .iter()
             .filter(|window| window.state != WindowState::Closed)
             .count();
-        let apps_line = format!("{} open windows", open_count);
+        let apps_line = format!("{} open windows  |  WS {} of {}", open_count, self.current_workspace + 1, WORKSPACE_COUNT);
         crate::graphics::draw_text(
             &apps_line,
             overlay.x + 18,
@@ -3445,82 +3759,86 @@ impl WindowManager {
 
     fn render_quick_settings(&self) {
         let font = crate::graphics::get_default_font();
-        let panel = Rect::new(
-            self.desktop_rect.width.saturating_sub(260),
-            self.menu_bar_rect.height + 8,
-            244,
-            150,
-        );
-        let uptime = format!("Uptime: {}s", crate::time::uptime_ms() / 1000);
-        let windows = format!(
-            "Open windows: {}",
-            self.windows
-                .iter()
-                .filter(|window| window.state != WindowState::Closed)
-                .count()
-        );
-        let focused = self
-            .focused_window
-            .and_then(|id| self.get_window(id))
-            .map_or("none", |window| window.title);
-        let focused_line = format!("Focused: {}", focused);
-        let network_line = format!(
-            "Network interfaces: {}",
-            crate::net::network_stack().interface_count()
+        let panel_w = 280;
+        let panel_x = self.desktop_rect.width.saturating_sub(panel_w + 8);
+        let panel_y = self.menu_bar_rect.height + 8;
+        let panel = Rect::new(panel_x, panel_y, panel_w, 380);
+
+        // Shadow
+        crate::graphics::framebuffer::fill_rect(
+            Rect::new(panel_x + 4, panel_y + 4, panel_w, 380),
+            Color::new(0, 0, 0, 100),
         );
 
-        self.fill_vertical_gradient(panel, colors::DOCK_GLASS, colors::MENU_BAR_BACKGROUND);
-        crate::graphics::framebuffer::draw_rect(panel, colors::DOCK_ICON_ACCENT, 2);
-        crate::graphics::draw_text(
-            "System",
-            panel.x + 14,
-            panel.y + 12,
-            colors::TEXT_COLOR_WHITE,
-            font,
+        // Background
+        self.fill_vertical_gradient(panel, Color::rgb(36, 36, 40), Color::rgb(28, 28, 32));
+        crate::graphics::framebuffer::draw_rect(panel, Color::rgb(55, 55, 62), 1);
+
+        // Toggle grid (GNOME 43+ style)
+        let toggles_h = super::widgets::render_quick_toggles(
+            &self.quick_toggles,
+            panel_x, panel_y, panel_w,
         );
+
+        // Sliders section
+        let slider_y = panel_y + toggles_h + 16;
+        super::widgets::render_slider(
+            panel_x + 16, slider_y, panel_w - 32,
+            "Brightness", self.brightness, 100,
+        );
+        super::widgets::render_slider(
+            panel_x + 16, slider_y + 36, panel_w - 32,
+            "Volume", self.volume, 100,
+        );
+
+        // Battery indicator
+        let bat_y = slider_y + 80;
+        super::widgets::render_battery_indicator(&self.battery, panel_x + 16, bat_y);
+
+        // System stats section
+        let stats_y = bat_y + 28;
+        let uptime = format!("Uptime: {}s", crate::time::uptime_ms() / 1000);
         crate::graphics::draw_text(
             &uptime,
-            panel.x + 14,
-            panel.y + 36,
-            colors::MENU_BAR_ICON,
-            font,
+            panel_x + 16, stats_y,
+            colors::MENU_BAR_ICON, font,
+        );
+        let windows = format!(
+            "Windows: {}",
+            self.windows.iter().filter(|w| w.state != WindowState::Closed).count()
         );
         crate::graphics::draw_text(
             &windows,
-            panel.x + 14,
-            panel.y + 54,
-            colors::MENU_BAR_ICON,
-            font,
+            panel_x + 16, stats_y + 18,
+            colors::MENU_BAR_ICON, font,
+        );
+        let net_line = format!(
+            "Net: {} ifaces",
+            crate::net::network_stack().interface_count()
         );
         crate::graphics::draw_text(
-            &focused_line,
-            panel.x + 14,
-            panel.y + 72,
-            colors::MENU_BAR_ICON,
-            font,
+            &net_line,
+            panel_x + 16, stats_y + 36,
+            colors::MENU_BAR_ICON, font,
         );
-        crate::graphics::draw_text(
-            &network_line,
-            panel.x + 14,
-            panel.y + 98,
-            colors::MENU_BAR_ICON,
-            font,
-        );
-
         if let Some(stats) = crate::memory::get_memory_stats() {
             let mem_line = format!(
-                "Memory: {} / {} MiB",
+                "Mem: {}/{} MiB",
                 stats.allocated_memory_mb(),
                 stats.total_memory_mb()
             );
             crate::graphics::draw_text(
                 &mem_line,
-                panel.x + 14,
-                panel.y + 116,
-                colors::MENU_BAR_ICON,
-                font,
+                panel_x + 16, stats_y + 54,
+                colors::MENU_BAR_ICON, font,
             );
         }
+
+        // Power button at bottom
+        let pw_btn = Rect::new(panel_x + panel_w - 44, panel_y + 340, 32, 32);
+        self.draw_circle(pw_btn.x + 16, pw_btn.y + 16, 14, Color::rgb(60, 60, 68));
+        self.draw_circle(pw_btn.x + 16, pw_btn.y + 16, 12, Color::rgb(200, 60, 50));
+        crate::graphics::draw_text("P", pw_btn.x + 10, pw_btn.y + 9, colors::TEXT_COLOR_WHITE, font);
     }
 
     fn render_menu_bar(&self) {
@@ -3589,6 +3907,27 @@ impl WindowManager {
 
         self.render_workspace_switcher();
         self.render_system_tray(text_y);
+
+        // Notification badge (between system tray and clock)
+        let unread = self.notifications.unread_count();
+        if unread > 0 {
+            let badge_str = if unread < 10 {
+                format!("({})", unread)
+            } else {
+                format!("(9+)")
+            };
+            let badge_w = badge_str.len() * font.char_width;
+            let clock_w = Self::format_clock().len() * font.char_width;
+            let badge_x = self.menu_bar_rect.x
+                + self.menu_bar_rect.width.saturating_sub(clock_w + badge_w + 20);
+            crate::graphics::draw_text(
+                &badge_str,
+                badge_x,
+                text_y,
+                colors::DOCK_ICON_ACCENT,
+                font,
+            );
+        }
 
         let clock = Self::format_clock();
         let right_text = format!("{}", clock.as_str());

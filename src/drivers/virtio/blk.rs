@@ -38,6 +38,20 @@ const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
 const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
+fn status_to_result(status: u8, op: &'static str) -> Result<(), &'static str> {
+    match status {
+        VIRTIO_BLK_S_OK => Ok(()),
+        VIRTIO_BLK_S_IOERR => Err(match op {
+            "read" => "virtio-blk: read I/O error",
+            "write" => "virtio-blk: write I/O error",
+            "flush" => "virtio-blk: flush I/O error",
+            _ => "virtio-blk: I/O error",
+        }),
+        VIRTIO_BLK_S_UNSUPP => Err("virtio-blk: request unsupported by device"),
+        _ => Err("virtio-blk: invalid device status"),
+    }
+}
+
 /// virtio-blk request header
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,6 +111,9 @@ impl VirtioBlk {
         // Read device config
         let capacity = transport.read_device_config32(0) as u64
             | ((transport.read_device_config32(4) as u64) << 32);
+        if capacity == 0 {
+            return Err("virtio-blk: zero capacity");
+        }
 
         let read_only = (transport.read_device_features() & VIRTIO_BLK_F_RO) != 0;
 
@@ -105,6 +122,12 @@ impl VirtioBlk {
         } else {
             SECTOR_SIZE as u32
         };
+        if block_size < SECTOR_SIZE as u32
+            || !block_size.is_power_of_two()
+            || (block_size as usize) % SECTOR_SIZE != 0
+        {
+            return Err("virtio-blk: invalid block size");
+        }
 
         crate::serial_println!(
             "virtio-blk: capacity={} sectors ({} MB), block_size={}, ro={}",
@@ -121,8 +144,7 @@ impl VirtioBlk {
         } else {
             q_size.min(QUEUE_SIZE)
         };
-        let notify_off =
-            unsafe { core::ptr::read_volatile((transport.common_base + 30) as *const u16) };
+        let notify_off = transport.selected_queue_notify_off();
         let queue = VirtQueue::new(q_size, notify_off)?;
         transport.setup_queue(&queue);
 
@@ -155,24 +177,50 @@ impl VirtioBlk {
         self.read_only
     }
 
+    fn validate_range(
+        &self,
+        sector: u64,
+        len: usize,
+        op: &'static str,
+    ) -> Result<u64, &'static str> {
+        let block_size = self.block_size as usize;
+        if block_size == 0 {
+            return Err("virtio-blk: invalid block size");
+        }
+        if len == 0 || len % block_size != 0 || len % SECTOR_SIZE != 0 {
+            return Err(match op {
+                "read" => "virtio-blk: read buffer is not block aligned",
+                "write" => "virtio-blk: write buffer is not block aligned",
+                _ => "virtio-blk: buffer is not block aligned",
+            });
+        }
+
+        // Virtio-blk request sectors and config capacity are defined in
+        // 512-byte units regardless of the device's advertised blk_size.
+        let sector_count = (len / SECTOR_SIZE) as u64;
+        if sector
+            .checked_add(sector_count)
+            .ok_or("virtio-blk: sector overflow")?
+            > self.capacity_sectors
+        {
+            return Err(match op {
+                "read" => "virtio-blk: read beyond device",
+                "write" => "virtio-blk: write beyond device",
+                _ => "virtio-blk: request beyond device",
+            });
+        }
+        Ok(sector_count)
+    }
+
     /// Read sectors from the device
     pub fn read_sectors(&mut self, sector: u64, buf: &mut [u8]) -> Result<usize, &'static str> {
         let _io_guard = BLK_IO_LOCK.lock();
+        self.validate_range(sector, buf.len(), "read")?;
         let queue = self.queue.as_mut().unwrap();
-        let sector_count = (buf.len() / SECTOR_SIZE) as u32;
-        if sector_count == 0 {
-            return Err("virtio-blk: buffer too small for a sector");
-        }
 
         // Allocate descriptors: 1 for request header, 1 for data, 1 for status
-        let desc_hdr = queue
-            .alloc_desc()
-            .ok_or("virtio-blk: no free descriptors")?;
-        let desc_data = queue
-            .alloc_desc()
-            .ok_or("virtio-blk: no free descriptors")?;
-        let desc_status = queue
-            .alloc_desc()
+        let [desc_hdr, desc_data, desc_status] = queue
+            .alloc_desc_chain::<3>()
             .ok_or("virtio-blk: no free descriptors")?;
 
         // Set up request header in static DMA-safe buffer
@@ -222,11 +270,8 @@ impl VirtioBlk {
 
                 // Read status from the static buffer (device wrote via DMA)
                 let status = BLK_STATUS_BUF.lock()[0];
-                if status == VIRTIO_BLK_S_OK {
-                    return Ok(buf.len());
-                } else {
-                    return Err("virtio-blk: read I/O error");
-                }
+                status_to_result(status, "read")?;
+                return Ok(buf.len());
             }
             if timeout == 0 {
                 queue.free_desc(desc_hdr);
@@ -246,20 +291,11 @@ impl VirtioBlk {
             return Err("virtio-blk: device is read-only");
         }
 
+        self.validate_range(sector, buf.len(), "write")?;
         let queue = self.queue.as_mut().unwrap();
-        let sector_count = (buf.len() / SECTOR_SIZE) as u32;
-        if sector_count == 0 {
-            return Err("virtio-blk: buffer too small for a sector");
-        }
 
-        let desc_hdr = queue
-            .alloc_desc()
-            .ok_or("virtio-blk: no free descriptors")?;
-        let desc_data = queue
-            .alloc_desc()
-            .ok_or("virtio-blk: no free descriptors")?;
-        let desc_status = queue
-            .alloc_desc()
+        let [desc_hdr, desc_data, desc_status] = queue
+            .alloc_desc_chain::<3>()
             .ok_or("virtio-blk: no free descriptors")?;
 
         // Set up request header in static DMA-safe buffer
@@ -306,11 +342,8 @@ impl VirtioBlk {
 
                 // Read status from the static buffer (device wrote via DMA)
                 let status = BLK_STATUS_BUF.lock()[0];
-                if status == VIRTIO_BLK_S_OK {
-                    return Ok(buf.len());
-                } else {
-                    return Err("virtio-blk: write I/O error");
-                }
+                status_to_result(status, "write")?;
+                return Ok(buf.len());
             }
             if timeout == 0 {
                 queue.free_desc(desc_hdr);
@@ -328,11 +361,8 @@ impl VirtioBlk {
         let _io_guard = BLK_IO_LOCK.lock();
         let queue = self.queue.as_mut().unwrap();
 
-        let desc_hdr = queue
-            .alloc_desc()
-            .ok_or("virtio-blk: no free descriptors")?;
-        let desc_status = queue
-            .alloc_desc()
+        let [desc_hdr, desc_status] = queue
+            .alloc_desc_chain::<2>()
             .ok_or("virtio-blk: no free descriptors")?;
 
         // Set up request header in static DMA-safe buffer
@@ -368,11 +398,7 @@ impl VirtioBlk {
 
                 // Read status from the static buffer (device wrote via DMA)
                 let status = BLK_STATUS_BUF.lock()[0];
-                if status == VIRTIO_BLK_S_OK {
-                    return Ok(());
-                } else {
-                    return Err("virtio-blk: flush I/O error");
-                }
+                return status_to_result(status, "flush");
             }
             if timeout == 0 {
                 queue.free_desc(desc_hdr);

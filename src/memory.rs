@@ -1726,7 +1726,7 @@ impl PageTableManager {
         }
 
         // Unmap old page
-        let _old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
+        let old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
 
         // Map new page with write permissions
         let flags =
@@ -1734,8 +1734,13 @@ impl PageTableManager {
         self.map_page(page, new_frame, flags, frame_allocator)
             .map_err(|_| "Failed to map new page")?;
 
-        // Note: In a real implementation, we would need to manage reference counting
-        // for the old frame and only deallocate it when no other processes reference it
+        // The old frame is still referenced by other page tables (COW sharing).
+        // Frame deallocation is handled by the MemoryManager's refcount system:
+        // when the last reference is removed, decrement_frame_refcount returns 0
+        // and the frame is returned to the allocator. Here we only unmap our
+        // reference; the caller (MemoryManager) is responsible for calling
+        // decrement_frame_refcount(old_frame.start_address()).
+        let _ = old_frame;
 
         Ok(())
     }
@@ -3517,28 +3522,28 @@ pub fn try_fast_page_fault_handler(addr: VirtAddr) -> bool {
             // Handle common fast-path cases
             match region.region_type {
                 MemoryRegionType::UserStack => {
-                    // Stack growth: if within reasonable bounds, allow it
+                    // Stack growth: if within reasonable bounds, handle it via demand paging
                     let stack_limit = region.start.as_u64().saturating_sub(1024 * 1024); // 1MB max stack growth
                     if addr.as_u64() >= stack_limit {
-                        // This would be handled by the full page fault handler
-                        // For now, indicate this needs full handling
-                        return false;
+                        if memory_manager.handle_demand_paging(addr, &region).is_ok() {
+                            return true;
+                        }
                     }
                 }
                 MemoryRegionType::UserHeap => {
-                    // Heap expansion: check if within reasonable bounds
+                    // Heap expansion: if within reasonable bounds, handle it via demand paging
                     if addr.as_u64() < region.end().as_u64() + (16 * 1024 * 1024) {
-                        // 16MB max heap growth
-                        // This could potentially be handled quickly
-                        // For now, delegate to full handler
-                        return false;
+                        if memory_manager.handle_demand_paging(addr, &region).is_ok() {
+                            return true;
+                        }
                     }
                 }
                 MemoryRegionType::UserData | MemoryRegionType::UserCode => {
                     // For code/data segments, check if this is a copy-on-write situation
                     if region.protection.copy_on_write {
-                        // COW requires full handling
-                        return false;
+                        if memory_manager.handle_copy_on_write(addr, &region).is_ok() {
+                            return true;
+                        }
                     }
                 }
                 _ => {

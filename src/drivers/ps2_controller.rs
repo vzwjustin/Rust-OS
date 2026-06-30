@@ -40,6 +40,8 @@ const DEV_RESET: u8 = 0xFF;
 /// Status register bits
 const STATUS_OUTPUT_FULL: u8 = 0x01;
 const STATUS_INPUT_FULL: u8 = 0x02;
+const STATUS_TIMEOUT_ERROR: u8 = 0x40;
+const STATUS_PARITY_ERROR: u8 = 0x80;
 
 /// Configuration byte bits
 const CONFIG_PORT1_IRQ: u8 = 0x01;
@@ -51,6 +53,7 @@ const CONFIG_PORT1_TRANSLATION: u8 = 0x40;
 /// Expected responses
 const SELF_TEST_PASSED: u8 = 0x55;
 const PORT_TEST_PASSED: u8 = 0x00;
+const DEVICE_BAT_PASSED: u8 = 0xAA;
 const ACK: u8 = 0xFA;
 const RESEND: u8 = 0xFE;
 
@@ -133,6 +136,14 @@ impl Ps2Controller {
     fn wait_output_full(&mut self) -> Result<(), Ps2Error> {
         for _ in 0..MAX_WAIT_ITERATIONS {
             let status = unsafe { self.status_port.read() };
+            if (status & (STATUS_TIMEOUT_ERROR | STATUS_PARITY_ERROR)) != 0 {
+                // Consume the bad byte, matching Linux i8042's error-drain
+                // behaviour, so the controller can resynchronise.
+                if (status & STATUS_OUTPUT_FULL) != 0 {
+                    unsafe { self.data_port.read() };
+                }
+                return Err(Ps2Error::DeviceError);
+            }
             if (status & STATUS_OUTPUT_FULL) != 0 {
                 return Ok(());
             }
@@ -174,7 +185,7 @@ impl Ps2Controller {
 
     /// Flush the output buffer
     fn flush_output_buffer(&mut self) {
-        for _ in 0..16 {
+        for _ in 0..32 {
             let status = unsafe { self.status_port.read() };
             if (status & STATUS_OUTPUT_FULL) == 0 {
                 break;
@@ -183,45 +194,76 @@ impl Ps2Controller {
         }
     }
 
+    /// Read a byte only if one is already pending. Used for optional second
+    /// identify bytes without imposing a full command timeout.
+    fn try_read_data(&mut self) -> Option<u8> {
+        let status = unsafe { self.status_port.read() };
+        if (status & STATUS_OUTPUT_FULL) != 0
+            && (status & (STATUS_TIMEOUT_ERROR | STATUS_PARITY_ERROR)) == 0
+        {
+            Some(unsafe { self.data_port.read() })
+        } else {
+            None
+        }
+    }
+
     /// Send a command to a specific port
     fn send_port_command(&mut self, port: Ps2Port, command: u8) -> Result<u8, Ps2Error> {
-        if port == Ps2Port::Port2 {
-            self.send_command(CMD_WRITE_TO_PORT2)?;
-        }
-        self.write_data(command)?;
-
-        // Wait for response
         for _ in 0..3 {
-            match self.read_data() {
-                Ok(response) => {
-                    if response == ACK {
-                        return Ok(ACK);
-                    } else if response == RESEND {
-                        return Err(Ps2Error::DeviceError);
-                    }
-                    return Ok(response);
-                }
-                Err(_) => continue,
+            if port == Ps2Port::Port2 {
+                self.send_command(CMD_WRITE_TO_PORT2)?;
+            }
+            self.write_data(command)?;
+
+            match self.read_data()? {
+                ACK => return Ok(ACK),
+                RESEND => continue,
+                _ => return Err(Ps2Error::DeviceError),
             }
         }
 
-        Err(Ps2Error::Timeout)
+        Err(Ps2Error::DeviceError)
+    }
+
+    /// Reset a device and wait for its BAT completion code.
+    fn reset_device(&mut self, port: Ps2Port) -> Result<(), Ps2Error> {
+        self.send_port_command(port, DEV_RESET)?;
+        let bat = self.read_data()?;
+        if bat != DEVICE_BAT_PASSED {
+            return Err(Ps2Error::DeviceError);
+        }
+        // Some devices append an ID byte after BAT. It is stale after reset and
+        // would confuse the later IDENTIFY command, so drain any pending byte.
+        let _ = self.try_read_data();
+        Ok(())
     }
 
     /// Identify device on a port
     fn identify_device(&mut self, port: Ps2Port) -> Ps2DeviceType {
+        let _ = self.send_port_command(port, DEV_DISABLE_SCANNING);
+
         // Send identify command
         if self.send_port_command(port, DEV_IDENTIFY).is_err() {
-            return Ps2DeviceType::Unknown;
+            return if port == Ps2Port::Port1 {
+                Ps2DeviceType::Keyboard
+            } else {
+                Ps2DeviceType::Unknown
+            };
         }
 
         // Try to read identification bytes
         let byte1 = match self.read_data() {
             Ok(b) => b,
-            Err(_) => return Ps2DeviceType::Keyboard, // Keyboards often don't respond to identify
+            Err(_) => {
+                return if port == Ps2Port::Port1 {
+                    Ps2DeviceType::Keyboard
+                } else {
+                    Ps2DeviceType::Unknown
+                }
+            }
         };
 
-        let byte2 = self.read_data().ok();
+        let byte2 = self.try_read_data();
 
         // Identify device based on response
         match (byte1, byte2) {
@@ -250,7 +292,6 @@ impl Ps2Controller {
 
         // Step 3: Set controller configuration
         let mut config = self.read_config()?;
-        let dual_channel = (config & CONFIG_PORT2_DISABLED) != 0;
 
         // Disable interrupts and translation during initialization
         config &= !(CONFIG_PORT1_IRQ | CONFIG_PORT2_IRQ | CONFIG_PORT1_TRANSLATION);
@@ -267,13 +308,11 @@ impl Ps2Controller {
         self.write_config(config)?;
 
         // Step 5: Determine if dual channel
-        if dual_channel {
-            self.send_command(CMD_ENABLE_PORT2)?;
-            config = self.read_config()?;
-            if (config & CONFIG_PORT2_DISABLED) == 0 {
-                self.port2_available = true;
-                self.send_command(CMD_DISABLE_PORT2)?;
-            }
+        self.send_command(CMD_ENABLE_PORT2)?;
+        config = self.read_config()?;
+        let port2_present = (config & CONFIG_PORT2_DISABLED) == 0;
+        if port2_present {
+            self.send_command(CMD_DISABLE_PORT2)?;
         }
 
         // Step 6: Test ports
@@ -281,7 +320,7 @@ impl Ps2Controller {
         let port1_result = self.read_data()?;
         self.port1_available = port1_result == PORT_TEST_PASSED;
 
-        if self.port2_available {
+        if port2_present {
             self.send_command(CMD_TEST_PORT2)?;
             let port2_result = self.read_data()?;
             self.port2_available = port2_result == PORT_TEST_PASSED;
@@ -291,7 +330,8 @@ impl Ps2Controller {
             return Err(Ps2Error::PortTestFailed);
         }
 
-        // Step 7: Enable ports
+        // Step 7: Enable ports while IRQs are still masked so commands are
+        // synchronously acknowledged by this driver.
         if self.port1_available {
             self.send_command(CMD_ENABLE_PORT1)?;
         }
@@ -299,23 +339,46 @@ impl Ps2Controller {
             self.send_command(CMD_ENABLE_PORT2)?;
         }
 
-        // Step 8: Enable interrupts
+        // Step 8: Reset, default and identify attached devices. Failures here
+        // make only that port unusable, matching Linux serio/i8042 tolerance.
+        if self.port1_available {
+            if self.reset_device(Ps2Port::Port1).is_ok() {
+                let _ = self.send_port_command(Ps2Port::Port1, DEV_SET_DEFAULTS);
+                self.port1_device = self.identify_device(Ps2Port::Port1);
+                if self.port1_device == Ps2DeviceType::Keyboard {
+                    let _ = self.send_port_command(Ps2Port::Port1, DEV_ENABLE_SCANNING);
+                }
+            } else {
+                self.port1_available = false;
+            }
+        }
+        if self.port2_available {
+            if self.reset_device(Ps2Port::Port2).is_ok() {
+                let _ = self.send_port_command(Ps2Port::Port2, DEV_SET_DEFAULTS);
+                self.port2_device = self.identify_device(Ps2Port::Port2);
+            } else {
+                self.port2_available = false;
+            }
+        }
+
+        if !self.port1_available && !self.port2_available {
+            return Err(Ps2Error::DeviceError);
+        }
+
+        // Step 9: Enable IRQs and keyboard translation only after devices have
+        // been quiesced and identified.
         let mut config = self.read_config()?;
+        config &= !(CONFIG_PORT1_IRQ | CONFIG_PORT2_IRQ | CONFIG_PORT1_TRANSLATION);
         if self.port1_available {
             config |= CONFIG_PORT1_IRQ;
+            if self.port1_device == Ps2DeviceType::Keyboard {
+                config |= CONFIG_PORT1_TRANSLATION;
+            }
         }
         if self.port2_available {
             config |= CONFIG_PORT2_IRQ;
         }
         self.write_config(config)?;
-
-        // Step 9: Identify and reset devices
-        if self.port1_available {
-            self.port1_device = self.identify_device(Ps2Port::Port1);
-        }
-        if self.port2_available {
-            self.port2_device = self.identify_device(Ps2Port::Port2);
-        }
 
         Ok(())
     }

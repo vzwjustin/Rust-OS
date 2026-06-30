@@ -155,13 +155,34 @@ pub fn register_client(dev_id: u32, name: &str, guid: [u8; 16]) -> Result<u32, &
 
 /// Connect an ISHTP client (Linux `ishtp_cl_connect`).
 pub fn connect_client(client_id: u32) -> Result<(), &'static str> {
+    let (dev_id, send_fn) = {
+        let clients = ISHTP_CLIENTS.read();
+        let client = clients.get(&client_id).ok_or("ISHTP client not found")?;
+        if client.state == IshtpClState::Connected {
+            return Ok(());
+        }
+        (client.dev_id, {
+            let devs = ISHTP_DEVS.read();
+            let dev = devs.get(&client.dev_id).ok_or("ISHTP device not found")?;
+            dev.ops.send_msg
+        })
+    };
+
+    {
+        let mut clients = ISHTP_CLIENTS.write();
+        if let Some(client) = clients.get_mut(&client_id) {
+            client.state = IshtpClState::Connecting;
+        }
+    }
+
+    let hbm_connect_msg: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+    (send_fn)(dev_id, client_id, &hbm_connect_msg)?;
+
     let mut clients = ISHTP_CLIENTS.write();
-    let client = clients
-        .get_mut(&client_id)
-        .ok_or("ISHTP client not found")?;
-    client.state = IshtpClState::Connecting;
-    // In a real implementation, we'd send an HBM connect request
-    client.state = IshtpClState::Connected;
+    if let Some(client) = clients.get_mut(&client_id) {
+        client.state = IshtpClState::Connected;
+        client.fc_off = false;
+    }
     Ok(())
 }
 
@@ -335,6 +356,16 @@ fn null_remove(_client_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("ishtp: subsystem ready");
+    if !ISHTP_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_ishtp_ops();
+    let dev_id = register_device("sw-ishtp", ops, 8)?;
+    init_device(dev_id)?;
+    crate::serial_println!(
+        "ishtp: software device registered and initialized (id={})",
+        dev_id
+    );
     Ok(())
 }

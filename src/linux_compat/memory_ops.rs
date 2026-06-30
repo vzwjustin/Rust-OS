@@ -234,6 +234,8 @@ fn map_to_mmap_flags(flags: i32) -> MmapFlags {
         shared: flags & map::MAP_SHARED != 0,
         private: flags & map::MAP_PRIVATE != 0,
         anonymous: flags & map::MAP_ANONYMOUS != 0,
+        map_32bit: flags & map::MAP_32BIT != 0,
+        above_4g: flags & map::MAP_ABOVE4G != 0,
     }
 }
 
@@ -304,6 +306,10 @@ pub mod map {
     pub const MAP_STACK: i32 = 0x20000;
     /// Create huge page mapping
     pub const MAP_HUGETLB: i32 = 0x40000;
+    /// Only give out 32-bit addresses (x86_64 specific)
+    pub const MAP_32BIT: i32 = 0x40;
+    /// Only map above 4GB (x86_64 specific)
+    pub const MAP_ABOVE4G: i32 = 0x80;
 }
 
 // ============================================================================
@@ -949,6 +955,8 @@ pub fn mremap(
                 shared: false,
                 private: true,
                 anonymous: true,
+                map_32bit: false,
+                above_4g: false,
             },
         )
         .map_err(vm_error_to_linux)?;
@@ -982,6 +990,8 @@ pub fn mremap(
                 shared: false,
                 private: true,
                 anonymous: true,
+                map_32bit: false,
+                above_4g: false,
             },
         ) {
             Ok(_) => {
@@ -1028,6 +1038,8 @@ pub fn mremap(
             shared: false,
             private: true,
             anonymous: true,
+            map_32bit: false,
+            above_4g: false,
         },
     ) {
         Ok(_) => Ok(old_addr),

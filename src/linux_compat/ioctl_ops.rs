@@ -435,6 +435,382 @@ fn tcset_action(request: u64) -> i32 {
 }
 
 /// ioctl - device control operations
+/// Check if an ioctl request is an evdev ioctl (base 'E' = 0x45).
+fn is_evdev_ioctl(req: u64) -> bool {
+    ((req >> 8) & 0xFF) == 0x45
+}
+
+/// Handle evdev ioctls for /dev/input/eventN devices.
+/// Mirrors Linux's drivers/input/evdev.c evdev_do_ioctl.
+/// Ported from `/home/justin/Downloads/linux-master/drivers/input/evdev.c`.
+fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
+    let nr = (req & 0xFF) as u8;
+    let dir = (req >> 30) & 0x3;
+    let size = ((req >> 16) & 0x3FFF) as usize;
+
+    // Try to determine which evdev device this fd refers to.
+    // Use device 0 (keyboard) as default, or device 1 (mouse)
+    // if the fd's rdev minor suggests it.
+    let device_idx = match crate::vfs::vfs_fstat(fd) {
+        Ok(stat) => {
+            let minor = (stat.rdev & 0xFF) as usize;
+            if minor >= 64 && minor < 96 {
+                (minor - 64).min(1)
+            } else {
+                0
+            }
+        }
+        Err(_) => 0,
+    };
+
+    // ── Fixed-length commands (Linux evdev_do_ioctl switch) ──
+
+    // EVIOCGVERSION: _IOR('E', 0x01, int)
+    if nr == 0x01 && dir == 2 {
+        let version: i32 = crate::drivers::input::evdev::EV_VERSION as i32;
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(
+            argp,
+            &version.to_ne_bytes(),
+        )
+        .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // EVIOCGID: _IOR('E', 0x02, struct input_id) — 8 bytes
+    if nr == 0x02 && dir == 2 {
+        let id_bytes = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            crate::drivers::input::evdev::InputId {
+                bustype: dev.bustype,
+                vendor: dev.vendor,
+                product: dev.product,
+                version: dev.version,
+            }
+            .to_bytes()
+        });
+        if let Ok(id) = id_bytes {
+            crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &id)
+                .map_err(|_| LinuxError::EFAULT)?;
+            return Ok(0);
+        }
+        // Fallback: static input_id
+        let id: [u8; 8] = [0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &id)
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // EVIOCGREP: _IOR('E', 0x03, unsigned int[2])
+    if nr == 0x03 && dir == 2 {
+        let (delay, period) = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            (dev.rep_delay, dev.rep_period)
+        }).unwrap_or((250, 33));
+        let rep: [u8; 8] = [
+            (delay & 0xFF) as u8, ((delay >> 8) & 0xFF) as u8,
+            (delay >> 16) as u8, (delay >> 24) as u8,
+            (period & 0xFF) as u8, ((period >> 8) & 0xFF) as u8,
+            (period >> 16) as u8, (period >> 24) as u8,
+        ];
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &rep)
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // EVIOCSREP: _IOW('E', 0x03, unsigned int[2])
+    if nr == 0x03 && dir == 1 {
+        let mut buf = [0u8; 8];
+        crate::memory::user_space::UserSpaceMemory::copy_from_user(argp, &mut buf)
+            .map_err(|_| LinuxError::EFAULT)?;
+        let delay = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let period = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let _ = crate::drivers::input::evdev::with_device_mut(device_idx, |dev| {
+            dev.rep_delay = delay;
+            dev.rep_period = period;
+        });
+        return Ok(0);
+    }
+
+    // EVIOCGKEYCODE: _IOR('E', 0x04, unsigned int[2])
+    if nr == 0x04 && dir == 2 {
+        let pair: [u8; 8] = [0u8; 8];
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &pair)
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // EVIOCSKEYCODE: _IOW('E', 0x04, unsigned int[2])
+    if nr == 0x04 && dir == 1 {
+        return Ok(0);
+    }
+
+    // EVIOCGNAME(len): _IOC(_IOC_READ, 'E', 0x06, len)
+    if nr == 0x06 && dir == 2 {
+        let name = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            let mut s = alloc::vec::Vec::new();
+            s.extend_from_slice(dev.name.as_bytes());
+            s.push(0); // null terminator
+            s
+        }).unwrap_or_else(|_| b"RustOS Input\0".to_vec());
+        let len = core::cmp::min(size, name.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &name[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGPHYS(len): _IOC(_IOC_READ, 'E', 0x07, len)
+    if nr == 0x07 && dir == 2 {
+        let phys = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            let mut s = alloc::vec::Vec::new();
+            s.extend_from_slice(dev.phys.as_bytes());
+            s.push(0);
+            s
+        }).unwrap_or_else(|_| b"isa0060/serio0/input0\0".to_vec());
+        let len = core::cmp::min(size, phys.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &phys[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGUNIQ(len): _IOC(_IOC_READ, 'E', 0x08, len)
+    if nr == 0x08 && dir == 2 {
+        let uniq = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            let mut s = alloc::vec::Vec::new();
+            s.extend_from_slice(dev.uniq.as_bytes());
+            s.push(0);
+            s
+        }).unwrap_or_else(|_| b"\0".to_vec());
+        let len = core::cmp::min(size, uniq.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &uniq[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGPROP(len): _IOC(_IOC_READ, 'E', 0x09, len)
+    if nr == 0x09 && dir == 2 {
+        let props = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.prop_bits.clone()
+        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let len = core::cmp::min(size, props.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &props[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGMTSLOTS(len): _IOC(_IOC_READ, 'E', 0x0a, len)
+    if nr == 0x0a && dir == 2 {
+        // Return zeros — no MT slots
+        let len = core::cmp::min(size, 4);
+        let buf = alloc::vec![0u8; len];
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &buf)
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // ── Variable-length, mask-size commands (Linux EVIOC_MASK_SIZE) ──
+
+    // EVIOCGKEY(len): _IOC(_IOC_READ, 'E', 0x18, len)
+    if nr == 0x18 && dir == 2 {
+        let key_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.key_state.clone()
+        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let len = core::cmp::min(size, key_state.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &key_state[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGLED(len): _IOC(_IOC_READ, 'E', 0x19, len)
+    if nr == 0x19 && dir == 2 {
+        let led_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.led_state.clone()
+        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let len = core::cmp::min(size, led_state.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &led_state[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGSND(len): _IOC(_IOC_READ, 'E', 0x1a, len)
+    if nr == 0x1a && dir == 2 {
+        let snd_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.snd_state.clone()
+        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let len = core::cmp::min(size, snd_state.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &snd_state[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGSW(len): _IOC(_IOC_READ, 'E', 0x1b, len)
+    if nr == 0x1b && dir == 2 {
+        let sw_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.sw_state.clone()
+        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let len = core::cmp::min(size, sw_state.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &sw_state[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGBIT(ev, len): _IOC(_IOC_READ, 'E', 0x20 + ev, len)
+    // Multi-number variable-length handler (Linux handle_eviocgbit)
+    if nr >= 0x20 && nr <= 0x3F && dir == 2 {
+        let ev_type = (nr - 0x20) as u16;
+        let bits = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.get_capability_bitmap(ev_type).to_vec()
+        }).unwrap_or_else(|_| {
+            // Fallback to static bitmap if evdev device not found
+            evdev_capability_bitmap_fallback(ev_type, size)
+        });
+        let len = core::cmp::min(size, bits.len());
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &bits[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(len as i32);
+    }
+
+    // EVIOCGABS(abs): _IOR('E', 0x40 + abs, struct input_absinfo) — 24 bytes
+    if nr >= 0x40 && nr <= 0x7F && dir == 2 {
+        let abs_code = (nr - 0x40) as u16;
+        let abs_bytes = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            if (abs_code as usize) < dev.absinfo.len() {
+                dev.absinfo[abs_code as usize].to_bytes()
+            } else {
+                [0u8; 24]
+            }
+        }).unwrap_or([0u8; 24]);
+        let len = core::cmp::min(size, 24);
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &abs_bytes[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // EVIOCSABS(abs): _IOW('E', 0xc0 + abs, struct input_absinfo) — 24 bytes
+    if nr >= 0xc0 && nr <= 0xFF && dir == 1 {
+        let abs_code = (nr - 0xc0) as u16;
+        let mut buf = [0u8; 24];
+        let len = core::cmp::min(size, 24);
+        crate::memory::user_space::UserSpaceMemory::copy_from_user(argp, &mut buf[..len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        let info = crate::drivers::input::evdev::InputAbsInfo::from_bytes(&buf);
+        let _ = crate::drivers::input::evdev::with_device_mut(device_idx, |dev| {
+            if (abs_code as usize) < dev.absinfo.len() && abs_code != crate::drivers::input::ABS_MT_SLOT {
+                dev.absinfo[abs_code as usize] = info;
+            }
+        });
+        return Ok(0);
+    }
+
+    // EVIOCGEFFECTS: _IOR('E', 0x84, int)
+    if nr == 0x84 && dir == 2 {
+        let n_effects: i32 = 0;
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(
+            argp,
+            &n_effects.to_ne_bytes(),
+        )
+        .map_err(|_| LinuxError::EFAULT)?;
+        return Ok(0);
+    }
+
+    // EVIOCGRAB: _IOW('E', 0x90, int)
+    if nr == 0x90 && dir == 1 {
+        return Ok(0);
+    }
+
+    // EVIOCREVOKE: _IOW('E', 0x91, int)
+    if nr == 0x91 && dir == 1 {
+        return Ok(0);
+    }
+
+    // EVIOCGMASK: _IOR('E', 0x92, struct input_mask)
+    if nr == 0x92 && dir == 2 {
+        // Read the input_mask struct from userspace
+        let mut mask_buf = [0u8; 16];
+        crate::memory::user_space::UserSpaceMemory::copy_from_user(argp, &mut mask_buf)
+            .map_err(|_| LinuxError::EFAULT)?;
+        let mask = crate::drivers::input::evdev::InputMask::from_bytes(&mask_buf);
+        // Return the capability bitmap for the requested type
+        let bits = crate::drivers::input::evdev::with_device(device_idx, |dev| {
+            dev.get_capability_bitmap(mask.mask_type as u16).to_vec()
+        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let xfer_size = core::cmp::min(mask.codes_size as usize, bits.len());
+        if mask.codes_ptr != 0 {
+            crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                mask.codes_ptr,
+                &bits[..xfer_size],
+            )
+            .map_err(|_| LinuxError::EFAULT)?;
+        }
+        return Ok(0);
+    }
+
+    // EVIOCSMASK: _IOW('E', 0x93, struct input_mask)
+    if nr == 0x93 && dir == 1 {
+        return Ok(0);
+    }
+
+    // EVIOCSCLOCKID: _IOW('E', 0xa0, int)
+    if nr == 0xa0 && dir == 1 {
+        let mut buf = [0u8; 4];
+        crate::memory::user_space::UserSpaceMemory::copy_from_user(argp, &mut buf)
+            .map_err(|_| LinuxError::EFAULT)?;
+        let clkid = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        // Accept CLOCK_REALTIME(0), CLOCK_MONOTONIC(1), CLOCK_BOOTTIME(7)
+        match clkid {
+            0 | 1 | 7 => return Ok(0),
+            _ => return Err(LinuxError::EINVAL),
+        }
+    }
+
+    Err(LinuxError::ENOTTY)
+}
+
+/// Fallback capability bitmap when no evdev device is registered.
+/// Used only as a last resort.
+fn evdev_capability_bitmap_fallback(ev_type: u16, max_bytes: usize) -> alloc::vec::Vec<u8> {
+    let len = max_bytes.max(1).min(128);
+    let mut bits = alloc::vec![0u8; len];
+
+    match ev_type {
+        0 => {
+            if len >= 1 {
+                bits[0] |= 1 << 0;
+            }
+        }
+        1 => {
+            if len >= 8 {
+                bits[0] = 0xFF;
+                bits[1] = 0xFF;
+                bits[2] = 0xFF;
+                bits[3] = 0xFF;
+                bits[4] = 0xFF;
+                bits[5] = 0xFF;
+                bits[6] = 0xFF;
+                bits[7] |= 0x01;
+            }
+            if len >= 36 {
+                bits[34] |= 0x01;
+                bits[34] |= 0x02;
+                bits[34] |= 0x04;
+                bits[34] |= 0x08;
+                bits[34] |= 0x10;
+            }
+        }
+        2 => {
+            if len >= 2 {
+                bits[0] |= 0x03;
+                bits[1] |= 0x01;
+            }
+        }
+        3 => {
+            if len >= 1 {
+                bits[0] |= 0x03;
+            }
+        }
+        _ => {}
+    }
+
+    bits
+}
+
 pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
     inc_ops();
 
@@ -547,6 +923,9 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
             crate::vfs::drmfs::dispatch_ioctl_for_fd(fd, req as u32, argp)
                 .map(|_| 0)
                 .map_err(|_| LinuxError::ENOTTY)
+        }
+        req if is_evdev_ioctl(req) => {
+            handle_evdev_ioctl(fd, req, argp)
         }
         _ => Err(LinuxError::ENOTTY),
     }

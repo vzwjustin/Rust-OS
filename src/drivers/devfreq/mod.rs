@@ -74,12 +74,12 @@ fn gov_simple_ondemand(current: u64, busy: u64, total: u64) -> u64 {
     if total == 0 {
         return current;
     }
-    let load = (busy * 100) / total;
+    let load = busy.saturating_mul(100) / total;
     // If load > 80%, go to max. If < 20%, go to min.
     // Otherwise scale proportionally.
     if load > 80 {
         // Request max frequency (caller will clamp to max_freq).
-        current * 2
+        current.saturating_mul(2)
     } else if load < 20 {
         current / 2
     } else {
@@ -89,7 +89,7 @@ fn gov_simple_ondemand(current: u64, busy: u64, total: u64) -> u64 {
 
 fn gov_performance(current: u64, _busy: u64, _total: u64) -> u64 {
     // Always request max frequency.
-    current * 2
+    current.saturating_mul(2)
 }
 
 fn gov_powersave(current: u64, _busy: u64, _total: u64) -> u64 {
@@ -172,6 +172,9 @@ pub fn register_device(
             .unwrap_or(u64::MAX);
         (min, max)
     };
+    if initial_freq < min_freq || initial_freq > max_freq {
+        return Err("Initial frequency outside OPP range");
+    }
 
     let id = NEXT_DEVFREQ_ID.fetch_add(1, Ordering::SeqCst);
     DEVFREQ_DEVICES.write().insert(
@@ -295,6 +298,54 @@ pub fn device_count() -> usize {
 
 /// Initialize devfreq subsystem with DDR device.
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("devfreq: subsystem ready");
+    if !DEVFREQ_DEVICES.read().is_empty() {
+        return Ok(());
+    }
+
+    // Ensure OPP subsystem is initialized (devfreq depends on it).
+    crate::drivers::opp::init()?;
+
+    // Register a DDR OPP table (400/800/1600/3200 MHz).
+    let ddr_opps = [
+        crate::drivers::opp::Opp {
+            frequency_hz: 400_000_000,
+            voltage_uv: 1_100_000,
+            level: 0,
+            turbo: false,
+            suspend: false,
+        },
+        crate::drivers::opp::Opp {
+            frequency_hz: 800_000_000,
+            voltage_uv: 1_150_000,
+            level: 1,
+            turbo: false,
+            suspend: false,
+        },
+        crate::drivers::opp::Opp {
+            frequency_hz: 1_600_000_000,
+            voltage_uv: 1_200_000,
+            level: 2,
+            turbo: false,
+            suspend: false,
+        },
+        crate::drivers::opp::Opp {
+            frequency_hz: 3_200_000_000,
+            voltage_uv: 1_350_000,
+            level: 3,
+            turbo: false,
+            suspend: false,
+        },
+    ];
+    let opp_table_id = crate::drivers::opp::register_table("ddr", &ddr_opps)?;
+
+    let dev_id = register_device(
+        &DDR_DEVFREQ_PROFILE,
+        opp_table_id,
+        DevfreqGovernor::SimpleOnDemand,
+    )?;
+    crate::serial_println!(
+        "devfreq: DDR device registered (id={}, governor=simple-ondemand)",
+        dev_id
+    );
     Ok(())
 }
