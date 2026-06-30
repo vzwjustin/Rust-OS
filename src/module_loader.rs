@@ -48,6 +48,22 @@ const R_X86_64_32S: u32 = 11;
 static MODULES: RwLock<BTreeMap<String, ModuleImage>> = RwLock::new(BTreeMap::new());
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
+/// A successfully initialised (live) kernel module.
+pub struct LoadedModule {
+    pub name: [u8; 64],
+    pub base: usize,
+    pub size: usize,
+    pub exit_fn: Option<fn()>,
+}
+
+static LOADED_MODULES: RwLock<Vec<LoadedModule>> = RwLock::new(Vec::new());
+
+/// Return a snapshot of all currently-live modules (names only, to avoid
+/// exposing raw pointers to callers that don't need them).
+pub fn list_modules() -> Vec<[u8; 64]> {
+    LOADED_MODULES.read().iter().map(|m| m.name).collect()
+}
+
 #[derive(Clone)]
 pub struct ModuleImage {
     pub id: u32,
@@ -308,6 +324,73 @@ fn module_name_from_modinfo(image: &[u8]) -> Option<String> {
     None
 }
 
+/// Scan the ELF64 symbol table for a function whose name matches `target`.
+/// Returns the symbol's `st_value` (byte offset within the image) on success.
+fn find_symbol_offset(image: &[u8], target: &str) -> Option<usize> {
+    let shoff = le64(image, 40).ok()? as usize;
+    let shentsize = le16(image, 58).ok()? as usize;
+    let shnum = le16(image, 60).ok()? as usize;
+    let shstrndx = le16(image, 62).ok()? as usize;
+    if shoff == 0 || shentsize < 64 || shstrndx >= shnum {
+        return None;
+    }
+
+    // Locate the string table for section names.
+    let shstr_sh = shoff.checked_add(shstrndx.checked_mul(shentsize)?)?;
+    let shstr_off = le64(image, shstr_sh + 24).ok()? as usize;
+    let shstr_size = le64(image, shstr_sh + 32).ok()? as usize;
+    let shstrtab = image.get(shstr_off..shstr_off.checked_add(shstr_size)?)?;
+
+    // Find .symtab and .strtab sections.
+    let mut symtab_off = 0usize;
+    let mut symtab_size = 0usize;
+    let mut strtab_off = 0usize;
+    let mut strtab_size = 0usize;
+    for idx in 0..shnum {
+        let sh = shoff.checked_add(idx.checked_mul(shentsize)?)?;
+        let name = section_name(shstrtab, le32(image, sh).ok()?);
+        let off = le64(image, sh + 24).ok()? as usize;
+        let size = le64(image, sh + 32).ok()? as usize;
+        if name == ".symtab" {
+            symtab_off = off;
+            symtab_size = size;
+        } else if name == ".strtab" {
+            strtab_off = off;
+            strtab_size = size;
+        }
+    }
+    if symtab_off == 0 || strtab_off == 0 {
+        return None;
+    }
+
+    // Each ELF64 symbol entry is 24 bytes.
+    let sym_entry_size = 24usize;
+    let sym_count = symtab_size / sym_entry_size;
+    let strtab = image.get(strtab_off..strtab_off.checked_add(strtab_size)?)?;
+
+    for i in 0..sym_count {
+        let base = symtab_off + i * sym_entry_size;
+        let st_name = le32(image, base).ok()? as usize;
+        let st_value = le64(image, base + 8).ok()? as usize;
+        let sym_name = {
+            let start = st_name;
+            if start >= strtab.len() {
+                continue;
+            }
+            let end = strtab[start..]
+                .iter()
+                .position(|&b| b == 0)
+                .map(|n| start + n)
+                .unwrap_or(strtab.len());
+            core::str::from_utf8(&strtab[start..end]).unwrap_or("")
+        };
+        if sym_name == target {
+            return Some(st_value);
+        }
+    }
+    None
+}
+
 fn fallback_name() -> String {
     alloc::format!("module{}", NEXT_ID.load(Ordering::SeqCst))
 }
@@ -316,12 +399,37 @@ fn load_module(mut image: Vec<u8>, params: String, flags: u32) -> Result<i32, i3
     validate_module_elf(&image)?;
     apply_relocations(&mut image)?;
     let name = module_name_from_modinfo(&image).unwrap_or_else(fallback_name);
-    let mut modules = MODULES.write();
-    if modules.contains_key(&name) {
-        return Err(17); // EEXIST
+    {
+        let modules = MODULES.read();
+        if modules.contains_key(&name) {
+            return Err(17); // EEXIST
+        }
     }
+
+    // Find and call the module's init_module entry point.
+    let exit_fn: Option<fn()> = find_symbol_offset(&image, "cleanup_module")
+        .map(|off| unsafe { core::mem::transmute(image.as_ptr().add(off)) });
+
+    if let Some(init_off) = find_symbol_offset(&image, "init_module") {
+        let init_fn: fn() -> i32 =
+            unsafe { core::mem::transmute(image.as_ptr().add(init_off)) };
+        let rc = unsafe { init_fn() };
+        if rc != 0 {
+            return Err(-rc); // init failed — do not register
+        }
+    }
+
+    // Build the LoadedModule entry.
+    let mut loaded_name = [0u8; 64];
+    let name_bytes = name.as_bytes();
+    let copy_len = name_bytes.len().min(63);
+    loaded_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+    let base = image.as_ptr() as usize;
+    let size = image.len();
+
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    modules.insert(
+    MODULES.write().insert(
         name.clone(),
         ModuleImage {
             id,
@@ -332,6 +440,14 @@ fn load_module(mut image: Vec<u8>, params: String, flags: u32) -> Result<i32, i3
             flags,
         },
     );
+
+    LOADED_MODULES.write().push(LoadedModule {
+        name: loaded_name,
+        base,
+        size,
+        exit_fn,
+    });
+
     Ok(0)
 }
 
@@ -379,6 +495,43 @@ pub fn delete_module(name: *const u8, flags: u32) -> i32 {
         modules.remove(&name);
         Ok(0)
     })())
+}
+
+/// remove_module - call the module's cleanup function and unload it.
+///
+/// Equivalent to `rmmod`. Calls `cleanup_module` (if found), then removes the
+/// module from both the image registry and the live-module list.
+pub fn remove_module(name: &str) -> i32 {
+    // Pull the exit function before dropping the lock.
+    let exit_fn = {
+        let loaded = LOADED_MODULES.read();
+        loaded.iter().find(|m| {
+            let name_bytes = name.as_bytes();
+            let copy_len = name_bytes.len().min(63);
+            m.name[..copy_len] == name_bytes[..copy_len] && m.name[copy_len] == 0
+        }).and_then(|m| m.exit_fn)
+    };
+
+    if let Some(f) = exit_fn {
+        unsafe { f() };
+    }
+
+    // Remove from live list.
+    {
+        let mut loaded = LOADED_MODULES.write();
+        let name_bytes = name.as_bytes();
+        let copy_len = name_bytes.len().min(63);
+        loaded.retain(|m| {
+            !(m.name[..copy_len] == name_bytes[..copy_len] && m.name[copy_len] == 0)
+        });
+    }
+
+    // Remove from image registry.
+    let mut modules = MODULES.write();
+    if modules.remove(name).is_none() {
+        return -2; // ENOENT
+    }
+    0
 }
 
 pub fn get_module(name: &str) -> Option<ModuleImage> {
