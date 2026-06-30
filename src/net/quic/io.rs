@@ -335,8 +335,12 @@ pub fn apply_frames(conn: &mut Connection, payload: &[u8], now: u64) -> FrameOut
                     now,
                     &acked,
                 );
-                let _ =
-                    super::recovery::detect_lost(&mut conn.pn_app, &mut conn.cong, now, &conn.rtt);
+                let lost = super::recovery::detect_lost(&mut conn.pn_app, &mut conn.cong, now, &conn.rtt);
+                for pkt in lost {
+                    if pkt.ack_eliciting && !pkt.frames.is_empty() {
+                        conn.retransmit_queue.push((pkt.level, pkt.frames));
+                    }
+                }
             }
             Frame::Ping => outcome.ack_eliciting = true,
             Frame::Crypto { offset, data } => {

@@ -45,19 +45,9 @@ impl ProcessQueue {
     }
 
     fn remove_process(&mut self, pid: Pid) -> bool {
-        let mut removed = false;
-        let mut index = 0;
-
-        while index < self.processes.len() {
-            if self.processes[index] == pid {
-                self.processes.remove(index);
-                removed = true;
-            } else {
-                index += 1;
-            }
-        }
-
-        removed
+        let old_len = self.processes.len();
+        self.processes.retain(|&p| p != pid);
+        self.processes.len() != old_len
     }
 
     fn next_process(&mut self) -> Option<Pid> {

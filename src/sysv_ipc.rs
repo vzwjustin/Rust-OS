@@ -852,7 +852,7 @@ pub fn msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> i32 {
     let mut q = q_mutex.lock();
 
     // Read mtype (first 8 bytes) and mtext
-    let mtype = unsafe { *(msgp as *const i64) };
+    let mtype = unsafe { (msgp as *const i64).read_unaligned() };
     if mtype <= 0 {
         return -22;
     }
@@ -898,7 +898,7 @@ pub fn msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: i32)
         q.rtime = crate::time::uptime_ns() / 1_000_000_000;
         let copy_len = core::cmp::min(text.len(), msgsz);
         unsafe {
-            *(msgp as *mut i64) = mtype;
+            (msgp as *mut i64).write_unaligned(mtype);
             core::ptr::copy_nonoverlapping(text.as_ptr(), msgp.add(8), copy_len);
         }
         return copy_len as i32;

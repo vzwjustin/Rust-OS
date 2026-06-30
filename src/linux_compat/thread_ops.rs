@@ -616,25 +616,36 @@ pub fn futex(
             let key = uaddr as usize;
             let target_key = _uaddr2 as usize;
             let nr_wake = val.max(0) as usize;
+            let nr_requeue = (_timeout as usize).max(0);
             let mut woke = 0i32;
             let mut requeued = 0i32;
 
             let mut waiters = FUTEX_WAITERS.write();
 
             // Wake up to nr_wake waiters that have pi_requeue_target == target_key.
-            // Move them to the target PI futex wait queue and unblock them so
-            // they can try to acquire the PI futex.
+            // Requeue up to nr_requeue more onto the target PI futex wait queue.
             let mut requeued_waiters: Vec<FutexWaiter> = Vec::new();
             if let Some(queue) = waiters.get_mut(&key) {
                 let mut remaining: Vec<FutexWaiter> = Vec::with_capacity(queue.len());
                 for waiter in queue.drain(..) {
-                    if woke < nr_wake as i32 && waiter.pi_requeue_target == target_key {
-                        requeued_waiters.push(FutexWaiter {
-                            pid: waiter.pid,
-                            bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
-                            pi_requeue_target: 0,
-                        });
-                        woke += 1;
+                    if waiter.pi_requeue_target == target_key {
+                        if woke < nr_wake as i32 {
+                            requeued_waiters.push(FutexWaiter {
+                                pid: waiter.pid,
+                                bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                                pi_requeue_target: 0,
+                            });
+                            woke += 1;
+                        } else if (requeued as usize) < nr_requeue {
+                            requeued_waiters.push(FutexWaiter {
+                                pid: waiter.pid,
+                                bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                                pi_requeue_target: 0,
+                            });
+                            requeued += 1;
+                        } else {
+                            remaining.push(waiter);
+                        }
                     } else {
                         remaining.push(waiter);
                     }
@@ -649,10 +660,9 @@ pub fn futex(
                 let pid = waiter.pid;
                 waiters.entry(target_key).or_default().push(waiter);
                 let _ = process::get_process_manager().unblock_process(pid as u32);
-                requeued += 1;
             }
 
-            Ok(requeued)
+            Ok(woke + requeued)
         }
         _ => Err(LinuxError::ENOSYS),
     }

@@ -15,6 +15,7 @@ pub struct DcaProvider {
     pub tag_base: u32,
     pub tag_count: u32,
     pub active_tags: u32,
+    pub next_tag_offset: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,7 @@ pub fn register_provider(
             tag_base,
             tag_count,
             active_tags: 0,
+            next_tag_offset: 0,
         },
     );
     Ok(id)
@@ -93,9 +95,10 @@ pub fn request_tag(cpu_id: u32) -> Result<DcaTag, &'static str> {
         id,
         provider_id: provider.id,
         cpu_id,
-        cache_tag: provider.tag_base + provider.active_tags,
+        cache_tag: provider.tag_base + provider.next_tag_offset,
     };
     provider.active_tags += 1;
+    provider.next_tag_offset += 1;
     DCA_TAGS.write().insert(id, tag);
     Ok(tag)
 }

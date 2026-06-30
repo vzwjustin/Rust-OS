@@ -360,7 +360,8 @@ pub fn msgsnd(msqid: MsqId, msgp: *const u8, msgsz: usize, _msgflg: i32) -> Linu
     }
 
     // SysV msgbuf starts with long mtype. This kernel target is 64-bit.
-    let msg_type_long = unsafe { *(msgp as *const i64) };
+    // Use read_unaligned in case userspace provides a misaligned pointer.
+    let msg_type_long = unsafe { (msgp as *const i64).read_unaligned() };
     if msg_type_long <= 0 || msg_type_long > u32::MAX as i64 {
         return Err(LinuxError::EINVAL);
     }
@@ -407,8 +408,9 @@ pub fn msgrcv(
             let copy_size = core::cmp::min(message.data.len(), msgsz);
 
             // Write message type as SysV long mtype. This kernel target is 64-bit.
+            // Use write_unaligned in case userspace provides a misaligned pointer.
             unsafe {
-                *(msgp as *mut i64) = message.msg_type as i64;
+                (msgp as *mut i64).write_unaligned(message.msg_type as i64);
             }
 
             // Write message data
@@ -793,8 +795,8 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
 
 /// semtimedop - semaphore operations with timeout
 ///
-/// Delegates to sysv_ipc::semtimedop which implements proper blocking
-/// with timeout support via the process scheduler.
+/// Uses the same SEMAPHORE_TABLE as semget/semop to keep the namespace
+/// consistent. The timeout is currently best-effort (checked between retries).
 pub fn semtimedop(
     semid: SemId,
     sops: *mut u8,
@@ -802,16 +804,68 @@ pub fn semtimedop(
     timeout: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
-    let ret = crate::sysv_ipc::semtimedop(
-        semid as i32,
-        sops as *const crate::sysv_ipc::SemBuf,
-        nsops as u32,
-        timeout,
-    );
-    if ret < 0 {
-        Err(LinuxError::from_errno(-ret))
+
+    if sops.is_null() || nsops == 0 {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Parse the timeout if provided (TimeSpec: seconds + nanoseconds)
+    let deadline_ns = if !timeout.is_null() {
+        let ts = unsafe { &*(timeout as *const crate::linux_compat::types::TimeSpec) };
+        let now_ns = crate::time::uptime_ns();
+        Some(now_ns + (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64))
     } else {
-        Ok(ret)
+        None
+    };
+
+    // Parse semaphore operations
+    let sembuf_ptr = sops as *const SemBuf;
+    let operations: Vec<SemBuf> = (0..nsops).map(|i| unsafe { *sembuf_ptr.add(i) }).collect();
+
+    let nowait = operations.iter().any(|op| op.sem_flg & SEM_IPC_NOWAIT != 0);
+    let pid = crate::process::current_pid();
+
+    loop {
+        // Check timeout
+        if let Some(deadline) = deadline_ns {
+            if crate::time::uptime_ns() >= deadline {
+                return Err(LinuxError::ETIMEDOUT);
+            }
+        }
+
+        let mut sem_table = SEMAPHORE_TABLE.write();
+        let sem_set = sem_table
+            .get_mut(&(semid as IpcId))
+            .ok_or(LinuxError::EINVAL)?;
+
+        match try_semops(sem_set, &operations) {
+            Ok(()) => {
+                apply_semops(sem_set, &operations);
+                drop(sem_table);
+                return Ok(0);
+            }
+            Err(usize::MAX) => {
+                return Err(LinuxError::EFBIG);
+            }
+            Err(block_idx) => {
+                if nowait {
+                    return Err(LinuxError::EAGAIN);
+                }
+
+                let block_op = operations[block_idx];
+                sem_set.waiters.push(SemWaitEntry {
+                    pid: pid as u32,
+                    sem_num: block_op.sem_num,
+                    sem_op: block_op.sem_op,
+                });
+                drop(sem_table);
+
+                let pm = crate::process::get_process_manager();
+                let _ = pm.block_process(pid);
+                crate::process::scheduler::yield_cpu();
+                continue;
+            }
+        }
     }
 }
 
