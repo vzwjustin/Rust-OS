@@ -40,6 +40,7 @@ pub mod connid;
 pub mod crypto;
 pub mod endpoint;
 pub mod frame;
+pub mod io;
 pub mod keys;
 pub mod packet;
 pub mod path;

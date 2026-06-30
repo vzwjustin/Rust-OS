@@ -1,0 +1,203 @@
+//! QUIC packet I/O — build and open fully-protected 1-RTT (short header)
+//! packets, and apply received frames to a connection.
+//!
+//! Ties the header parsing, packet-number spaces, frame codec, and packet
+//! protection together into the steady-state data path. Long-header
+//! (handshake) packets follow the same protection rules but with the
+//! token/length fields parsed first; this module implements the 1-RTT path
+//! that carries application data.
+
+use super::connection::Connection;
+use super::frame::{parse_frame, Frame};
+use super::keys::PacketKeys;
+use super::pnspace::{pn_decode, pn_encode_len};
+use super::protection::{apply_header_protection, header_protection_mask, open, seal};
+use crate::crypto::algapi::CryptoError;
+use alloc::vec::Vec;
+
+/// Header-protection sample is taken 4 bytes past the start of the packet
+/// number field and is 16 bytes long (RFC 9001 §5.4.2).
+const SAMPLE_OFFSET: usize = 4;
+const SAMPLE_LEN: usize = 16;
+
+/// Build a protected short-header (1-RTT) packet carrying `payload`
+/// (already-serialized frames) for connection `dcid`.
+pub fn build_short_packet(
+    keys: &PacketKeys,
+    dcid: &[u8],
+    pn: u64,
+    largest_acked: Option<u64>,
+    payload: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let pn_len = pn_encode_len(pn, largest_acked); // 1..=4
+
+    let mut pkt = Vec::new();
+    // Short header: header form 0, fixed bit set, key phase 0, pn length in the
+    // low 2 bits (RFC 9000 §17.3).
+    pkt.push(0x40 | ((pn_len as u8 - 1) & 0x03));
+    pkt.extend_from_slice(dcid);
+
+    let pn_offset = pkt.len();
+    let pn_be = pn.to_be_bytes();
+    pkt.extend_from_slice(&pn_be[8 - pn_len..]); // truncated packet number
+
+    // AEAD: the header (through the packet number) is the AAD.
+    let header = pkt[..pn_offset + pn_len].to_vec();
+    let ciphertext = seal(keys, pn, &header, payload)?;
+    pkt.extend_from_slice(&ciphertext);
+
+    // Header protection: sample the ciphertext and mask the first byte + PN.
+    let sample_off = pn_offset + SAMPLE_OFFSET;
+    if pkt.len() < sample_off + SAMPLE_LEN {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+    let mask = header_protection_mask(&keys.hp, &pkt[sample_off..sample_off + SAMPLE_LEN])?;
+    let mut first = pkt[0];
+    let mut pn_bytes = pkt[pn_offset..pn_offset + pn_len].to_vec();
+    apply_header_protection(&mask, &mut first, &mut pn_bytes, false);
+    pkt[0] = first;
+    pkt[pn_offset..pn_offset + pn_len].copy_from_slice(&pn_bytes);
+
+    Ok(pkt)
+}
+
+/// Open a protected short-header packet, returning `(packet_number, payload)`.
+///
+/// `dcid_len` is this endpoint's connection-ID length (the short-header DCID
+/// carries no length prefix); `largest_received` drives packet-number recovery.
+pub fn open_short_packet(
+    keys: &PacketKeys,
+    datagram: &[u8],
+    dcid_len: usize,
+    largest_received: Option<u64>,
+) -> Result<(u64, Vec<u8>), CryptoError> {
+    let pn_offset = 1 + dcid_len;
+    let sample_off = pn_offset + SAMPLE_OFFSET;
+    if datagram.len() < sample_off + SAMPLE_LEN {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+
+    let mask = header_protection_mask(&keys.hp, &datagram[sample_off..sample_off + SAMPLE_LEN])?;
+    let first = datagram[0] ^ (mask[0] & 0x1f);
+    let pn_len = ((first & 0x03) + 1) as usize;
+    if datagram.len() < pn_offset + pn_len {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+
+    // Recover the truncated packet number, then expand it.
+    let mut truncated = 0u64;
+    for i in 0..pn_len {
+        truncated = (truncated << 8) | (datagram[pn_offset + i] ^ mask[1 + i]) as u64;
+    }
+    let pn = pn_decode(largest_received.unwrap_or(0), truncated, (pn_len * 8) as u32);
+
+    // Reconstruct the unprotected header (the AAD).
+    let mut header = datagram[..pn_offset + pn_len].to_vec();
+    header[0] = first;
+    for i in 0..pn_len {
+        header[pn_offset + i] ^= mask[1 + i];
+    }
+
+    let payload = open(keys, pn, &header, &datagram[pn_offset + pn_len..])?;
+    Ok((pn, payload))
+}
+
+/// Outcome of applying a received packet's frames.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct FrameOutcome {
+    /// An ACK should be sent (an ack-eliciting frame was received).
+    pub ack_eliciting: bool,
+    /// The peer signalled connection close.
+    pub closed: bool,
+    /// Bytes of stream data delivered to the application this packet.
+    pub stream_bytes: usize,
+}
+
+/// Walk the frames in a decrypted payload and apply them to `conn`.
+pub fn apply_frames(conn: &mut Connection, payload: &[u8]) -> FrameOutcome {
+    let mut outcome = FrameOutcome::default();
+    let mut off = 0;
+    while off < payload.len() {
+        let (frame, used) = match parse_frame(&payload[off..]) {
+            Some(v) => v,
+            None => break, // unknown/short frame ends processing
+        };
+        match frame {
+            Frame::Padding(_) | Frame::Ack { .. } => {}
+            Frame::Ping => outcome.ack_eliciting = true,
+            Frame::Crypto { offset, data } => {
+                outcome.ack_eliciting = true;
+                let _ = conn.crypto.recv_crypto(offset, data);
+            }
+            Frame::Stream {
+                stream_id,
+                offset,
+                fin,
+                data,
+            } => {
+                outcome.ack_eliciting = true;
+                outcome.stream_bytes += data.len();
+                let stream = conn.stream_mut(stream_id);
+                // Deliver in-order data; out-of-order handling is a follow-up.
+                if offset == stream.recv_offset {
+                    stream.recv_offset += data.len() as u64;
+                    if fin {
+                        stream.final_size = Some(stream.recv_offset);
+                    }
+                }
+            }
+            Frame::MaxData(v) => {
+                conn.max_data_remote = conn.max_data_remote.max(v);
+                outcome.ack_eliciting = true;
+            }
+            Frame::MaxStreamData { stream_id, max } => {
+                outcome.ack_eliciting = true;
+                let stream = conn.stream_mut(stream_id);
+                stream.send_max_data = stream.send_max_data.max(max);
+            }
+            Frame::ResetStream { .. } | Frame::StopSending { .. } => {
+                outcome.ack_eliciting = true;
+            }
+            Frame::ConnectionClose { .. } => {
+                outcome.closed = true;
+                conn.begin_close();
+            }
+            Frame::HandshakeDone => {
+                outcome.ack_eliciting = true;
+                conn.on_handshake_complete();
+            }
+        }
+        off += used.max(1);
+    }
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::keys::initial_keys;
+    use super::*;
+
+    #[test]
+    fn short_packet_round_trip() {
+        let (keys, _server) = initial_keys(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let dcid = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let payload = b"\x01\x01\x01frame-bytes-go-here-padding-too"; // PINGs + data
+
+        let pkt = build_short_packet(&keys, &dcid, 7, Some(0), payload).unwrap();
+        // First byte is header-protected, so its low bits are masked on the wire.
+        let (pn, recovered) =
+            open_short_packet(&keys, &pkt, dcid.len(), Some(0)).unwrap();
+        assert_eq!(pn, 7);
+        assert_eq!(recovered, payload);
+    }
+
+    #[test]
+    fn tampered_packet_fails_auth() {
+        let (keys, _server) = initial_keys(&[9, 9, 9, 9]);
+        let dcid = [0u8; 4];
+        let mut pkt = build_short_packet(&keys, &dcid, 1, Some(0), b"hello-quic-payload!!").unwrap();
+        let n = pkt.len();
+        pkt[n - 1] ^= 0x01; // flip a tag bit
+        assert!(open_short_packet(&keys, &pkt, dcid.len(), Some(0)).is_err());
+    }
+}
