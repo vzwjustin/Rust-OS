@@ -22,7 +22,7 @@ pub enum BusType {
     Generic,
 }
 
-</// Probe/bind state for legacy bus devices.
+/// Probe/bind state for legacy bus devices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusProbeState {
     NeverProbed,
@@ -51,7 +51,7 @@ pub struct BusDevice {
     pub resource_base: u64,
     pub resource_size: u64,
     pub driver_name: Option<String>,
-<    pub bound_driver_id: Option<u32>,
+    pub bound_driver_id: Option<u32>,
     pub bound: bool,
     pub probe_state: BusProbeState,
     pub probe_attempts: u32,
@@ -66,7 +66,7 @@ pub struct BusDriver {
     pub bus_id: u32,
     pub probe: fn(dev_id: u32) -> Result<(), &'static str>,
     pub remove: fn(dev_id: u32) -> Result<(), &'static str>,
-<    pub probe_attempts: u32,
+    pub probe_attempts: u32,
     pub successful_probes: u32,
     pub failed_probes: u32,
     pub bound_device_ids: Vec<u32>,
@@ -128,7 +128,7 @@ pub fn register_device(
         resource_base,
         resource_size,
         driver_name: None,
-<        bound_driver_id: None,
+        bound_driver_id: None,
         bound: false,
         probe_state: BusProbeState::NeverProbed,
         probe_attempts: 0,
@@ -163,7 +163,7 @@ pub fn register_driver(
         bus_id,
         probe,
         remove,
-<        probe_attempts: 0,
+        probe_attempts: 0,
         successful_probes: 0,
         failed_probes: 0,
         bound_device_ids: Vec::new(),
@@ -215,7 +215,7 @@ fn try_match_device(dev_id: u32) -> Result<(), &'static str> {
             let drv = drvs.get(&drv_id).ok_or("Bus driver not found")?;
             drv.probe
         };
-<        {
+        {
             let mut devs = BUS_DEVS.write();
             if let Some(dev) = devs.get_mut(&dev_id) {
                 dev.probe_state = BusProbeState::Probing;
@@ -261,7 +261,7 @@ fn try_match_device(dev_id: u32) -> Result<(), &'static str> {
     Ok(())
 }
 
-</// Unbind a legacy bus device and invoke its driver's remove callback.
+/// Unbind a legacy bus device and invoke its driver's remove callback.
 pub fn unbind_device(dev_id: u32) -> Result<(), &'static str> {
     let drv_id = {
         let devs = BUS_DEVS.read();

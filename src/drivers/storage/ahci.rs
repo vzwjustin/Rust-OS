@@ -1182,7 +1182,7 @@ impl AhciDriver {
         // Allocate proper DMA buffer for data transfer - Production implementation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
-<        let sector_size = self.ports[port as usize].sector_size.max(512) as usize;
+        let sector_size = self.ports[port as usize].sector_size.max(512) as usize;
         let transfer_size = if Self::data_command(command) {
             core::cmp::max((count as usize) * sector_size, 512)
         } else {
@@ -1410,9 +1410,6 @@ impl AhciDriver {
     }
 
     pub fn get_smart_data(&mut self, port: u8) -> Result<Vec<u8>, StorageError> {
-        if port >= 32 {
-            return Err(StorageError::HardwareError);
-        }
         // SMART READ DATA: ATA command 0xB0, features=0xD0, LBA=0xC24F8C0
         // The 512-byte SMART data is returned in the DMA buffer
         let mut smart_data = vec![0u8; 512];
@@ -1544,7 +1541,7 @@ impl AhciPortDevice {
             let ctrl = controller.lock();
             capabilities.max_queue_depth = ctrl.capabilities.max_queue_depth;
             capabilities.supports_ncq = ctrl.capabilities.supports_ncq;
-<            let info = ctrl.ports[port as usize];
+            let info = ctrl.ports[port as usize];
             capabilities.sector_size = info.sector_size;
             capabilities.capacity_bytes = info.sectors.saturating_mul(info.sector_size as u64);
             capabilities.max_transfer_size = 65535 * info.sector_size;
@@ -1711,7 +1708,7 @@ impl StorageDriver for AhciPortDevice {
         Ok(())
     }
 
-<    fn vendor_command(&mut self, _command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {
+    fn vendor_command(&mut self, _command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {
         Err(StorageError::NotSupported)
     }
 
@@ -1741,7 +1738,7 @@ pub fn create_ahci_driver(
             device_name.unwrap_or_else(|| format!("AHCI-{:04x}:{:04x}", vendor_id, device_id));
         let mut driver = AhciDriver::new(name.clone(), vendor_id, device_id, base_addr);
         if driver.init_controller().is_ok() {
-<            let port = driver
+            let port = driver
                 .ports
                 .iter()
                 .enumerate()

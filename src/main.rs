@@ -1897,8 +1897,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // desktop.  Enter a minimal compositor/idle loop that services
             // the userspace process, forwards input to Wayland clients,
             // and renders their surfaces without drawing a kernel desktop.
-            crate::serial_println!("Boot: entering userspace session idle loop");
-            userspace_session_loop()
+            crate::serial_println!("Boot: entering userspace init idle loop");
+            userspace_init_idle_loop()
         } else if use_graphics_desktop && desktop_result.window_manager_ready {
             crate::serial_println!(
                 "desktop: {}x{}x{} gpu={}",
@@ -2406,6 +2406,17 @@ fn pixel_desktop_main_loop() -> ! {
 extern "C" fn userspace_idle_resume() -> ! {
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+fn userspace_init_idle_loop() -> ! {
+    crate::serial_println!("userspace_init_idle_loop: entered");
+    loop {
+        crate::user_sched::service_pending(userspace_idle_resume as *const () as u64);
+        // SAFETY: the boot CPU is idle here; timer interrupts wake it to run the scheduler.
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 

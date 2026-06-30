@@ -17,6 +17,7 @@ pub mod sched_class;
 pub mod wait;
 
 pub use sched_class::SchedPolicy;
+
 use crate::process;
 pub use crate::process::{Pid, Priority, ProcessState};
 use alloc::{collections::VecDeque, vec, vec::Vec};

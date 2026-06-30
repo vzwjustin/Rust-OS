@@ -473,13 +473,13 @@ pub fn futex_wait_requeue_pi(
         // intentionally by CMP_REQUEUE_PI — fall through to the PI-futex CAS.
     }
 
-<    // Woken. Now try to acquire the PI futex at uaddr2 (shared with
+    // Woken. Now try to acquire the PI futex at uaddr2 (shared with
     // futex_lock_pi/futex_trylock_pi).
     let pi_key = uaddr2 as usize;
     let our_pid = crate::process::current_pid();
     let our_tid = crate::process::thread::get_thread_manager().current_thread() as i32;
 
-<    let prev = futex_pi_try_acquire(uaddr2, pi_key, our_pid, our_tid);
+    let prev = futex_pi_try_acquire(uaddr2, pi_key, our_pid, our_tid);
     if prev == 0 {
         return 0;
     }

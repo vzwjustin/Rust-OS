@@ -292,7 +292,7 @@ impl UsbMassStorageDriver {
             return Err(StorageError::NotSupported);
         }
 
-<        // Boot storage currently supports Bulk-Only Transport only.  UAS needs
+        // Boot storage currently supports Bulk-Only Transport only.  UAS needs
         // stream/task-management plumbing in the USB host stack before it can
         // be exposed as a reliable disk path.
         if self.protocol != UsbMscProtocol::BulkOnly as u8 {
@@ -392,7 +392,7 @@ impl UsbMassStorageDriver {
         buffer: Option<&mut [u8]>,
     ) -> Result<CommandStatusWrapper, StorageError> {
         self.validate_transport()?;
-<        let command_id = self.validate_command_transfer(command, data_length, buffer.as_deref())?;
+        let command_id = self.validate_command_transfer(command, data_length, buffer.as_deref())?;
 
         match command_id {
             ScsiCommand::Read10
@@ -637,7 +637,7 @@ impl UsbMassStorageDriver {
                 0, // Group number
                 0, // Control
             ];
-<            let csw =
+            let csw =
                 self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
             if !csw.is_success() {
                 return Err(StorageError::MediaError);
@@ -656,7 +656,7 @@ impl UsbMassStorageDriver {
                 (block_count & 0xFF) as u8,
                 0, // Control
             ];
-<            let csw =
+            let csw =
                 self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
             if !csw.is_success() {
                 return Err(StorageError::MediaError);
@@ -806,7 +806,7 @@ impl StorageDriver for UsbMassStorageDriver {
         if sector_count > u32::MAX as usize {
             return Err(StorageError::TransferTooLarge);
         }
-<        if buffer.len() > self.capabilities.max_transfer_size as usize {
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
             return Err(StorageError::TransferTooLarge);
         }
 
@@ -839,7 +839,7 @@ impl StorageDriver for UsbMassStorageDriver {
         if sector_count > u32::MAX as usize {
             return Err(StorageError::TransferTooLarge);
         }
-<        if buffer.len() > self.capabilities.max_transfer_size as usize {
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
             return Err(StorageError::TransferTooLarge);
         }
 
