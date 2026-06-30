@@ -48,6 +48,7 @@ pub mod pnspace;
 pub mod protection;
 pub mod stream;
 pub mod timer;
+pub mod udp;
 
 pub use common::{QUIC_VERSION_1, QUIC_VERSION_2};
 pub use connection::{ConnState, Connection, Role};
