@@ -18,26 +18,29 @@ Done (each validated against RFC test vectors where applicable):
       PN, header as AAD) + header-protection mask (RFC 9001 A.2 vector).
 - [x] **Packet I/O** (`io.rs`) — build/open protected short-header packets and
       apply received frames (round-trip + tamper tests).
-- [x] **UDP glue** (`udp.rs`) — QUIC port registry; UDP receive routes by DCID
-      to an endpoint, unprotects, and applies frames for 1-RTT connections.
+- [x] **UDP glue** (`udp.rs`) — QUIC port registry; UDP receive (post-checksum)
+      routes by DCID to an endpoint, unprotects, and applies frames for 1-RTT
+      connections, and accepts new server-side Initials (derive keys, decrypt,
+      buffer CRYPTO).
+- [x] **Long-header I/O** (`io.rs`) — build/open Initial & Handshake packets
+      (token/length parsing, Length-bounded AEAD; RFC 9001 A.1 validated).
+- [x] **Send path + ACK** (`send.rs`, `pnspace.rs`) — coalesced received-range
+      tracking → ACK frames; packetize ACK + STREAM data under the congestion
+      window into protected packets.
+- [x] **Handshake secret install** (`connection.rs`) — `install_initial_keys`
+      from the DCID and `install_secret` for per-level traffic secrets.
 
 Remaining:
-- [ ] **Initial/handshake long-header processing** — token/length parsing, then
-      open + CRYPTO-frame reassembly to drive the handshake (the open/protect
-      rules are the same as 1-RTT; only the header layout differs).
-- [ ] **Send path** — packetize stream/crypto data under congestion control,
-      assign packet numbers, protect, and emit (the `io::build_short_packet`
-      primitive exists; it needs a scheduler).
-- [ ] **ACK generation + loss recovery** — wire `pnspace`, `timer` (PTO), and
-      `cong` into a real send/ack/retransmit loop (frames already report
-      ack-eliciting via `io::FrameOutcome`).
-- [ ] **Userspace handshake hand-off** — API to install negotiated TLS 1.3
-      traffic secrets per level into `crypto::CryptoState` / derive
-      `PacketKeys` (handshake is offloaded, as upstream).
+- [ ] **TLS handshake driver** — feed reassembled CRYPTO to the userspace TLS
+      side and pump its output back as CRYPTO frames until the handshake
+      completes and 1-RTT secrets are installed (the offload interface).
+- [ ] **Loss recovery** — arm PTO from `timer`, detect loss, and retransmit
+      (ACK generation + cwnd are wired; the retransmit timer loop is not).
 - [ ] **Stream reassembly** — out-of-order STREAM data buffering (in-order
       delivery is wired today).
 - [ ] **Connection ID management** — issue/retire NEW_CONNECTION_ID, stateless
-      reset tokens.
+      reset tokens; migrate the server connection key from the client DCID to
+      the server-issued SCID after the handshake.
 - [ ] (optional) **ChaCha20-Poly1305** as the alternate cipher suite.
 
 ## Audit follow-ups (deferred, not safety bugs)
