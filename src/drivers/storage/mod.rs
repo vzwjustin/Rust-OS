@@ -548,7 +548,16 @@ pub fn get_default_device() -> Option<u32> {
 pub fn read_sectors(sector: u64, count: u32, buffer: &mut [u8]) -> Result<(), StorageError> {
     let device_id = get_default_device().ok_or(StorageError::DeviceNotFound)?;
 
-    let sector_size = 512usize;
+    let sector_size = with_storage_manager(|manager| {
+        manager
+            .get_device(device_id)
+            .map(|device| device.driver.capabilities().sector_size as usize)
+    })
+    .flatten()
+    .ok_or(StorageError::DeviceNotFound)?;
+    if sector_size == 0 {
+        return Err(StorageError::HardwareError);
+    }
     let required_size = (count as usize) * sector_size;
 
     if buffer.len() < required_size {
@@ -596,7 +605,16 @@ pub fn read_sectors(sector: u64, count: u32, buffer: &mut [u8]) -> Result<(), St
 pub fn write_sectors(sector: u64, count: u32, buffer: &[u8]) -> Result<(), StorageError> {
     let device_id = get_default_device().ok_or(StorageError::DeviceNotFound)?;
 
-    let sector_size = 512usize;
+    let sector_size = with_storage_manager(|manager| {
+        manager
+            .get_device(device_id)
+            .map(|device| device.driver.capabilities().sector_size as usize)
+    })
+    .flatten()
+    .ok_or(StorageError::DeviceNotFound)?;
+    if sector_size == 0 {
+        return Err(StorageError::HardwareError);
+    }
     let required_size = (count as usize) * sector_size;
 
     if buffer.len() < required_size {

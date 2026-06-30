@@ -244,17 +244,32 @@ pub fn waitpid(pid: Pid, status: *mut i32, options: i32) -> LinuxResult<Pid> {
     }
 }
 
-/// Linux auxiliary vector types (uapi/linux/auxvec.h)
+/// Linux auxiliary vector types (uapi/linux/auxvec.h + arch/x86/auxvec.h)
 mod auxv {
     pub const AT_NULL: u64 = 0;
+    pub const AT_IGNORE: u64 = 1;
+    pub const AT_EXECFD: u64 = 2;
     pub const AT_PHDR: u64 = 3;
     pub const AT_PHENT: u64 = 4;
     pub const AT_PHNUM: u64 = 5;
     pub const AT_PAGESZ: u64 = 6;
     pub const AT_BASE: u64 = 7;
+    pub const AT_FLAGS: u64 = 8;
     pub const AT_ENTRY: u64 = 9;
-    pub const AT_EXECFN: u64 = 31;
+    pub const AT_NOTELF: u64 = 10;
+    pub const AT_UID: u64 = 11;
+    pub const AT_EUID: u64 = 12;
+    pub const AT_GID: u64 = 13;
+    pub const AT_EGID: u64 = 14;
+    pub const AT_PLATFORM: u64 = 15;
+    pub const AT_HWCAP: u64 = 16;
+    pub const AT_CLKTCK: u64 = 17;
+    pub const AT_SECURE: u64 = 23;
+    pub const AT_BASE_PLATFORM: u64 = 24;
     pub const AT_RANDOM: u64 = 25;
+    pub const AT_HWCAP2: u64 = 26;
+    pub const AT_EXECFN: u64 = 31;
+    pub const AT_SYSINFO_EHDR: u64 = 33;
 }
 
 const MAX_USER_STRING: usize = 4096;
@@ -395,7 +410,24 @@ fn build_linux_initial_stack(
     let execfn_addr = unsafe { push_cstring(&mut sp, exec_path) };
 
     let phdr_addr = compute_phdr_addr(loaded, header);
-    let auxv_entries: [(u64, u64); 9] = [
+
+    // Compute AT_HWCAP from CPU features.
+    let hwcap = {
+        let features = crate::arch::cpu_features();
+        let mut cap: u64 = 0;
+        if features.sse { cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE; }
+        if features.sse2 { cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE2; }
+        if features.mmx { cap |= crate::arch::x86::auxvec::HWCAP_X86_MMX; }
+        if features.fpu { cap |= crate::arch::x86::auxvec::HWCAP_X86_FPU; }
+        if features.tsc { cap |= crate::arch::x86::auxvec::HWCAP_X86_TSC; }
+        if features.cmov { cap |= crate::arch::x86::auxvec::HWCAP_X86_CMOV; }
+        if features.pat { cap |= crate::arch::x86::auxvec::HWCAP_X86_PAT; }
+        if features.clflush { cap |= crate::arch::x86::auxvec::HWCAP_X86_CLFLUSH; }
+        if features.fxsr { cap |= crate::arch::x86::auxvec::HWCAP_X86_FXSR; }
+        cap
+    };
+
+    let auxv_entries: [(u64, u64); 16] = [
         (auxv::AT_PAGESZ, 4096),
         (auxv::AT_PHDR, phdr_addr),
         (
@@ -407,6 +439,13 @@ fn build_linux_initial_stack(
         (auxv::AT_BASE, loaded.base_address.as_u64()),
         (auxv::AT_EXECFN, execfn_addr),
         (auxv::AT_RANDOM, random_addr),
+        (auxv::AT_HWCAP, hwcap),
+        (auxv::AT_CLKTCK, 100),
+        (auxv::AT_UID, 0),
+        (auxv::AT_EUID, 0),
+        (auxv::AT_GID, 0),
+        (auxv::AT_EGID, 0),
+        (auxv::AT_SECURE, 0),
         (auxv::AT_NULL, 0),
     ];
 

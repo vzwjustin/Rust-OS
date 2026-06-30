@@ -5,11 +5,12 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::RwLock;
 
 use crate::linux_compat::advanced_io::IoVec;
@@ -27,8 +28,10 @@ const IORING_SETUP_CQSIZE: u32 = 1 << 3;
 const IORING_SETUP_CLAMP: u32 = 1 << 4;
 const IORING_SETUP_R_DISABLED: u32 = 1 << 6;
 
-const SUPPORTED_SETUP_FLAGS: u32 =
-    IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | IORING_SETUP_R_DISABLED;
+const SUPPORTED_SETUP_FLAGS: u32 = IORING_SETUP_CQSIZE
+    | IORING_SETUP_CLAMP
+    | IORING_SETUP_R_DISABLED
+    | IORING_SETUP_SQPOLL;
 
 const IORING_OFF_SQ_RING: u64 = 0;
 const IORING_OFF_CQ_RING: u64 = 0x0800_0000;
@@ -87,6 +90,21 @@ const IORING_OP_UNLINKAT: u8 = 34;
 const IORING_OP_MKDIRAT: u8 = 35;
 const IORING_OP_LINKAT: u8 = 37;
 const IORING_OP_SYMLINKAT: u8 = 38;
+
+// SQE flags (sqe.flags), mirrors include/uapi/linux/io_uring.h IOSQE_* bits.
+/// `sqe.fd` is an index into the registered-files table, not a raw fd.
+const IOSQE_FIXED_FILE: u8 = 1 << 0;
+/// Linked SQE: don't start until the previous SQE in the chain has
+/// completed. If the previous member failed, this SQE (and the rest of the
+/// chain) is completed with -ECANCELED without being executed.
+const IOSQE_IO_LINK: u8 = 1 << 2;
+/// Like IOSQE_IO_LINK but the chain isn't broken when a member fails.
+const IOSQE_IO_HARDLINK: u8 = 1 << 3;
+/// Don't post a CQE for this SQE if it completes successfully.
+const IOSQE_CQE_SKIP_SUCCESS: u8 = 1 << 6;
+
+/// ECANCELED, used to fail linked SQEs whose predecessor failed.
+const ECANCELED: i32 = 125;
 
 static NEXT_RING_ID: AtomicU32 = AtomicU32::new(1);
 static RINGS: RwLock<BTreeMap<u32, IoUring>> = RwLock::new(BTreeMap::new());
@@ -188,7 +206,7 @@ fn is_supported_at_path(dirfd: i32, path: &str) -> bool {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 struct IoUringCqe {
     user_data: u64,
     res: i32,
@@ -208,6 +226,17 @@ struct IoUring {
     registered_files: Vec<Option<i32>>,
     /// Per-SQE timeout deadlines stored as (user_data, deadline_ns) pairs
     timeout_deadlines: Vec<(u64, u64)>,
+    /// CQEs that couldn't be posted because the CQ ring was full.  Mirrors
+    /// the `io_kiocb` overflow backlog in io_uring.c's
+    /// `io_cqring_overflow_flush()` — entries are replayed into the ring on
+    /// the next `enter()` once space is available, instead of being dropped.
+    cq_overflow: VecDeque<IoUringCqe>,
+    /// Set when IORING_SETUP_SQPOLL was requested: a dedicated kernel
+    /// thread drains the SQ ring instead of requiring io_uring_enter().
+    sqpoll: bool,
+    /// Shared stop flag for the SQPOLL kernel thread, signalled by
+    /// close_ring() so the thread exits instead of polling a freed ring.
+    sqpoll_stop: Option<Arc<AtomicBool>>,
 }
 
 pub fn init() {
@@ -299,10 +328,11 @@ pub fn setup(entries: u32, params: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
     if p.flags & !SUPPORTED_SETUP_FLAGS != 0
-        || p.flags & (IORING_SETUP_IOPOLL | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF) != 0
+        || p.flags & (IORING_SETUP_IOPOLL | IORING_SETUP_SQ_AFF) != 0
     {
         return Err(LinuxError::EINVAL);
     }
+    let sqpoll = p.flags & IORING_SETUP_SQPOLL != 0;
 
     let sq_entries = round_up_pow2(entries).ok_or(LinuxError::EINVAL)?;
     let requested_cq = if p.flags & IORING_SETUP_CQSIZE != 0 {
@@ -324,6 +354,9 @@ pub fn setup(entries: u32, params: *mut u8) -> LinuxResult<i32> {
             registered_buffers: Vec::new(),
             registered_files: Vec::new(),
             timeout_deadlines: Vec::new(),
+            cq_overflow: VecDeque::new(),
+            sqpoll,
+            sqpoll_stop: None,
         },
     );
 
@@ -359,7 +392,55 @@ pub fn setup(entries: u32, params: *mut u8) -> LinuxResult<i32> {
         RINGS.write().remove(&id);
         return Err(LinuxError::EMFILE);
     }
+
+    if sqpoll {
+        spawn_sqpoll_thread(id, p.sq_thread_idle);
+    }
+
     Ok(fd)
+}
+
+/// Spawn the SQPOLL kernel thread for ring `id` (mirrors `io_sq_thread()` in
+/// sqpoll.c).  Drains the SQ ring on its own without the application having
+/// to call io_uring_enter() for submission.  Basic version: no CPU affinity
+/// (IORING_SETUP_SQ_AFF is rejected at setup time) and a fixed idle backoff
+/// instead of the real adaptive `IORING_SETUP_SQPOLL` busy-spin window.
+fn spawn_sqpoll_thread(ring_id: u32, sq_thread_idle: u32) {
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let mut rings = RINGS.write();
+        if let Some(ring) = rings.get_mut(&ring_id) {
+            ring.sqpoll_stop = Some(stop.clone());
+        } else {
+            // Ring was torn down before the thread could be spawned.
+            return;
+        }
+    }
+    let idle_ms = if sq_thread_idle == 0 {
+        100
+    } else {
+        sq_thread_idle as u64
+    };
+    let mut name = String::from("iou-sqp-");
+    name.push_str(&ring_id.to_string());
+    let _ = crate::process::thread::create_kernel_thread(
+        &name,
+        crate::process::Priority::Normal,
+        0x8000,
+        move || {
+            while !stop.load(Ordering::SeqCst) {
+                match sqpoll_process(ring_id) {
+                    Ok(n) if n > 0 => continue,
+                    Ok(_) => crate::process::thread::sleep_ms(idle_ms).unwrap_or(()),
+                    Err(_) => {
+                        // Ring rings/mappings not ready yet, or the ring has
+                        // been torn down — back off and check the stop flag.
+                        crate::process::thread::sleep_ms(idle_ms).unwrap_or(());
+                    }
+                }
+            }
+        },
+    );
 }
 
 pub fn io_uring_setup(entries: u32, params: *mut IoUringParams) -> i32 {
@@ -370,7 +451,15 @@ pub fn io_uring_setup(entries: u32, params: *mut IoUringParams) -> i32 {
 }
 
 pub fn close_ring(id: u32) {
-    RINGS.write().remove(&id);
+    let removed = RINGS.write().remove(&id);
+    if let Some(ring) = removed {
+        if let Some(stop) = ring.sqpoll_stop {
+            // Signal the SQPOLL kernel thread (if any) to exit; it polls
+            // this flag on every iteration instead of touching the now
+            // freed ring state.
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 pub fn mmap(fd: i32, offset: u64, addr: usize, len: usize) -> LinuxResult<bool> {
@@ -437,6 +526,36 @@ pub fn enter(
     let ring = RINGS.read().get(&id).cloned().ok_or(LinuxError::EBADF)?;
     let sq_ring = ring.sq_ring_addr.ok_or(LinuxError::EINVAL)?;
     let cq_ring = ring.cq_ring_addr.ok_or(LinuxError::EINVAL)?;
+
+    if ring.sqpoll {
+        // With IORING_SETUP_SQPOLL the dedicated kernel thread owns both
+        // submission and the CQ overflow flush; the application must not
+        // also flush here; doing so would race the poller thread on the
+        // unlocked tail-read/copy_to_user/tail-write sequence inside
+        // flush_cq_overflow() and could corrupt the CQ tail or drop a
+        // completion. The SQPOLL thread flushes every iteration of its own
+        // loop, so overflow still drains promptly without the app's help.
+        return Ok(0);
+    }
+
+    // Mirrors io_cqring_overflow_flush(): always try to drain any
+    // previously-overflowed CQEs into the ring before doing anything else.
+    flush_cq_overflow(id, cq_ring, ring.cq_entries)?;
+
+    submit_sqes(id, &ring, sq_ring, cq_ring, to_submit)
+}
+
+/// Drain up to `to_submit` SQEs from ring `id`'s SQ ring, executing each one
+/// and posting its CQE.  Shared by the synchronous io_uring_enter() path and
+/// the SQPOLL kernel thread. Handles IOSQE_IO_LINK / IOSQE_IO_HARDLINK
+/// chains, IOSQE_FIXED_FILE resolution, and IOSQE_CQE_SKIP_SUCCESS.
+fn submit_sqes(
+    id: u32,
+    ring: &IoUring,
+    sq_ring: usize,
+    cq_ring: usize,
+    to_submit: u32,
+) -> LinuxResult<i32> {
     let sqes = ring.sqes_addr.ok_or(LinuxError::EINVAL)?;
 
     let sq_head = read_u32(sq_ring + SQ_HEAD)?;
@@ -444,6 +563,9 @@ pub fn enter(
     let available = sq_tail.wrapping_sub(sq_head);
     let submit = cmp::min(to_submit, available);
     let mut completed = 0u32;
+    // True once a member of an IOSQE_IO_LINK chain has failed; subsequent
+    // chain members are then completed with -ECANCELED instead of running.
+    let mut link_failed = false;
 
     for n in 0..submit {
         let sq_index = (sq_head.wrapping_add(n)) & (ring.sq_entries - 1);
@@ -456,22 +578,68 @@ pub fn enter(
             continue;
         }
         let sqe_addr = sqes + sqe_index as usize * core::mem::size_of::<IoUringSqe>();
-        let sqe: IoUringSqe = copy_from_user(sqe_addr as u64)?;
-        let res = execute_sqe(&sqe, &ring, id);
-        push_cqe(
-            cq_ring,
-            ring.cq_entries,
-            IoUringCqe {
-                user_data: sqe.user_data,
-                res,
-                flags: 0,
-            },
-        )?;
+        let mut sqe: IoUringSqe = copy_from_user(sqe_addr as u64)?;
+
+        let is_link = sqe.flags & (IOSQE_IO_LINK | IOSQE_IO_HARDLINK) != 0;
+        let is_hardlink = sqe.flags & IOSQE_IO_HARDLINK != 0;
+
+        let res = if link_failed {
+            -ECANCELED
+        } else if sqe.flags & IOSQE_FIXED_FILE != 0 {
+            // sqe.fd is an index into the registered-files table.
+            match ring.registered_files.get(sqe.fd as usize) {
+                Some(Some(real_fd)) => {
+                    sqe.fd = *real_fd;
+                    execute_sqe(&sqe, ring, id)
+                }
+                _ => -9, // EBADF
+            }
+        } else {
+            execute_sqe(&sqe, ring, id)
+        };
+
+        if res < 0 && is_link && !is_hardlink {
+            link_failed = true;
+        } else if !is_link {
+            link_failed = false;
+        }
+
+        let skip_cqe = res >= 0 && sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0;
+        if !skip_cqe {
+            push_cqe(
+                id,
+                cq_ring,
+                ring.cq_entries,
+                IoUringCqe {
+                    user_data: sqe.user_data,
+                    res,
+                    flags: 0,
+                },
+            )?;
+        }
         completed += 1;
     }
 
     write_u32(sq_ring + SQ_HEAD, sq_head.wrapping_add(submit))?;
     Ok(completed as i32)
+}
+
+/// Submission step driven by the SQPOLL kernel thread: drains whatever is
+/// currently queued on ring `id`'s SQ ring without requiring a userspace
+/// io_uring_enter() call. Returns Ok(0) (not an error) if the ring's
+/// memory regions haven't been mmap()ed yet, so the caller just keeps
+/// polling.
+fn sqpoll_process(id: u32) -> LinuxResult<i32> {
+    let ring = RINGS.read().get(&id).cloned().ok_or(LinuxError::EBADF)?;
+    let (sq_ring, cq_ring) = match (ring.sq_ring_addr, ring.cq_ring_addr) {
+        (Some(sq), Some(cq)) => (sq, cq),
+        _ => return Ok(0),
+    };
+    flush_cq_overflow(id, cq_ring, ring.cq_entries)?;
+    if ring.sqes_addr.is_none() {
+        return Ok(0);
+    }
+    submit_sqes(id, &ring, sq_ring, cq_ring, ring.sq_entries)
 }
 
 pub fn io_uring_enter(fd: i32, to_submit: u32, min_complete: u32, flags: u32) -> i32 {
@@ -871,10 +1039,13 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
             }
         }
         IORING_OP_TIMEOUT_REMOVE => {
-            // TIMEOUT_REMOVE: cancel a previously submitted timeout.
-            // In this synchronous implementation timeouts complete immediately,
-            // so there is nothing to cancel.  Return success (0).
-            0
+            // TIMEOUT_REMOVE: cancel a previously submitted timeout
+            // (target identified by sqe.addr == target user_data).  This
+            // engine executes IORING_OP_TIMEOUT synchronously and inline,
+            // so by the time a TIMEOUT_REMOVE can run, the target has
+            // always already completed — matching timeout.c's behaviour
+            // when `io_timeout_cancel()` can't find the request: -ENOENT.
+            -(LinuxError::ENOENT as i32)
         }
         IORING_OP_FALLOCATE => {
             // fallocate(fd, mode, offset, len)
@@ -1050,16 +1221,22 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
             revents as i32
         }
         IORING_OP_POLL_REMOVE => {
-            // POLL_REMOVE: cancel a previously submitted POLL_ADD.
-            // In this synchronous implementation poll completes immediately,
-            // so there is nothing to cancel.  Return success (0).
-            0
+            // POLL_REMOVE: cancel a previously submitted POLL_ADD
+            // (target identified by sqe.addr == target user_data).  Poll
+            // completes synchronously and inline in this engine, so the
+            // target has always already finished by the time REMOVE runs.
+            // Matches poll.c's `io_poll_remove()` "not found" path.
+            -(LinuxError::ENOENT as i32)
         }
         IORING_OP_ASYNC_CANCEL => {
-            // ASYNC_CANCEL: cancel a previously submitted async request.
-            // In this synchronous implementation all operations complete
-            // immediately, so there is nothing to cancel.  Return success (0).
-            0
+            // ASYNC_CANCEL: cancel a previously submitted request
+            // (target identified by sqe.addr == target user_data, or
+            // IORING_ASYNC_CANCEL_ALL/FD via sqe.rw_flags upstream — not
+            // modelled here).  Every op in this engine runs to completion
+            // before the next SQE is even looked at, so there is never an
+            // in-flight request to find.  Matches cancel.c's behaviour
+            // when no matching `io_kiocb` exists: -ENOENT.
+            -(LinuxError::ENOENT as i32)
         }
         IORING_OP_LINK_TIMEOUT => {
             // LINK_TIMEOUT: linked timeout for the previous SQE.
@@ -1097,18 +1274,59 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
     }
 }
 
-fn push_cqe(cq_ring: usize, entries: u32, cqe: IoUringCqe) -> LinuxResult<()> {
+/// Post a CQE to ring `ring_id`'s CQ ring. If the ring is full, queue the
+/// CQE on the ring's overflow backlog instead of dropping it (mirrors
+/// io_uring.c's overflow list); the CQ_OVERFLOW counter visible to
+/// userspace is still bumped, matching Linux's `cq_overflow` stat.
+fn push_cqe(ring_id: u32, cq_ring: usize, entries: u32, cqe: IoUringCqe) -> LinuxResult<()> {
     let head = read_u32(cq_ring + CQ_HEAD)?;
     let tail = read_u32(cq_ring + CQ_TAIL)?;
     if tail.wrapping_sub(head) >= entries {
         let overflow = read_u32(cq_ring + CQ_OVERFLOW)?;
         write_u32(cq_ring + CQ_OVERFLOW, overflow.saturating_add(1))?;
+        let mut rings = RINGS.write();
+        if let Some(ring) = rings.get_mut(&ring_id) {
+            ring.cq_overflow.push_back(cqe);
+        }
         return Ok(());
     }
     let index = tail & (entries - 1);
     let cqe_addr = cq_ring + CQ_CQES + index as usize * core::mem::size_of::<IoUringCqe>();
     copy_to_user(cqe_addr as u64, &cqe)?;
     write_u32(cq_ring + CQ_TAIL, tail.wrapping_add(1))
+}
+
+/// Replay previously-overflowed CQEs into the CQ ring now that space may be
+/// available. Mirrors `io_cqring_overflow_flush()` in io_uring.c, which
+/// Linux calls on every io_uring_enter() before processing new work.
+fn flush_cq_overflow(ring_id: u32, cq_ring: usize, entries: u32) -> LinuxResult<()> {
+    loop {
+        let has_pending = RINGS
+            .read()
+            .get(&ring_id)
+            .map(|r| !r.cq_overflow.is_empty())
+            .unwrap_or(false);
+        if !has_pending {
+            return Ok(());
+        }
+        let head = read_u32(cq_ring + CQ_HEAD)?;
+        let tail = read_u32(cq_ring + CQ_TAIL)?;
+        if tail.wrapping_sub(head) >= entries {
+            // Ring still full — leave the rest queued for next time.
+            return Ok(());
+        }
+        let cqe = {
+            let mut rings = RINGS.write();
+            match rings.get_mut(&ring_id).and_then(|r| r.cq_overflow.pop_front()) {
+                Some(cqe) => cqe,
+                None => return Ok(()),
+            }
+        };
+        let index = tail & (entries - 1);
+        let cqe_addr = cq_ring + CQ_CQES + index as usize * core::mem::size_of::<IoUringCqe>();
+        copy_to_user(cqe_addr as u64, &cqe)?;
+        write_u32(cq_ring + CQ_TAIL, tail.wrapping_add(1))?;
+    }
 }
 
 pub fn register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> LinuxResult<i32> {

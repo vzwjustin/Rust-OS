@@ -9,9 +9,14 @@
 //! over the process manager's scheduler, so callers can inspect CPU-local queue
 //! and load state without introducing a second process table.
 
+pub mod cfs;
 pub mod completion;
+pub mod load_balance;
+pub mod rt;
+pub mod sched_class;
 pub mod wait;
 
+pub use sched_class::SchedPolicy;
 use crate::process;
 pub use crate::process::{Pid, Priority, ProcessState};
 use alloc::{collections::VecDeque, vec, vec::Vec};

@@ -4,6 +4,15 @@
 //! buses, classes, devices, and drivers, plus the match/bind/probe machinery
 //! that ties them together. Mirrors Linux's `drivers/base/`.
 
+// ── Linux-kernel-style device/driver submodules ──────────────────────────────
+pub mod device;
+pub mod devres;
+pub mod driver;
+
+pub use device::{BusType, Device, DevicePower, KobjType, SysfsAttr};
+pub use devres::{devres_register_raw, devres_release_all, Devres};
+pub use driver::{driver_count, find_driver, for_each_driver, DeviceId, Driver, DriverRegistration, PmState};
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -11,6 +20,18 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
+
+/// Binding/probe lifecycle state for a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeState {
+    NeverProbed,
+    Probing,
+    Bound,
+    ProbeFailed,
+    Removing,
+    RemoveFailed,
+    Unbound,
+}
 
 /// A device in the unified device model (Linux `struct device`).
 pub struct Device {
@@ -26,6 +47,12 @@ pub struct Device {
     pub compatible: String,
     /// Id of the driver currently bound to this device, if any.
     pub bound_driver: Option<u32>,
+    /// Linux-style probe/bind lifecycle metadata.
+    pub probe_state: ProbeState,
+    pub probe_attempts: u32,
+    pub remove_attempts: u32,
+    pub last_probe_error: Option<String>,
+    pub last_bind_sequence: u32,
     /// Key/value attributes standing in for sysfs entries.
     pub properties: BTreeMap<String, String>,
 }
@@ -45,6 +72,22 @@ pub struct DeviceDriver {
     /// Predicate matching a device's compatible/modalias string.
     pub matches: fn(compatible: &str) -> bool,
     pub ops: DeviceDriverOps,
+    pub probe_attempts: u32,
+    pub successful_probes: u32,
+    pub failed_probes: u32,
+    pub bound_device_ids: Vec<u32>,
+}
+
+/// Snapshot of a device's binding metadata.
+#[derive(Debug, Clone)]
+pub struct BindingInfo {
+    pub device_id: u32,
+    pub bound_driver: Option<u32>,
+    pub probe_state: ProbeState,
+    pub probe_attempts: u32,
+    pub remove_attempts: u32,
+    pub last_probe_error: Option<String>,
+    pub last_bind_sequence: u32,
 }
 
 /// A bus type (Linux `struct bus_type`).
@@ -73,6 +116,7 @@ static NEXT_BUS_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_DRIVER_ID: AtomicU32 = AtomicU32::new(0);
+static NEXT_BIND_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 
 // ── Public API: registration ──────────────────────────────────────────────
 
@@ -138,6 +182,11 @@ pub fn register_device(
             class: String::from(class),
             compatible: String::from(compatible),
             bound_driver: None,
+            probe_state: ProbeState::NeverProbed,
+            probe_attempts: 0,
+            remove_attempts: 0,
+            last_probe_error: None,
+            last_bind_sequence: 0,
             properties: BTreeMap::new(),
         },
     );
@@ -171,6 +220,10 @@ pub fn register_driver(
             bus: String::from(bus),
             matches,
             ops,
+            probe_attempts: 0,
+            successful_probes: 0,
+            failed_probes: 0,
+            bound_device_ids: Vec::new(),
         },
     );
 
@@ -209,10 +262,42 @@ pub fn bind(dev_id: u32, drv_id: u32) -> Result<(), &'static str> {
         return Err("base: driver does not match device");
     }
 
-    (probe)(dev_id)?;
+    {
+        let mut devices = DEVICES.write();
+        let dev = devices.get_mut(&dev_id).ok_or("base: device not found")?;
+        dev.probe_state = ProbeState::Probing;
+        dev.probe_attempts = dev.probe_attempts.saturating_add(1);
+        dev.last_probe_error = None;
+    }
+    {
+        let mut drivers = DRIVERS.write();
+        if let Some(drv) = drivers.get_mut(&drv_id) {
+            drv.probe_attempts = drv.probe_attempts.saturating_add(1);
+        }
+    }
+
+    if let Err(err) = (probe)(dev_id) {
+        if let Some(dev) = DEVICES.write().get_mut(&dev_id) {
+            dev.probe_state = ProbeState::ProbeFailed;
+            dev.last_probe_error = Some(String::from(err));
+        }
+        if let Some(drv) = DRIVERS.write().get_mut(&drv_id) {
+            drv.failed_probes = drv.failed_probes.saturating_add(1);
+        }
+        return Err(err);
+    }
 
     if let Some(dev) = DEVICES.write().get_mut(&dev_id) {
         dev.bound_driver = Some(drv_id);
+        dev.probe_state = ProbeState::Bound;
+        dev.last_probe_error = None;
+        dev.last_bind_sequence = NEXT_BIND_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    }
+    if let Some(drv) = DRIVERS.write().get_mut(&drv_id) {
+        drv.successful_probes = drv.successful_probes.saturating_add(1);
+        if !drv.bound_device_ids.contains(&dev_id) {
+            drv.bound_device_ids.push(dev_id);
+        }
     }
     Ok(())
 }
@@ -231,10 +316,25 @@ pub fn unbind(dev_id: u32) -> Result<(), &'static str> {
         drv.ops.remove
     };
 
-    (remove)(dev_id)?;
+    if let Some(dev) = DEVICES.write().get_mut(&dev_id) {
+        dev.probe_state = ProbeState::Removing;
+        dev.remove_attempts = dev.remove_attempts.saturating_add(1);
+    }
+
+    if let Err(err) = (remove)(dev_id) {
+        if let Some(dev) = DEVICES.write().get_mut(&dev_id) {
+            dev.probe_state = ProbeState::RemoveFailed;
+            dev.last_probe_error = Some(String::from(err));
+        }
+        return Err(err);
+    }
 
     if let Some(dev) = DEVICES.write().get_mut(&dev_id) {
         dev.bound_driver = None;
+        dev.probe_state = ProbeState::Unbound;
+    }
+    if let Some(drv) = DRIVERS.write().get_mut(&drv_id) {
+        drv.bound_device_ids.retain(|id| *id != dev_id);
     }
     Ok(())
 }
@@ -317,6 +417,19 @@ pub fn device_path(dev_id: u32) -> Result<String, &'static str> {
 /// Return the id of the driver bound to a device, if any.
 pub fn bound_driver(dev_id: u32) -> Option<u32> {
     DEVICES.read().get(&dev_id).and_then(|d| d.bound_driver)
+}
+
+/// Return a snapshot of Linux-style bind/probe lifecycle metadata.
+pub fn binding_info(dev_id: u32) -> Option<BindingInfo> {
+    DEVICES.read().get(&dev_id).map(|d| BindingInfo {
+        device_id: d.id,
+        bound_driver: d.bound_driver,
+        probe_state: d.probe_state,
+        probe_attempts: d.probe_attempts,
+        remove_attempts: d.remove_attempts,
+        last_probe_error: d.last_probe_error.clone(),
+        last_bind_sequence: d.last_bind_sequence,
+    })
 }
 
 fn bus_id_by_name(name: &str) -> Option<u32> {

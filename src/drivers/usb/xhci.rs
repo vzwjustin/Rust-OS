@@ -373,12 +373,18 @@ impl HostController for XhciController {
     }
 
     fn reset_port(&mut self, port: u8) -> Result<(), &'static str> {
+        if self.usbsts & 1 != 0 {
+            return Err("xhci: controller halted");
+        }
         let idx = (port as usize)
             .checked_sub(1)
             .filter(|i| *i < self.ports.len())
             .ok_or("xhci: port out of range")?;
         if !self.ports[idx].status.connected {
             return Err("xhci: reset on unconnected port");
+        }
+        if !self.ports[idx].status.powered {
+            return Err("xhci: reset on unpowered port");
         }
         // Model the reset pulse, then leave the port enabled.
         self.ports[idx].status.reset = true;
@@ -393,6 +399,9 @@ impl HostController for XhciController {
     }
 
     fn enable_slot(&mut self, port: u8) -> Result<u8, &'static str> {
+        if self.usbsts & 1 != 0 {
+            return Err("xhci: controller halted");
+        }
         let idx = (port as usize)
             .checked_sub(1)
             .filter(|i| *i < self.ports.len())
@@ -402,6 +411,9 @@ impl HostController for XhciController {
         }
         if let Some(existing) = self.ports[idx].slot {
             return Ok(existing);
+        }
+        if self.next_slot as usize >= self.dcbaa.len() {
+            return Err("xhci: no free device slots");
         }
         let slot = self.next_slot;
         self.next_slot += 1;
@@ -429,6 +441,9 @@ impl HostController for XhciController {
         setup: SetupPacket,
         data: Option<&mut [u8]>,
     ) -> Result<TransferResult, &'static str> {
+        if slot as usize >= self.doorbells.len() {
+            return Err("xhci: invalid slot");
+        }
         // Enqueue Setup / Data / Status stage TRBs on EP0's transfer ring so
         // the cycle bit advances exactly as on hardware.
         let setup_bytes = setup.to_bytes();
@@ -469,6 +484,12 @@ impl HostController for XhciController {
         dir: TransferDirection,
         buffer: &mut [u8],
     ) -> Result<TransferResult, &'static str> {
+        if slot as usize >= self.doorbells.len() {
+            return Err("xhci: invalid slot");
+        }
+        if (endpoint & 0x80 != 0) != (dir == TransferDirection::In) {
+            return Err("xhci: endpoint direction mismatch");
+        }
         let mut trb = Trb::new(TrbType::Normal);
         trb.status = buffer.len() as u32;
         let pointer = {
@@ -492,6 +513,12 @@ impl HostController for XhciController {
         endpoint: u8,
         buffer: &mut [u8],
     ) -> Result<TransferResult, &'static str> {
+        if slot as usize >= self.doorbells.len() {
+            return Err("xhci: invalid slot");
+        }
+        if endpoint & 0x80 == 0 {
+            return Err("xhci: interrupt endpoint is not IN");
+        }
         let mut trb = Trb::new(TrbType::Normal);
         trb.status = buffer.len() as u32;
         let pointer = {

@@ -2,9 +2,8 @@
 //!
 //! This ports the load-time half of Linux kexec: syscall argument validation,
 //! segment copying, file-based image capture, and unload semantics. RustOS does
-//! not yet have the architecture handoff code that disables devices, installs
-//! identity mappings, and jumps to the loaded image, so this module deliberately
-//! exposes a staged image but does not execute it.
+//! now has the architecture handoff code that installs identity mappings, copies
+//! staged segments, and jumps to the loaded image when reboot requests kexec.
 
 extern crate alloc;
 
@@ -54,6 +53,18 @@ const MAX_FILE_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_CMDLINE_BYTES: usize = 64 * 1024;
 const KEXEC_STACK_BYTES: usize = 4096;
 const LOW_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
+const X86_BZIMAGE_BOOT_FLAG_OFFSET: usize = 0x1fe;
+const X86_BZIMAGE_HEADER_OFFSET: usize = 0x202;
+const X86_BZIMAGE_VERSION_OFFSET: usize = 0x206;
+const X86_BZIMAGE_SETUP_SECTS_OFFSET: usize = 0x1f1;
+const X86_BZIMAGE_CODE32_START_OFFSET: usize = 0x214;
+const X86_BZIMAGE_INIT_SIZE_OFFSET: usize = 0x260;
+const X86_BZIMAGE_MIN_PROTOCOL: u16 = 0x0200;
+const X86_BZIMAGE_DEFAULT_SETUP_SECTS: usize = 4;
+const X86_BZIMAGE_DEFAULT_CODE32_START: u64 = 0x0010_0000;
+const ELF64_HEADER_SIZE: usize = 64;
+const ELF64_PROGRAM_HEADER_SIZE: usize = 56;
+const ELF_PT_LOAD: u32 = 1;
 
 static STAGED_IMAGE: RwLock<Option<KexecImage>> = RwLock::new(None);
 
@@ -77,6 +88,7 @@ pub enum KexecImageSource {
         entry: u64,
     },
     File {
+        entry: u64,
         cmdline: Vec<u8>,
         initrd: Option<Vec<u8>>,
     },
@@ -168,6 +180,19 @@ fn validate_segment(seg: KexecSegmentUser) -> Result<(), LinuxError> {
     Ok(())
 }
 
+fn validate_loaded_segment(seg: &KexecLoadedSegment) -> Result<(), LinuxError> {
+    if seg.memsz == 0 || seg.data.len() > seg.memsz || seg.memsz > MAX_SEGMENT_BYTES {
+        return Err(LinuxError::EINVAL);
+    }
+    if seg.mem == 0 || seg.mem & 0xfff != 0 || seg.memsz & 0xfff != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    seg.mem
+        .checked_add(seg.memsz as u64)
+        .ok_or(LinuxError::EINVAL)?;
+    Ok(())
+}
+
 fn ranges_overlap(a: &KexecLoadedSegment, b: &KexecLoadedSegment) -> bool {
     let a_end = a.mem.saturating_add(a.memsz as u64);
     let b_end = b.mem.saturating_add(b.memsz as u64);
@@ -195,6 +220,128 @@ fn read_fd_all(fd: i32, max_bytes: usize) -> Result<Vec<u8>, LinuxError> {
         offset += n;
     }
     Ok(out)
+}
+
+fn le_u16(bytes: &[u8], offset: usize) -> Result<u16, LinuxError> {
+    let src = bytes.get(offset..offset + 2).ok_or(LinuxError::ENOEXEC)?;
+    Ok(u16::from_le_bytes([src[0], src[1]]))
+}
+
+fn le_u32(bytes: &[u8], offset: usize) -> Result<u32, LinuxError> {
+    let src = bytes.get(offset..offset + 4).ok_or(LinuxError::ENOEXEC)?;
+    Ok(u32::from_le_bytes([src[0], src[1], src[2], src[3]]))
+}
+
+fn le_u64(bytes: &[u8], offset: usize) -> Result<u64, LinuxError> {
+    let src = bytes.get(offset..offset + 8).ok_or(LinuxError::ENOEXEC)?;
+    Ok(u64::from_le_bytes([
+        src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7],
+    ]))
+}
+
+fn parse_elf64_image(kernel: &[u8]) -> Result<(u64, Vec<KexecLoadedSegment>), LinuxError> {
+    if kernel.len() < ELF64_HEADER_SIZE || kernel.get(0..4) != Some(b"\x7fELF") {
+        return Err(LinuxError::ENOEXEC);
+    }
+    if kernel.get(4) != Some(&2) || kernel.get(5) != Some(&1) {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let entry = le_u64(kernel, 24)?;
+    let phoff = le_u64(kernel, 32)? as usize;
+    let phentsize = le_u16(kernel, 54)? as usize;
+    let phnum = le_u16(kernel, 56)? as usize;
+    if phentsize < ELF64_PROGRAM_HEADER_SIZE || phnum == 0 || phnum > MAX_SEGMENTS {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let mut segments = Vec::new();
+    for idx in 0..phnum {
+        let base = phoff
+            .checked_add(idx.checked_mul(phentsize).ok_or(LinuxError::ENOEXEC)?)
+            .ok_or(LinuxError::ENOEXEC)?;
+        let ph = kernel
+            .get(base..base + phentsize)
+            .ok_or(LinuxError::ENOEXEC)?;
+        if le_u32(ph, 0)? != ELF_PT_LOAD {
+            continue;
+        }
+
+        let offset = le_u64(ph, 8)? as usize;
+        let paddr = le_u64(ph, 24)?;
+        let filesz = le_u64(ph, 32)? as usize;
+        let memsz = le_u64(ph, 40)? as usize;
+        if filesz > memsz || memsz > MAX_SEGMENT_BYTES {
+            return Err(LinuxError::EINVAL);
+        }
+        let memsz = align_up(memsz as u64)? as usize;
+        let data = kernel
+            .get(offset..offset + filesz)
+            .ok_or(LinuxError::ENOEXEC)?
+            .to_vec();
+        let segment = KexecLoadedSegment {
+            mem: paddr,
+            memsz,
+            data,
+        };
+        validate_loaded_segment(&segment)?;
+        if segments.iter().any(|old| ranges_overlap(old, &segment)) {
+            return Err(LinuxError::EINVAL);
+        }
+        segments.push(segment);
+    }
+
+    if segments.is_empty() || !entry_in_segments(entry, &segments) {
+        return Err(LinuxError::ENOEXEC);
+    }
+    Ok((entry, segments))
+}
+
+fn parse_x86_bzimage(kernel: &[u8]) -> Result<(u64, Vec<KexecLoadedSegment>), LinuxError> {
+    if le_u16(kernel, X86_BZIMAGE_BOOT_FLAG_OFFSET)? != 0xaa55
+        || kernel.get(X86_BZIMAGE_HEADER_OFFSET..X86_BZIMAGE_HEADER_OFFSET + 4) != Some(b"HdrS")
+        || le_u16(kernel, X86_BZIMAGE_VERSION_OFFSET)? < X86_BZIMAGE_MIN_PROTOCOL
+    {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let setup_sects = match kernel
+        .get(X86_BZIMAGE_SETUP_SECTS_OFFSET)
+        .copied()
+        .ok_or(LinuxError::ENOEXEC)?
+    {
+        0 => X86_BZIMAGE_DEFAULT_SETUP_SECTS,
+        value => value as usize,
+    };
+    let payload_offset = (setup_sects + 1)
+        .checked_mul(512)
+        .ok_or(LinuxError::ENOEXEC)?;
+    let payload = kernel.get(payload_offset..).ok_or(LinuxError::ENOEXEC)?;
+    if payload.is_empty() {
+        return Err(LinuxError::ENOEXEC);
+    }
+
+    let code32_start = match le_u32(kernel, X86_BZIMAGE_CODE32_START_OFFSET)? as u64 {
+        0 => X86_BZIMAGE_DEFAULT_CODE32_START,
+        value => value,
+    };
+    let init_size = le_u32(kernel, X86_BZIMAGE_INIT_SIZE_OFFSET).unwrap_or(0) as usize;
+    let memsz = align_up(core::cmp::max(payload.len(), init_size) as u64)? as usize;
+    let segment = KexecLoadedSegment {
+        mem: code32_start,
+        memsz,
+        data: payload.to_vec(),
+    };
+    validate_loaded_segment(&segment)?;
+    Ok((code32_start, vec![segment]))
+}
+
+fn parse_file_image(kernel: Vec<u8>) -> Result<(u64, Vec<KexecLoadedSegment>), LinuxError> {
+    match parse_elf64_image(&kernel) {
+        Ok(parsed) => Ok(parsed),
+        Err(LinuxError::ENOEXEC) => parse_x86_bzimage(&kernel),
+        Err(err) => Err(err),
+    }
 }
 
 fn errno(ret: Result<(), LinuxError>) -> i32 {
@@ -304,15 +451,16 @@ fn kexec_file_load_inner(
         None
     };
     let cmdline = copy_user_bytes(cmdline_addr, cmdline_len)?;
+    let (entry, segments) = parse_file_image(kernel)?;
 
     *STAGED_IMAGE.write() = Some(KexecImage {
         flags,
-        source: KexecImageSource::File { cmdline, initrd },
-        segments: vec![KexecLoadedSegment {
-            mem: 0,
-            memsz: kernel.len(),
-            data: kernel,
-        }],
+        source: KexecImageSource::File {
+            entry,
+            cmdline,
+            initrd,
+        },
+        segments,
         loaded_by_pid: process::current_pid(),
     });
     Ok(())
@@ -400,7 +548,7 @@ fn prepare_segment_image(image: &KexecImage) -> Result<PreparedKexec, LinuxError
 
     let entry = match image.source {
         KexecImageSource::Segments { entry } => entry,
-        KexecImageSource::File { .. } => return Err(LinuxError::ENOEXEC),
+        KexecImageSource::File { entry, .. } => entry,
     };
     if !entry_in_segments(entry, &image.segments) {
         return Err(LinuxError::EINVAL);
@@ -536,15 +684,17 @@ pub fn staged_summary() -> Option<String> {
             image.flags
         ),
         KexecImageSource::File {
+            entry,
             ref cmdline,
             ref initrd,
         } => alloc::format!(
-            "file kernel_bytes={} initrd_bytes={} cmdline_bytes={} flags=0x{:x}",
+            "file kernel_bytes={} entry=0x{:x} initrd_bytes={} cmdline_bytes={} flags=0x{:x}",
             image
                 .segments
                 .first()
                 .map(|seg| seg.data.len())
                 .unwrap_or(0),
+            entry,
             initrd.as_ref().map(|data| data.len()).unwrap_or(0),
             cmdline.len(),
             image.flags

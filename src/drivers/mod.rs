@@ -651,8 +651,26 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("backlight: init failed: {}", e);
     }
 
-    if let Err(e) = input::init() {
-        crate::serial_println!("input: init failed: {}", e);
+    let input_hardware_ready = ps2_controller::get_device_info()
+        .map(|(port1_available, port1_device, port2_available, port2_device)| {
+            (port1_available && port1_device == ps2_controller::Ps2DeviceType::Keyboard)
+                || (port2_available
+                    && matches!(
+                        port2_device,
+                        ps2_controller::Ps2DeviceType::StandardMouse
+                            | ps2_controller::Ps2DeviceType::MouseWithScrollWheel
+                            | ps2_controller::Ps2DeviceType::Mouse5Button
+                    ))
+        })
+        .unwrap_or(false);
+
+    if input_hardware_ready {
+        if let Err(e) = input::init() {
+            crate::serial_println!("input: init failed: {}", e);
+        }
+        input::evdev::init_evdev_devices();
+    } else {
+        crate::serial_println!("input: no initialized hardware; skipping generic device registration");
     }
 
     if let Err(e) = char::init() {
