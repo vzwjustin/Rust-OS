@@ -375,10 +375,46 @@ pub fn futex_wait_requeue_pi(
         return -14; // EFAULT
     }
 
-    // Block on uaddr (identical to FUTEX_WAIT)
-    let ret = futex_wait(uaddr, val, FUTEX_BITSET_MATCH_ANY, timeout);
-    if ret != 0 {
-        return ret; // -EAGAIN, -ETIMEDOUT, etc.
+    // Block on uaddr — inlined from FUTEX_WAIT but WITHOUT the post-wakeup
+    // *uaddr == val check. futex_cmp_requeue_pi intentionally changes *uaddr
+    // before waking us; the check in the regular futex_wait path would fire
+    // and return -EAGAIN, preventing us from ever reaching the PI-futex CAS.
+    {
+        let current = unsafe { core::ptr::read_volatile(uaddr) };
+        if current != val {
+            return -11; // EAGAIN
+        }
+
+        let key1 = uaddr as usize;
+        let hash1_w = futex_hash(key1);
+        let our_pid_w = crate::process::current_pid();
+        let our_tid_w = crate::process::thread::get_thread_manager().current_thread();
+
+        {
+            let bucket = &FUTEX_BUCKETS[hash1_w];
+            let mut b = bucket.lock();
+            b.waiters.push((key1, FutexWaiter {
+                pid: our_pid_w,
+                tid: our_tid_w,
+                bitset: FUTEX_BITSET_MATCH_ANY,
+            }));
+        }
+
+        if let Some(to) = timeout {
+            if to.expired() {
+                let bucket = &FUTEX_BUCKETS[hash1_w];
+                let mut b = bucket.lock();
+                b.waiters.retain(|(k, w)| {
+                    !(*k == key1 && w.pid == our_pid_w && w.tid == our_tid_w)
+                });
+                return -110; // ETIMEDOUT
+            }
+        }
+
+        let pm = crate::process::get_process_manager();
+        let _ = pm.block_process(our_pid_w);
+        // After wakeup: do NOT re-check *uaddr. The condvar value was changed
+        // intentionally by CMP_REQUEUE_PI — fall through to the PI-futex CAS.
     }
 
     // Woken. Now try to acquire the PI futex at uaddr2.
@@ -483,10 +519,21 @@ pub fn futex_cmp_requeue_pi(
 
     // Requeue up to `val2` more waiters from uaddr to uaddr2 (PI)
     if val2 > 0 && hash1 != hash2 {
-        let bucket1 = &FUTEX_BUCKETS[hash1];
-        let bucket2 = &FUTEX_BUCKETS[hash2];
-        let mut b1 = bucket1.lock();
-        let mut b2 = bucket2.lock();
+        // Acquire bucket locks in index order to prevent ABBA deadlock when a
+        // concurrent cmp_requeue_pi maps to the same two buckets in reverse.
+        let (lo_idx, hi_idx) = if hash1 < hash2 {
+            (hash1, hash2)
+        } else {
+            (hash2, hash1)
+        };
+        let mut guard_lo = FUTEX_BUCKETS[lo_idx].lock();
+        let mut guard_hi = FUTEX_BUCKETS[hi_idx].lock();
+        // Rebind to the original b1/b2 names the rest of the block expects.
+        let (b1, b2): (&mut FutexBucket, &mut FutexBucket) = if hash1 < hash2 {
+            (&mut *guard_lo, &mut *guard_hi)
+        } else {
+            (&mut *guard_hi, &mut *guard_lo)
+        };
         let mut to_requeue = alloc::vec![];
         for (i, (k, _)) in b1.waiters.iter().enumerate() {
             if *k == key1 {
