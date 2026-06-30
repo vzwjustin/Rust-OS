@@ -6,31 +6,39 @@ the PR history; this file lists what remains.
 
 ## QUIC (`src/net/quic/`)
 
-Mirrors the in-kernel Linux QUIC module (github.com/lxin/quic). Foundation and
-endpoint demux are done; the data path is not yet wired.
+Mirrors the in-kernel Linux QUIC module (github.com/lxin/quic).
 
-- [ ] **AEAD packet protection (RFC 9001)** — blocked on crypto primitives.
-      `crypto/aes.rs` has only block + CBC today; QUIC needs:
-  - [ ] AES-CTR (straightforward on top of `encrypt_block`) for header
-        protection.
-  - [ ] AES-128-GCM (needs a GHASH / carryless-multiply implementation) for
-        packet payload AEAD.
-  - [ ] (optional) ChaCha20-Poly1305 as the alternate cipher suite.
-- [ ] **UDP socket glue** — register the QUIC family in `net/socket.rs` and call
-      `quic::endpoint::QuicEndpoint::route()` from the UDP receive path so
-      inbound datagrams reach connections.
-- [ ] **Receive path** — once AEAD lands: remove header/packet protection,
-      decode the packet number against the PN space, walk frames, and apply
-      them to the matched `Connection` (CRYPTO → handshake, STREAM → streams,
-      ACK → loss recovery, etc.).
+Done (each validated against RFC test vectors where applicable):
+- [x] **Crypto primitives** — AES-CTR, AES-128/256-GCM (constant-time GHASH),
+      HMAC-SHA256, HKDF + HKDF-Expand-Label (`crypto/gcm.rs`, `crypto/hkdf.rs`;
+      NIST/McGrew + RFC 4231/5869 vectors).
+- [x] **Key derivation** (`keys.rs`) — Initial keys from DCID + v1 salt and
+      "quic key/iv/hp" from a traffic secret (RFC 9001 A.1 vectors).
+- [x] **Packet protection** (`protection.rs`) — AEAD seal/open (nonce = IV XOR
+      PN, header as AAD) + header-protection mask (RFC 9001 A.2 vector).
+- [x] **Packet I/O** (`io.rs`) — build/open protected short-header packets and
+      apply received frames (round-trip + tamper tests).
+- [x] **UDP glue** (`udp.rs`) — QUIC port registry; UDP receive routes by DCID
+      to an endpoint, unprotects, and applies frames for 1-RTT connections.
+
+Remaining:
+- [ ] **Initial/handshake long-header processing** — token/length parsing, then
+      open + CRYPTO-frame reassembly to drive the handshake (the open/protect
+      rules are the same as 1-RTT; only the header layout differs).
 - [ ] **Send path** — packetize stream/crypto data under congestion control,
-      assign packet numbers, protect, and emit.
-- [ ] **ACK generation + loss recovery scheduling** — wire `pnspace`, `timer`
-      (PTO), and `cong` together into a real send/ack/retransmit loop.
-- [ ] **Userspace handshake hand-off** — interface to receive negotiated TLS 1.3
-      traffic secrets per encryption level (handshake is offloaded, as upstream).
+      assign packet numbers, protect, and emit (the `io::build_short_packet`
+      primitive exists; it needs a scheduler).
+- [ ] **ACK generation + loss recovery** — wire `pnspace`, `timer` (PTO), and
+      `cong` into a real send/ack/retransmit loop (frames already report
+      ack-eliciting via `io::FrameOutcome`).
+- [ ] **Userspace handshake hand-off** — API to install negotiated TLS 1.3
+      traffic secrets per level into `crypto::CryptoState` / derive
+      `PacketKeys` (handshake is offloaded, as upstream).
+- [ ] **Stream reassembly** — out-of-order STREAM data buffering (in-order
+      delivery is wired today).
 - [ ] **Connection ID management** — issue/retire NEW_CONNECTION_ID, stateless
       reset tokens.
+- [ ] (optional) **ChaCha20-Poly1305** as the alternate cipher suite.
 
 ## Audit follow-ups (deferred, not safety bugs)
 
