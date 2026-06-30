@@ -11,6 +11,7 @@ pub mod blk;
 pub mod console;
 pub mod net;
 pub mod rng;
+pub mod software;
 
 use crate::pci::{list_devices, PciDevice};
 use alloc::vec::Vec;
@@ -657,12 +658,33 @@ pub fn scan_virtio_devices() -> Vec<VirtioTransport> {
     transports
 }
 
+/// Run the software/loopback virtio datapath self-tests and log a summary.
+/// These exercise the split-virtqueue `add_buf`/`get_buf` path, the feature
+/// negotiation handshake, and the virtio-net/virtio-blk device logic without
+/// any real hardware.
+fn init_software_samples() {
+    let blk = software::selftest_blk();
+    let net = software::selftest_net();
+    match (blk, net) {
+        (Ok(bf), Ok(nf)) => crate::serial_println!(
+            "virtio: software loopback ready (blk feat=0x{:X} ok, net feat=0x{:X} ok)",
+            bf,
+            nf
+        ),
+        (b, n) => crate::serial_println!("virtio: software loopback blk={:?} net={:?}", b, n),
+    }
+}
+
 /// Initialize all VirtIO devices found on the PCI bus
 pub fn init() -> Result<(), &'static str> {
+    // Always bring up the transport-agnostic software/loopback datapath so the
+    // virtqueue stack is exercised even on machines with no virtio hardware.
+    init_software_samples();
+
     let transports = scan_virtio_devices();
 
     if transports.is_empty() {
-        crate::serial_println!("virtio: no devices found");
+        crate::serial_println!("virtio: no PCI devices found (software datapath active)");
         return Ok(());
     }
 
