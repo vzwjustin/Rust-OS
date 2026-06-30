@@ -55,6 +55,14 @@ fn linux_result_i32(result: crate::linux_compat::LinuxResult<i32>) -> SyscallRes
     }
 }
 
+/// Same as `linux_result_i32` but for isize-returning linux_compat functions.
+fn linux_result_isize(result: crate::linux_compat::LinuxResult<isize>) -> SyscallResult {
+    match result {
+        Ok(v) => SyscallResult::Success(v as u64),
+        Err(e) => SyscallResult::Success((-(e as i32) as i64) as u64),
+    }
+}
+
 /// File open flags
 #[derive(Debug, Clone, Copy)]
 pub struct OpenFlags {
@@ -104,6 +112,22 @@ impl SyscallDispatcher {
         process_manager: &ProcessManager,
     ) -> Result<u64, &'static str> {
         self.total_syscalls += 1;
+
+        // ── Seccomp enforcement ─────────────────────────────────────────────
+        // Check the current process's seccomp filter before dispatching.
+        // SECCOMP_RET_KILL → process was already terminated; return SIGSYS errno.
+        // SECCOMP_RET_TRAP / SECCOMP_RET_ERRNO → return the error value.
+        // SECCOMP_RET_ALLOW / no filter → proceed normally.
+        {
+            let mut args6 = [0u64; 6];
+            for (i, &v) in args.iter().enumerate().take(6) {
+                args6[i] = v;
+            }
+            if let Err(errno) = crate::seccomp::check_syscall(syscall_number as i32, &args6) {
+                // errno is already negative (e.g. -31 for SIGSYS); return as u64.
+                return Ok(errno as i64 as u64);
+            }
+        }
 
         let syscall = SyscallNumber::from(syscall_number);
 
@@ -173,6 +197,130 @@ impl SyscallDispatcher {
             SyscallNumber::PkgList => self.sys_pkg_list(args),
             SyscallNumber::PkgUpdate => self.sys_pkg_update(args),
             SyscallNumber::PkgUpgrade => self.sys_pkg_upgrade(args),
+            // ── Additional syscalls wired to linux_compat or simple stubs ──
+            SyscallNumber::SchedYield => SyscallResult::Success(0),
+            SyscallNumber::Getuid => self.sys_getuid(process_manager, current_pid),
+            SyscallNumber::Getgid => self.sys_getgid(process_manager, current_pid),
+            SyscallNumber::Geteuid => self.sys_getuid(process_manager, current_pid),
+            SyscallNumber::Getegid => self.sys_getgid(process_manager, current_pid),
+            SyscallNumber::Setuid => self.sys_setuid(args, process_manager, current_pid),
+            SyscallNumber::Setgid => self.sys_setgid(args, process_manager, current_pid),
+            SyscallNumber::Gettid => self.sys_gettid(process_manager, current_pid),
+            SyscallNumber::RtSigprocmask => {
+                linux_result_i32(crate::linux_compat::signal_ops::rt_sigprocmask(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as *const u64,
+                    args.get(2).copied().unwrap_or(0) as *mut u64,
+                    args.get(3).copied().unwrap_or(8) as usize,
+                ))
+            }
+            SyscallNumber::Tkill => {
+                let tid = args.first().copied().unwrap_or(0) as Pid;
+                let sig = args.get(1).copied().unwrap_or(0);
+                self.sys_kill(&[tid as u64, sig], process_manager, current_pid)
+            }
+            SyscallNumber::Tgkill => {
+                // tgkill(tgid, tid, sig) — we treat tid as the PID
+                let tid = args.get(1).copied().unwrap_or(0) as Pid;
+                let sig = args.get(2).copied().unwrap_or(0);
+                self.sys_kill(&[tid as u64, sig], process_manager, current_pid)
+            }
+            SyscallNumber::Dup => {
+                linux_result_i32(crate::linux_compat::file_ops::dup(
+                    args.first().copied().unwrap_or(0) as i32,
+                ))
+            }
+            SyscallNumber::Dup2 => {
+                linux_result_i32(crate::linux_compat::file_ops::dup2(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as i32,
+                ))
+            }
+            SyscallNumber::Sendto => {
+                linux_result_isize(crate::linux_compat::socket_ops::sendto(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as *const u8,
+                    args.get(2).copied().unwrap_or(0) as usize,
+                    args.get(3).copied().unwrap_or(0) as i32,
+                    args.get(4).copied().unwrap_or(0) as *const crate::linux_compat::SockAddr,
+                    args.get(5).copied().unwrap_or(0) as u32,
+                ))
+            }
+            SyscallNumber::Recvfrom => {
+                linux_result_isize(crate::linux_compat::socket_ops::recvfrom(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as *mut u8,
+                    args.get(2).copied().unwrap_or(0) as usize,
+                    args.get(3).copied().unwrap_or(0) as i32,
+                    args.get(4).copied().unwrap_or(0) as *mut crate::linux_compat::SockAddr,
+                    args.get(5).copied().unwrap_or(0) as *mut u32,
+                ))
+            }
+            SyscallNumber::Shutdown => {
+                linux_result_i32(crate::linux_compat::socket_ops::shutdown(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as i32,
+                ))
+            }
+            SyscallNumber::SetSockopt => {
+                linux_result_i32(crate::linux_compat::socket_ops::setsockopt(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as i32,
+                    args.get(2).copied().unwrap_or(0) as i32,
+                    args.get(3).copied().unwrap_or(0) as *const u8,
+                    args.get(4).copied().unwrap_or(0) as u32,
+                ))
+            }
+            SyscallNumber::GetSockopt => {
+                linux_result_i32(crate::linux_compat::socket_ops::getsockopt(
+                    args.first().copied().unwrap_or(0) as i32,
+                    args.get(1).copied().unwrap_or(0) as i32,
+                    args.get(2).copied().unwrap_or(0) as i32,
+                    args.get(3).copied().unwrap_or(0) as *mut u8,
+                    args.get(4).copied().unwrap_or(0) as *mut u32,
+                ))
+            }
+            SyscallNumber::Unlink => {
+                linux_result_i32(crate::linux_compat::file_ops::unlinkat(
+                    -100, // AT_FDCWD
+                    args.first().copied().unwrap_or(0) as *const u8,
+                    0,
+                ))
+            }
+            SyscallNumber::Mkdir => {
+                linux_result_i32(crate::linux_compat::file_ops::mkdirat(
+                    -100, // AT_FDCWD
+                    args.first().copied().unwrap_or(0) as *const u8,
+                    args.get(1).copied().unwrap_or(0o755) as u32,
+                ))
+            }
+            SyscallNumber::Rmdir => {
+                linux_result_i32(crate::linux_compat::file_ops::unlinkat(
+                    -100,                                              // AT_FDCWD
+                    args.first().copied().unwrap_or(0) as *const u8,
+                    0x200,                                             // AT_REMOVEDIR
+                ))
+            }
+            SyscallNumber::Chmod => {
+                linux_result_i32(crate::linux_compat::file_ops::fchmodat(
+                    -100, // AT_FDCWD
+                    args.first().copied().unwrap_or(0) as *const u8,
+                    args.get(1).copied().unwrap_or(0) as u32,
+                    0,
+                ))
+            }
+            SyscallNumber::Seccomp => {
+                let ret = crate::seccomp::seccomp_set_mode(
+                    args.first().copied().unwrap_or(0) as u32,
+                    args.get(1).copied().unwrap_or(0) as u32,
+                    args.get(2).copied().unwrap_or(0) as *const u8,
+                );
+                if ret == 0 {
+                    SyscallResult::Success(0)
+                } else {
+                    SyscallResult::Success((ret as i64) as u64)
+                }
+            }
             SyscallNumber::Invalid => SyscallResult::Error(SyscallError::InvalidSyscall),
             _ => match crate::linux_integration::route_syscall(syscall_number, args) {
                 Ok(value) => SyscallResult::Success(value),
@@ -1832,6 +1980,72 @@ impl SyscallDispatcher {
         ) {
             Ok(val) => SyscallResult::Success(val as u64),
             Err(_) => SyscallResult::Error(SyscallError::PermissionDenied),
+        }
+    }
+
+    /// sys_getuid - Get real user ID
+    fn sys_getuid(&self, process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+        match process_manager.get_process(current_pid) {
+            Some(pcb) => SyscallResult::Success(pcb.uid as u64),
+            None => SyscallResult::Success(0),
+        }
+    }
+
+    /// sys_getgid - Get real group ID
+    fn sys_getgid(&self, process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+        match process_manager.get_process(current_pid) {
+            Some(pcb) => SyscallResult::Success(pcb.gid as u64),
+            None => SyscallResult::Success(0),
+        }
+    }
+
+    /// sys_setuid - Set real user ID (requires privilege)
+    fn sys_setuid(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
+        let new_uid = args.first().copied().unwrap_or(0) as u32;
+        let allowed = process_manager
+            .get_process(current_pid)
+            .map(|p| p.uid == 0 || p.uid == new_uid)
+            .unwrap_or(false);
+        if !allowed {
+            return SyscallResult::Success((-1i64) as u64); // EPERM
+        }
+        let _ = process_manager.with_process_mut(current_pid, |p| {
+            p.uid = new_uid;
+        });
+        SyscallResult::Success(0)
+    }
+
+    /// sys_setgid - Set real group ID (requires privilege)
+    fn sys_setgid(
+        &self,
+        args: &[u64],
+        process_manager: &ProcessManager,
+        current_pid: Pid,
+    ) -> SyscallResult {
+        let new_gid = args.first().copied().unwrap_or(0) as u32;
+        let allowed = process_manager
+            .get_process(current_pid)
+            .map(|p| p.uid == 0 || p.gid == new_gid)
+            .unwrap_or(false);
+        if !allowed {
+            return SyscallResult::Success((-1i64) as u64); // EPERM
+        }
+        let _ = process_manager.with_process_mut(current_pid, |p| {
+            p.gid = new_gid;
+        });
+        SyscallResult::Success(0)
+    }
+
+    /// sys_gettid - Get thread ID (same as PID in our single-threaded model)
+    fn sys_gettid(&self, process_manager: &ProcessManager, current_pid: Pid) -> SyscallResult {
+        match process_manager.get_process(current_pid) {
+            Some(_) => SyscallResult::Success(current_pid as u64),
+            None => SyscallResult::Error(SyscallError::ProcessNotFound),
         }
     }
 
