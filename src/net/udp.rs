@@ -851,6 +851,16 @@ pub fn process_packet(
         }
     }
 
+    // QUIC runs over UDP: once the datagram passes UDP checksum validation, if a
+    // QUIC endpoint is bound to this port, hand it off before the generic
+    // socket-delivery path. (After the checksum so QUIC doesn't bypass the
+    // stack's integrity enforcement; QUIC AEAD does not cover the UDP header.)
+    if super::quic::udp::is_bound(header.dest_port)
+        && super::quic::udp::deliver(header.dest_port, src_ip, header.source_port, payload)
+    {
+        return Ok(());
+    }
+
     // Find receiving sockets
     let receivers = UDP_MANAGER.find_receiving_sockets(&dst_ip, header.dest_port);
 

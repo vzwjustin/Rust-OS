@@ -24,6 +24,29 @@ pub struct PnSpace {
     /// Largest packet number received from the peer (drives PN decoding and
     /// ACK generation).
     pub largest_received: Option<u64>,
+    /// Received packet numbers as inclusive `(low, high)` ranges sorted in
+    /// descending order (the order an ACK frame lists them, RFC 9000 §19.3).
+    pub received: Vec<(u64, u64)>,
+    /// Set when an ack-eliciting packet has arrived since the last ACK we sent.
+    pub ack_pending: bool,
+    /// In-flight sent packets awaiting acknowledgement, keyed by packet number
+    /// (RFC 9002 loss recovery).
+    pub sent: BTreeMap<u64, SentInfo>,
+}
+
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+
+/// Bookkeeping for one sent packet, used by loss recovery (RFC 9002 §A.1).
+#[derive(Debug, Clone)]
+pub struct SentInfo {
+    /// Time the packet was sent (ms).
+    pub time_sent: u64,
+    /// Whether the packet is ack-eliciting (and so counts toward in-flight
+    /// bytes / RTT sampling).
+    pub ack_eliciting: bool,
+    /// Encoded packet size in bytes.
+    pub size: u64,
 }
 
 impl PnSpace {
@@ -38,12 +61,74 @@ impl PnSpace {
         pn
     }
 
-    /// Record receipt of `pn`, advancing `largest_received`.
+    /// Record receipt of `pn`: advance `largest_received` and fold it into the
+    /// descending range set, coalescing adjacent ranges.
     pub fn on_received(&mut self, pn: u64) {
         self.largest_received = Some(match self.largest_received {
             Some(cur) => cur.max(pn),
             None => pn,
         });
+        self.insert_received(pn);
+    }
+
+    fn insert_received(&mut self, pn: u64) {
+        // Extend an existing range if pn is adjacent or inside it.
+        for r in self.received.iter_mut() {
+            if pn >= r.0 && pn <= r.1 {
+                return; // duplicate
+            }
+            if pn + 1 == r.0 {
+                r.0 = pn;
+                self.normalize();
+                return;
+            }
+            if r.1 + 1 == pn {
+                r.1 = pn;
+                self.normalize();
+                return;
+            }
+        }
+        self.received.push((pn, pn));
+        self.normalize();
+    }
+
+    /// Keep `received` sorted descending by high bound and merge any ranges
+    /// that became adjacent/overlapping.
+    fn normalize(&mut self) {
+        self.received.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.received.len());
+        for &(lo, hi) in self.received.iter() {
+            if let Some(last) = merged.last_mut() {
+                // Descending: `last` has the higher range; merge if it touches.
+                if lo <= last.1 + 1 && hi + 1 >= last.0 {
+                    last.0 = last.0.min(lo);
+                    last.1 = last.1.max(hi);
+                    continue;
+                }
+            }
+            merged.push((lo, hi));
+        }
+        self.received = merged;
+    }
+
+    /// Build the fields of an ACK frame from the received ranges:
+    /// `(largest, first_range, [(gap, ack_range_len)])` (RFC 9000 §19.3).
+    /// Returns `None` if nothing has been received yet.
+    pub fn ack_fields(&self) -> Option<(u64, u64, Vec<(u64, u64)>)> {
+        let first = self.received.first()?;
+        let largest = first.1;
+        let first_range = first.1 - first.0;
+        let mut ranges = Vec::new();
+        let mut prev_low = first.0;
+        for &(lo, hi) in self.received.iter().skip(1) {
+            // Gap = number of unacknowledged packets between this range and the
+            // previous (lower-numbered side), encoded as count-1.
+            let gap = prev_low - hi - 2;
+            let len = hi - lo;
+            ranges.push((gap, len));
+            prev_low = lo;
+        }
+        Some((largest, first_range, ranges))
     }
 }
 

@@ -6,8 +6,9 @@
 //! stream table, and drives the connection state machine.
 
 use super::cong::Cong;
-use super::connid::ConnectionId;
+use super::connid::{CidManager, ConnectionId};
 use super::crypto::{CryptoState, EncryptionLevel};
+use super::keys::{derive_packet_keys, initial_keys};
 use super::path::Path;
 use super::pnspace::{PnSpace, PnSpaceKind};
 use super::stream::Stream;
@@ -64,6 +65,9 @@ pub struct Connection {
     pub streams: BTreeMap<u64, Stream>,
     /// Per-stream initial flow-control limit advertised to the peer.
     pub initial_max_stream_data: u64,
+
+    /// Connection ID set management (issued + peer-advertised CIDs).
+    pub cids: CidManager,
 }
 
 impl Connection {
@@ -93,6 +97,7 @@ impl Connection {
             data_recv: 0,
             streams: BTreeMap::new(),
             initial_max_stream_data: 256 * 1024,
+            cids: CidManager::new(),
         }
     }
 
@@ -120,6 +125,33 @@ impl Connection {
         self.streams
             .entry(stream_id)
             .or_insert_with(|| Stream::new(stream_id, limit))
+    }
+
+    /// Derive and install the Initial-level keys from the client's Destination
+    /// Connection ID (RFC 9001 §5.2). The transmit/receive assignment follows
+    /// this endpoint's role: a server sends with the server-initial keys and
+    /// receives with the client-initial keys, and vice versa.
+    pub fn install_initial_keys(&mut self, client_dcid: &[u8]) {
+        let (client, server) = initial_keys(client_dcid);
+        let (tx, rx) = match self.role {
+            Role::Client => (client, server),
+            Role::Server => (server, client),
+        };
+        self.crypto.tx_initial.install(tx.key, tx.iv, tx.hp);
+        self.crypto.rx_initial.install(rx.key, rx.iv, rx.hp);
+    }
+
+    /// Install a traffic secret for an encryption level and direction (handed
+    /// up by the userspace TLS handshake), deriving the AEAD key / IV /
+    /// header-protection key (RFC 9001 §5.1).
+    pub fn install_secret(&mut self, level: EncryptionLevel, transmit: bool, secret: &[u8]) {
+        let derived = derive_packet_keys(secret);
+        let km = if transmit {
+            self.crypto.tx(level)
+        } else {
+            self.crypto.rx(level)
+        };
+        km.install(derived.key, derived.iv, derived.hp);
     }
 
     /// Mark the handshake complete and transition to 1-RTT data flow.

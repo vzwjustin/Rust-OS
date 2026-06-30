@@ -84,6 +84,13 @@ pub enum Frame<'a> {
         reason: &'a [u8],
         application: bool,
     },
+    NewConnectionId {
+        seq: u64,
+        retire_prior_to: u64,
+        cid: &'a [u8],
+        reset_token: [u8; 16],
+    },
+    RetireConnectionId(u64),
     HandshakeDone,
 }
 
@@ -256,6 +263,42 @@ pub fn parse_frame(buf: &[u8]) -> Option<(Frame<'_>, usize)> {
                 end,
             ))
         }
+        frame_type::NEW_CONNECTION_ID => {
+            let (seq, n) = decode_varint(&buf[off..])?;
+            off += n;
+            let (retire_prior_to, n) = decode_varint(&buf[off..])?;
+            off += n;
+            let len = *buf.get(off)? as usize;
+            off += 1;
+            if len == 0 || len > 20 {
+                return None;
+            }
+            let cid_end = off.checked_add(len)?;
+            if cid_end > buf.len() {
+                return None;
+            }
+            let cid = &buf[off..cid_end];
+            off = cid_end;
+            if off + 16 > buf.len() {
+                return None;
+            }
+            let mut reset_token = [0u8; 16];
+            reset_token.copy_from_slice(&buf[off..off + 16]);
+            off += 16;
+            Some((
+                Frame::NewConnectionId {
+                    seq,
+                    retire_prior_to,
+                    cid,
+                    reset_token,
+                },
+                off,
+            ))
+        }
+        frame_type::RETIRE_CONNECTION_ID => {
+            let (seq, n) = decode_varint(&buf[off..])?;
+            Some((Frame::RetireConnectionId(seq), off + n))
+        }
         frame_type::HANDSHAKE_DONE => Some((Frame::HandshakeDone, off)),
         _ => None, // Unknown/unsupported frame type.
     }
@@ -303,6 +346,104 @@ pub fn encode_stream(
     Some(off + data.len())
 }
 
+/// Encode a single-byte PING frame.
+pub fn encode_ping(buf: &mut [u8]) -> Option<usize> {
+    encode_varint(frame_type::PING, buf)
+}
+
+/// Encode a HANDSHAKE_DONE frame (server → client, 1-RTT).
+pub fn encode_handshake_done(buf: &mut [u8]) -> Option<usize> {
+    encode_varint(frame_type::HANDSHAKE_DONE, buf)
+}
+
+/// Encode a MAX_DATA frame advertising the connection-level flow-control limit.
+pub fn encode_max_data(max: u64, buf: &mut [u8]) -> Option<usize> {
+    let mut off = encode_varint(frame_type::MAX_DATA, buf)?;
+    off += encode_varint(max, &mut buf[off..])?;
+    Some(off)
+}
+
+/// Encode an ACK frame (RFC 9000 §19.3). `ranges` are the `(gap, ack_range_len)`
+/// pairs after the first range, in descending packet-number order.
+pub fn encode_ack(
+    largest: u64,
+    ack_delay: u64,
+    first_range: u64,
+    ranges: &[(u64, u64)],
+    buf: &mut [u8],
+) -> Option<usize> {
+    let mut off = encode_varint(frame_type::ACK, buf)?;
+    off += encode_varint(largest, &mut buf[off..])?;
+    off += encode_varint(ack_delay, &mut buf[off..])?;
+    off += encode_varint(ranges.len() as u64, &mut buf[off..])?;
+    off += encode_varint(first_range, &mut buf[off..])?;
+    for &(gap, len) in ranges {
+        off += encode_varint(gap, &mut buf[off..])?;
+        off += encode_varint(len, &mut buf[off..])?;
+    }
+    Some(off)
+}
+
+/// Encode a NEW_CONNECTION_ID frame (RFC 9000 §19.15).
+pub fn encode_new_connection_id(
+    seq: u64,
+    retire_prior_to: u64,
+    cid: &[u8],
+    reset_token: &[u8; 16],
+    buf: &mut [u8],
+) -> Option<usize> {
+    if cid.is_empty() || cid.len() > 20 {
+        return None;
+    }
+    let mut off = encode_varint(frame_type::NEW_CONNECTION_ID, buf)?;
+    off += encode_varint(seq, &mut buf[off..])?;
+    off += encode_varint(retire_prior_to, &mut buf[off..])?;
+    if buf.len() < off + 1 + cid.len() + 16 {
+        return None;
+    }
+    buf[off] = cid.len() as u8;
+    off += 1;
+    buf[off..off + cid.len()].copy_from_slice(cid);
+    off += cid.len();
+    buf[off..off + 16].copy_from_slice(reset_token);
+    Some(off + 16)
+}
+
+/// Encode a RETIRE_CONNECTION_ID frame (RFC 9000 §19.16).
+pub fn encode_retire_connection_id(seq: u64, buf: &mut [u8]) -> Option<usize> {
+    let mut off = encode_varint(frame_type::RETIRE_CONNECTION_ID, buf)?;
+    off += encode_varint(seq, &mut buf[off..])?;
+    Some(off)
+}
+
+/// Encode a CONNECTION_CLOSE frame. `application` selects the 0x1d (application)
+/// vs 0x1c (transport) type; `frame_type_field` is ignored for the
+/// application variant.
+pub fn encode_connection_close(
+    error_code: u64,
+    frame_type_field: u64,
+    reason: &[u8],
+    application: bool,
+    buf: &mut [u8],
+) -> Option<usize> {
+    let ty = if application {
+        frame_type::CONNECTION_CLOSE_APP
+    } else {
+        frame_type::CONNECTION_CLOSE
+    };
+    let mut off = encode_varint(ty, buf)?;
+    off += encode_varint(error_code, &mut buf[off..])?;
+    if !application {
+        off += encode_varint(frame_type_field, &mut buf[off..])?;
+    }
+    off += encode_varint(reason.len() as u64, &mut buf[off..])?;
+    if buf.len() < off + reason.len() {
+        return None;
+    }
+    buf[off..off + reason.len()].copy_from_slice(reason);
+    Some(off + reason.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +473,29 @@ mod tests {
                 assert_eq!(data, b"hello");
             }
             _ => panic!("expected stream frame"),
+        }
+    }
+
+    #[test]
+    fn ack_frame_roundtrip() {
+        let mut buf = [0u8; 32];
+        // Largest 100, first range covers 100..=98, then one more range.
+        let n = encode_ack(100, 3, 2, &[(1, 4)], &mut buf).unwrap();
+        let (f, consumed) = parse_frame(&buf[..n]).unwrap();
+        assert_eq!(consumed, n);
+        match f {
+            Frame::Ack {
+                largest,
+                delay,
+                first_range,
+                ranges,
+            } => {
+                assert_eq!(largest, 100);
+                assert_eq!(delay, 3);
+                assert_eq!(first_range, 2);
+                assert_eq!(ranges, alloc::vec![(1u64, 4u64)]);
+            }
+            _ => panic!("expected ack frame"),
         }
     }
 

@@ -6,31 +6,61 @@ the PR history; this file lists what remains.
 
 ## QUIC (`src/net/quic/`)
 
-Mirrors the in-kernel Linux QUIC module (github.com/lxin/quic). Foundation and
-endpoint demux are done; the data path is not yet wired.
+Mirrors the in-kernel Linux QUIC module (github.com/lxin/quic).
 
-- [ ] **AEAD packet protection (RFC 9001)** — blocked on crypto primitives.
-      `crypto/aes.rs` has only block + CBC today; QUIC needs:
-  - [ ] AES-CTR (straightforward on top of `encrypt_block`) for header
-        protection.
-  - [ ] AES-128-GCM (needs a GHASH / carryless-multiply implementation) for
-        packet payload AEAD.
-  - [ ] (optional) ChaCha20-Poly1305 as the alternate cipher suite.
-- [ ] **UDP socket glue** — register the QUIC family in `net/socket.rs` and call
-      `quic::endpoint::QuicEndpoint::route()` from the UDP receive path so
-      inbound datagrams reach connections.
-- [ ] **Receive path** — once AEAD lands: remove header/packet protection,
-      decode the packet number against the PN space, walk frames, and apply
-      them to the matched `Connection` (CRYPTO → handshake, STREAM → streams,
-      ACK → loss recovery, etc.).
-- [ ] **Send path** — packetize stream/crypto data under congestion control,
-      assign packet numbers, protect, and emit.
-- [ ] **ACK generation + loss recovery scheduling** — wire `pnspace`, `timer`
-      (PTO), and `cong` together into a real send/ack/retransmit loop.
-- [ ] **Userspace handshake hand-off** — interface to receive negotiated TLS 1.3
-      traffic secrets per encryption level (handshake is offloaded, as upstream).
-- [ ] **Connection ID management** — issue/retire NEW_CONNECTION_ID, stateless
-      reset tokens.
+Done (each validated against RFC test vectors where applicable):
+- [x] **Crypto primitives** — AES-CTR, AES-128/256-GCM (constant-time GHASH),
+      HMAC-SHA256, HKDF + HKDF-Expand-Label (`crypto/gcm.rs`, `crypto/hkdf.rs`;
+      NIST/McGrew + RFC 4231/5869 vectors).
+- [x] **Key derivation** (`keys.rs`) — Initial keys from DCID + v1 salt and
+      "quic key/iv/hp" from a traffic secret (RFC 9001 A.1 vectors).
+- [x] **Packet protection** (`protection.rs`) — AEAD seal/open (nonce = IV XOR
+      PN, header as AAD) + header-protection mask (RFC 9001 A.2 vector).
+- [x] **Packet I/O** (`io.rs`) — build/open protected short-header packets and
+      apply received frames (round-trip + tamper tests).
+- [x] **UDP glue** (`udp.rs`) — QUIC port registry; UDP receive (post-checksum)
+      routes by DCID to an endpoint, unprotects, and applies frames for 1-RTT
+      connections, and accepts new server-side Initials (derive keys, decrypt,
+      buffer CRYPTO).
+- [x] **Long-header I/O** (`io.rs`) — build/open Initial & Handshake packets
+      (token/length parsing, Length-bounded AEAD; RFC 9001 A.1 validated).
+- [x] **Send path + ACK** (`send.rs`, `pnspace.rs`) — coalesced received-range
+      tracking → ACK frames; packetize ACK + STREAM data under the congestion
+      window into protected packets.
+- [x] **Handshake secret install** (`connection.rs`) — `install_initial_keys`
+      from the DCID and `install_secret` for per-level traffic secrets.
+- [x] **Stream reassembly** (`stream.rs`) — `recv` buffers out-of-order STREAM
+      data, delivers in order, trims duplicates/overlap, and records the
+      final size on FIN (RFC 9000 §2.2).
+- [x] **Loss recovery** (`recovery.rs`, `pnspace.rs`) — per-space sent-packet
+      tracking, ACK processing (RTT sample + cwnd feedback), and packet/time-
+      threshold loss detection (RFC 9002). Wired into `apply_frames` (ACK) and
+      `poll_send`/`poll_handshake` (sent tracking).
+- [x] **Connection ID management** (`connid.rs`, `frame.rs`) — `CidManager`
+      issues/retires local CIDs and records peer-advertised CIDs honoring
+      `retire_prior_to`; NEW_CONNECTION_ID / RETIRE_CONNECTION_ID codec + apply.
+- [x] **Handshake CRYPTO send driver** (`crypto.rs`, `send.rs`) — per-level
+      outgoing CRYPTO stream (`CryptoSendStream`) drained by `poll_handshake`
+      into protected Initial/Handshake long-header packets carrying CRYPTO
+      frames, tracked for loss recovery in their own PN space.
+- [x] **ACK scheduling wired** (`udp.rs`) — the receive path now sets
+      `ack_pending` from the `apply_frames` ack-eliciting outcome (was never
+      set, so ACKs were never emitted); only ack-eliciting packets elicit an
+      ACK (RFC 9000 §13.2.1).
+
+Remaining:
+- [ ] **TLS handshake driver (offload interface)** — the in-kernel transport
+      now queues/drains CRYPTO both directions; the remaining piece is the
+      hand-off to the userspace TLS stack: deliver reassembled CRYPTO up, take
+      its records back via `queue_crypto`, and install Handshake/1-RTT secrets
+      as they are produced.
+- [ ] **Retransmit timer loop** — `recovery::pto_duration` + `detect_lost`
+      compute what is lost and when to probe; arming the `timer` and re-queuing
+      the lost frames for retransmission is not yet wired.
+- [ ] **CID migration** — migrate the server connection key from the client
+      DCID to a server-issued SCID after the handshake (manager exists; the
+      endpoint rekeying is not wired).
+- [ ] (optional) **ChaCha20-Poly1305** as the alternate cipher suite.
 
 ## Audit follow-ups (deferred, not safety bugs)
 
