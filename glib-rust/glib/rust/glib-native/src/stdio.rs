@@ -258,6 +258,11 @@ pub fn chmod(path: &str, mode: u32) -> i32 {
     STDIO_PLATFORM.read().chmod(path, mode)
 }
 
+/// Change directory (`g_chdir`).
+pub fn chdir(path: &str) -> i32 {
+    STDIO_PLATFORM.read().chdir(path)
+}
+
 /// Synchronize a file descriptor (`g_fsync`).
 pub fn fsync(fd: i32) -> i32 {
     STDIO_PLATFORM.read().fsync(fd)

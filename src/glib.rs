@@ -5005,6 +5005,13 @@ pub fn smoke_check() -> Result<(), &'static str> {
             return Err("g_stat /tmp");
         }
 
+        if glib_native::stdio::chdir("/tmp") != 0 {
+            return Err("g_chdir /tmp");
+        }
+        if glib_native::getenv("HOME").as_deref() != Some("/root") {
+            return Err("g_getenv HOME after environ wiring");
+        }
+
         let mut dir = dir_open("/tmp", DIR_CASE_SENSITIVE).map_err(|_| "GDir open /tmp")?;
         if dir.read_name().is_none() {
             return Err("GDir read /tmp");

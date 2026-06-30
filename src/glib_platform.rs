@@ -51,6 +51,21 @@ pub fn register_all() {
     glib_native::register_spawn_platform(&RUSTOS_SPAWN_PLATFORM);
     glib_native::register_poll_platform(&RUSTOS_POLL_PLATFORM);
     glib_native::register_thread_platform(&RUSTOS_THREAD_PLATFORM);
+    wire_glib_environ();
+}
+
+/// Seed the in-kernel GLib environment table from the desktop session defaults.
+fn wire_glib_environ() {
+    for entry in crate::linux_compat::process_ops::default_session_envp() {
+        if let Some((key, value)) = entry.split_once('=') {
+            glib_native::setenv(key, value, false);
+        }
+    }
+}
+
+/// Resolve a path against the current process working directory.
+fn resolve_stdio_path(path: &str) -> String {
+    crate::linux_compat::file_ops::resolve_cwd_path(path)
 }
 
 /// Dynamic module platform for RustOS (no runtime loader; paths use `/lib`).
@@ -222,7 +237,8 @@ pub struct RustOsStdioPlatform;
 
 impl StdioPlatform for RustOsStdioPlatform {
     fn access(&self, path: &str, mode: i32) -> i32 {
-        match vfs::vfs_stat(path) {
+        let path = resolve_stdio_path(path);
+        match vfs::vfs_stat(&path) {
             Ok(stat) => {
                 if mode == F_OK {
                     return 0;
@@ -243,12 +259,32 @@ impl StdioPlatform for RustOsStdioPlatform {
         }
     }
 
-    fn chdir(&self, _path: &str) -> i32 {
-        -1
+    fn chdir(&self, path: &str) -> i32 {
+        let resolved = resolve_stdio_path(path);
+        match vfs::vfs_stat(&resolved) {
+            Ok(stat) => {
+                if stat.inode_type != InodeType::Directory {
+                    return -1;
+                }
+                let pid = crate::process::current_pid();
+                if crate::process::get_process_manager()
+                    .with_process_mut(pid, |pcb| {
+                        pcb.cwd = resolved;
+                    })
+                    .is_some()
+                {
+                    0
+                } else {
+                    -1
+                }
+            }
+            Err(_) => -1,
+        }
     }
 
     fn mkdir(&self, path: &str, mode: u32) -> i32 {
-        if vfs::vfs_mkdir(path, mode).is_ok() {
+        let path = resolve_stdio_path(path);
+        if vfs::vfs_mkdir(&path, mode).is_ok() {
             0
         } else {
             -1
@@ -256,7 +292,8 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn rmdir(&self, path: &str) -> i32 {
-        if vfs::vfs_rmdir(path).is_ok() {
+        let path = resolve_stdio_path(path);
+        if vfs::vfs_rmdir(&path).is_ok() {
             0
         } else {
             -1
@@ -264,7 +301,8 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn unlink(&self, path: &str) -> i32 {
-        if vfs::vfs_unlink(path).is_ok() {
+        let path = resolve_stdio_path(path);
+        if vfs::vfs_unlink(&path).is_ok() {
             0
         } else {
             -1
@@ -272,7 +310,9 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn rename(&self, oldpath: &str, newpath: &str) -> i32 {
-        if vfs::vfs_rename(oldpath, newpath).is_ok() {
+        let oldpath = resolve_stdio_path(oldpath);
+        let newpath = resolve_stdio_path(newpath);
+        if vfs::vfs_rename(&oldpath, &newpath).is_ok() {
             0
         } else {
             -1
@@ -280,7 +320,8 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn chmod(&self, path: &str, mode: u32) -> i32 {
-        if vfs::vfs_chmod(path, mode).is_ok() {
+        let path = resolve_stdio_path(path);
+        if vfs::vfs_chmod(&path, mode).is_ok() {
             0
         } else {
             -1
@@ -288,12 +329,14 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn open(&self, path: &str, flags: GOpenFlags, mode: u32) -> i32 {
-        vfs::vfs_open(path, flags.0 as u32, mode).unwrap_or(-1)
+        let path = resolve_stdio_path(path);
+        vfs::vfs_open(&path, flags.0 as u32, mode).unwrap_or(-1)
     }
 
     fn creat(&self, path: &str, mode: u32) -> i32 {
+        let path = resolve_stdio_path(path);
         vfs::vfs_open(
-            path,
+            &path,
             VfsOpenFlags::WRONLY | VfsOpenFlags::CREAT | VfsOpenFlags::TRUNC,
             mode,
         )
@@ -313,7 +356,8 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn stat(&self, path: &str) -> Option<StatBuf> {
-        vfs::vfs_stat(path).ok().map(stat_to_stat_buf)
+        let path = resolve_stdio_path(path);
+        vfs::vfs_stat(&path).ok().map(stat_to_stat_buf)
     }
 
     fn lstat(&self, path: &str) -> Option<StatBuf> {
@@ -321,10 +365,11 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn remove(&self, path: &str) -> i32 {
-        match vfs::vfs_stat(path) {
+        let path = resolve_stdio_path(path);
+        match vfs::vfs_stat(&path) {
             Ok(stat) => match stat.inode_type {
-                InodeType::Directory => self.rmdir(path),
-                _ => self.unlink(path),
+                InodeType::Directory => self.rmdir(&path),
+                _ => self.unlink(&path),
             },
             Err(_) => -1,
         }
@@ -339,7 +384,8 @@ impl StdioPlatform for RustOsStdioPlatform {
     }
 
     fn list_dir(&self, path: &str) -> Vec<String> {
-        vfs::vfs_list_dir(path)
+        let path = resolve_stdio_path(path);
+        vfs::vfs_list_dir(&path)
             .map(|entries| {
                 entries
                     .into_iter()
