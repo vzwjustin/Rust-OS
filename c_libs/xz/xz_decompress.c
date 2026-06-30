@@ -353,6 +353,10 @@ static int lzma2_decode(const uint8_t *src, size_t src_size,
                         if (rd_decode_bit(&rd, &s.is_rep0_long[state][pos_state]) == 0) {
                             /* Short rep (length 1) */
                             if (out_pos >= dst_cap) return -1;
+                            /* Reject back-references that point before the
+                             * start of the output. Computed in 64-bit because
+                             * the unsigned size_t arithmetic below wraps. */
+                            if ((uint64_t)s.rep0 + 1 > (uint64_t)out_pos) return -1;
                             dst[out_pos] = dst[out_pos - s.rep0 - 1];
                             out_pos++;
                             if (state < 7) s.state = 9;
@@ -394,7 +398,11 @@ static int lzma2_decode(const uint8_t *src, size_t src_size,
                 /* Copy match */
                 for (int i = 0; i < len; i++) {
                     if (out_pos >= dst_cap) return -1;
-                    if (out_pos - s.rep0 - 1 < 0) return -1;
+                    /* out_pos and rep0 are unsigned, so the original
+                     * `out_pos - s.rep0 - 1 < 0` check could never fire and
+                     * an invalid distance read out of bounds. Compare in
+                     * 64-bit instead. */
+                    if ((uint64_t)s.rep0 + 1 > (uint64_t)out_pos) return -1;
                     dst[out_pos] = dst[out_pos - s.rep0 - 1];
                     out_pos++;
                 }

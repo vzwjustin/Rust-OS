@@ -398,10 +398,9 @@ pub fn init() -> Result<(), &'static str> {
 
     let ops = software_nfc_ops();
     let _ = (ops, protocols);
-    crate::serial_println!("nfc: subsystem ready");
-    return Ok(());
 
     register_se("sw-se0")?;
 
+    crate::serial_println!("nfc: subsystem ready");
     Ok(())
 }

@@ -7,6 +7,10 @@ fn main() {
     println!("cargo:rerun-if-changed=src/boot.s");
     println!("cargo:rerun-if-changed=link.ld");
 
+    // Guarantee the embedded initramfs archive exists before rustc reaches the
+    // `include_bytes!` in src/initramfs.rs.
+    ensure_initramfs();
+
     // ── Compile C compression libraries ──────────────────────────
     // These provide zstd, bzip2, and xz/lzma2 decompression for the
     // kernel package manager. They use a kernel compat layer (kcompat.h)
@@ -108,6 +112,88 @@ fn main() {
     );
 
     build_acpica(llvm_tools.as_ref());
+}
+
+/// Ensure the uncompressed initramfs CPIO archive embedded by the kernel exists.
+///
+/// `src/initramfs.rs` embeds `userspace/initramfs.cpio` via `include_bytes!`.
+/// That uncompressed archive is a build artifact (gitignored via
+/// `/userspace/*.cpio`); only the compressed `userspace/initramfs.cpio.gz` is
+/// committed. When a `userspace/rootfs` tree is present, `make initramfs`
+/// regenerates the `.cpio` from it, but a plain `cargo build` (or
+/// `build_rustos.sh`) has no such step and would otherwise fail with a missing
+/// file. Decompress the committed `.gz` here so the kernel always has an
+/// initramfs to embed without requiring a rootfs checkout.
+fn ensure_initramfs() {
+    use std::path::Path;
+
+    let cpio = Path::new("userspace/initramfs.cpio");
+    let gz = Path::new("userspace/initramfs.cpio.gz");
+
+    // Rerun when the committed source archive changes. We deliberately do not
+    // watch the generated `.cpio`: rustc already tracks it through the
+    // `include_bytes!` dep-info, and watching a file we rewrite would churn.
+    println!("cargo:rerun-if-changed=userspace/initramfs.cpio.gz");
+
+    // Skip regeneration when the uncompressed archive is present and at least
+    // as new as the committed source. A rootfs-driven `make initramfs` run
+    // still wins because it rewrites the `.cpio` with a newer mtime.
+    if cpio.exists() {
+        let up_to_date = (|| {
+            let cpio_m = std::fs::metadata(cpio).ok()?.modified().ok()?;
+            let gz_m = std::fs::metadata(gz).ok()?.modified().ok()?;
+            Some(cpio_m >= gz_m)
+        })()
+        .unwrap_or(true);
+        if up_to_date {
+            return;
+        }
+    }
+
+    if !gz.exists() {
+        // Neither archive exists. Let the build fail at the `include_bytes!`
+        // with a clear missing-file error rather than embedding an empty
+        // archive that would silently disable userspace at runtime.
+        println!(
+            "cargo:warning=userspace/initramfs.cpio.gz is missing; cannot generate \
+             userspace/initramfs.cpio (run `make initramfs` or restore the committed archive)"
+        );
+        return;
+    }
+
+    // `gzip` is already a hard dependency of the userspace build scripts
+    // (scripts/build_initramfs.sh and friends), so reuse it here instead of
+    // pulling in a host decompression crate.
+    let output = std::process::Command::new("gzip")
+        .arg("-dc")
+        .arg(gz)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            // Write to a temp file then rename so an interrupted build never
+            // leaves a truncated archive that `include_bytes!` would embed.
+            let tmp = Path::new("userspace/initramfs.cpio.tmp");
+            if std::fs::write(tmp, &out.stdout).is_ok() && std::fs::rename(tmp, cpio).is_ok() {
+                println!(
+                    "cargo:warning=generated userspace/initramfs.cpio ({} bytes) from \
+                     initramfs.cpio.gz",
+                    out.stdout.len()
+                );
+            } else {
+                let _ = std::fs::remove_file(tmp);
+                panic!("failed to write userspace/initramfs.cpio");
+            }
+        }
+        Ok(out) => panic!(
+            "gzip failed to decompress userspace/initramfs.cpio.gz: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(e) => panic!(
+            "could not run gzip to decompress the initramfs (install gzip or run \
+             `make initramfs`): {e}"
+        ),
+    }
 }
 
 fn build_acpica(tools: Option<&(String, String)>) {

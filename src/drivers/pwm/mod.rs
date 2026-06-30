@@ -232,8 +232,7 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     let _ = SOFTWARE_PWM_OPS;
-    crate::serial_println!("pwm: subsystem ready");
-    return Ok(());
     crate::serial_println!("pwm: software chip registered ({} channels)", npwm);
+    crate::serial_println!("pwm: subsystem ready");
     Ok(())
 }

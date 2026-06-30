@@ -330,8 +330,7 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     let _ = SOFTWARE_GPIO_OPS;
-    crate::serial_println!("gpio: subsystem ready");
-    return Ok(());
     crate::serial_println!("gpio: software chip registered ({} lines)", ngpio);
+    crate::serial_println!("gpio: subsystem ready");
     Ok(())
 }

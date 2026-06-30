@@ -165,9 +165,14 @@ static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
 
 /* ── MTF inverse ────────────────────────────────────────────────── */
 static void mtf_inverse(const uint8_t *mtf_data, int mtf_size,
-                        uint8_t *out, int n_groups) {
+                        uint8_t *out, int n_groups,
+                        const uint8_t *alpha_map) {
+    /* The MTF list is seeded with the actual in-use byte values (sorted
+     * ascending) — bzip2's "seqToUnseq" table — not the raw alphabet indices.
+     * Seeding with 0..n-1 only happens to be correct when the in-use set is
+     * exactly {0,1,...,n-1}, so it silently corrupts most real payloads. */
     uint8_t order[256];
-    for (int i = 0; i < n_groups; i++) order[i] = (uint8_t)i;
+    for (int i = 0; i < n_groups; i++) order[i] = alpha_map[i];
 
     int out_pos = 0;
     int run_len = 0;
@@ -357,7 +362,7 @@ int bzip2_decompress(const uint8_t *src, size_t src_size,
             uint8_t *bwt_buf = (uint8_t *)kmalloc(max_block + 20);
             if (!bwt_buf) { kfree(mtf_buf); return -1; }
 
-            mtf_inverse(mtf_buf, mtf_pos, bwt_buf, n_in_use);
+            mtf_inverse(mtf_buf, mtf_pos, bwt_buf, n_in_use, alpha_map);
             kfree(mtf_buf);
 
             /* BWT inverse */
