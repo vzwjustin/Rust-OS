@@ -225,27 +225,21 @@ impl SyscallDispatcher {
                 let sig = args.get(2).copied().unwrap_or(0);
                 self.sys_kill(&[tid as u64, sig], process_manager, current_pid)
             }
-            SyscallNumber::Dup => {
-                linux_result_i32(crate::linux_compat::file_ops::dup(
-                    args.first().copied().unwrap_or(0) as i32,
-                ))
-            }
-            SyscallNumber::Dup2 => {
-                linux_result_i32(crate::linux_compat::file_ops::dup2(
-                    args.first().copied().unwrap_or(0) as i32,
-                    args.get(1).copied().unwrap_or(0) as i32,
-                ))
-            }
-            SyscallNumber::Sendto => {
-                linux_result_isize(crate::linux_compat::socket_ops::sendto(
-                    args.first().copied().unwrap_or(0) as i32,
-                    args.get(1).copied().unwrap_or(0) as *const u8,
-                    args.get(2).copied().unwrap_or(0) as usize,
-                    args.get(3).copied().unwrap_or(0) as i32,
-                    args.get(4).copied().unwrap_or(0) as *const crate::linux_compat::SockAddr,
-                    args.get(5).copied().unwrap_or(0) as u32,
-                ))
-            }
+            SyscallNumber::Dup => linux_result_i32(crate::linux_compat::file_ops::dup(
+                args.first().copied().unwrap_or(0) as i32,
+            )),
+            SyscallNumber::Dup2 => linux_result_i32(crate::linux_compat::file_ops::dup2(
+                args.first().copied().unwrap_or(0) as i32,
+                args.get(1).copied().unwrap_or(0) as i32,
+            )),
+            SyscallNumber::Sendto => linux_result_isize(crate::linux_compat::socket_ops::sendto(
+                args.first().copied().unwrap_or(0) as i32,
+                args.get(1).copied().unwrap_or(0) as *const u8,
+                args.get(2).copied().unwrap_or(0) as usize,
+                args.get(3).copied().unwrap_or(0) as i32,
+                args.get(4).copied().unwrap_or(0) as *const crate::linux_compat::SockAddr,
+                args.get(5).copied().unwrap_or(0) as u32,
+            )),
             SyscallNumber::Recvfrom => {
                 linux_result_isize(crate::linux_compat::socket_ops::recvfrom(
                     args.first().copied().unwrap_or(0) as i32,
@@ -256,12 +250,10 @@ impl SyscallDispatcher {
                     args.get(5).copied().unwrap_or(0) as *mut u32,
                 ))
             }
-            SyscallNumber::Shutdown => {
-                linux_result_i32(crate::linux_compat::socket_ops::shutdown(
-                    args.first().copied().unwrap_or(0) as i32,
-                    args.get(1).copied().unwrap_or(0) as i32,
-                ))
-            }
+            SyscallNumber::Shutdown => linux_result_i32(crate::linux_compat::socket_ops::shutdown(
+                args.first().copied().unwrap_or(0) as i32,
+                args.get(1).copied().unwrap_or(0) as i32,
+            )),
             SyscallNumber::SetSockopt => {
                 linux_result_i32(crate::linux_compat::socket_ops::setsockopt(
                     args.first().copied().unwrap_or(0) as i32,
@@ -296,9 +288,9 @@ impl SyscallDispatcher {
             }
             SyscallNumber::Rmdir => {
                 linux_result_i32(crate::linux_compat::file_ops::unlinkat(
-                    -100,                                              // AT_FDCWD
+                    -100, // AT_FDCWD
                     args.first().copied().unwrap_or(0) as *const u8,
-                    0x200,                                             // AT_REMOVEDIR
+                    0x200, // AT_REMOVEDIR
                 ))
             }
             SyscallNumber::Chmod => {

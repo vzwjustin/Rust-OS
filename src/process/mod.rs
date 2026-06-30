@@ -13,6 +13,8 @@ pub mod context;
 pub mod dynamic_linker;
 pub mod elf_loader;
 pub mod exec;
+pub mod exit;
+pub mod fork;
 pub mod integration;
 pub mod ipc;
 pub mod scheduler;
@@ -58,6 +60,24 @@ pub enum Priority {
     Low = 3,
     /// Idle priority (lowest)
     Idle = 4,
+}
+
+impl Priority {
+    /// Number of priority levels.
+    pub const fn count() -> usize {
+        5
+    }
+
+    /// Time slice duration in milliseconds for this priority.
+    pub fn time_slice_ms(&self) -> u64 {
+        match self {
+            Priority::RealTime => 100,
+            Priority::High => 50,
+            Priority::Normal => 20,
+            Priority::Low => 10,
+            Priority::Idle => 5,
+        }
+    }
 }
 
 impl Default for Priority {
@@ -266,6 +286,10 @@ pub struct ProcessControlBlock {
     pub wake_time: Option<u64>,
     /// Signal handlers
     pub signal_handlers: BTreeMap<u32, u64>,
+    /// Signal flags (SA_* bits) per signal number
+    pub signal_flags: BTreeMap<u32, u64>,
+    /// Signal restorer function per signal number
+    pub signal_restorer: BTreeMap<u32, u64>,
     /// Pending signals
     pub pending_signals: alloc::vec::Vec<u32>,
     /// Program entry point address
@@ -608,6 +632,8 @@ impl ProcessControlBlock {
             file_offsets: BTreeMap::new(),
             wake_time: None,
             signal_handlers: BTreeMap::new(),
+            signal_flags: BTreeMap::new(),
+            signal_restorer: BTreeMap::new(),
             pending_signals: alloc::vec::Vec::new(),
             entry_point: 0,
 
@@ -823,6 +849,9 @@ impl ProcessManager {
             }
         }
 
+        // Create a security context for the new process (inherits from parent if provided).
+        let _ = crate::security::create_context(pid, parent_pid);
+
         // Initialize IPC state for new process
         let ipc_manager = ipc::get_ipc_manager();
         ipc_manager.init_process_signals(pid)?;
@@ -882,6 +911,9 @@ impl ProcessManager {
             let ipc_manager = ipc::get_ipc_manager();
             ipc_manager.init_process_signals(pid)?;
         }
+
+        // Create or refresh the security context for the adopted process.
+        let _ = crate::security::create_context(pid, parent_pid);
 
         Ok(())
     }
@@ -989,6 +1021,29 @@ impl ProcessManager {
         scheduler.schedule()
     }
 
+    /// Add elapsed time to the current process's CPU time accounting.
+    pub fn tick_cpu_time(&self, elapsed_us: u64) {
+        let pid = self.current_process();
+        if pid == 0 {
+            return;
+        }
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.cpu_time += elapsed_us;
+        }
+    }
+
+    /// Set the CPU affinity mask for a process.
+    pub fn set_cpu_affinity(&self, pid: Pid, mask: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.sched_info.cpu_affinity = mask;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
     /// Update current process
     pub fn set_current_process(&self, pid: Pid) {
         self.current_process.store(pid, Ordering::SeqCst);
@@ -1034,14 +1089,7 @@ impl ProcessManager {
         // Add back to scheduler
         {
             let mut scheduler = self.scheduler.lock();
-            let priority = {
-                let processes = self.processes.read();
-                processes
-                    .get(&pid)
-                    .map(|p| p.priority)
-                    .unwrap_or(Priority::Normal)
-            };
-            scheduler.add_process(pid, priority)?;
+            scheduler.unblock_process(pid)?;
         }
 
         Ok(())
@@ -1348,6 +1396,10 @@ pub fn nice_to_priority(nice: i32) -> Priority {
 /// Global process manager instance
 static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
+/// Set to true once the process management system has been initialized.
+/// Guards against re-initialization when multiple subsystems call `process::init()`.
+static INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Set to true once the process subsystem (scheduler + processes) is fully initialized.
 /// The timer ISR checks this before calling the scheduler to avoid races during boot.
 pub static PROCESS_SUBSYSTEM_INITIALIZED: core::sync::atomic::AtomicBool =
@@ -1360,6 +1412,10 @@ pub fn get_process_manager() -> &'static ProcessManager {
 
 /// Initialize the process management system
 pub fn init() -> Result<(), &'static str> {
+    if INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+
     // Initialize core process management
     PROCESS_MANAGER.init()?;
 

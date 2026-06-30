@@ -89,6 +89,23 @@ pub fn register_controller(
     txdone_poll: bool,
     txpoll_period: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("Mailbox controller name is empty");
+    }
+    if num_channels == 0 {
+        return Err("Mailbox controller must expose at least one channel");
+    }
+    if txdone_poll && txpoll_period == 0 {
+        return Err("Mailbox polling period must be non-zero");
+    }
+    if MBOX_CONTROLLERS
+        .read()
+        .values()
+        .any(|controller| controller.name == name)
+    {
+        return Err("Mailbox controller already registered");
+    }
+
     let id = CONTROLLER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let ctrl = MboxController {
         name: String::from(name),
@@ -119,6 +136,17 @@ pub fn register_controller(
 
 /// Register a mailbox client.
 pub fn register_client(client: MboxClient) -> Result<u32, &'static str> {
+    if client.name.is_empty() {
+        return Err("Mailbox client name is empty");
+    }
+    if MBOX_CLIENTS
+        .read()
+        .values()
+        .any(|existing| existing.name == client.name)
+    {
+        return Err("Mailbox client already registered");
+    }
+
     let id = CLIENT_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     MBOX_CLIENTS.write().insert(id, client);
     Ok(id)
@@ -130,6 +158,19 @@ pub fn request_channel(
     channel_index: u32,
     client_id: u32,
 ) -> Result<u32, &'static str> {
+    if !MBOX_CLIENTS.read().contains_key(&client_id) {
+        return Err("Mailbox client not found");
+    }
+    {
+        let ctrls = MBOX_CONTROLLERS.read();
+        let ctrl = ctrls
+            .get(&controller_id)
+            .ok_or("Mailbox controller not found")?;
+        if channel_index >= ctrl.num_channels {
+            return Err("Mailbox channel index out of range");
+        }
+    }
+
     let ch_id = {
         let channels = MBOX_CHANNELS.read();
         let mut found: Option<u32> = None;
@@ -160,7 +201,15 @@ pub fn request_channel(
         ch.active = true;
     }
 
-    (startup_fn)(ch_id)?;
+    if let Err(err) = (startup_fn)(ch_id) {
+        let mut channels = MBOX_CHANNELS.write();
+        if let Some(ch) = channels.get_mut(&ch_id) {
+            ch.client = None;
+            ch.active = false;
+            ch.tx_pending = false;
+        }
+        return Err(err);
+    }
     Ok(ch_id)
 }
 
@@ -321,6 +370,15 @@ pub fn software_mbox_ops() -> MboxChanOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("mailbox: subsystem ready");
+    if !MBOX_CONTROLLERS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_mbox_ops();
+    let ctrl_id = register_controller("sw-mailbox", ops, 4, false, true, 100)?;
+    crate::serial_println!(
+        "mailbox: software loopback controller registered (id={}, 4 channels)",
+        ctrl_id
+    );
     Ok(())
 }

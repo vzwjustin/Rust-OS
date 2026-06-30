@@ -33,8 +33,8 @@
 //! the UDP socket glue in [`super::socket`], full ACK/loss-recovery scheduling,
 //! and the userspace handshake hand-off.
 
-pub mod cong;
 pub mod common;
+pub mod cong;
 pub mod connection;
 pub mod connid;
 pub mod crypto;
@@ -77,10 +77,7 @@ pub const DEFAULT_QUIC_PORT: u16 = 443;
 /// This is the entry point the UDP layer calls once QUIC sockets are wired in;
 /// `local_cid_len` is the connection-ID length this endpoint issued, needed to
 /// locate the DCID in short-header (1-RTT) packets.
-pub fn peek_destination(
-    datagram: &[u8],
-    local_cid_len: usize,
-) -> Option<ConnectionId> {
+pub fn peek_destination(datagram: &[u8], local_cid_len: usize) -> Option<ConnectionId> {
     match parse_header(datagram, local_cid_len)? {
         PacketHeader::Long { dcid, .. } => Some(dcid),
         PacketHeader::Short { dcid, .. } => Some(dcid),

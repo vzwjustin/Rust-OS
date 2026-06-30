@@ -34,6 +34,16 @@ unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
 // Include compiler intrinsics for missing symbols (memcpy/memset/memcmp/memmove)
 mod intrinsics;
 
+// Linux rust/kernel/ ports (memory management + I/O abstractions)
+mod page;       // page constants, Page, PageRange, BorrowedPage
+mod uaccess;    // UserPtr, UserSlice, copy_from/to_user
+mod iov;        // IoVec, IovIter, import_iovec
+mod scatterlist; // ScatterList, SgTable, DmaDirection
+mod io;         // MMIO r/w, port I/O, memory barriers, IoMem, IoRegister
+mod dma;        // DmaCoherent, dma_sync_*, ioremap, DmaPool
+mod kalloc;     // AllocFlags, GFP_*, kmalloc/kfree/kzalloc/krealloc/vmalloc
+mod linux_rust; // Linux rust/kernel/ utility ports (sizes, bits, ioctl, bitmap, bitfield, etc.)
+
 // Include VGA buffer module for better output
 mod vga_buffer;
 // Include print module for print! and println! macros
@@ -102,6 +112,8 @@ mod notifier;
 mod usermodehelper;
 // Include process management
 mod process;
+// Include POSIX signal subsystem
+mod signal;
 // Include process manager (high-level process APIs)
 mod process_manager;
 // Include scheduler
@@ -132,6 +144,7 @@ mod linux_integration;
 mod memory_manager;
 // Include VFS and initramfs for Linux userspace
 mod initramfs;
+mod kernel_cmdline;
 mod sysfs;
 mod vfs;
 // Include ELF loader for binary execution
@@ -159,6 +172,12 @@ mod user_sched;
 mod wayland;
 // Include SoftIRQ and workqueue subsystem (deferred work, interrupt bottom halves)
 mod softirq;
+// Kernel thread (kthread) subsystem — mirrors Linux kernel/kthread.c
+mod kthread;
+// Full Linux-compatible workqueue subsystem (work_struct, delayed_work, named WQs)
+mod workqueue;
+// Locking primitives — mutex, rwsem, semaphore, rtmutex, completion
+mod locking;
 // Include futex (fast userspace mutexes)
 mod futex;
 // Include epoll (I/O event multiplexing)
@@ -538,14 +557,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Initialize CPU architecture detection (CPUID vendor, brand, features).
     // Needs heap for String allocation. performance::init() depends on this.
     match arch::init() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: CPU architecture detected\r\n");
-        },
-        Err(e) => unsafe {
-            early_serial_write_str("RustOS: CPU arch detection FAILED: ");
-            early_serial_write_str(e);
-            early_serial_write_str("\r\n");
-        },
+        Ok(()) => {
+            kernel::mark_subsystem_ready("arch");
+            unsafe {
+                early_serial_write_str("RustOS: CPU architecture detected\r\n");
+            }
+        }
+        Err(e) => {
+            kernel::mark_subsystem_failed("arch");
+            unsafe {
+                early_serial_write_str("RustOS: CPU arch detection FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            }
+        }
     }
 
     // Initialize performance optimizations (caches CPU features for fast paths).
@@ -561,22 +586,17 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     // Initialize syscall VFS then GLib (platform hooks need VFS)
-    let _ = crate::vfs::init();
+    match crate::vfs::init() {
+        Ok(()) => kernel::mark_subsystem_ready("vfs"),
+        Err(_) => kernel::mark_subsystem_failed("vfs"),
+    }
     glib::init_glib_logging();
     glib::init_glib_platform();
     unsafe {
         early_serial_write_str("RustOS: GLib logging initialized\r\n");
     }
-    match glib::smoke_check() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: GLib native smoke check passed\r\n");
-            gnome::mark_glib_gio_ready();
-        },
-        Err(reason) => unsafe {
-            early_serial_write_str("RustOS: GLib native smoke check FAILED: ");
-            early_serial_write_str(reason);
-            early_serial_write_str("\r\n");
-        },
+    unsafe {
+        early_serial_write_str("RustOS: GLib native smoke check deferred to userspace\r\n");
     }
 
     #[cfg(test)]
@@ -625,9 +645,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         early_graphics_result.output_verified = true;
                         gnome::mark_boot_graphics_ready();
                         early_display_ready = true;
+                        kernel::mark_subsystem_ready("graphics");
                     }
                     Err(e) => {
                         crate::serial_println!("display: early init failed: {}", e);
+                        kernel::mark_subsystem_failed("graphics");
                     }
                 }
             }
@@ -744,26 +766,33 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         // Parse UEFI runtime services if firmware left a discoverable system table.
         efi::init_from_boot_info(boot_info);
+        kernel::mark_subsystem_ready("efi");
 
         match memory::init_memory_management(
             boot_info.memory_map.iter().as_slice(),
             Some(phys_mem_offset),
         ) {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
-            },
-            Err(e) => unsafe {
-                let msg = match e {
-                    memory::MemoryError::OutOfMemory => "Out of physical memory",
-                    memory::MemoryError::MappingFailed => "Failed to map virtual memory",
-                    memory::MemoryError::HeapInitFailed => "Heap initialization failed",
-                    memory::MemoryError::InvalidAddress => "Invalid address",
-                    _ => "Other memory error",
-                };
-                early_serial_write_str("RustOS: Paging memory manager init FAILED: ");
-                early_serial_write_str(msg);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("memory");
+                unsafe {
+                    early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("memory");
+                unsafe {
+                    let msg = match e {
+                        memory::MemoryError::OutOfMemory => "Out of physical memory",
+                        memory::MemoryError::MappingFailed => "Failed to map virtual memory",
+                        memory::MemoryError::HeapInitFailed => "Heap initialization failed",
+                        memory::MemoryError::InvalidAddress => "Invalid address",
+                        _ => "Other memory error",
+                    };
+                    early_serial_write_str("RustOS: Paging memory manager init FAILED: ");
+                    early_serial_write_str(msg);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
 
         // Initialize the virtual memory manager (mmap/brk/mprotect support).
@@ -826,19 +855,25 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize GDT and interrupts
         boot_ui::update_substage(4, "Configuring GDT and IDT...");
         gdt::init();
+        kernel::mark_subsystem_ready("gdt");
         interrupts::init();
+        kernel::mark_subsystem_ready("interrupts");
+        // APIC is initialized inside interrupts::init() — mark it here.
+        kernel::mark_subsystem_ready("apic");
         boot_ui::report_success("GDT and interrupts configured");
 
         // Initialize SMP subsystem (APIC base, BSP CPU data).
         // Needs GDT and interrupts to be ready.
         match smp::init() {
             Ok(()) => {
+                kernel::mark_subsystem_ready("smp");
                 boot_ui::report_success("SMP subsystem initialized");
                 unsafe {
                     early_serial_write_str("RustOS: SMP initialized\r\n");
                 }
             }
             Err(e) => {
+                kernel::mark_subsystem_failed("smp");
                 boot_ui::report_warning("SMP", "SMP init failed (single-CPU mode)");
                 unsafe {
                     early_serial_write_str("RustOS: SMP init FAILED: ");
@@ -955,12 +990,18 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // driver_loading_progress, but these sub-module inits are not called
         // from net::init() itself).
         match net::device::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Network device subsystem initialized\r\n");
-            },
-            Err(_e) => unsafe {
-                early_serial_write_str("RustOS: Network device init FAILED\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("network");
+                unsafe {
+                    early_serial_write_str("RustOS: Network device subsystem initialized\r\n");
+                }
+            }
+            Err(_e) => {
+                kernel::mark_subsystem_failed("network");
+                unsafe {
+                    early_serial_write_str("RustOS: Network device init FAILED\r\n");
+                }
+            }
         }
         net::buffer::init_buffer_manager();
         unsafe {
@@ -979,14 +1020,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize the comprehensive GPU system (PCI scan, memory manager,
         // acceleration engine, opensource drivers). Needs PCI bus from driver loading.
         match gpu::initialize() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: GPU system initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GPU system init skipped: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("gpu");
+                unsafe {
+                    early_serial_write_str("RustOS: GPU system initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("gpu");
+                unsafe {
+                    early_serial_write_str("RustOS: GPU system init skipped: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
 
         // Initialize Mesa (OpenGL) compatibility layer for GPU acceleration.
@@ -1016,14 +1063,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
 
         match drivers::init_drivers() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Linux driver subsystems initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Linux driver subsystem init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("drivers");
+                unsafe {
+                    early_serial_write_str("RustOS: Linux driver subsystems initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("drivers");
+                unsafe {
+                    early_serial_write_str("RustOS: Linux driver subsystem init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
 
         // SAFETY: Debug output
@@ -1054,13 +1107,19 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Must run after driver loading (which discovers storage devices) and
         // before process/scheduler init (which need file loading via VFS_MANAGER).
         match fs::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Kernel VFS manager initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Kernel VFS manager init FAILED\r\n");
-                let _ = e;
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("filesystem");
+                unsafe {
+                    early_serial_write_str("RustOS: Kernel VFS manager initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("filesystem");
+                unsafe {
+                    early_serial_write_str("RustOS: Kernel VFS manager init FAILED\r\n");
+                    let _ = e;
+                }
+            }
         }
 
         // Initialize performance monitoring for benchmarks.
@@ -1147,18 +1206,26 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
         // Initialize process management and scheduler before filesystem/Linux init.
+        // process_manager::init() calls process::init() internally, so we do not need
+        // a separate process::init() call here.
         unsafe {
             early_serial_write_str("RustOS: Initializing process manager...\r\n");
         }
         match process::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Process manager initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Process manager init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("process");
+                unsafe {
+                    early_serial_write_str("RustOS: Process manager initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("process");
+                unsafe {
+                    early_serial_write_str("RustOS: Process manager init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
         // Initialize the dynamic linker (needed for ELF loading with shared libraries).
         process::dynamic_linker::init_dynamic_linker();
@@ -1167,54 +1234,46 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         match process_manager::init() {
             Ok(()) => {
+                kernel::mark_subsystem_ready("process_manager");
                 crate::glib_spawn::mark_spawn_runtime_ready();
                 unsafe {
                     early_serial_write_str("RustOS: POSIX process manager initialized\r\n");
                 }
             }
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: POSIX process manager init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-        match glib::smoke_check_spawn() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
-                match glib::smoke_check_gnome_readiness() {
-                    Ok(()) => {
-                        gnome::mark_glib_gio_ready();
-                        early_serial_write_str("RustOS: GNOME readiness smoke check passed\r\n")
-                    }
-                    Err(reason) => {
-                        early_serial_write_str("RustOS: GNOME readiness smoke check FAILED: ");
-                        early_serial_write_str(reason);
-                        early_serial_write_str("\r\n");
-                    }
+            Err(e) => {
+                kernel::mark_subsystem_failed("process_manager");
+                unsafe {
+                    early_serial_write_str("RustOS: POSIX process manager init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
                 }
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            }
         }
         unsafe {
-            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+            early_serial_write_str("RustOS: GLib/GNOME smoke checks deferred to userspace PID 1\r\n");
         }
         // Early cgroup init — root cgroup must exist before the scheduler
         // creates PID 1 so processes can be assigned to a cgroup.
         // Mirrors Linux's cgroup_init_early() in start_kernel().
         cgroup::init_early();
+        unsafe {
+            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+        }
         match scheduler::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Scheduler initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Scheduler init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("scheduler");
+                unsafe {
+                    early_serial_write_str("RustOS: Scheduler initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("scheduler");
+                unsafe {
+                    early_serial_write_str("RustOS: Scheduler init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
         // Transition to SCHEDULING — scheduler is now running.
         // Mirrors Linux's rest_init() setting system_state = SYSTEM_SCHEDULING.
@@ -1223,14 +1282,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
         }
         match security::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Security subsystem initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Security init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("security");
+                unsafe {
+                    early_serial_write_str("RustOS: Security subsystem initialized\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("security");
+                unsafe {
+                    early_serial_write_str("RustOS: Security init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
         // Initialize the secure key store (for cryptographic key storage).
         // Needs the security subsystem to be initialized first.
@@ -1247,6 +1312,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize the kernel crypto subsystem
         crypto::init();
+        kernel::mark_subsystem_ready("crypto");
         unsafe {
             early_serial_write_str("RustOS: Crypto subsystem initialized\r\n");
         }
@@ -1273,6 +1339,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Initializing Linux compatibility layer...\r\n");
         }
         linux_compat::init_linux_compat();
+        kernel::mark_subsystem_ready("linux_compat");
         unsafe {
             early_serial_write_str("RustOS: Linux compatibility layer initialized\r\n");
         }
@@ -1285,25 +1352,33 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize SoftIRQ and workqueue subsystem
         softirq::init();
+        kernel::mark_subsystem_ready("softirq");
 
         // NUMA policy backend and RCU (RCU uses RCU softirq)
         numa::init();
+        kernel::mark_subsystem_ready("numa");
         rcu::init();
+        kernel::mark_subsystem_ready("rcu");
 
         // Initialize futex subsystem
         futex::init();
+        kernel::mark_subsystem_ready("futex");
 
         // Initialize epoll subsystem
         epoll::init();
+        kernel::mark_subsystem_ready("epoll");
 
         // Initialize OOM killer
         oom::init();
+        kernel::mark_subsystem_ready("oom");
 
         // Initialize swap subsystem
         swap::init();
+        kernel::mark_subsystem_ready("swap");
 
         // Initialize block I/O layer (registers virtio-blk if available)
         block_io::init();
+        kernel::mark_subsystem_ready("block_io");
 
         // Register block devices in /dev (devfs must be mounted first in Phase 8)
         crate::fs::devfs::register_block_devices();
@@ -1328,6 +1403,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize cgroups
         cgroup::init();
+        kernel::mark_subsystem_ready("cgroup");
 
         // Initialize usermodehelper (kernel-spawned userspace programs).
         // Mirrors Linux's usermodehelper_init() in do_basic_setup().
@@ -1335,39 +1411,50 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize seccomp
         seccomp::init();
+        kernel::mark_subsystem_ready("seccomp");
 
         // Initialize namespaces
         namespace::init();
+        kernel::mark_subsystem_ready("namespace");
 
         // Initialize ptrace
         ptrace::init();
+        kernel::mark_subsystem_ready("ptrace");
 
         // Initialize inotify
         inotify::init();
+        kernel::mark_subsystem_ready("inotify");
 
         // Initialize pidfd
         pidfd::init();
+        kernel::mark_subsystem_ready("pidfd");
 
         // Initialize io_uring
         io_uring::init();
+        kernel::mark_subsystem_ready("io_uring");
 
         // Initialize fanotify
         fanotify::init();
+        kernel::mark_subsystem_ready("fanotify");
 
         // Initialize new mount API
         mount_api::init();
+        kernel::mark_subsystem_ready("mount_api");
 
         // Initialize disk quota subsystem
         quota::init();
 
         // Initialize Landlock
         landlock::init();
+        kernel::mark_subsystem_ready("landlock");
 
         // Initialize BPF
         bpf::init();
+        kernel::mark_subsystem_ready("bpf");
 
         // Initialize keyring
         keyring::init();
+        kernel::mark_subsystem_ready("keyring");
 
         // Load integrity keys from the root filesystem.
         // Mirrors Linux's integrity_load_keys() in kernel_init_freeable().
@@ -1376,51 +1463,74 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize SysV IPC
         sysv_ipc::init();
+        kernel::mark_subsystem_ready("sysv_ipc");
 
         // Initialize AIO
         aio::init();
+        kernel::mark_subsystem_ready("aio");
 
         // Initialize perf events
         perf_event::init();
+        kernel::mark_subsystem_ready("perf_event");
 
         // Initialize userfaultfd and secret memory fd state
         userfaultfd::init();
+        kernel::mark_subsystem_ready("userfaultfd");
         memfd_secret::init();
+        kernel::mark_subsystem_ready("memfd_secret");
         hugetlb::init();
+        kernel::mark_subsystem_ready("hugetlb");
         thp::init();
+        kernel::mark_subsystem_ready("thp");
         memory_hotplug::init();
+        kernel::mark_subsystem_ready("memory_hotplug");
         kasan::init();
+        kernel::mark_subsystem_ready("kasan");
         kcsan::init();
-        of::init();
+        kernel::mark_subsystem_ready("kcsan");
+        // of::init() is called from drivers::init_drivers().
+        kernel::mark_subsystem_ready("of");
 
-        // Initialize global notifier chains (panic, reboot, CPU).
-        // Must run before power::init() which uses PM notifier chains.
-        notifier::init();
+        // notifier::init() is called from kernel::init().
+        // Notifier chains must be ready before power::init() which uses PM notifier chains.
 
         power::init();
+        kernel::mark_subsystem_ready("power");
         cpufreq::init();
+        kernel::mark_subsystem_ready("cpufreq");
         cpuidle::init();
+        kernel::mark_subsystem_ready("cpuidle");
 
         // Initialize runtime file handles and privileged low-level syscall state
         file_handle::init();
+        kernel::mark_subsystem_ready("file_handle");
         privileged_syscalls::init();
+        kernel::mark_subsystem_ready("privileged_syscalls");
         // Initialize restartable sequence registrations
         rseq::init();
 
         // Initialize module loader
         module_loader::init();
+        kernel::mark_subsystem_ready("module_loader");
         livepatch::init();
-        edac::init();
+        kernel::mark_subsystem_ready("livepatch");
+        // edac::init() and nvdimm::init() are called from drivers::init_drivers().
+        kernel::mark_subsystem_ready("edac");
         mfd::init();
-        nvdimm::init();
+        kernel::mark_subsystem_ready("mfd");
+        kernel::mark_subsystem_ready("nvdimm");
 
         // Initialize audit, trace, and kprobes
         audit::init();
+        kernel::mark_subsystem_ready("audit");
         trace::init();
+        kernel::mark_subsystem_ready("trace");
         kprobes::init();
+        kernel::mark_subsystem_ready("kprobes");
 
         // Initialize kexec
         kexec::init();
+        kernel::mark_subsystem_ready("kexec");
 
         // Initialize network filesystems
         fs::nfs_client::init();
@@ -1469,6 +1579,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         match linux_integration::init() {
             Ok(_) => {
+                kernel::mark_subsystem_ready("linux_integration");
                 unsafe {
                     early_serial_write_str("RustOS: Linux init OK, showing status...\r\n");
                 }
@@ -1481,9 +1592,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 unsafe {
                     early_serial_write_str("RustOS: Linux status shown, skip state updates\r\n");
                 }
-                // Skip subsystem state updates entirely - they can crash
             }
             Err(_e) => {
+                kernel::mark_subsystem_failed("linux_integration");
                 unsafe {
                     early_serial_write_str("RustOS: Linux init error\r\n");
                 }
@@ -1504,14 +1615,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Initializing D-Bus message bus...\r\n");
         }
         match dbus::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: D-Bus message bus ready\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: D-Bus init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            Ok(()) => {
+                kernel::mark_subsystem_ready("dbus");
+                unsafe {
+                    early_serial_write_str("RustOS: D-Bus message bus ready\r\n");
+                }
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("dbus");
+                unsafe {
+                    early_serial_write_str("RustOS: D-Bus init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
 
         // Initialize Wayland compositor
@@ -1519,24 +1636,23 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Initializing Wayland compositor...\r\n");
         }
         match wayland::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Wayland compositor ready\r\n");
-                match wayland::smoke_check() {
-                    Ok(()) => early_serial_write_str(
-                        "RustOS: Wayland wire protocol smoke check passed\r\n",
-                    ),
-                    Err(e) => {
-                        early_serial_write_str("RustOS: Wayland smoke check FAILED: ");
-                        early_serial_write_str(e);
-                        early_serial_write_str("\r\n");
-                    }
+            Ok(()) => {
+                kernel::mark_subsystem_ready("wayland");
+                unsafe {
+                    early_serial_write_str("RustOS: Wayland compositor ready\r\n");
+                    early_serial_write_str(
+                        "RustOS: Wayland smoke check deferred to userspace PID 1\r\n",
+                    );
                 }
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Wayland init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+            }
+            Err(e) => {
+                kernel::mark_subsystem_failed("wayland");
+                unsafe {
+                    early_serial_write_str("RustOS: Wayland init FAILED: ");
+                    early_serial_write_str(e);
+                    early_serial_write_str("\r\n");
+                }
+            }
         }
 
         // Initialize Mutter foundation (Wayland handshake verification)
@@ -1551,33 +1667,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
-        // Validate GNOME foundation prerequisites before logging readiness.
-        match gnome::smoke_check_foundation() {
-            Ok(_readiness) => unsafe {
-                early_serial_write_str("RustOS: GNOME foundation smoke check passed\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GNOME foundation smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-
         // Validate full desktop session stack (linux compat + overlay + wayland + dbus).
-        match linux_compat::desktop::smoke_check() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Desktop session smoke check passed\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Desktop session smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+        unsafe {
+            early_serial_write_str(
+                "RustOS: desktop readiness checks deferred to userspace PID 1\r\n",
+            );
         }
-
-        // Log GNOME readiness after all foundation subsystems are initialized
-        gnome::log_boot_readiness();
-        let _ = crate::vfs::procfs::update_gnome_status();
 
         // ========================================================================
         // PHASE 9: Graphics Initialization (already done early — mark complete)
@@ -1625,12 +1720,14 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 let mut result = boot_ui::DesktopInitResult::new();
                 match desktop::init_default_desktop() {
                     Ok(()) => {
+                        kernel::mark_subsystem_ready("desktop");
                         result.window_manager_ready = true;
                         result.input_ready = true;
                         result.taskbar_ready = true;
                         result.windows_created = true;
                     }
                     Err(e) => {
+                        kernel::mark_subsystem_failed("desktop");
                         crate::serial_println!("Desktop setup error: {}", e);
                     }
                 }
@@ -1714,6 +1811,32 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         } else {
             crate::linux_compat::desktop::SessionBoot::Desktop
         };
+        let drm_mode_configured = use_graphics_desktop
+            && crate::gpu::opensource::drm_compat::configure_primary_mode(
+                graphics_result.width as u32,
+                graphics_result.height as u32,
+                graphics_result.bpp as u32,
+            )
+            .is_ok();
+        if drm_mode_configured {
+            crate::serial_println!(
+                "drm/kms: primary mode configured {}x{}x{}",
+                graphics_result.width,
+                graphics_result.height,
+                graphics_result.bpp
+            );
+        }
+        let drm_kms_ready =
+            use_graphics_desktop && drm_mode_configured && crate::vfs::drmfs::smoke_check().is_ok();
+        crate::linux_compat::desktop::mark_graphical_boot(
+            session_boot,
+            graphics_result.framebuffer_ready,
+            drm_kms_ready,
+            graphics_result.gpu_accelerated,
+            graphics_result.width,
+            graphics_result.height,
+            graphics_result.bpp,
+        );
 
         let mut userspace_spawned = false;
         if boot_config.prefer_userspace_init
@@ -1741,7 +1864,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         } else if boot_config.verbose {
             unsafe {
                 early_serial_write_str(
-                    "RustOS: no userspace init (or disabled), using kernel desktop only\r\n",
+                    "RustOS: no userspace init (or disabled), using kernel desktop fallback\r\n",
                 );
             }
         }

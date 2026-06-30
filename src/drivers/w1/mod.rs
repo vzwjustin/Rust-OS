@@ -177,11 +177,120 @@ pub fn search_slaves(master_id: u32) -> Result<Vec<u32>, &'static str> {
         return Ok(Vec::new());
     }
 
-    // In a real implementation, we'd do a binary tree search using ROM commands.
-    // For the software implementation, we just return already-registered slaves.
+    let (write_fn, read_fn) = {
+        let masters = W1_MASTERS.read();
+        let master = masters.get(&master_id).ok_or("W1 master not found")?;
+        (master.ops.write_byte, master.ops.read_byte)
+    };
+
+    let write_byte = |byte: u8| -> Result<(), &'static str> {
+        (write_fn)(master_id, byte).map_err(|_| "W1 write failed")
+    };
+    let read_byte =
+        || -> Result<u8, &'static str> { (read_fn)(master_id).map_err(|_| "W1 read failed") };
+
+    let mut found_roms: Vec<u64> = Vec::new();
+    let mut last_discrepancy: i32 = -1;
+    let max_roms = 64u32;
+
+    loop {
+        if found_roms.len() >= max_roms as usize {
+            break;
+        }
+
+        if !reset_bus(master_id)? {
+            break;
+        }
+
+        write_byte(0xF0)?;
+
+        let mut rom: u64 = 0;
+        let mut last_zero: i32 = -1;
+        let mut search_done = false;
+
+        for bit_idx in 0..64u32 {
+            let read_bit = read_byte()? & 1;
+            let comp_bit = read_byte()? & 1;
+
+            if read_bit == 1 && comp_bit == 1 {
+                break;
+            }
+
+            let search_dir: u8 = if read_bit != comp_bit {
+                read_bit as u8
+            } else if bit_idx as i32 == last_discrepancy {
+                1
+            } else if bit_idx as i32 > last_discrepancy {
+                0
+            } else {
+                ((rom >> bit_idx) & 1) as u8
+            };
+
+            if read_bit == 0 && comp_bit == 0 && search_dir == 0 {
+                last_zero = bit_idx as i32;
+            }
+
+            write_byte(search_dir)?;
+
+            if search_dir == 1 {
+                rom |= 1u64 << bit_idx;
+            }
+        }
+
+        if last_zero == -1 {
+            search_done = true;
+        }
+
+        last_discrepancy = last_zero;
+
+        let crc = (rom >> 56) as u8;
+        let mut calc_crc: u8 = 0;
+        for i in 0..7u32 {
+            let b = ((rom >> (i * 8)) & 0xFF) as u8;
+            calc_crc ^= b;
+            for _ in 0..8 {
+                if calc_crc & 1 != 0 {
+                    calc_crc = (calc_crc >> 1) ^ 0x8C;
+                } else {
+                    calc_crc >>= 1;
+                }
+            }
+        }
+
+        if calc_crc == crc && !found_roms.contains(&rom) {
+            found_roms.push(rom);
+        }
+
+        if search_done {
+            break;
+        }
+    }
+
+    let mut new_slave_ids = Vec::new();
+    for rom_val in &found_roms {
+        let rom_struct = W1Rom(*rom_val);
+        let already = {
+            let slaves = W1_SLAVES.read();
+            slaves
+                .values()
+                .any(|s| s.master_id == master_id && s.rom.0 == *rom_val)
+        };
+        if !already {
+            if let Ok(sid) = register_slave(master_id, rom_struct) {
+                new_slave_ids.push(sid);
+            }
+        }
+    }
+
     let masters = W1_MASTERS.read();
     let master = masters.get(&master_id).ok_or("W1 master not found")?;
-    Ok(master.device_ids.clone())
+    let mut all_ids = master.device_ids.clone();
+    for sid in &new_slave_ids {
+        if !all_ids.contains(sid) {
+            all_ids.push(*sid);
+        }
+    }
+    Ok(all_ids)
 }
 
 /// Register a discovered slave device.
@@ -341,6 +450,25 @@ fn ds18b20_write(_slave_id: u32, data: &[u8]) -> Result<usize, &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("w1: subsystem ready");
+    if !W1_MASTERS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_w1_ops();
+    let master_id = register_master("sw-w1-master", ops, 16)?;
+
+    register_family(
+        0x28,
+        W1FamilyDriver {
+            family: W1Family::Ds18b20,
+            name: String::from("ds18b20"),
+            add_slave: ds18b20_add,
+            remove_slave: ds18b20_remove,
+            read_data: ds18b20_read,
+            write_data: ds18b20_write,
+        },
+    )?;
+
+    crate::serial_println!("w1: software master registered (id={})", master_id);
     Ok(())
 }

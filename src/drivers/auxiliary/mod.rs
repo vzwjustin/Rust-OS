@@ -48,6 +48,20 @@ static DRIVER_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Register an auxiliary device on the auxiliary bus.
 pub fn register_device(name: &str, parent_id: u32, modalias: &str) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("Auxiliary device name is empty");
+    }
+    if modalias.is_empty() {
+        return Err("Auxiliary device modalias is empty");
+    }
+    if AUX_DEVICES
+        .read()
+        .values()
+        .any(|dev| dev.name == name && dev.parent_id == parent_id)
+    {
+        return Err("Auxiliary device already registered");
+    }
+
     let id = DEVICE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = AuxiliaryDevice {
         id,
@@ -60,7 +74,10 @@ pub fn register_device(name: &str, parent_id: u32, modalias: &str) -> Result<u32
     AUX_DEVICES.write().insert(id, dev);
 
     // Try to match with existing drivers
-    try_match_driver(id)?;
+    if let Err(err) = try_match_driver(id) {
+        AUX_DEVICES.write().remove(&id);
+        return Err(err);
+    }
     Ok(id)
 }
 
@@ -90,6 +107,20 @@ pub fn unregister_device(device_id: u32) -> Result<(), &'static str> {
 
 /// Register an auxiliary driver.
 pub fn register_driver(driver: AuxiliaryDriver) -> Result<u32, &'static str> {
+    if driver.name.is_empty() {
+        return Err("Auxiliary driver name is empty");
+    }
+    if driver.id_table.is_empty() {
+        return Err("Auxiliary driver ID table is empty");
+    }
+    if AUX_DRIVERS
+        .read()
+        .values()
+        .any(|existing| existing.name == driver.name)
+    {
+        return Err("Auxiliary driver already registered");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let driver_name = driver.name.clone();
     AUX_DRIVERS.write().insert(id, driver);
@@ -105,7 +136,10 @@ pub fn register_driver(driver: AuxiliaryDriver) -> Result<u32, &'static str> {
     };
 
     for dev_id in device_ids {
-        try_match_driver(dev_id)?;
+        if let Err(err) = try_match_driver(dev_id) {
+            AUX_DRIVERS.write().remove(&id);
+            return Err(err);
+        }
     }
 
     Ok(id)
@@ -230,6 +264,6 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("auxiliary: subsystem ready");
+    crate::serial_println!("auxiliary: framework ready");
     Ok(())
 }

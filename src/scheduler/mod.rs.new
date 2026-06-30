@@ -1,0 +1,572 @@
+//! Scheduler subsystem facade for RustOS
+//!
+//! All process state and scheduling decisions are maintained by the canonical
+//! process manager (`crate::process::ProcessManager`). This module provides a
+//! stable scheduler subsystem API that delegates to the process manager, so
+//! there is exactly one process table and one scheduler in the kernel.
+//!
+//! The per-CPU scheduler state and advanced scheduling algorithms that used to
+//! live in this module are currently unused; they can be reintroduced later as
+//! an evolution of the process manager's scheduler without changing the public
+//! API.
+
+pub mod completion;
+pub mod wait;
+
+use crate::process::{self, Pid, Priority, ProcessState};
+use alloc::{collections::VecDeque, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
+
+/// Process ID type
+pub type Pid = u32;
+
+/// Thread ID type
+pub type Tid = u64;
+
+/// CPU ID type
+pub type CpuId = u32;
+
+/// FPU/SSE/AVX state structure (512 bytes for FXSAVE/FXRSTOR)
+#[derive(Debug, Clone)]
+#[repr(C, align(16))]
+pub struct FpuState {
+    /// FPU control word
+    pub fcw: u16,
+    /// FPU status word
+    pub fsw: u16,
+    /// FPU tag word
+    pub ftw: u8,
+    /// Reserved
+    pub reserved1: u8,
+    /// FPU instruction pointer offset
+    pub fop: u16,
+    /// FPU instruction pointer segment
+    pub fip: u32,
+    /// FPU data pointer offset
+    pub fdp: u32,
+    /// FPU data pointer segment
+    pub fds: u32,
+    /// MXCSR register
+    pub mxcsr: u32,
+    /// MXCSR mask
+    pub mxcsr_mask: u32,
+    /// ST0-ST7 registers (8 * 16 bytes)
+    pub st_regs: [u8; 128],
+    /// XMM0-XMM15 registers (16 * 16 bytes)
+    pub xmm_regs: [u8; 256],
+    /// Padding to align to 512 bytes
+    pub padding: [u8; 96],
+}
+
+impl Default for FpuState {
+    fn default() -> Self {
+        Self {
+            fcw: 0x037F,
+            fsw: 0,
+            ftw: 0xFF,
+            reserved1: 0,
+            fop: 0,
+            fip: 0,
+            fdp: 0,
+            fds: 0,
+            mxcsr: 0x1F80,
+            mxcsr_mask: 0xFFFF,
+            st_regs: [0; 128],
+            xmm_regs: [0; 256],
+            padding: [0; 96],
+        }
+    }
+}
+
+/// CPU registers state for context switching
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct CpuState {
+    // General purpose registers
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+
+    // Control registers
+    pub rip: u64,
+    pub rflags: u64,
+    pub cs: u64,
+    pub ss: u64,
+
+    // Segment registers
+    pub ds: u64,
+    pub es: u64,
+    pub fs: u64,
+    pub gs: u64,
+}
+
+impl Default for CpuState {
+    fn default() -> Self {
+        Self {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            rsp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rip: 0,
+            rflags: 0x200, // Enable interrupts
+            cs: 0x08,
+            ss: 0x10, // Kernel code/data segments
+            ds: 0x10,
+            es: 0x10,
+            fs: 0x10,
+            gs: 0x10,
+        }
+    }
+}
+
+/// Per-CPU scheduler state stub (kept for API compatibility).
+#[derive(Debug)]
+pub struct CpuScheduler {
+    /// CPU ID
+    pub cpu_id: CpuId,
+    /// Currently running process
+    pub current_process: Option<Pid>,
+    /// Ready queues for each priority level (unused; scheduling is delegated).
+    pub ready_queues: [VecDeque<Pid>; Priority::count()],
+    /// Time slice remaining for current process (in microseconds)
+    pub time_slice_remaining: u64,
+    /// Total processes scheduled on this CPU
+    pub total_scheduled: u64,
+    /// CPU utilization percentage (0-100)
+    pub utilization: u8,
+    /// Idle time in microseconds
+    pub idle_time: u64,
+}
+
+impl CpuScheduler {
+    /// Create a new CPU scheduler stub
+    pub fn new(cpu_id: CpuId) -> Self {
+        Self {
+            cpu_id,
+            current_process: None,
+            ready_queues: [
+                VecDeque::new(),
+                VecDeque::new(),
+                VecDeque::new(),
+                VecDeque::new(),
+                VecDeque::new(),
+            ],
+            time_slice_remaining: 0,
+            total_scheduled: 0,
+            utilization: 0,
+            idle_time: 0,
+        }
+    }
+
+    /// Get the number of ready processes (always 0; scheduling is delegated).
+    pub fn ready_process_count(&self) -> usize {
+        0
+    }
+
+    /// Get the total number of processes tracked by the system.
+    pub fn process_count(&self) -> usize {
+        process::get_process_manager().process_count()
+    }
+}
+
+/// Scheduler statistics
+#[derive(Debug, Clone)]
+pub struct SchedulerStats {
+    pub total_processes: usize,
+    pub ready_processes: usize,
+    pub running_processes: usize,
+    pub blocked_processes: usize,
+    pub sleeping_processes: usize,
+    pub terminated_processes: usize,
+    pub creating_processes: usize,
+    pub realtime_processes: usize,
+    pub high_priority_processes: usize,
+    pub normal_priority_processes: usize,
+    pub low_priority_processes: usize,
+    pub idle_priority_processes: usize,
+    pub cpu_utilizations: Vec<u8>,
+    pub uptime_seconds: u64,
+}
+
+/// Global scheduler state — delegates to the canonical process manager.
+pub struct GlobalScheduler {
+    initialized: AtomicBool,
+}
+
+impl GlobalScheduler {
+    /// Create a new global scheduler
+    pub const fn new() -> Self {
+        Self {
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    /// Initialize the scheduler subsystem.
+    /// Ensures the process manager is ready and creates the init process (PID 1).
+    pub fn init(&self) -> Result<(), &'static str> {
+        if self.initialized.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        process::init()?;
+        let pm = process::get_process_manager();
+        pm.create_process("init", None, Priority::High)?;
+        Ok(())
+    }
+
+    /// Create a new process via the canonical process manager.
+    pub fn create_process(
+        &self,
+        parent_pid: Option<Pid>,
+        priority: Priority,
+        name: &str,
+    ) -> Result<Pid, &'static str> {
+        process::get_process_manager().create_process(name, parent_pid, priority)
+    }
+
+    /// Terminate a process via the canonical process manager.
+    pub fn terminate_process(&self, pid: Pid) -> Result<(), &'static str> {
+        process::get_process_manager().terminate_process(pid, 0)
+    }
+
+    /// Block a process via the canonical process manager.
+    pub fn block_process(&self, pid: Pid) -> Result<(), &'static str> {
+        process::get_process_manager().block_process(pid)
+    }
+
+    /// Unblock a process via the canonical process manager.
+    pub fn unblock_process(&self, pid: Pid) -> Result<(), &'static str> {
+        process::get_process_manager().unblock_process(pid)
+    }
+
+    /// Schedule the next process on the given CPU.
+    pub fn schedule(&self, _cpu_id: CpuId) -> Option<Pid> {
+        process::get_process_manager().schedule().ok().flatten()
+    }
+
+    /// Handle timer tick for scheduling accounting.
+    pub fn timer_tick(&self, _cpu_id: CpuId, elapsed_us: u64) {
+        process::get_process_manager().tick_cpu_time(elapsed_us);
+    }
+
+    /// Get scheduler statistics from the canonical process manager.
+    pub fn get_stats(&self) -> SchedulerStats {
+        let pm = process::get_process_manager();
+        let processes = pm.find_processes(|_| true);
+
+        let mut stats_by_state = [0usize; 6];
+        let mut stats_by_priority = [0usize; 5];
+
+        for pcb in &processes {
+            let state_idx = match pcb.state {
+                ProcessState::Ready => 0,
+                ProcessState::Running => 1,
+                ProcessState::Blocked => 2,
+                ProcessState::Sleeping => 3,
+                ProcessState::Zombie => 4,
+                ProcessState::Terminated => 4,
+                ProcessState::Dead => 4,
+            };
+            stats_by_state[state_idx] += 1;
+            stats_by_priority[pcb.priority as usize] += 1;
+        }
+
+        SchedulerStats {
+            total_processes: processes.len(),
+            ready_processes: stats_by_state[0],
+            running_processes: stats_by_state[1],
+            blocked_processes: stats_by_state[2],
+            sleeping_processes: stats_by_state[3],
+            terminated_processes: stats_by_state[4],
+            creating_processes: stats_by_state[5],
+            realtime_processes: stats_by_priority[0],
+            high_priority_processes: stats_by_priority[1],
+            normal_priority_processes: stats_by_priority[2],
+            low_priority_processes: stats_by_priority[3],
+            idle_priority_processes: stats_by_priority[4],
+            cpu_utilizations: Vec::new(),
+            uptime_seconds: get_system_time() / 1_000_000,
+        }
+    }
+}
+
+static GLOBAL_SCHEDULER: GlobalScheduler = GlobalScheduler::new();
+
+static CURRENT_CPU_SCHEDULER: Mutex<CpuScheduler> = Mutex::new(CpuScheduler::new(0));
+
+/// Initialize the scheduler subsystem
+pub fn init() -> Result<(), &'static str> {
+    GLOBAL_SCHEDULER.init()
+}
+
+/// Create a new process
+pub fn create_process(
+    parent_pid: Option<Pid>,
+    priority: Priority,
+    name: &str,
+) -> Result<Pid, &'static str> {
+    GLOBAL_SCHEDULER.create_process(parent_pid, priority, name)
+}
+
+/// Terminate a process
+pub fn terminate_process(pid: Pid) -> Result<(), &'static str> {
+    GLOBAL_SCHEDULER.terminate_process(pid)
+}
+
+/// Block a process
+pub fn block_process(pid: Pid) -> Result<(), &'static str> {
+    GLOBAL_SCHEDULER.block_process(pid)
+}
+
+/// Unblock a process
+pub fn unblock_process(pid: Pid) -> Result<(), &'static str> {
+    GLOBAL_SCHEDULER.unblock_process(pid)
+}
+
+/// Change process priority
+pub fn set_process_priority(pid: Pid, new_priority: Priority) -> Result<(), &'static str> {
+    process::scheduler::set_process_priority(pid, new_priority)
+}
+
+/// Schedule the next process on the current CPU
+pub fn schedule() -> Option<Pid> {
+    let cpu_id = get_current_cpu_id();
+    let next_pid = GLOBAL_SCHEDULER.schedule(cpu_id);
+
+    // Update thread manager with the main thread of the scheduled process
+    if let Some(pid) = next_pid {
+        let thread_manager = crate::process::thread::get_thread_manager();
+        thread_manager.set_current_thread(pid);
+    }
+
+    next_pid
+}
+
+/// Handle timer tick for scheduling
+pub fn timer_tick(elapsed_us: u64) {
+    let cpu_id = get_current_cpu_id();
+    GLOBAL_SCHEDULER.timer_tick(cpu_id, elapsed_us);
+}
+
+/// Get scheduler statistics
+pub fn get_scheduler_stats() -> SchedulerStats {
+    GLOBAL_SCHEDULER.get_stats()
+}
+
+/// Get current CPU ID
+fn get_current_cpu_id() -> CpuId {
+    crate::smp::current_cpu()
+}
+
+/// Get system time in microseconds
+fn get_system_time() -> u64 {
+    crate::time::uptime_us()
+}
+
+/// Context switch between processes (real assembly implementation)
+#[unsafe(naked)]
+pub unsafe extern "C" fn context_switch(old_state: *mut CpuState, new_state: *const CpuState) {
+    use core::arch::naked_asm;
+
+    naked_asm!(
+        r#"
+        // Save current CPU state to old_state (RDI)
+        mov [rdi + 0x00], rax
+        mov [rdi + 0x08], rbx
+        mov [rdi + 0x10], rcx
+        mov [rdi + 0x18], rdx
+        mov [rdi + 0x20], rsi
+        mov [rdi + 0x28], rdi
+        mov [rdi + 0x30], rbp
+        mov [rdi + 0x38], rsp
+        mov [rdi + 0x40], r8
+        mov [rdi + 0x48], r9
+        mov [rdi + 0x50], r10
+        mov [rdi + 0x58], r11
+        mov [rdi + 0x60], r12
+        mov [rdi + 0x68], r13
+        mov [rdi + 0x70], r14
+        mov [rdi + 0x78], r15
+
+        // Save RIP (return address from stack)
+        mov rax, [rsp]
+        mov [rdi + 0x80], rax
+
+        // Save RFLAGS
+        pushf
+        pop rax
+        mov [rdi + 0x88], rax
+
+        // Save segment registers
+        mov ax, cs
+        mov [rdi + 0x90], rax
+        mov ax, ss
+        mov [rdi + 0x98], rax
+        mov ax, ds
+        mov [rdi + 0xA0], rax
+        mov ax, es
+        mov [rdi + 0xA8], rax
+        mov ax, fs
+        mov [rdi + 0xB0], rax
+        mov ax, gs
+        mov [rdi + 0xB8], rax
+
+        // Load new CPU state from new_state (RSI)
+        mov rax, [rsi + 0x00]
+        mov rbx, [rsi + 0x08]
+        mov rcx, [rsi + 0x10]
+        mov rdx, [rsi + 0x18]
+        mov rbp, [rsi + 0x30]
+        mov rsp, [rsi + 0x38]
+        mov r8,  [rsi + 0x40]
+        mov r9,  [rsi + 0x48]
+        mov r10, [rsi + 0x50]
+        mov r11, [rsi + 0x58]
+        mov r12, [rsi + 0x60]
+        mov r13, [rsi + 0x68]
+        mov r14, [rsi + 0x70]
+        mov r15, [rsi + 0x78]
+
+        // Restore RFLAGS
+        push qword ptr [rsi + 0x88]
+        popf
+
+        // Restore segment registers (data segments only, CS/SS handled by iret)
+        mov ax, [rsi + 0xA0]
+        mov ds, ax
+        mov ax, [rsi + 0xA8]
+        mov es, ax
+        mov ax, [rsi + 0xB0]
+        mov fs, ax
+        mov ax, [rsi + 0xB8]
+        mov gs, ax
+
+        // Push return address and jump to new process
+        push qword ptr [rsi + 0x80]
+
+        // Restore RSI and RDI last
+        mov rdi, [rsi + 0x28]
+        mov rsi, [rsi + 0x20]
+
+        // Return to new process
+        ret
+        "#
+    );
+}
+
+/// Save FPU/SSE state
+pub unsafe fn save_fpu_state(fpu_state: *mut FpuState) {
+    use core::arch::asm;
+
+    asm!(
+        "fxsave [{}]",
+        in(reg) fpu_state,
+        options(nostack, preserves_flags)
+    );
+}
+
+/// Restore FPU/SSE state
+pub unsafe fn restore_fpu_state(fpu_state: *const FpuState) {
+    use core::arch::asm;
+
+    asm!(
+        "fxrstor [{}]",
+        in(reg) fpu_state,
+        options(nostack, preserves_flags)
+    );
+}
+
+/// Initialize FPU for the current CPU
+pub unsafe fn init_fpu() {
+    use core::arch::asm;
+
+    asm!("finit", options(nostack, preserves_flags));
+
+    let mut cr4: u64;
+    asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
+    cr4 |= (1 << 9) | (1 << 10); // OSFXSR and OSXMMEXCPT
+    asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+
+    asm!("clts", options(nostack, preserves_flags));
+}
+
+/// Complete context switch with FPU state
+pub unsafe fn context_switch_with_fpu(
+    old_cpu_state: *mut CpuState,
+    old_fpu_state: *mut FpuState,
+    new_cpu_state: *const CpuState,
+    new_fpu_state: *const FpuState,
+) {
+    save_fpu_state(old_fpu_state);
+    context_switch(old_cpu_state, new_cpu_state);
+    restore_fpu_state(new_fpu_state);
+}
+
+/// Set CPU affinity for a process
+pub fn set_process_affinity(pid: Pid, cpu_mask: u64) -> Result<(), &'static str> {
+    process::get_process_manager().set_cpu_affinity(pid, cpu_mask)
+}
+
+/// Get CPU affinity for a process
+pub fn get_process_affinity(pid: Pid) -> Option<u64> {
+    process::get_process_manager()
+        .get_process(pid)
+        .map(|pcb| pcb.sched_info.cpu_affinity)
+}
+
+/// Force a process to migrate to a specific CPU (no-op; affinity is advisory).
+pub fn migrate_process_to_cpu(_pid: Pid, _target_cpu: CpuId) -> Result<(), &'static str> {
+    Ok(())
+}
+
+/// Get current CPU load information
+pub fn get_cpu_loads() -> Vec<(CpuId, usize, u8)> {
+    let mut loads = Vec::new();
+    let pm = process::get_process_manager();
+    loads.push((0, pm.process_count(), 0));
+    loads
+}
+
+/// Enable or disable load balancing (no-op; kept for API compatibility)
+pub fn set_load_balancing(_enabled: bool) {}
+
+/// Yield CPU time to allow other processes to run
+pub fn yield_cpu() {
+    process::scheduler::yield_cpu();
+}
+
+/// Get a reference to the current CPU's scheduler (kept for API compatibility)
+pub fn get_scheduler() -> Option<&'static Mutex<CpuScheduler>> {
+    Some(&CURRENT_CPU_SCHEDULER)
+}
+
+/// Update the priority of a process (convenience wrapper)
+pub fn update_process_priority(pid: Pid, new_priority: Priority) {
+    let _ = set_process_priority(pid, new_priority);
+}

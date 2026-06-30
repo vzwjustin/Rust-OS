@@ -16,9 +16,9 @@ use super::{LinuxError, LinuxResult};
 use crate::process;
 
 /// FS base MSR (x86_64)
-const MSR_FS_BASE: u32 = 0xC000_0100;
+const MSR_FS_BASE: u32 = crate::arch::x86::msr::MSR_FS_BASE;
 /// GS base MSR (x86_64)
-const MSR_GS_BASE: u32 = 0xC000_0101;
+const MSR_GS_BASE: u32 = crate::arch::x86::msr::MSR_GS_BASE;
 
 static CLEAR_CHILD_TID: AtomicU64 = AtomicU64::new(0);
 
@@ -39,6 +39,10 @@ static THREAD_AREAS: RwLock<BTreeMap<Pid, [u8; 32]>> = RwLock::new(BTreeMap::new
 struct FutexWaiter {
     pid: Pid,
     bitset: u32,
+    /// If non-zero, this waiter is a FUTEX_WAIT_REQUEUE_PI caller waiting
+    /// on `uaddr` to be requeued to the PI futex at this address.
+    /// FUTEX_CMP_REQUEUE_PI checks this field to find eligible waiters.
+    pi_requeue_target: usize,
 }
 
 /// Futex wait queues keyed by userspace address.
@@ -302,6 +306,7 @@ pub fn futex(
                 waiters.entry(key).or_default().push(FutexWaiter {
                     pid: pid as Pid,
                     bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                    pi_requeue_target: 0,
                 });
                 // Mark ourselves Blocked while still holding the queue lock. A
                 // concurrent FUTEX_WAKE must take this same lock to drain us, so
@@ -434,6 +439,7 @@ pub fn futex(
                 waiters.entry(key).or_default().push(FutexWaiter {
                     pid: pid as Pid,
                     bitset,
+                    pi_requeue_target: 0,
                 });
                 // Block under the queue lock to close the lost-wakeup race with
                 // a concurrent FUTEX_WAKE_BITSET (see FUTEX_WAIT above).
@@ -462,8 +468,8 @@ pub fn futex(
                     let mut remaining = Vec::with_capacity(queue.len());
                     for waiter in queue.drain(..) {
                         if woke < nr_wake as i32 && (waiter.bitset & bitset) != 0 {
-                            let _ = process::get_process_manager()
-                                .unblock_process(waiter.pid as u32);
+                            let _ =
+                                process::get_process_manager().unblock_process(waiter.pid as u32);
                             woke += 1;
                         } else {
                             remaining.push(waiter);
@@ -496,6 +502,7 @@ pub fn futex(
                 waiters.entry(key).or_default().push(FutexWaiter {
                     pid: pid as Pid,
                     bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                    pi_requeue_target: 0,
                 });
                 // Block under the queue lock to close the lost-wakeup race
                 // against FUTEX_UNLOCK_PI (see FUTEX_WAIT above).
@@ -544,7 +551,108 @@ pub fn futex(
                 Err(LinuxError::EAGAIN)
             }
         }
-        futex_op::FUTEX_WAIT_REQUEUE_PI | futex_op::FUTEX_CMP_REQUEUE_PI => Err(LinuxError::ENOSYS),
+        futex_op::FUTEX_WAIT_REQUEUE_PI => {
+            // FUTEX_WAIT_REQUEUE_PI: Wait on uaddr (a regular futex) with the
+            // expectation that a FUTEX_CMP_REQUEUE_PI will requeue us to
+            // uaddr2 (a PI futex).  When requeued and woken, we acquire uaddr2.
+            //
+            // Parameters: uaddr = source futex, val = expected value,
+            // uaddr2 = target PI futex, val3 = expected value of uaddr2.
+            if _uaddr2.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+
+            // Check that *uaddr still equals val (like FUTEX_WAIT).
+            unsafe {
+                if *uaddr != val {
+                    return Err(LinuxError::EAGAIN);
+                }
+            }
+
+            let key = uaddr as usize;
+            let target_key = _uaddr2 as usize;
+            let pid = process::current_pid();
+
+            {
+                let mut waiters = FUTEX_WAITERS.write();
+                waiters.entry(key).or_default().push(FutexWaiter {
+                    pid: pid as Pid,
+                    bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                    pi_requeue_target: target_key,
+                });
+                // Block under the queue lock to close the lost-wakeup race.
+                let _ = process::get_process_manager().block_process(pid);
+            }
+
+            // When woken, we've been requeued to uaddr2 and it's our turn.
+            // Try to acquire the PI futex at uaddr2 by atomically setting it
+            // to our TID (if it's 0).
+            let pi_futex = unsafe { &*(_uaddr2 as *const AtomicI32) };
+            let tid = pid as i32;
+            pi_futex
+                .compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst)
+                .map(|_| 0)
+                .map_err(|_| LinuxError::EAGAIN)
+        }
+        futex_op::FUTEX_CMP_REQUEUE_PI => {
+            // FUTEX_CMP_REQUEUE_PI: Wake up to `val` waiters on uaddr and
+            // requeue them onto the PI futex at uaddr2.  Like FUTEX_CMP_REQUEUE
+            // but the requeued waiters become PI futex waiters.
+            //
+            // Parameters: uaddr = source, val = nr_wake, uaddr2 = target PI futex,
+            // val3 = expected value of *uaddr (cmp check).
+            if _uaddr2.is_null() {
+                return Err(LinuxError::EFAULT);
+            }
+
+            // CMP check: *uaddr must equal val3, otherwise EAGAIN.
+            unsafe {
+                if *uaddr != _val3 {
+                    return Err(LinuxError::EAGAIN);
+                }
+            }
+
+            let key = uaddr as usize;
+            let target_key = _uaddr2 as usize;
+            let nr_wake = val.max(0) as usize;
+            let mut woke = 0i32;
+            let mut requeued = 0i32;
+
+            let mut waiters = FUTEX_WAITERS.write();
+
+            // Wake up to nr_wake waiters that have pi_requeue_target == target_key.
+            // Move them to the target PI futex wait queue and unblock them so
+            // they can try to acquire the PI futex.
+            let mut requeued_waiters: Vec<FutexWaiter> = Vec::new();
+            if let Some(queue) = waiters.get_mut(&key) {
+                let mut remaining: Vec<FutexWaiter> = Vec::with_capacity(queue.len());
+                for waiter in queue.drain(..) {
+                    if woke < nr_wake as i32 && waiter.pi_requeue_target == target_key {
+                        requeued_waiters.push(FutexWaiter {
+                            pid: waiter.pid,
+                            bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                            pi_requeue_target: 0,
+                        });
+                        woke += 1;
+                    } else {
+                        remaining.push(waiter);
+                    }
+                }
+                if remaining.is_empty() {
+                    waiters.remove(&key);
+                } else {
+                    *queue = remaining;
+                }
+            }
+            for waiter in requeued_waiters {
+                let pid = waiter.pid;
+                waiters.entry(target_key).or_default().push(waiter);
+                let _ = process::get_process_manager().unblock_process(pid as u32);
+                requeued += 1;
+            }
+
+            Ok(requeued)
+        }
         _ => Err(LinuxError::ENOSYS),
     }
 }
@@ -643,22 +751,19 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
 pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
     inc_ops();
 
-    const ARCH_SET_GS: i32 = 0x1001;
-    const ARCH_SET_FS: i32 = 0x1002;
-    const ARCH_GET_FS: i32 = 0x1003;
-    const ARCH_GET_GS: i32 = 0x1004;
+    use crate::arch::x86::prctl;
 
     let tid = current_tid();
 
     match code {
-        ARCH_SET_FS => {
+        prctl::ARCH_SET_FS => {
             TLS_FS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_FS_BASE, addr);
             }
             Ok(0)
         }
-        ARCH_GET_FS => {
+        prctl::ARCH_GET_FS => {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
@@ -668,20 +773,35 @@ pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
             }
             Ok(0)
         }
-        ARCH_SET_GS => {
+        prctl::ARCH_SET_GS => {
             TLS_GS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_GS_BASE, addr);
             }
             Ok(0)
         }
-        ARCH_GET_GS => {
+        prctl::ARCH_GET_GS => {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
             let base = TLS_GS_BASE.read().get(&tid).copied().unwrap_or(0);
             unsafe {
                 *(addr as *mut u64) = base;
+            }
+            Ok(0)
+        }
+        prctl::ARCH_GET_CPUID => {
+            if addr == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            unsafe {
+                *(addr as *mut u64) = 1;
+            }
+            Ok(0)
+        }
+        prctl::ARCH_SET_CPUID => {
+            if addr != 0 && addr != 1 {
+                return Err(LinuxError::EINVAL);
             }
             Ok(0)
         }

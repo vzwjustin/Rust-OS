@@ -599,6 +599,20 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
         return poll_events::POLLNVAL;
     }
 
+    // AF_UNIX sockets are backed by regular VFS fds, so the generic match below
+    // would report them as perpetually readable. Report true readiness from the
+    // underlying transport instead (the sink side is always writable).
+    if crate::net::unix::is_unix_fd(fd) {
+        let mut revents = 0i16;
+        if events & poll_events::POLLIN != 0 && crate::net::unix::poll_readable(fd) {
+            revents |= poll_events::POLLIN;
+        }
+        if events & poll_events::POLLOUT != 0 {
+            revents |= poll_events::POLLOUT;
+        }
+        return revents;
+    }
+
     let Ok(kind) = vfs::vfs_fd_kind(fd) else {
         return poll_events::POLLNVAL;
     };

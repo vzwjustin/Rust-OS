@@ -105,10 +105,37 @@ static APM_BIOS: RwLock<BTreeMap<u32, ApmBios>> = RwLock::new(BTreeMap::new());
 static APM_DEVS: RwLock<BTreeMap<u32, ApmDevice>> = RwLock::new(BTreeMap::new());
 static APM_EVENT_QUEUE: RwLock<Vec<ApmEvent>> = RwLock::new(Vec::new());
 
+fn power_mgmt_available(state: ApmState) -> bool {
+    !matches!(state, ApmState::Disabled | ApmState::Off)
+}
+
+fn find_existing_bios(version: u16, bios_flags: u16) -> Option<u32> {
+    APM_BIOS
+        .read()
+        .iter()
+        .find(|(_, bios)| bios.version == version && bios.bios_flags == bios_flags)
+        .map(|(id, _)| *id)
+}
+
+fn find_existing_device(bios_id: u32, name: &str) -> Option<u32> {
+    APM_DEVS
+        .read()
+        .iter()
+        .find(|(_, dev)| dev.bios_id == bios_id && dev.name == name)
+        .map(|(id, _)| *id)
+}
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Register an APM BIOS (Linux `apm_bios_init`).
 pub fn register_bios(version: u16, bios_flags: u16, ops: ApmOps) -> Result<u32, &'static str> {
+    if version == 0 {
+        return Err("APM BIOS version is invalid");
+    }
+    if let Some(id) = find_existing_bios(version, bios_flags) {
+        return Ok(id);
+    }
+
     let id = BIOS_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let bios = ApmBios {
         id,
@@ -189,6 +216,9 @@ pub fn standby(bios_id: u32) -> Result<(), &'static str> {
     let standby_fn = {
         let bioses = APM_BIOS.read();
         let bios = bioses.get(&bios_id).ok_or("APM BIOS not found")?;
+        if !power_mgmt_available(bios.state) {
+            return Err("APM power management is disabled");
+        }
         bios.ops.standby
     };
     (standby_fn)(bios_id)?;
@@ -205,6 +235,9 @@ pub fn suspend(bios_id: u32) -> Result<(), &'static str> {
     let suspend_fn = {
         let bioses = APM_BIOS.read();
         let bios = bioses.get(&bios_id).ok_or("APM BIOS not found")?;
+        if !power_mgmt_available(bios.state) {
+            return Err("APM power management is disabled");
+        }
         bios.ops.suspend
     };
     (suspend_fn)(bios_id)?;
@@ -241,6 +274,16 @@ pub fn poll_events() -> Vec<ApmEvent> {
 
 /// Register an APM device (Linux `apm_open`).
 pub fn register_device(bios_id: u32, name: &str) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("APM device name is empty");
+    }
+    if !APM_BIOS.read().contains_key(&bios_id) {
+        return Err("APM BIOS not found");
+    }
+    if let Some(id) = find_existing_device(bios_id, name) {
+        return Ok(id);
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = ApmDevice {
         id,
@@ -316,6 +359,12 @@ pub fn software_apm_ops() -> ApmOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("apm: subsystem ready");
+    if !APM_BIOS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_apm_ops();
+    let bios_id = register_bios(0x0102, 0, ops)?;
+    crate::serial_println!("apm: software BIOS registered (id={}, v1.2)", bios_id);
     Ok(())
 }

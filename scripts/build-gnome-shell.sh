@@ -51,6 +51,7 @@ extract_apk() {
 
 echo "=== Resolving Alpine GNOME package dependencies ==="
 PACKAGES=$(python3 "$SCRIPT_DIR/alpine-resolve-deps.py" \
+    openrc dbus dbus-openrc elogind polkit \
     gnome-shell gnome-session gnome-settings-daemon \
     gsettings-desktop-schemas adwaita-icon-theme font-cantarell mutter \
     font-ubuntu gnome-shell-extensions \

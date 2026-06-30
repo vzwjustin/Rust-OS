@@ -18,13 +18,13 @@ use x86_64::registers::model_specific::{LStar, SFMask, Star};
 use x86_64::VirtAddr;
 
 /// MSR numbers for SYSCALL/SYSRET support
-const IA32_STAR: u32 = 0xC000_0081;
-const IA32_LSTAR: u32 = 0xC000_0082;
-const IA32_FMASK: u32 = 0xC000_0084;
-const IA32_EFER: u32 = 0xC000_0080;
+const IA32_STAR: u32 = crate::arch::x86::msr::MSR_STAR;
+const IA32_LSTAR: u32 = crate::arch::x86::msr::MSR_LSTAR;
+const IA32_FMASK: u32 = crate::arch::x86::msr::MSR_SYSCALL_MASK;
+const IA32_EFER: u32 = crate::arch::x86::msr::MSR_EFER;
 
 /// EFER bits
-const EFER_SCE: u64 = 1 << 0; // System Call Extensions
+const EFER_SCE: u64 = crate::arch::x86::msr::EFER_SCE;
 
 /// Initialize SYSCALL/SYSRET support
 ///

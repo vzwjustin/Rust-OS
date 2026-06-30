@@ -364,5 +364,22 @@ pub fn init() -> Result<(), &'static str> {
     let ops = software_nvme_ops();
     let ctrl_id = register_ctrl("sw-nvme0", ops)?;
     init_ctrl(ctrl_id)?;
+
+    // Publish a representative NVMe controller into the unified `base` model
+    // (additive; tolerant of a missing bus and never fatal to NVMe init).
+    publish_to_base();
+
     Ok(())
+}
+
+/// Register a representative NVMe device into the unified `base` device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("sw-nvme0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("nvme", "sw-nvme0", "nvme,controller") {
+        let _ = base::set_property(id, "model", "RustOS-SW-NVMe");
+        let _ = base::set_property(id, "type", "ssd");
+    }
 }

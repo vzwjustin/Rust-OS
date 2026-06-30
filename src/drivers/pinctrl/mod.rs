@@ -205,12 +205,26 @@ static NEXT_CTRL_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Register a pin controller (Linux `pinctrl_register`).
 pub fn register_controller(name: &str, ops: &'static PinctrlOps) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("Pin controller name is empty");
+    }
     let npins = (ops.get_npins)();
     if npins == 0 {
         return Err("Pin controller must have at least one pin");
     }
+    if (ops.get_groups_count)() == 0 {
+        return Err("Pin controller must have at least one group");
+    }
+    if (ops.get_functions_count)() == 0 {
+        return Err("Pin controller must have at least one function");
+    }
+    let mut devs = PINCTRL_DEVS.write();
+    if devs.values().any(|dev| dev.name == name) {
+        return Err("Pin controller already registered");
+    }
+
     let id = NEXT_CTRL_ID.fetch_add(1, Ordering::SeqCst);
-    PINCTRL_DEVS.write().insert(
+    devs.insert(
         id,
         PinctrlDev {
             id,
@@ -239,6 +253,10 @@ pub fn register_controller(name: &str, ops: &'static PinctrlOps) -> Result<u32, 
 
 /// Request exclusive use of a pin (Linux `pin_request`).
 pub fn request_pin(ctrl_id: u32, pin: u32, owner: &str) -> Result<(), &'static str> {
+    if owner.is_empty() {
+        return Err("Pin owner is empty");
+    }
+
     let mut states = PIN_STATES.write();
     let state = states.get_mut(&(ctrl_id, pin)).ok_or("Pin not found")?;
     if state.owner.is_some() {
@@ -259,16 +277,35 @@ pub fn free_pin(ctrl_id: u32, pin: u32) -> Result<(), &'static str> {
 
 /// Select a function for a group of pins (Linux `pinmux_select`).
 pub fn select_function(ctrl_id: u32, function: u32, group: u32) -> Result<(), &'static str> {
-    let ops = {
+    let (ops, npins) = {
         let devs = PINCTRL_DEVS.read();
         let dev = devs.get(&ctrl_id).ok_or("Pin controller not found")?;
-        dev.ops
+        let group_count = (dev.ops.get_groups_count)();
+        if group >= group_count {
+            return Err("Pin group selector out of range");
+        }
+        let function_count = (dev.ops.get_functions_count)();
+        if function >= function_count {
+            return Err("Pin function selector out of range");
+        }
+        let function_groups = (dev.ops.get_function_groups)(function);
+        if !function_groups.iter().any(|candidate| *candidate == group) {
+            return Err("Pin function does not support group");
+        }
+        (dev.ops, dev.npins)
     };
+
+    let pins = (ops.get_group_pins)(group);
+    if pins.is_empty() {
+        return Err("Pin group has no pins");
+    }
+    if pins.iter().any(|pin| *pin >= npins) {
+        return Err("Pin group contains invalid pin");
+    }
 
     (ops.pinmux_set)(function, group)?;
 
     // Update pin states.
-    let pins = (ops.get_group_pins)(group);
     let mut states = PIN_STATES.write();
     for pin in pins {
         if let Some(state) = states.get_mut(&(ctrl_id, pin)) {
@@ -283,6 +320,9 @@ pub fn config_pin(ctrl_id: u32, pin: u32, config: PinConfigParam) -> Result<(), 
     let ops = {
         let devs = PINCTRL_DEVS.read();
         let dev = devs.get(&ctrl_id).ok_or("Pin controller not found")?;
+        if pin >= dev.npins {
+            return Err("Pin selector out of range");
+        }
         dev.ops
     };
 
@@ -300,6 +340,9 @@ pub fn get_pin_config(ctrl_id: u32, pin: u32) -> Result<PinConfigParam, &'static
     let ops = {
         let devs = PINCTRL_DEVS.read();
         let dev = devs.get(&ctrl_id).ok_or("Pin controller not found")?;
+        if pin >= dev.npins {
+            return Err("Pin selector out of range");
+        }
         dev.ops
     };
     (ops.pin_config_get)(pin)
@@ -316,6 +359,9 @@ pub fn get_groups_count(ctrl_id: u32) -> Result<u32, &'static str> {
 pub fn get_group_name(ctrl_id: u32, selector: u32) -> Result<&'static str, &'static str> {
     let devs = PINCTRL_DEVS.read();
     let dev = devs.get(&ctrl_id).ok_or("Pin controller not found")?;
+    if selector >= (dev.ops.get_groups_count)() {
+        return Err("Pin group selector out of range");
+    }
     Ok((dev.ops.get_group_name)(selector))
 }
 
@@ -330,6 +376,9 @@ pub fn get_functions_count(ctrl_id: u32) -> Result<u32, &'static str> {
 pub fn get_function_name(ctrl_id: u32, selector: u32) -> Result<&'static str, &'static str> {
     let devs = PINCTRL_DEVS.read();
     let dev = devs.get(&ctrl_id).ok_or("Pin controller not found")?;
+    if selector >= (dev.ops.get_functions_count)() {
+        return Err("Pin function selector out of range");
+    }
     Ok((dev.ops.get_function_name)(selector))
 }
 
@@ -345,6 +394,17 @@ pub fn total_pins() -> usize {
 
 /// Initialize pinctrl subsystem with software controller.
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("pinctrl: subsystem ready");
+    if !PINCTRL_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let npins = (SW_PINCTRL_OPS.get_npins)();
+    unsafe {
+        SW_PIN_FUNCS = alloc::vec![None; npins as usize];
+        SW_PIN_CONFIGS = alloc::vec![PinConfigParam::PullNone; npins as usize];
+    }
+
+    register_controller("software-pinctrl", &SW_PINCTRL_OPS)?;
+    crate::serial_println!("pinctrl: software controller registered ({} pins)", npins);
     Ok(())
 }
