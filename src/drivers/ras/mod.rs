@@ -381,6 +381,16 @@ pub fn software_ras_ops() -> RasOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("ras: subsystem ready");
+    if !RAS_CTRLS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_ras_ops();
+    let ctrl_id = register_controller("sw-ras", 10, ops)?;
+    enable(ctrl_id)?;
+    crate::serial_println!(
+        "ras: software controller registered and enabled (id={})",
+        ctrl_id
+    );
     Ok(())
 }

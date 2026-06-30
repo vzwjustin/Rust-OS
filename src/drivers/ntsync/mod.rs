@@ -213,13 +213,19 @@ pub fn mutex_release(obj_id: u32, tid: u32) -> Result<u32, &'static str> {
 
 /// Acquire a mutex.
 pub fn mutex_acquire(obj_id: u32, tid: u32) -> Result<(), &'static str> {
+    if tid == 0 {
+        return Err("Mutex owner thread id must be non-zero");
+    }
     let mut objs = NT_OBJS.write();
     let obj = objs.get_mut(&obj_id).ok_or("NT sync object not found")?;
     if obj.type_ != NtSyncType::Mutex {
         return Err("Object is not a mutex");
     }
     if obj.owner_tid == tid {
-        obj.recursion_count += 1;
+        obj.recursion_count = obj
+            .recursion_count
+            .checked_add(1)
+            .ok_or("Mutex recursion count overflow")?;
         return Ok(());
     }
     if obj.owner_tid != 0 {
@@ -261,10 +267,7 @@ pub fn event_pulse(obj_id: u32) -> Result<(), &'static str> {
     if obj.type_ != NtSyncType::Event {
         return Err("Object is not an event");
     }
-    obj.signaled = !obj.signaled;
-    if !obj.manual_reset {
-        obj.signaled = false;
-    }
+    obj.signaled = false;
     Ok(())
 }
 
@@ -307,6 +310,21 @@ pub fn create_device() -> Result<u32, &'static str> {
 
 /// Create a wait queue (Linux `NTSYNC_WAIT_ALL` / `NTSYNC_WAIT_ANY`).
 pub fn create_queue(obj_ids: Vec<u32>) -> Result<u32, &'static str> {
+    if obj_ids.is_empty() {
+        return Err("NT sync queue must contain at least one object");
+    }
+    {
+        let objs = NT_OBJS.read();
+        for (idx, obj_id) in obj_ids.iter().enumerate() {
+            if !objs.contains_key(obj_id) {
+                return Err("NT sync queue references missing object");
+            }
+            if obj_ids.iter().skip(idx + 1).any(|other| other == obj_id) {
+                return Err("NT sync queue contains duplicate object");
+            }
+        }
+    }
+
     let id = QUEUE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let queue = NtSyncQueue {
         id,
@@ -324,10 +342,11 @@ pub fn queue_check_signaled(queue_id: u32) -> Result<bool, &'static str> {
     let queue = queues.get(&queue_id).ok_or("NT sync queue not found")?;
     let objs = NT_OBJS.read();
     for &oid in &queue.obj_ids {
-        if let Some(obj) = objs.get(&oid) {
-            if obj.signaled {
-                return Ok(true);
-            }
+        let obj = objs
+            .get(&oid)
+            .ok_or("NT sync queue references missing object")?;
+        if obj.signaled {
+            return Ok(true);
         }
     }
     Ok(false)
@@ -350,6 +369,6 @@ pub fn object_count() -> usize {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("ntsync: subsystem ready");
+    crate::serial_println!("ntsync: framework ready");
     Ok(())
 }

@@ -85,6 +85,19 @@ pub fn register_device(
     reg_size: u64,
     irq_base: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("MFD device name is empty");
+    }
+    if reg_size == 0 {
+        return Err("MFD register window is empty");
+    }
+    reg_base
+        .checked_add(reg_size - 1)
+        .ok_or("MFD register window overflow")?;
+    if MFD_DEVS.read().values().any(|dev| dev.name == name) {
+        return Err("MFD device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = MfdDevice {
         id,
@@ -102,6 +115,25 @@ pub fn register_device(
 
 /// Add MFD cells to a device (Linux `mfd_add_devices`).
 pub fn add_cells(dev_id: u32, cells: Vec<MfdCell>) -> Result<Vec<u32>, &'static str> {
+    if cells.is_empty() {
+        return Err("MFD cell list is empty");
+    }
+    {
+        let devs = MFD_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("MFD device not found")?;
+        let existing_cells = MFD_CELLS.read();
+        for cell in &cells {
+            validate_cell(cell)?;
+            if dev.cell_ids.iter().any(|cell_id| {
+                existing_cells
+                    .get(cell_id)
+                    .is_some_and(|existing| existing.name == cell.name)
+            }) {
+                return Err("MFD cell already registered");
+            }
+        }
+    }
+
     let mut cell_ids = Vec::new();
     for mut cell in cells {
         let cell_id = CELL_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -123,7 +155,18 @@ pub fn add_cells(dev_id: u32, cells: Vec<MfdCell>) -> Result<Vec<u32>, &'static 
                 dev.state = MfdState::Probing;
             }
         }
-        (probe_fn)(dev_id, cell_id)?;
+        if let Err(err) = (probe_fn)(dev_id, cell_id) {
+            MFD_CELLS.write().remove(&cell_id);
+            if let Some(dev) = MFD_DEVS.write().get_mut(&dev_id) {
+                dev.cell_ids.retain(|id| *id != cell_id);
+                dev.state = if dev.cell_ids.is_empty() {
+                    MfdState::Registered
+                } else {
+                    MfdState::Active
+                };
+            }
+            return Err(err);
+        }
 
         let mut devs = MFD_DEVS.write();
         if let Some(dev) = devs.get_mut(&dev_id) {
@@ -161,8 +204,36 @@ pub fn remove_all_cells(dev_id: u32) -> Result<(), &'static str> {
         dev.cell_ids.clone()
     };
     for cell_id in cell_ids {
-        let _ = remove_cell(cell_id);
+        remove_cell(cell_id)?;
     }
+    Ok(())
+}
+
+fn validate_cell(cell: &MfdCell) -> Result<(), &'static str> {
+    if cell.name.is_empty() {
+        return Err("MFD cell name is empty");
+    }
+    if cell.compatible.is_empty() {
+        return Err("MFD cell compatible string is empty");
+    }
+
+    for resource in &cell.resources {
+        if resource.name.is_empty() {
+            return Err("MFD resource name is empty");
+        }
+        if resource.start > resource.end {
+            return Err("MFD resource range is invalid");
+        }
+    }
+
+    for (idx, left) in cell.resources.iter().enumerate() {
+        for right in cell.resources.iter().skip(idx + 1) {
+            if left.flags == right.flags && left.start <= right.end && right.start <= left.end {
+                return Err("MFD resources overlap");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -320,6 +391,14 @@ pub fn software_mfd_cells() -> Vec<MfdCell> {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("mfd: subsystem ready");
+    if !MFD_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let dev_id = register_device("sw-pmic", 0x100, 0x400, 32)?;
+    let cells = software_mfd_cells();
+    let cell_count = cells.len();
+    add_cells(dev_id, cells)?;
+    crate::serial_println!("mfd: sw-pmic registered ({} cells)", cell_count);
     Ok(())
 }

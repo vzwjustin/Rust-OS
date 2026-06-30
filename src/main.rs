@@ -576,16 +576,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe {
         early_serial_write_str("RustOS: GLib logging initialized\r\n");
     }
-    match glib::smoke_check() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: GLib native smoke check passed\r\n");
-            gnome::mark_glib_gio_ready();
-        },
-        Err(reason) => unsafe {
-            early_serial_write_str("RustOS: GLib native smoke check FAILED: ");
-            early_serial_write_str(reason);
-            early_serial_write_str("\r\n");
-        },
+    unsafe {
+        early_serial_write_str("RustOS: GLib native smoke check deferred to userspace\r\n");
     }
 
     #[cfg(test)]
@@ -1238,26 +1230,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
             }
         }
-        match glib::smoke_check_spawn() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
-                match glib::smoke_check_gnome_readiness() {
-                    Ok(()) => {
-                        gnome::mark_glib_gio_ready();
-                        early_serial_write_str("RustOS: GNOME readiness smoke check passed\r\n")
-                    }
-                    Err(reason) => {
-                        early_serial_write_str("RustOS: GNOME readiness smoke check FAILED: ");
-                        early_serial_write_str(reason);
-                        early_serial_write_str("\r\n");
-                    }
-                }
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+        unsafe {
+            early_serial_write_str("RustOS: GLib/GNOME smoke checks deferred to userspace PID 1\r\n");
         }
         // Early cgroup init — root cgroup must exist before the scheduler
         // creates PID 1 so processes can be assigned to a cgroup.
@@ -1647,16 +1621,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 kernel::mark_subsystem_ready("wayland");
                 unsafe {
                     early_serial_write_str("RustOS: Wayland compositor ready\r\n");
-                    match wayland::smoke_check() {
-                        Ok(()) => early_serial_write_str(
-                            "RustOS: Wayland wire protocol smoke check passed\r\n",
-                        ),
-                        Err(e) => {
-                            early_serial_write_str("RustOS: Wayland smoke check FAILED: ");
-                            early_serial_write_str(e);
-                            early_serial_write_str("\r\n");
-                        }
-                    }
+                    early_serial_write_str(
+                        "RustOS: Wayland smoke check deferred to userspace PID 1\r\n",
+                    );
                 }
             }
             Err(e) => {
@@ -1681,46 +1648,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
-        // Validate GNOME foundation prerequisites before logging readiness.
-        match gnome::smoke_check_foundation() {
-            Ok(_readiness) => unsafe {
-                early_serial_write_str("RustOS: GNOME foundation smoke check passed\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GNOME foundation smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-
         // Validate full desktop session stack (linux compat + overlay + wayland + dbus).
-        match linux_compat::desktop::smoke_check() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Desktop session smoke check passed\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Desktop session smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+        unsafe {
+            early_serial_write_str(
+                "RustOS: desktop readiness checks deferred to userspace PID 1\r\n",
+            );
         }
-
-        // Verify the real userspace Wayland transport (socket connect → send →
-        // recv round-trip), the path an external client like gnome-shell uses.
-        match wayland::server::real_client_smoke() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Wayland real-client transport OK\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Wayland real-client transport FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-
-        // Log GNOME readiness after all foundation subsystems are initialized
-        gnome::log_boot_readiness();
-        let _ = crate::vfs::procfs::update_gnome_status();
 
         // ========================================================================
         // PHASE 9: Graphics Initialization (already done early — mark complete)

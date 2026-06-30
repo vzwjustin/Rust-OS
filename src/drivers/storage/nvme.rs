@@ -1129,7 +1129,13 @@ impl StorageDriver for NvmeDriver {
         let block_count = sector_count as u16;
 
         let buf_len = buffer.len();
-        self.submit_io_command(NvmeIoOpcode::Read, lba, block_count, buffer.as_mut_ptr(), buf_len)?;
+        self.submit_io_command(
+            NvmeIoOpcode::Read,
+            lba,
+            block_count,
+            buffer.as_mut_ptr(),
+            buf_len,
+        )?;
 
         Ok(buffer.len())
     }

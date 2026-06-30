@@ -340,7 +340,7 @@ pub fn spawn_userspace_init(
 ) -> Result<u32, InitramfsError> {
     let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
     crate::linux_compat::desktop::spawn_session_init(path, boot)
-        .map_err(|_| InitramfsError::InitNotFound)
+        .map_err(|_| InitramfsError::ExtractionFailed)
 }
 
 /// Try to exec a Linux-style init fallback and enter user mode.

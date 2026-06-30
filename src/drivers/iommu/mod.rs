@@ -394,6 +394,6 @@ pub fn software_iommu_ops() -> IommuOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("iommu: subsystem ready");
+    crate::serial_println!("iommu: framework ready (no software provider)");
     Ok(())
 }

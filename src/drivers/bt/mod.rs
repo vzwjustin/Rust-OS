@@ -404,6 +404,12 @@ pub fn software_hci_ops() -> HciOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("bt: subsystem ready");
+    if !HCI_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_hci_ops();
+    let dev_id = register_device("sw-hci0", [0; 6], HciDevType::Primary, HciBus::Virtual, ops)?;
+    crate::serial_println!("bt: software HCI device registered (id={})", dev_id);
     Ok(())
 }

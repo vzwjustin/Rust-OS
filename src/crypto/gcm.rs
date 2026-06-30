@@ -181,8 +181,9 @@ pub fn aes_gcm_open(
     let expected_tag: &[u8; GCM_TAG_LEN] = expected[..GCM_TAG_LEN]
         .try_into()
         .map_err(|_| CryptoError::AuthenticationFailed)?;
-    let actual_tag: &[u8; GCM_TAG_LEN] =
-        tag.try_into().map_err(|_| CryptoError::AuthenticationFailed)?;
+    let actual_tag: &[u8; GCM_TAG_LEN] = tag
+        .try_into()
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
     let mut diff = 0u8;
     for i in 0..GCM_TAG_LEN {
         diff |= expected_tag[i] ^ actual_tag[i];
@@ -213,7 +214,10 @@ pub fn aes_ctr_xor(key: &[u8], counter: &[u8], data: &[u8]) -> Result<Vec<u8>, C
 
 /// Encrypt a single block with raw AES (ECB). Used for QUIC header protection,
 /// which derives a 5-byte mask from `AES-ECB(hp_key, sample)` (RFC 9001 §5.4.3).
-pub fn aes_ecb_encrypt_block(key: &[u8], block: &[u8; BLOCK_SIZE]) -> Result<[u8; BLOCK_SIZE], CryptoError> {
+pub fn aes_ecb_encrypt_block(
+    key: &[u8],
+    block: &[u8; BLOCK_SIZE],
+) -> Result<[u8; BLOCK_SIZE], CryptoError> {
     if !valid_key_len(key.len()) {
         return Err(CryptoError::InvalidKeySize);
     }
@@ -270,11 +274,15 @@ mod tests {
     fn gcm_tc3_multiblock() {
         let key = h("feffe9928665731c6d6a8f9467308308");
         let nonce = h("cafebabefacedbaddecaf888");
-        let pt = h("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
-                    1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255");
+        let pt = h(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
+                    1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
+        );
         let out = aes_gcm_seal(&key, &nonce, &[], &pt).unwrap();
-        let expected_ct = h("42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e\
-                             21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985");
+        let expected_ct = h(
+            "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e\
+                             21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985",
+        );
         let expected_tag = h("4d5c2af327cd64a62cf35abd2ba6fab4");
         assert_eq!(&out[..pt.len()], &expected_ct[..]);
         assert_eq!(&out[pt.len()..], &expected_tag[..]);

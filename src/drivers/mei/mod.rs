@@ -99,6 +99,16 @@ static MEI_DRIVERS: RwLock<BTreeMap<u32, MeiClDriver>> = RwLock::new(BTreeMap::n
 
 /// Register an MEI device.
 pub fn register_device(name: &str, ops: MeiDevOps, max_clients: u32) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("MEI device name is empty");
+    }
+    if max_clients == 0 {
+        return Err("MEI device max_clients must be non-zero");
+    }
+    if MEI_DEVS.read().values().any(|dev| dev.name == name) {
+        return Err("MEI device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = MeiDevice {
         id,
@@ -130,7 +140,12 @@ pub fn init_device(dev_id: u32) -> Result<(), &'static str> {
         }
     }
 
-    (hbm_fn)(dev_id)?;
+    if let Err(err) = (hbm_fn)(dev_id) {
+        if let Some(dev) = MEI_DEVS.write().get_mut(&dev_id) {
+            dev.state = MeiDevState::Init;
+        }
+        return Err(err);
+    }
 
     let mut devs = MEI_DEVS.write();
     if let Some(dev) = devs.get_mut(&dev_id) {
@@ -147,6 +162,28 @@ pub fn register_client(
     uuid: [u8; 16],
     max_conn: u8,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("MEI client name is empty");
+    }
+    if max_conn == 0 {
+        return Err("MEI client max_conn must be non-zero");
+    }
+    {
+        let devs = MEI_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("MEI device not found")?;
+        if dev.client_ids.len() >= dev.max_clients as usize {
+            return Err("MEI device client limit reached");
+        }
+        let clients = MEI_CLIENTS.read();
+        if dev.client_ids.iter().any(|cid| {
+            clients
+                .get(cid)
+                .is_some_and(|client| client.uuid == uuid || client.name == name)
+        }) {
+            return Err("MEI client already registered");
+        }
+    }
+
     let client_id = CLIENT_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let client = MeiClient {
         id: client_id,
@@ -163,18 +200,47 @@ pub fn register_client(
     MEI_CLIENTS.write().insert(client_id, client);
 
     let mut devs = MEI_DEVS.write();
-    if let Some(dev) = devs.get_mut(&dev_id) {
-        dev.client_ids.push(client_id);
+    match devs.get_mut(&dev_id) {
+        Some(dev) => dev.client_ids.push(client_id),
+        None => {
+            MEI_CLIENTS.write().remove(&client_id);
+            return Err("MEI device not found");
+        }
     }
+    drop(devs);
 
-    try_match_driver(client_id)?;
+    if let Err(err) = try_match_driver(client_id) {
+        MEI_CLIENTS.write().remove(&client_id);
+        if let Some(dev) = MEI_DEVS.write().get_mut(&dev_id) {
+            dev.client_ids.retain(|cid| *cid != client_id);
+        }
+        return Err(err);
+    }
     Ok(client_id)
 }
 
 /// Connect an MEI client (Linux `mei_cl_connect`).
 pub fn connect_client(client_id: u32) -> Result<(), &'static str> {
+    let dev_id = {
+        let clients = MEI_CLIENTS.read();
+        clients
+            .get(&client_id)
+            .ok_or("MEI client not found")?
+            .dev_id
+    };
+    {
+        let devs = MEI_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("MEI device not found")?;
+        if dev.state != MeiDevState::Enabled {
+            return Err("MEI device not enabled");
+        }
+    }
+
     let mut clients = MEI_CLIENTS.write();
     let client = clients.get_mut(&client_id).ok_or("MEI client not found")?;
+    if client.state != MeiClState::Disconnected {
+        return Err("MEI client is not disconnected");
+    }
     client.state = MeiClState::Connected;
     Ok(())
 }
@@ -183,6 +249,9 @@ pub fn connect_client(client_id: u32) -> Result<(), &'static str> {
 pub fn disconnect_client(client_id: u32) -> Result<(), &'static str> {
     let mut clients = MEI_CLIENTS.write();
     let client = clients.get_mut(&client_id).ok_or("MEI client not found")?;
+    if client.state != MeiClState::Connected {
+        return Err("MEI client is not connected");
+    }
     client.state = MeiClState::Disconnected;
     Ok(())
 }
@@ -206,7 +275,10 @@ pub fn send_msg(client_id: u32, data: &[u8]) -> Result<usize, &'static str> {
 
     let mut clients = MEI_CLIENTS.write();
     if let Some(client) = clients.get_mut(&client_id) {
-        client.msg_sent += 1;
+        client.msg_sent = client
+            .msg_sent
+            .checked_add(1)
+            .ok_or("MEI sent message counter overflow")?;
         let mut tx = Vec::new();
         tx.extend_from_slice(data);
         client.tx_ring.push(tx);
@@ -224,13 +296,19 @@ pub fn recv_msg(client_id: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
         }
         let devs = MEI_DEVS.read();
         let dev = devs.get(&client.dev_id).ok_or("MEI device not found")?;
+        if dev.state != MeiDevState::Enabled {
+            return Err("MEI device not enabled");
+        }
         (client.dev_id, dev.ops.recv_msg)
     };
     let n = (recv_fn)(dev_id, client_id, buf)?;
 
     let mut clients = MEI_CLIENTS.write();
     if let Some(client) = clients.get_mut(&client_id) {
-        client.msg_recv += 1;
+        client.msg_recv = client
+            .msg_recv
+            .checked_add(1)
+            .ok_or("MEI received message counter overflow")?;
     }
     Ok(n)
 }
@@ -247,6 +325,17 @@ pub fn set_pg_state(dev_id: u32, state: MeiPgState) -> Result<(), &'static str> 
 
 /// Register an MEI client driver.
 pub fn register_driver(driver: MeiClDriver) -> Result<u32, &'static str> {
+    if driver.name.is_empty() {
+        return Err("MEI driver name is empty");
+    }
+    if MEI_DRIVERS
+        .read()
+        .values()
+        .any(|existing| existing.name == driver.name || existing.uuid == driver.uuid)
+    {
+        return Err("MEI driver already registered");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let uuid = driver.uuid;
     MEI_DRIVERS.write().insert(id, driver);
@@ -260,7 +349,10 @@ pub fn register_driver(driver: MeiClDriver) -> Result<u32, &'static str> {
             .collect()
     };
     for cid in client_ids {
-        try_match_driver(cid)?;
+        if let Err(err) = try_match_driver(cid) {
+            MEI_DRIVERS.write().remove(&id);
+            return Err(err);
+        }
     }
     Ok(id)
 }
@@ -366,6 +458,16 @@ fn null_remove(_client_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("mei: subsystem ready");
+    if !MEI_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_mei_ops();
+    let dev_id = register_device("sw-mei", ops, 16)?;
+    init_device(dev_id)?;
+    crate::serial_println!(
+        "mei: software device registered and initialized (id={})",
+        dev_id
+    );
     Ok(())
 }

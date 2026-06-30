@@ -96,6 +96,13 @@ static FPGA_MGRS: RwLock<BTreeMap<u32, FpgaManager>> = RwLock::new(BTreeMap::new
 static FPGA_REGIONS: RwLock<BTreeMap<u32, FpgaRegion>> = RwLock::new(BTreeMap::new());
 static FPGA_BRIDGES: RwLock<BTreeMap<u32, FpgaBridge>> = RwLock::new(BTreeMap::new());
 
+fn set_manager_state(mgr_id: u32, state: FpgaMgrState) -> Result<(), &'static str> {
+    let mut mgrs = FPGA_MGRS.write();
+    let mgr = mgrs.get_mut(&mgr_id).ok_or("FPGA manager not found")?;
+    mgr.state = state;
+    Ok(())
+}
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Register an FPGA manager.
@@ -104,6 +111,18 @@ pub fn register_manager(
     ops: FpgaMgrOps,
     compatible: &str,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("FPGA manager name is empty");
+    }
+    if compatible.is_empty() {
+        return Err("FPGA manager compatible is empty");
+    }
+
+    let mut mgrs = FPGA_MGRS.write();
+    if mgrs.values().any(|mgr| mgr.name == name) {
+        return Err("FPGA manager already registered");
+    }
+
     let id = MGR_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let mgr = FpgaManager {
         id,
@@ -112,12 +131,21 @@ pub fn register_manager(
         state: FpgaMgrState::Unknown,
         compatible: String::from(compatible),
     };
-    FPGA_MGRS.write().insert(id, mgr);
+    mgrs.insert(id, mgr);
     Ok(id)
 }
 
 /// Register an FPGA bridge.
 pub fn register_bridge(name: &str, ops: FpgaBridgeOps) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("FPGA bridge name is empty");
+    }
+
+    let mut bridges = FPGA_BRIDGES.write();
+    if bridges.values().any(|bridge| bridge.name == name) {
+        return Err("FPGA bridge already registered");
+    }
+
     let id = BRIDGE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let bridge = FpgaBridge {
         id,
@@ -125,12 +153,35 @@ pub fn register_bridge(name: &str, ops: FpgaBridgeOps) -> Result<u32, &'static s
         ops,
         enable: true,
     };
-    FPGA_BRIDGES.write().insert(id, bridge);
+    bridges.insert(id, bridge);
     Ok(id)
 }
 
 /// Register an FPGA region.
 pub fn register_region(name: &str, mgr_id: u32, bridge_ids: Vec<u32>) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("FPGA region name is empty");
+    }
+    if !FPGA_MGRS.read().contains_key(&mgr_id) {
+        return Err("FPGA manager not found");
+    }
+    {
+        let bridges = FPGA_BRIDGES.read();
+        for (idx, bridge_id) in bridge_ids.iter().enumerate() {
+            if !bridges.contains_key(bridge_id) {
+                return Err("FPGA bridge not found");
+            }
+            if bridge_ids[..idx].iter().any(|seen| seen == bridge_id) {
+                return Err("FPGA bridge listed twice");
+            }
+        }
+    }
+
+    let mut regions = FPGA_REGIONS.write();
+    if regions.values().any(|region| region.name == name) {
+        return Err("FPGA region already registered");
+    }
+
     let id = REGION_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let region = FpgaRegion {
         id,
@@ -140,12 +191,16 @@ pub fn register_region(name: &str, mgr_id: u32, bridge_ids: Vec<u32>) -> Result<
         info: None,
         active: false,
     };
-    FPGA_REGIONS.write().insert(id, region);
+    regions.insert(id, region);
     Ok(id)
 }
 
 /// Load an FPGA image (Linux `fpga_mgr_load`).
 pub fn load_image(mgr_id: u32, info: &FpgaImageInfo) -> Result<(), &'static str> {
+    if info.data.is_empty() {
+        return Err("FPGA image is empty");
+    }
+
     let (write_init_fn, header_size) = {
         let mgrs = FPGA_MGRS.read();
         let mgr = mgrs.get(&mgr_id).ok_or("FPGA manager not found")?;
@@ -153,16 +208,14 @@ pub fn load_image(mgr_id: u32, info: &FpgaImageInfo) -> Result<(), &'static str>
     };
 
     // Set state to firmware load
-    {
-        let mut mgrs = FPGA_MGRS.write();
-        if let Some(mgr) = mgrs.get_mut(&mgr_id) {
-            mgr.state = FpgaMgrState::FirmwareLoad;
-        }
-    }
+    set_manager_state(mgr_id, FpgaMgrState::FirmwareLoad)?;
 
     // Write initial header
     let header_end = core::cmp::min(header_size, info.data.len());
-    (write_init_fn)(mgr_id, info, &info.data[..header_end])?;
+    if let Err(err) = (write_init_fn)(mgr_id, info, &info.data[..header_end]) {
+        let _ = set_manager_state(mgr_id, FpgaMgrState::FirmwareLoadErr);
+        return Err(err);
+    }
 
     // Write remaining data
     let write_fn = {
@@ -171,7 +224,10 @@ pub fn load_image(mgr_id: u32, info: &FpgaImageInfo) -> Result<(), &'static str>
         mgr.ops.write
     };
     if info.data.len() > header_end {
-        (write_fn)(mgr_id, &info.data[header_end..])?;
+        if let Err(err) = (write_fn)(mgr_id, &info.data[header_end..]) {
+            let _ = set_manager_state(mgr_id, FpgaMgrState::FirmwareLoadErr);
+            return Err(err);
+        }
     }
 
     // Complete write
@@ -180,13 +236,13 @@ pub fn load_image(mgr_id: u32, info: &FpgaImageInfo) -> Result<(), &'static str>
         let mgr = mgrs.get(&mgr_id).ok_or("FPGA manager not found")?;
         mgr.ops.write_complete
     };
-    (complete_fn)(mgr_id)?;
+    if let Err(err) = (complete_fn)(mgr_id) {
+        let _ = set_manager_state(mgr_id, FpgaMgrState::FirmwareLoadErr);
+        return Err(err);
+    }
 
     // Set state to operating
-    let mut mgrs = FPGA_MGRS.write();
-    if let Some(mgr) = mgrs.get_mut(&mgr_id) {
-        mgr.state = FpgaMgrState::Operating;
-    }
+    set_manager_state(mgr_id, FpgaMgrState::Operating)?;
     Ok(())
 }
 
@@ -199,6 +255,7 @@ pub fn program_region(region_id: u32, info: FpgaImageInfo) -> Result<(), &'stati
     };
 
     // Disable bridges before programming
+    let mut disabled_bridges = Vec::new();
     for &bid in &bridge_ids {
         let enable_fn = {
             let bridges = FPGA_BRIDGES.read();
@@ -206,13 +263,25 @@ pub fn program_region(region_id: u32, info: FpgaImageInfo) -> Result<(), &'stati
             bridge.ops.enable_set
         };
         (enable_fn)(bid, false)?;
+        disabled_bridges.push(bid);
     }
 
     // Load the image
-    load_image(mgr_id, &info)?;
+    if let Err(err) = load_image(mgr_id, &info) {
+        for &bid in disabled_bridges.iter().rev() {
+            if let Some(enable_fn) = FPGA_BRIDGES
+                .read()
+                .get(&bid)
+                .map(|bridge| bridge.ops.enable_set)
+            {
+                let _ = (enable_fn)(bid, true);
+            }
+        }
+        return Err(err);
+    }
 
     // Re-enable bridges after programming
-    for &bid in &bridge_ids {
+    for &bid in disabled_bridges.iter().rev() {
         let enable_fn = {
             let bridges = FPGA_BRIDGES.read();
             let bridge = bridges.get(&bid).ok_or("FPGA bridge not found")?;
@@ -345,6 +414,21 @@ pub fn software_fpga_bridge_ops() -> FpgaBridgeOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("fpga: subsystem ready");
+    if !FPGA_MGRS.read().is_empty() {
+        return Ok(());
+    }
+
+    let mgr_ops = software_fpga_mgr_ops();
+    let mgr_id = register_manager("sw-fpga-mgr", mgr_ops, "sw-fpga")?;
+
+    let bridge_ops = software_fpga_bridge_ops();
+    let bridge_id = register_bridge("sw-fpga-bridge", bridge_ops)?;
+
+    register_region("sw-fpga-region", mgr_id, alloc::vec![bridge_id])?;
+
+    crate::serial_println!(
+        "fpga: software manager, bridge, and region registered (mgr_id={})",
+        mgr_id
+    );
     Ok(())
 }

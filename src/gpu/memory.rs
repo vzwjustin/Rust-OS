@@ -1475,17 +1475,28 @@ impl GPUMemoryManager {
     }
 
     fn perform_memory_transfer(&self, src: u64, dst: u64, size: usize) -> Result<(), &'static str> {
-        // Production memory transfer - would use DMA engine or memcpy
         if src == 0 || dst == 0 || size == 0 {
             return Err("Invalid memory transfer parameters");
         }
 
-        // In production, would use:
-        // - DMA engine for large transfers
-        // - Memory barriers for cache coherency
-        // - Platform-specific GPU memory APIs
+        // Perform the memory copy. For GPU-local memory that has been mapped
+        // into the host address space, we use a direct memcpy. For unmapped
+        // GPU memory, the transfer is a no-op (the GPU page table is updated
+        // separately by move_allocation).
+        //
+        // In a hardware GPU driver, this would use the DMA engine or
+        // platform-specific GPU memory copy APIs.
+        let src_ptr = src as *const u8;
+        let dst_ptr = dst as *mut u8;
 
-        // For now, validate the operation completed
+        // SAFETY: The caller guarantees src and dst are valid GPU memory
+        // addresses with at least `size` bytes available. The regions must
+        // not overlap (move_allocation ensures this by picking a new address
+        // in a different free block).
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size);
+        }
+
         self.stats
             .total_transfers
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -1543,13 +1554,27 @@ impl GPUMemoryManager {
         allocation_id: u32,
         new_address: u64,
     ) -> Result<(), &'static str> {
-        // This would perform the actual memory move in a real implementation
+        let (old_address, size) = {
+            let allocation = self
+                .allocations
+                .get(&allocation_id)
+                .ok_or("Invalid allocation ID")?;
+            (allocation.gpu_address, allocation.size)
+        };
+
+        // Copy memory contents from old address to new address
+        self.perform_memory_transfer(old_address, new_address, size)?;
+
+        // Update page table entries for the new location
+        self.clear_page_table(old_address, size);
+        let flags = MemoryFlags::DEFAULT;
+        self.update_page_table(new_address, size, &flags)?;
+
+        // Update the allocation record
         if let Some(allocation) = self.allocations.get_mut(&allocation_id) {
             allocation.gpu_address = new_address;
-            Ok(())
-        } else {
-            Err("Invalid allocation ID")
         }
+        Ok(())
     }
 
     fn rebuild_free_blocks(&mut self) {

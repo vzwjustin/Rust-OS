@@ -97,35 +97,55 @@ impl DrmInode {
 
     /// Handle a DRM ioctl request.
     /// Returns the number of bytes written to the user buffer, or an error.
-    fn handle_ioctl(&self, cmd: u32, _arg: u64) -> Result<usize, &'static str> {
+    fn handle_ioctl(&self, cmd: u32, arg: u64) -> Result<usize, &'static str> {
         // Ensure DRM compat layer is initialized
         drm_compat::init_drm_compat()?;
 
         match cmd {
             DRM_IOCTL_VERSION => {
                 let version = drm_compat::DRMIoctl::version();
-                // In a real implementation, we'd copy this to userspace.
-                // For kernel-internal use, we just return the size.
-                let _ = version;
-                Ok(core::mem::size_of::<drm_compat::DRMVersion>())
+                let size = core::mem::size_of::<drm_compat::DRMVersion>();
+                let bytes =
+                    unsafe { core::slice::from_raw_parts(&version as *const _ as *const u8, size) };
+                crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
+                    .map_err(|_| "Failed to copy DRM version to userspace")?;
+                Ok(size)
             }
             DRM_IOCTL_GET_CAP => {
                 // arg points to drm_get_cap { capability: u64, value: u64 }
-                // For now, return success with the capability value
-                Ok(16) // size of drm_get_cap struct
+                // Return capability value for DUMB_BUFFER (0x1)
+                let cap: [u8; 16] = [
+                    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00,
+                ];
+                crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, &cap)
+                    .map_err(|_| "Failed to copy DRM cap to userspace")?;
+                Ok(16)
             }
             DRM_IOCTL_MODE_GETRESOURCES => {
                 if let Some(drm) = drm_compat::get_drm_compat() {
-                    let _resources = drm_compat::DRMIoctl::get_resources(drm);
-                    Ok(core::mem::size_of::<drm_compat::DRMResources>())
+                    let resources = drm_compat::DRMIoctl::get_resources(drm);
+                    let size = core::mem::size_of::<drm_compat::DRMResources>();
+                    let bytes = unsafe {
+                        core::slice::from_raw_parts(&resources as *const _ as *const u8, size)
+                    };
+                    crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
+                        .map_err(|_| "Failed to copy DRM resources to userspace")?;
+                    Ok(size)
                 } else {
                     Err("DRM not initialized")
                 }
             }
             DRM_IOCTL_MODE_GETPLANERESOURCES => {
                 if let Some(drm) = drm_compat::get_drm_compat() {
-                    let _resources = drm_compat::DRMIoctl::get_plane_resources(drm);
-                    Ok(core::mem::size_of::<drm_compat::DRMPlaneResources>())
+                    let resources = drm_compat::DRMIoctl::get_plane_resources(drm);
+                    let size = core::mem::size_of::<drm_compat::DRMPlaneResources>();
+                    let bytes = unsafe {
+                        core::slice::from_raw_parts(&resources as *const _ as *const u8, size)
+                    };
+                    crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
+                        .map_err(|_| "Failed to copy DRM plane resources to userspace")?;
+                    Ok(size)
                 } else {
                     Err("DRM not initialized")
                 }

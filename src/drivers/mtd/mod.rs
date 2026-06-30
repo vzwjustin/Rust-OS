@@ -144,11 +144,29 @@ pub fn register_device(
     oobsize: u32,
     ops: &'static MtdOps,
 ) -> Result<u32, &'static str> {
-    if size == 0 || erasesize == 0 {
-        return Err("MTD device size and erasesize must be non-zero");
+    if name.is_empty() {
+        return Err("MTD device name is empty");
     }
+    if size == 0 || erasesize == 0 || writesize == 0 {
+        return Err("MTD device size, erasesize, and writesize must be non-zero");
+    }
+    if size % erasesize as u64 != 0 {
+        return Err("MTD device size must be erasesize-aligned");
+    }
+    if writesize as u64 > size {
+        return Err("MTD writesize exceeds device size");
+    }
+    if oobsize != 0 && mtd_type == MtdType::Nor {
+        return Err("NOR MTD device cannot expose OOB data");
+    }
+
+    let mut devices = MTD_DEVICES.write();
+    if devices.values().any(|dev| dev.name == name) {
+        return Err("MTD device already registered");
+    }
+
     let id = NEXT_MTD_ID.fetch_add(1, Ordering::SeqCst);
-    MTD_DEVICES.write().insert(
+    devices.insert(
         id,
         MtdDevice {
             id,
@@ -170,10 +188,45 @@ pub fn register_device(
 pub fn add_partitions(device_id: u32, partitions: &[MtdPartition]) -> Result<(), &'static str> {
     let mut devices = MTD_DEVICES.write();
     let dev = devices.get_mut(&device_id).ok_or("MTD device not found")?;
-    for part in partitions {
-        if part.offset + part.size > dev.size {
+    if partitions.is_empty() {
+        return Err("MTD partition list is empty");
+    }
+
+    for (idx, part) in partitions.iter().enumerate() {
+        if part.name.is_empty() {
+            return Err("MTD partition name is empty");
+        }
+        if part.size == 0 {
+            return Err("MTD partition size is zero");
+        }
+        let end = part
+            .offset
+            .checked_add(part.size)
+            .ok_or("MTD partition range overflow")?;
+        if end > dev.size {
             return Err("MTD partition extends beyond device");
         }
+        if part.offset % dev.erasesize as u64 != 0 || part.size % dev.erasesize as u64 != 0 {
+            return Err("MTD partition must be erasesize-aligned");
+        }
+        if dev.partitions.iter().any(|existing| {
+            let existing_end = existing.offset.saturating_add(existing.size);
+            existing.name == part.name || (part.offset < existing_end && existing.offset < end)
+        }) {
+            return Err("MTD partition overlaps or duplicates existing partition");
+        }
+        for other in &partitions[..idx] {
+            let other_end = other
+                .offset
+                .checked_add(other.size)
+                .ok_or("MTD partition range overflow")?;
+            if other.name == part.name || (part.offset < other_end && other.offset < end) {
+                return Err("MTD partition overlaps or duplicates another new partition");
+            }
+        }
+    }
+
+    for part in partitions {
         dev.partitions.push(part.clone());
     }
     Ok(())
@@ -184,7 +237,10 @@ pub fn read(device_id: u32, offset: u64, buf: &mut [u8]) -> Result<usize, &'stat
     let ops = {
         let devices = MTD_DEVICES.read();
         let dev = devices.get(&device_id).ok_or("MTD device not found")?;
-        if offset + buf.len() as u64 > dev.size {
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or("MTD read range overflow")?;
+        if end > dev.size {
             return Err("MTD read extends beyond device");
         }
         dev.ops
@@ -200,8 +256,14 @@ pub fn write(device_id: u32, offset: u64, buf: &[u8]) -> Result<usize, &'static 
         if dev.write_protected {
             return Err("MTD device is write-protected");
         }
-        if offset + buf.len() as u64 > dev.size {
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or("MTD write range overflow")?;
+        if end > dev.size {
             return Err("MTD write extends beyond device");
+        }
+        if offset % dev.writesize as u64 != 0 || buf.len() as u64 % dev.writesize as u64 != 0 {
+            return Err("MTD write must be writesize-aligned");
         }
         (dev.ops, dev.write_protected)
     };
@@ -222,6 +284,10 @@ pub fn erase(device_id: u32, offset: u64, len: u64) -> Result<(), &'static str> 
         }
         if len % dev.erasesize as u64 != 0 {
             return Err("MTD erase length must be multiple of erasesize");
+        }
+        let end = offset.checked_add(len).ok_or("MTD erase range overflow")?;
+        if end > dev.size {
+            return Err("MTD erase extends beyond device");
         }
         (dev.ops, dev.erasesize)
     };
@@ -274,6 +340,21 @@ pub fn device_count() -> usize {
 
 /// Initialize MTD subsystem with software NOR flash.
 pub fn init() -> Result<(), &'static str> {
+    if device_count() == 0 {
+        unsafe {
+            SW_FLASH_DATA = alloc::vec![0xFF; SW_FLASH_SIZE as usize];
+        }
+        register_device(
+            "software-nor-flash",
+            MtdType::Nor,
+            SW_FLASH_SIZE,
+            SW_FLASH_ERASESIZE,
+            SW_FLASH_WRITESIZE,
+            0, // oobsize
+            &SW_NOR_OPS,
+        )?;
+        crate::serial_println!("mtd: software NOR flash registered");
+    }
     crate::serial_println!("mtd: subsystem ready");
     Ok(())
 }
