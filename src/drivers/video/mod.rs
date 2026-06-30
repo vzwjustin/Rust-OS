@@ -9,7 +9,6 @@
 //! This module is declared from `src/drivers/gpu/mod.rs` (via `#[path]`) because
 //! `src/drivers/mod.rs` does not carry a `pub mod video;` declaration.
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use spin::RwLock;
 
 use crate::drivers::gpu::{with_buffer_object, DrmFourCc};
@@ -57,17 +56,19 @@ impl FbConsole {
 }
 
 static FBCON: RwLock<Option<FbConsole>> = RwLock::new(None);
-static ATTACHED: AtomicBool = AtomicBool::new(false);
 
 /// Write a single pixel into the bound framebuffer's backing store.
 fn write_pixel(buf: &mut [u8], pitch: u32, x: u32, y: u32, color: Color) {
-    let off = (y as usize) * (pitch as usize) + (x as usize) * 4;
-    if off + 4 <= buf.len() {
-        // Little-endian XRGB8888: byte order B, G, R, X.
-        buf[off] = (color.0 & 0xFF) as u8;
-        buf[off + 1] = ((color.0 >> 8) & 0xFF) as u8;
-        buf[off + 2] = ((color.0 >> 16) & 0xFF) as u8;
-        buf[off + 3] = 0xFF;
+    let off = (y as usize)
+        .checked_mul(pitch as usize)
+        .and_then(|o| o.checked_add((x as usize) * 4));
+    if let Some(off) = off {
+        if off + 4 <= buf.len() {
+            buf[off] = (color.0 & 0xFF) as u8;
+            buf[off + 1] = ((color.0 >> 8) & 0xFF) as u8;
+            buf[off + 2] = ((color.0 >> 16) & 0xFF) as u8;
+            buf[off + 3] = 0xFF;
+        }
     }
 }
 
@@ -186,7 +187,7 @@ pub fn dimensions() -> Option<(u32, u32)> {
 
 /// True once an fbdev console is bound to a DRM framebuffer.
 pub fn is_attached() -> bool {
-    ATTACHED.load(Ordering::SeqCst)
+    FBCON.read().is_some()
 }
 
 /// Attach the fbdev console to a DRM framebuffer + its backing buffer object.
@@ -201,7 +202,7 @@ pub fn init_with_framebuffer(
     height: u32,
     pitch: u32,
 ) -> Result<(), &'static str> {
-    if ATTACHED.swap(true, Ordering::SeqCst) {
+    if is_attached() {
         return Ok(());
     }
     let con = FbConsole {
@@ -221,8 +222,15 @@ pub fn init_with_framebuffer(
     let (cols, rows) = (con.cols(), con.rows());
     *FBCON.write() = Some(con);
 
-    clear(Color::GRAY)?;
-    print("RustOS fbdev console\n")?;
+    // If clear/print fail, reset FBCON so init can be retried.
+    if let Err(e) = clear(Color::GRAY) {
+        *FBCON.write() = None;
+        return Err(e);
+    }
+    if let Err(e) = print("RustOS fbdev console\n") {
+        *FBCON.write() = None;
+        return Err(e);
+    }
     crate::serial_println!(
         "video: fbcon attached fb={} bo={} {}x{} ({}x{} cells)",
         fb_id,

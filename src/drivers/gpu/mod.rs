@@ -656,7 +656,11 @@ pub fn set_mode(
     {
         let encs = DRM_ENCODERS.read();
         let enc = encs.get(&encoder_id).ok_or("set_mode: encoder not found")?;
-        let crtc_mask = 1u32 << (crtc_index(crtc_id)?);
+        let idx = crtc_index(crtc_id)?;
+        if idx >= 32 {
+            return Err("set_mode: CRTC index out of range for possible_crtcs mask");
+        }
+        let crtc_mask = 1u32 << idx;
         if enc.possible_crtcs & crtc_mask == 0 {
             return Err("set_mode: encoder cannot drive this CRTC");
         }
@@ -790,8 +794,11 @@ fn sw_dumb_create(
         return Err("dumb_create: zero dimension");
     }
     let handle = DUMB_HANDLE_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let pitch = width * (bpp / 8);
-    let size = (pitch as u64) * (height as u64);
+    let pitch = width.checked_mul(bpp / 8).ok_or("dumb_create: pitch overflow")?;
+    let size = (pitch as u64).checked_mul(height as u64).ok_or("dumb_create: size overflow")?;
+    if size > (isize::MAX as u64) {
+        return Err("dumb_create: size too large for allocation");
+    }
     // Allocate real backing storage so map/addr yields a usable pointer.
     let bo = BufferObject {
         handle,
@@ -813,6 +820,14 @@ fn sw_dumb_create(
 }
 
 fn sw_dumb_destroy(_dev_id: u32, handle: u32) -> Result<(), &'static str> {
+    // Check if this buffer is still bound to any framebuffer.
+    let fbs = DRM_FRAMEBUFFERS.read();
+    for fb in fbs.values() {
+        if fb.bo_handle == Some(handle) {
+            return Err("dumb_destroy: buffer is bound to an active framebuffer");
+        }
+    }
+    drop(fbs);
     if DRM_BUFFER_OBJECTS.write().remove(&handle).is_none() {
         return Err("dumb_destroy: handle not found");
     }
