@@ -525,7 +525,13 @@ impl SyscallDispatcher {
 
         // Verify the process actually exists in the process table
         match process_manager.get_process(current_pid) {
-            Some(_) => SyscallResult::Success(current_pid as u64),
+            Some(_) => {
+                // Return the namespace-local PID so processes inside a PID
+                // namespace see their virtual PID (1 for the init of the ns).
+                let ns = crate::namespace::get_nsproxy(current_pid);
+                let local_pid = ns.pid.lock().local_pid(current_pid);
+                SyscallResult::Success(local_pid as u64)
+            }
             None => {
                 // This should not happen - current PID should always be valid
                 SyscallResult::Error(SyscallError::ProcessNotFound)
@@ -1337,12 +1343,14 @@ impl SyscallDispatcher {
             machine: [0; 65],
         };
 
-        // Fill in system information
-        copy_str_to_buf(&mut utsname.sysname, "RustOS");
-        copy_str_to_buf(&mut utsname.nodename, "rustos-node");
-        copy_str_to_buf(&mut utsname.release, env!("CARGO_PKG_VERSION"));
-        copy_str_to_buf(&mut utsname.version, "RustOS Production Kernel");
-        copy_str_to_buf(&mut utsname.machine, "x86_64");
+        // Fill in system information — use the calling process's UTS namespace
+        // so that processes with an unshared UTS namespace see their own hostname.
+        let uts_ns = crate::namespace::get_nsproxy(_current_pid).uts;
+        copy_str_to_buf(&mut utsname.sysname, &uts_ns.sysname);
+        copy_str_to_buf(&mut utsname.nodename, &uts_ns.nodename);
+        copy_str_to_buf(&mut utsname.release, &uts_ns.release);
+        copy_str_to_buf(&mut utsname.version, &uts_ns.version);
+        copy_str_to_buf(&mut utsname.machine, &uts_ns.machine);
 
         // Copy to user space
         let utsname_bytes =

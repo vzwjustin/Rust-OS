@@ -119,12 +119,16 @@ impl MemoryController {
 
 #[derive(Debug, Clone)]
 pub struct CpuController {
-    pub cpu_time_ns: u64,   // Total CPU time used
-    pub cpu_quota_us: i64,  // -1 = unlimited, else max CPU time per period
-    pub cpu_period_us: u64, // Period for quota (default 100000 = 100ms)
-    pub cpu_shares: u64,    // Weight for proportional scheduling (default 1024)
-    pub nr_throttled: u64,  // Times throttled
+    pub cpu_time_ns: u64,      // Total CPU time used (all time)
+    pub cpu_quota_us: i64,     // -1 = unlimited, else max CPU time per period
+    pub cpu_period_us: u64,    // Period for quota (default 100000 = 100ms)
+    pub cpu_shares: u64,       // Weight for proportional scheduling (default 1024)
+    pub nr_throttled: u64,     // Times throttled
     pub throttled_time_ns: u64,
+    /// Monotonic ns timestamp when the current period started (0 = unset)
+    pub period_start_ns: u64,
+    /// CPU nanoseconds consumed within the current period
+    pub used_ns_in_period: u64,
 }
 
 impl Default for CpuController {
@@ -136,6 +140,8 @@ impl Default for CpuController {
             cpu_shares: 1024,
             nr_throttled: 0,
             throttled_time_ns: 0,
+            period_start_ns: 0,
+            used_ns_in_period: 0,
         }
     }
 }
@@ -144,17 +150,33 @@ impl CpuController {
     /// Charge CPU time to this cgroup.
     pub fn charge_cpu(&mut self, ns: u64) {
         self.cpu_time_ns += ns;
+        self.used_ns_in_period += ns;
     }
 
-    /// Check if the cgroup is over its CPU quota.
+    /// Reset the current period if `current_time_ns` has crossed the period boundary.
+    pub fn maybe_reset_period(&mut self, current_time_ns: u64) {
+        let period_ns = self.cpu_period_us * 1000;
+        if self.period_start_ns == 0 {
+            self.period_start_ns = current_time_ns;
+            self.used_ns_in_period = 0;
+            return;
+        }
+        if current_time_ns >= self.period_start_ns + period_ns {
+            self.used_ns_in_period = 0;
+            // Advance period_start by the number of complete periods that elapsed
+            let elapsed = current_time_ns - self.period_start_ns;
+            let periods = elapsed / period_ns;
+            self.period_start_ns += periods * period_ns;
+        }
+    }
+
+    /// Check if the cgroup has exceeded its CPU quota in the current period.
     pub fn is_throttled(&self) -> bool {
         if self.cpu_quota_us < 0 {
             return false;
         }
         let quota_ns = self.cpu_quota_us as u64 * 1000;
-        let period_ns = self.cpu_period_us * 1000;
-        let used_in_period = self.cpu_time_ns % period_ns;
-        used_in_period >= quota_ns
+        self.used_ns_in_period >= quota_ns
     }
 }
 
@@ -607,5 +629,79 @@ pub fn check_cgroup_oom(cgroup_id: u32) -> bool {
         cg.controllers.memory.oom_count += 1;
     }
 
+    true
+}
+
+// ── Enforcement hooks (called from allocator / scheduler / I/O path) ─────
+
+/// Check and charge a memory allocation for the **current** process.
+///
+/// Returns `true` if the allocation is within limits (and charges it),
+/// `false` if the cgroup memory limit would be exceeded.
+/// Call `uncharge_memory(current_pid, size)` if the allocation is later freed.
+pub fn enforce_memory_limit(size: usize) -> bool {
+    let pid = crate::process::current_pid();
+    charge_memory(pid, size as u64)
+}
+
+/// Check whether a process is within its CPU quota for the current period.
+///
+/// Returns `true` if the process may be scheduled, `false` if it should be
+/// throttled.  The scheduler should call this before dispatching a process.
+pub fn check_cpu_quota(pid: u32) -> bool {
+    let cgroup_id = get_cgroup_for_pid(pid);
+    let groups = CGROUPS.read();
+    if let Some(cg) = groups.get(&cgroup_id) {
+        return !cg.controllers.cpu.is_throttled();
+    }
+    true // no cgroup = unlimited
+}
+
+/// Record CPU usage for a process (in microseconds) and handle period resets.
+///
+/// `microseconds` is the amount of CPU time consumed in this timeslice.
+/// Call this from the scheduler tick / context-switch path.
+pub fn record_cpu_usage(pid: u32, microseconds: u64) {
+    let cgroup_id = get_cgroup_for_pid(pid);
+    let mut groups = CGROUPS.write();
+    if let Some(cg) = groups.get_mut(&cgroup_id) {
+        let cpu = &mut cg.controllers.cpu;
+        // Use cumulative cpu_time_ns as a monotonic clock proxy
+        let clock_ns = cpu.cpu_time_ns;
+        cpu.maybe_reset_period(clock_ns);
+        cpu.charge_cpu(microseconds * 1000);
+        if cpu.is_throttled() {
+            cpu.nr_throttled += 1;
+        }
+    }
+}
+
+/// Check whether a block-I/O read of `bytes` is within the cgroup's throttle
+/// limit for the process.  Returns `true` if allowed, `false` to rate-limit.
+pub fn check_blkio_read(pid: u32, bytes: u64) -> bool {
+    let cgroup_id = get_cgroup_for_pid(pid);
+    let groups = CGROUPS.read();
+    if let Some(cg) = groups.get(&cgroup_id) {
+        let limit = cg.controllers.blkio.throttle_read_bps;
+        if limit == 0 {
+            return true; // unlimited
+        }
+        return bytes <= limit;
+    }
+    true
+}
+
+/// Check whether a block-I/O write of `bytes` is within the cgroup's throttle
+/// limit.  Returns `true` if allowed, `false` to rate-limit.
+pub fn check_blkio_write(pid: u32, bytes: u64) -> bool {
+    let cgroup_id = get_cgroup_for_pid(pid);
+    let groups = CGROUPS.read();
+    if let Some(cg) = groups.get(&cgroup_id) {
+        let limit = cg.controllers.blkio.throttle_write_bps;
+        if limit == 0 {
+            return true; // unlimited
+        }
+        return bytes <= limit;
+    }
     true
 }
