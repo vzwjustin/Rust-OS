@@ -591,6 +591,10 @@ pub fn try_close(fd: i32) -> Option<LinuxResult<()>> {
             crate::net::network_stack().close_socket(socket_id).ok();
             Some(Ok(()))
         }
+        FdKind::MessageQueue(queue_id) => {
+            super::ipc_ops::mq_release(queue_id);
+            Some(Ok(()))
+        }
         _ => None,
     }
 }
@@ -755,6 +759,18 @@ pub fn poll_revents(fd: i32, events: i16) -> i16 {
                 if super::fs_ops::inotify_has_events(id) {
                     revents |= poll_events::POLLIN;
                 }
+            }
+        }
+        FdKind::MessageQueue(queue_id) => {
+            if let Some((has_msgs, has_space)) = super::ipc_ops::mq_poll_state(queue_id) {
+                if events & poll_events::POLLIN != 0 && has_msgs {
+                    revents |= poll_events::POLLIN;
+                }
+                if events & poll_events::POLLOUT != 0 && has_space {
+                    revents |= poll_events::POLLOUT;
+                }
+            } else {
+                revents |= poll_events::POLLNVAL;
             }
         }
     }

@@ -43,6 +43,20 @@ pub enum BioStatus {
     Error,
 }
 
+/// A single contiguous segment within a bio's data buffer, mirroring
+/// Linux's `struct bio_vec` (page + offset + len). RustOS bios back their
+/// data with a flat heap buffer rather than discrete pages, so a segment
+/// instead records an (offset, len) span within `bi_data`. A freshly
+/// created bio has exactly one segment; merging two bios appends a
+/// segment boundary rather than silently flattening the buffer, so
+/// scatter-gather structure (e.g. which original bio contributed which
+/// bytes) is preserved for drivers that care.
+#[derive(Debug, Clone, Copy)]
+pub struct BioVec {
+    pub bv_offset: usize,
+    pub bv_len: usize,
+}
+
 /// A bio represents a single I/O request to a block device.
 #[derive(Clone)]
 pub struct Bio {
@@ -51,8 +65,15 @@ pub struct Bio {
     pub bi_dir: BioDirection,
     pub bi_status: BioStatus,
     pub bi_error: i32,
-    /// Inline data buffer for small transfers
+    /// Inline data buffer backing all segments for this bio (and any bios
+    /// merged into it).
     pub bi_data: Vec<u8>,
+    /// Scatter-gather segment list describing how `bi_data` is split into
+    /// discrete (offset, len) spans.
+    pub bi_io_vec: Vec<BioVec>,
+    /// Next bio in a chain, for batched submission (e.g. readahead runs
+    /// or writeback of several dirty pages as one logical unit).
+    pub bi_next: Option<Box<Bio>>,
     /// Callback invoked when bio completes
     pub bi_end_io: Option<fn(&Bio)>,
 }
@@ -66,6 +87,11 @@ impl Bio {
             bi_status: BioStatus::Pending,
             bi_error: 0,
             bi_data: vec![0u8; size],
+            bi_io_vec: vec![BioVec {
+                bv_offset: 0,
+                bv_len: size,
+            }],
+            bi_next: None,
             bi_end_io: None,
         }
     }
@@ -79,6 +105,11 @@ impl Bio {
             bi_status: BioStatus::Pending,
             bi_error: 0,
             bi_data: data,
+            bi_io_vec: vec![BioVec {
+                bv_offset: 0,
+                bv_len: size,
+            }],
+            bi_next: None,
             bi_end_io: None,
         }
     }
@@ -91,6 +122,8 @@ impl Bio {
             bi_status: BioStatus::Pending,
             bi_error: 0,
             bi_data: Vec::new(),
+            bi_io_vec: Vec::new(),
+            bi_next: None,
             bi_end_io: None,
         }
     }
@@ -105,6 +138,49 @@ impl Bio {
 
     pub fn is_write(&self) -> bool {
         self.bi_dir == BioDirection::Write
+    }
+
+    /// Number of distinct scatter-gather segments in this bio.
+    pub fn n_segments(&self) -> usize {
+        self.bi_io_vec.len()
+    }
+
+    /// Append `extra` bytes to `bi_data` as a new trailing segment,
+    /// instead of silently coalescing into the previous segment. Used by
+    /// request merging to extend a pending bio with a contiguous one
+    /// while keeping the segment list accurate.
+    pub fn push_segment(&mut self, extra: &[u8]) {
+        let offset = self.bi_data.len();
+        self.bi_data.extend_from_slice(extra);
+        self.bi_io_vec.push(BioVec {
+            bv_offset: offset,
+            bv_len: extra.len(),
+        });
+        self.bi_size = self.bi_data.len();
+    }
+
+    /// Chain `next` onto the end of this bio's chain list.
+    pub fn chain(&mut self, next: Bio) {
+        let mut tail = self;
+        while tail.bi_next.is_some() {
+            tail = tail.bi_next.as_mut().unwrap();
+        }
+        tail.bi_next = Some(Box::new(next));
+    }
+
+    /// Flatten this bio's chain (including itself) into a plain Vec, in
+    /// order, consuming the chain links.
+    pub fn into_chain_vec(mut self) -> Vec<Bio> {
+        let mut out = Vec::new();
+        loop {
+            let next = self.bi_next.take();
+            out.push(self);
+            match next {
+                Some(boxed) => self = *boxed,
+                None => break,
+            }
+        }
+        out
     }
 }
 
@@ -140,57 +216,125 @@ pub struct BlockDeviceStats {
     pub error_count: AtomicU64,
 }
 
-// ── Request queue ───────────────────────────────────────────────────────
+// ── Request queue / I/O scheduler ───────────────────────────────────────
+//
+// Conceptually mirrors Linux's elevator_queue + mq-deadline: requests are
+// split into a read queue and a write queue, each FIFO-ordered with a
+// soft deadline. Dispatch (`pop_bio`, the `elv_dispatch_request`
+// equivalent) prefers reads up to a batch limit (favoring read latency,
+// as interactive/paging workloads are read-heavy) but services whichever
+// queue has an expired-deadline head first, and falls back to writes
+// once the read batch is exhausted, so writers are never starved
+// indefinitely. This is a single dispatch queue today (no per-CPU
+// software queues like blk-mq), but the read/write split plus deadline
+// tracking is the same shape mq-deadline uses and is meant to be
+// extensible toward a real elevator if/when multiple hardware queues
+// exist.
 
 /// A request queue collects and dispatches bios to the device.
 struct RequestQueue {
-    pending: Vec<Bio>,
+    /// (deadline_ms, bio) pairs, FIFO-ordered, read direction.
+    read_queue: Vec<(u64, Bio)>,
+    /// (deadline_ms, bio) pairs, FIFO-ordered, write direction (also
+    /// carries Flush/Discard, which have no merge target).
+    write_queue: Vec<(u64, Bio)>,
     in_flight: usize,
     max_in_flight: usize,
     queue_depth: usize,
+    /// How long a request may sit in queue before it is force-dispatched
+    /// ahead of normal read/write batching, in milliseconds.
+    fifo_expire_ms: u64,
+    /// Max consecutive reads dispatched before yielding to a write.
+    read_batch: usize,
+    reads_since_write: usize,
 }
 
 impl RequestQueue {
     fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            read_queue: Vec::new(),
+            write_queue: Vec::new(),
             in_flight: 0,
             max_in_flight: 64,
             queue_depth: 128,
+            fifo_expire_ms: 500,
+            read_batch: 16,
+            reads_since_write: 0,
         }
     }
 
-    /// Add a bio to the queue. Attempts to merge with existing requests.
+    /// Add a bio to the queue. Attempts to merge with the tail of the
+    /// matching-direction queue if the new bio is sector-contiguous
+    /// (blk-merge.c's back-merge case).
     fn add_bio(&mut self, bio: Bio) {
-        // Try to merge with the last pending bio if contiguous
-        if let Some(last) = self.pending.last_mut() {
+        let is_write = matches!(bio.bi_dir, BioDirection::Write);
+        let queue = if is_write {
+            &mut self.write_queue
+        } else {
+            &mut self.read_queue
+        };
+
+        if let Some((_, last)) = queue.last_mut() {
             if last.bi_dir == bio.bi_dir
                 && last.bi_sector + last.sectors() == bio.bi_sector
                 && last.bi_size + bio.bi_size <= 4096 * BIO_MAX_PAGES
             {
-                // Merge: append data for writes
                 if bio.is_write() {
-                    last.bi_data.extend_from_slice(&bio.bi_data);
-                    last.bi_size += bio.bi_size;
+                    last.push_segment(&bio.bi_data);
                 } else {
-                    // For reads, just extend the size
-                    last.bi_size += bio.bi_size;
+                    // For reads, just extend the size; data is filled in
+                    // by the driver on completion. Still record a
+                    // segment boundary so n_segments() reflects the merge.
+                    let extra = bio.bi_size;
+                    let offset = last.bi_data.len();
+                    last.bi_size += extra;
                     last.bi_data.resize(last.bi_size, 0);
+                    last.bi_io_vec.push(BioVec {
+                        bv_offset: offset,
+                        bv_len: extra,
+                    });
                 }
                 return;
             }
         }
 
-        self.pending.push(bio);
+        let deadline = crate::time::uptime_ms() + self.fifo_expire_ms;
+        queue.push((deadline, bio));
     }
 
-    /// Pop the next bio to dispatch. Uses simple FIFO for now.
+    /// Pop the next bio to dispatch (the `elv_dispatch_request`
+    /// equivalent): expired requests are serviced first to bound
+    /// worst-case latency, then reads are batched ahead of writes, with
+    /// the batch yielding to a pending write afterward.
     fn pop_bio(&mut self) -> Option<Bio> {
-        if self.pending.is_empty() {
-            None
-        } else {
-            Some(self.pending.remove(0))
+        let now = crate::time::uptime_ms();
+
+        if let Some((deadline, _)) = self.read_queue.first() {
+            if now >= *deadline {
+                self.reads_since_write += 1;
+                return Some(self.read_queue.remove(0).1);
+            }
         }
+        if let Some((deadline, _)) = self.write_queue.first() {
+            if now >= *deadline {
+                self.reads_since_write = 0;
+                return Some(self.write_queue.remove(0).1);
+            }
+        }
+
+        if !self.read_queue.is_empty()
+            && (self.write_queue.is_empty() || self.reads_since_write < self.read_batch)
+        {
+            self.reads_since_write += 1;
+            return Some(self.read_queue.remove(0).1);
+        }
+
+        if !self.write_queue.is_empty() {
+            self.reads_since_write = 0;
+            return Some(self.write_queue.remove(0).1);
+        }
+
+        None
     }
 }
 

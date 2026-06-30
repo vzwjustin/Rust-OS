@@ -16,7 +16,6 @@ use crate::process::ipc::{get_ipc_manager, IpcId, SharedMemoryPermissions};
 
 /// Operation counter for statistics
 static IPC_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
-static NEXT_MQ_DESC: AtomicU32 = AtomicU32::new(10_000);
 
 const O_CREAT: i32 = 0o100;
 const O_EXCL: i32 = 0o200;
@@ -48,19 +47,55 @@ struct PosixMessageQueue {
     messages: VecDeque<MqMessage>,
     unlinked: bool,
     notify_pid: Option<i32>,
-}
-
-#[derive(Clone)]
-struct MqDescriptor {
-    queue_id: u32,
-    flags: i32,
+    /// Number of open descriptors (real vfs fds) referencing this queue.
+    /// The queue is destroyed once this drops to zero and `unlinked` is set,
+    /// matching POSIX mq_unlink()/mq_close() lifetime semantics.
+    open_count: u32,
 }
 
 static NEXT_MQ_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_MQ_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static MQ_BY_NAME: RwLock<BTreeMap<String, u32>> = RwLock::new(BTreeMap::new());
 static MQ_QUEUES: RwLock<BTreeMap<u32, PosixMessageQueue>> = RwLock::new(BTreeMap::new());
-static MQ_DESCRIPTORS: RwLock<BTreeMap<i32, MqDescriptor>> = RwLock::new(BTreeMap::new());
+
+/// Resolve a real vfs fd that should be a POSIX message queue descriptor to
+/// its backing queue id. Mirrors the dispatch pattern used for the other
+/// special-fd kinds (eventfd, timerfd, ...) in `special_fd.rs`.
+fn mq_queue_id(mqd: i32) -> LinuxResult<u32> {
+    match crate::vfs::vfs_fd_kind(mqd) {
+        Ok(crate::vfs::FdKind::MessageQueue(queue_id)) => Ok(queue_id),
+        _ => Err(LinuxError::EBADF),
+    }
+}
+
+/// Drop a message-queue open reference, deleting the queue once it has been
+/// unlinked and no descriptor references it anymore. Called from
+/// `special_fd::try_close` when a `FdKind::MessageQueue` fd is closed.
+/// Readiness snapshot for `poll`/`select`/`epoll` on a message-queue fd:
+/// `(has_messages, has_space)`. Returns `None` if the queue no longer
+/// exists (e.g. raced with unlink+close on another thread), which the
+/// caller treats as POLLNVAL.
+pub(crate) fn mq_poll_state(queue_id: u32) -> Option<(bool, bool)> {
+    let queues = MQ_QUEUES.read();
+    let queue = queues.get(&queue_id)?;
+    Some((
+        !queue.messages.is_empty(),
+        queue.messages.len() < queue.attr.mq_maxmsg as usize,
+    ))
+}
+
+pub(crate) fn mq_release(queue_id: u32) {
+    let mut queues = MQ_QUEUES.write();
+    let remove = if let Some(queue) = queues.get_mut(&queue_id) {
+        queue.open_count = queue.open_count.saturating_sub(1);
+        queue.open_count == 0 && queue.unlinked
+    } else {
+        false
+    };
+    if remove {
+        queues.remove(&queue_id);
+    }
+}
 
 /// Initialize IPC operations subsystem
 pub fn init_ipc_operations() {
@@ -118,14 +153,6 @@ fn mq_attr_from_user(attr: *const MqAttr, oflag: i32) -> LinuxResult<MqAttr> {
     out.mq_flags = (oflag & O_NONBLOCK) as i64;
     out.mq_curmsgs = 0;
     Ok(out)
-}
-
-fn mq_descriptor(mqd: i32) -> LinuxResult<MqDescriptor> {
-    MQ_DESCRIPTORS
-        .read()
-        .get(&mqd)
-        .cloned()
-        .ok_or(LinuxError::EBADF)
 }
 
 fn copy_mq_attr_to_user(attr: *mut MqAttr, value: MqAttr) -> LinuxResult<()> {
@@ -981,6 +1008,15 @@ pub fn shmctl(shmid: ShmId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
     }
 }
 
+/// mq_open(2) - open (and optionally create) a POSIX message queue.
+///
+/// Unlike SysV IPC ids, the returned descriptor is a real vfs file
+/// descriptor (`FdKind::MessageQueue`), so it participates in the normal
+/// fd table: `close()` releases it (see `special_fd::try_close`), and
+/// `poll`/`select`/`epoll` can observe readability/writability (see
+/// `special_fd::poll_revents`). `mq_close()` is therefore just `close(2)`
+/// on this fd, matching glibc/Linux, and there is no separate mq_close
+/// syscall to implement.
 pub fn mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const MqAttr) -> LinuxResult<i32> {
     inc_ops();
     let name = normalize_mq_name(name)?;
@@ -1006,29 +1042,43 @@ pub fn mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const MqAttr) -> 
                 messages: VecDeque::new(),
                 unlinked: false,
                 notify_pid: None,
+                open_count: 0,
             },
         );
         names.insert(name, queue_id);
         queue_id
     };
 
-    let desc = NEXT_MQ_DESC.fetch_add(1, Ordering::Relaxed) as i32;
-    MQ_DESCRIPTORS.write().insert(
-        desc,
-        MqDescriptor {
-            queue_id,
-            flags: oflag,
-        },
+    if let Some(queue) = queues.get_mut(&queue_id) {
+        queue.open_count += 1;
+    }
+    drop(queues);
+    drop(names);
+
+    let fd = super::special_fd::register_special(
+        crate::vfs::FdKind::MessageQueue(queue_id),
+        oflag as u32,
     );
-    Ok(desc)
+    if fd.is_err() {
+        // Roll back the open_count bump if fd allocation failed.
+        mq_release(queue_id);
+    }
+    fd
 }
 
 pub fn mq_unlink(name: *const u8) -> LinuxResult<i32> {
     inc_ops();
     let name = normalize_mq_name(name)?;
     let queue_id = MQ_BY_NAME.write().remove(&name).ok_or(LinuxError::ENOENT)?;
-    if let Some(queue) = MQ_QUEUES.write().get_mut(&queue_id) {
+    let mut queues = MQ_QUEUES.write();
+    let remove = if let Some(queue) = queues.get_mut(&queue_id) {
         queue.unlinked = true;
+        queue.open_count == 0
+    } else {
+        false
+    };
+    if remove {
+        queues.remove(&queue_id);
     }
     Ok(0)
 }
@@ -1045,9 +1095,15 @@ pub fn mq_timedsend(
         return Err(LinuxError::EFAULT);
     }
 
-    let desc = mq_descriptor(mqd)?;
+    let queue_id = mq_queue_id(mqd)?;
+    // NOTE: like the rest of this kernel's special-fd objects (eventfd,
+    // pipes, sockets), this does not block: a full queue returns EAGAIN
+    // immediately regardless of O_NONBLOCK. True blocking (with a
+    // wait-queue parked on scheduler primitives, woken by mq_timedreceive
+    // or timeout) is a documented gap — see module docs at the top of
+    // this file region.
     let mut queues = MQ_QUEUES.write();
-    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    let queue = queues.get_mut(&queue_id).ok_or(LinuxError::EBADF)?;
     if msg_len > queue.attr.mq_msgsize as usize {
         return Err(LinuxError::EINVAL);
     }
@@ -1089,9 +1145,10 @@ pub fn mq_timedreceive(
         return Err(LinuxError::EFAULT);
     }
 
-    let desc = mq_descriptor(mqd)?;
+    let queue_id = mq_queue_id(mqd)?;
+    // See mq_timedsend: non-blocking only, EAGAIN when empty (gap noted above).
     let mut queues = MQ_QUEUES.write();
-    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    let queue = queues.get_mut(&queue_id).ok_or(LinuxError::EBADF)?;
     if msg_len < queue.attr.mq_msgsize as usize {
         return Err(LinuxError::EINVAL);
     }
@@ -1112,9 +1169,9 @@ pub fn mq_timedreceive(
 
 pub fn mq_notify(mqd: i32, sevp: *const u8) -> LinuxResult<i32> {
     inc_ops();
-    let desc = mq_descriptor(mqd)?;
+    let queue_id = mq_queue_id(mqd)?;
     let mut queues = MQ_QUEUES.write();
-    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    let queue = queues.get_mut(&queue_id).ok_or(LinuxError::EBADF)?;
     if sevp.is_null() {
         queue.notify_pid = None;
     } else if queue.notify_pid.is_some() {
@@ -1122,24 +1179,38 @@ pub fn mq_notify(mqd: i32, sevp: *const u8) -> LinuxResult<i32> {
     } else {
         queue.notify_pid = Some(current_pid() as i32);
     }
+    // Gap: actual SIGEV_SIGNAL/SIGEV_THREAD delivery on message arrival is
+    // not wired up. `notify_pid` is recorded but nothing currently raises a
+    // signal to it from mq_timedsend; there is no generic "deliver signal
+    // on async event" hook in src/signal.rs to attach to here. Documented
+    // as a known gap rather than inventing a bespoke delivery path.
     Ok(0)
 }
 
 pub fn mq_getsetattr(mqd: i32, newattr: *const MqAttr, oldattr: *mut MqAttr) -> LinuxResult<i32> {
     inc_ops();
-    let desc = mq_descriptor(mqd)?;
+    let queue_id = mq_queue_id(mqd)?;
+    let cur_flags = crate::vfs::vfs_fd_flags(mqd).map_err(|_| LinuxError::EBADF)?;
     let mut queues = MQ_QUEUES.write();
-    let queue = queues.get_mut(&desc.queue_id).ok_or(LinuxError::EBADF)?;
+    let queue = queues.get_mut(&queue_id).ok_or(LinuxError::EBADF)?;
     let mut current = queue.attr;
-    current.mq_flags = (desc.flags & O_NONBLOCK) as i64;
+    current.mq_flags = if cur_flags.has_flag(crate::vfs::OpenFlags::NONBLOCK) {
+        O_NONBLOCK as i64
+    } else {
+        0
+    };
     current.mq_curmsgs = queue.messages.len() as i64;
     copy_mq_attr_to_user(oldattr, current)?;
+    drop(queues);
 
     if !newattr.is_null() {
         let new_flags = unsafe { (*newattr).mq_flags } as i32;
-        if let Some(desc) = MQ_DESCRIPTORS.write().get_mut(&mqd) {
-            desc.flags = (desc.flags & !O_NONBLOCK) | (new_flags & O_NONBLOCK);
-        }
+        let bits = if (new_flags & O_NONBLOCK) != 0 {
+            cur_flags.bits() | crate::vfs::OpenFlags::NONBLOCK
+        } else {
+            cur_flags.bits() & !crate::vfs::OpenFlags::NONBLOCK
+        };
+        let _ = crate::vfs::vfs_set_fd_flags(mqd, bits);
     }
     Ok(0)
 }

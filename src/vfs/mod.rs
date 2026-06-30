@@ -701,6 +701,13 @@ impl Vfs {
         file_table.set_flags(fd, flags)
     }
 
+    /// Get the current open flags for a file descriptor (e.g. to check
+    /// O_NONBLOCK on a special fd such as a POSIX message queue).
+    pub fn fd_flags(&self, fd: i32) -> VfsResult<OpenFlags> {
+        let file_table = self.file_table.lock();
+        Ok(file_table.get(fd)?.flags)
+    }
+
     /// Snapshot open fds for syscall tracing.
     pub fn open_fd_snapshot(&self) -> Vec<(i32, FdKind)> {
         let file_table = self.file_table.lock();
@@ -1193,6 +1200,10 @@ pub fn vfs_set_dir_cookie(fd: i32, cookie: u64) -> VfsResult<()> {
 /// Get fd kind
 pub fn vfs_fd_kind(fd: i32) -> VfsResult<FdKind> {
     VFS.fd_kind(fd)
+}
+
+pub fn vfs_fd_flags(fd: i32) -> VfsResult<OpenFlags> {
+    VFS.fd_flags(fd)
 }
 
 /// Count descriptors that reference the same fd object as `fd`.

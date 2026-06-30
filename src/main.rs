@@ -188,6 +188,9 @@ mod oom;
 mod swap;
 // Include block I/O layer (generic block device abstraction)
 mod block_io;
+// Partition table parsing (MBR/GPT), consumed by block_io to expose
+// per-partition block devices.
+mod block_partition;
 // Include cgroups (resource control groups)
 mod cgroup;
 // Include seccomp (secure computing mode - syscall filtering)
