@@ -166,6 +166,11 @@ pub fn init() -> Result<(), &'static str> {
     if !BACKLIGHTS.read().is_empty() {
         return Ok(());
     }
-    crate::serial_println!("backlight: subsystem ready");
+
+    let bl_id = register_backlight("software-backlight", &SW_BACKLIGHT_OPS)?;
+    crate::serial_println!(
+        "backlight: software device registered (id={}, max=255)",
+        bl_id
+    );
     Ok(())
 }

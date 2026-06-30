@@ -748,6 +748,9 @@ pub fn timer_tick() {
     // Fire any expired ITIMER_REAL alarms (delivers SIGALRM)
     crate::linux_compat::process_ops::fire_expired_alarms();
 
+    // Wake semaphore waiters whose timeout has expired
+    crate::sysv_ipc::check_sem_timeouts();
+
     // Process any scheduled software timers
     process_scheduled_timers();
 }

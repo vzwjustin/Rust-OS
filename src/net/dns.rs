@@ -961,18 +961,18 @@ impl DnsResolver {
                                             .unwrap_or(60);
                                         let records: Vec<DnsResourceRecord> = addrs
                                             .iter()
-                                            .map(|&ip| DnsResourceRecord::new(
-                                                String::from(hostname),
-                                                DnsRecordType::A,
-                                                DnsClass::In,
-                                                min_ttl,
-                                                ip.to_vec(),
-                                            ))
+                                            .map(|&ip| {
+                                                DnsResourceRecord::new(
+                                                    String::from(hostname),
+                                                    DnsRecordType::A,
+                                                    DnsClass::In,
+                                                    min_ttl,
+                                                    ip.to_vec(),
+                                                )
+                                            })
                                             .collect();
-                                        let key = (
-                                            StringExt::to_lowercase(hostname),
-                                            DnsRecordType::A,
-                                        );
+                                        let key =
+                                            (StringExt::to_lowercase(hostname), DnsRecordType::A);
                                         self.cache.insert(key, (records, now));
                                         self.stats.cache_entries += 1;
                                         let _ = super::udp::udp_close(src_addr, src_port);

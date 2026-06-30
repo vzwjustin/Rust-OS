@@ -31,6 +31,7 @@ const PCI_DEVICE_ID: u8 = 0x02;
 const PCI_CLASS_CODE: u8 = 0x0B;
 const PCI_SUBCLASS: u8 = 0x0A;
 const PCI_PROG_IF: u8 = 0x09;
+const PCI_HEADER_TYPE: u8 = 0x0E;
 const PCI_BAR0: u8 = 0x10;
 const PCI_BAR1: u8 = 0x14;
 const PCI_BAR2: u8 = 0x18;
@@ -116,20 +117,23 @@ fn read_pci_device(bus: u8, device: u8, function: u8) -> Option<PciDevice> {
 pub fn scan_pci_devices() -> Vec<PciDevice> {
     let mut devices = Vec::new();
 
-    // Scan all possible PCI locations
+    // Scan all possible PCI locations. Function 0 defines whether functions
+    // 1-7 may exist, matching the normal PCI multifunction enumeration flow.
     for bus in 0..256 {
         for device in 0..32 {
-            for function in 0..8 {
-                if let Some(pci_device) = read_pci_device(bus as u8, device as u8, function as u8) {
-                    devices.push(pci_device);
+            let bus = bus as u8;
+            let device = device as u8;
+            let Some(function0) = read_pci_device(bus, device, 0) else {
+                continue;
+            };
 
-                    // If this is function 0 and it's not a multi-function device,
-                    // skip the other functions
-                    if function == 0 {
-                        let header_type = pci_config_read_u8(bus as u8, device as u8, 0, 0x0E);
-                        if (header_type & 0x80) == 0 {
-                            break; // Not multi-function
-                        }
+            let header_type = pci_config_read_u8(bus, device, 0, PCI_HEADER_TYPE);
+            devices.push(function0);
+
+            if (header_type & 0x80) != 0 {
+                for function in 1..8 {
+                    if let Some(pci_device) = read_pci_device(bus, device, function as u8) {
+                        devices.push(pci_device);
                     }
                 }
             }

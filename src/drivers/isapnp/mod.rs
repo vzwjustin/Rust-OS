@@ -76,6 +76,11 @@ static ISA_PNP_CARDS: RwLock<BTreeMap<u32, IsaPnpCard>> = RwLock::new(BTreeMap::
 static ISA_PNP_DEVICES: RwLock<BTreeMap<u32, IsaPnpDev>> = RwLock::new(BTreeMap::new());
 static ISA_PNP_DRIVERS: RwLock<BTreeMap<u32, IsaPnpDriver>> = RwLock::new(BTreeMap::new());
 
+const ISAPNP_MAX_MEM: usize = 4;
+const ISAPNP_MAX_IO: usize = 8;
+const ISAPNP_MAX_IRQ: usize = 2;
+const ISAPNP_MAX_DMA: usize = 2;
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Register an ISA PnP card.
@@ -101,6 +106,24 @@ pub fn register_device(
     serial: u32,
     resources: Vec<IsaPnpResource>,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("ISA PnP device name is empty");
+    }
+    validate_resources(&resources)?;
+
+    {
+        let cards = ISA_PNP_CARDS.read();
+        let card = cards.get(&card_id).ok_or("ISA PnP card not found")?;
+        let devices = ISA_PNP_DEVICES.read();
+        if card.device_ids.iter().any(|id| {
+            devices.get(id).is_some_and(|dev| {
+                dev.vendor_id == vendor_id && dev.product_id == product_id && dev.serial == serial
+            })
+        }) {
+            return Err("ISA PnP device already registered");
+        }
+    }
+
     let dev_id = DEVICE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = IsaPnpDev {
         id: dev_id,
@@ -115,12 +138,25 @@ pub fn register_device(
     };
     ISA_PNP_DEVICES.write().insert(dev_id, dev);
 
-    let mut cards = ISA_PNP_CARDS.write();
-    if let Some(card) = cards.get_mut(&card_id) {
-        card.device_ids.push(dev_id);
+    {
+        let mut cards = ISA_PNP_CARDS.write();
+        match cards.get_mut(&card_id) {
+            Some(card) => card.device_ids.push(dev_id),
+            None => {
+                ISA_PNP_DEVICES.write().remove(&dev_id);
+                return Err("ISA PnP card not found");
+            }
+        }
     }
 
-    try_match_driver(dev_id)?;
+    if let Err(err) = try_match_driver(dev_id) {
+        ISA_PNP_DEVICES.write().remove(&dev_id);
+        if let Some(card) = ISA_PNP_CARDS.write().get_mut(&card_id) {
+            card.device_ids.retain(|id| *id != dev_id);
+        }
+        return Err(err);
+    }
+
     Ok(dev_id)
 }
 
@@ -146,9 +182,22 @@ pub fn deactivate_device(device_id: u32) -> Result<(), &'static str> {
 
 /// Register an ISA PnP driver.
 pub fn register_driver(driver: IsaPnpDriver) -> Result<u32, &'static str> {
+    if driver.name.is_empty() {
+        return Err("ISA PnP driver name is empty");
+    }
+    if driver.id_table.is_empty() {
+        return Err("ISA PnP driver ID table is empty");
+    }
+
+    let mut drivers = ISA_PNP_DRIVERS.write();
+    if drivers.values().any(|drv| drv.name == driver.name) {
+        return Err("ISA PnP driver already registered");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let id_table = driver.id_table.clone();
-    ISA_PNP_DRIVERS.write().insert(id, driver);
+    drivers.insert(id, driver);
+    drop(drivers);
 
     // Try to match with existing devices
     let device_ids: Vec<u32> = {
@@ -165,9 +214,62 @@ pub fn register_driver(driver: IsaPnpDriver) -> Result<u32, &'static str> {
             .collect()
     };
     for dev_id in device_ids {
-        try_match_driver(dev_id)?;
+        if let Err(err) = try_match_driver(dev_id) {
+            ISA_PNP_DRIVERS.write().remove(&id);
+            return Err(err);
+        }
     }
     Ok(id)
+}
+
+fn validate_resources(resources: &[IsaPnpResource]) -> Result<(), &'static str> {
+    let mut mem = 0;
+    let mut io = 0;
+    let mut irq = 0;
+    let mut dma = 0;
+
+    for resource in resources {
+        if resource.start > resource.end {
+            return Err("ISA PnP resource range is invalid");
+        }
+        match resource.kind {
+            IsaPnpResKind::Mem => {
+                mem += 1;
+            }
+            IsaPnpResKind::Io => {
+                io += 1;
+                if resource.end > 0xffff {
+                    return Err("ISA PnP IO resource out of range");
+                }
+            }
+            IsaPnpResKind::Irq => {
+                irq += 1;
+                if resource.start != resource.end || resource.end > 15 {
+                    return Err("ISA PnP IRQ resource out of range");
+                }
+            }
+            IsaPnpResKind::Dma => {
+                dma += 1;
+                if resource.start != resource.end || resource.end > 7 {
+                    return Err("ISA PnP DMA resource out of range");
+                }
+            }
+        }
+    }
+
+    if mem > ISAPNP_MAX_MEM || io > ISAPNP_MAX_IO || irq > ISAPNP_MAX_IRQ || dma > ISAPNP_MAX_DMA {
+        return Err("ISA PnP resource count exceeds hardware limits");
+    }
+
+    for (idx, left) in resources.iter().enumerate() {
+        for right in resources.iter().skip(idx + 1) {
+            if left.kind == right.kind && left.start <= right.end && right.start <= left.end {
+                return Err("ISA PnP resources overlap");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Try to match a device with a driver.
@@ -252,6 +354,6 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("isapnp: subsystem ready");
+    crate::serial_println!("isapnp: framework ready (hardware probing deferred)");
     Ok(())
 }

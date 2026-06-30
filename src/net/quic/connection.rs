@@ -14,6 +14,7 @@ use super::pnspace::{PnSpace, PnSpaceKind};
 use super::stream::Stream;
 use super::timer::RttEstimator;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 /// Endpoint role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,9 @@ pub struct Connection {
 
     /// Connection ID set management (issued + peer-advertised CIDs).
     pub cids: CidManager,
+
+    /// Retransmission queue for lost packet payloads.
+    pub retransmit_queue: Vec<(EncryptionLevel, Vec<u8>)>,
 }
 
 impl Connection {
@@ -98,6 +102,49 @@ impl Connection {
             streams: BTreeMap::new(),
             initial_max_stream_data: 256 * 1024,
             cids: CidManager::new(),
+            retransmit_queue: Vec::new(),
+        }
+    }
+
+    /// Update the local connection ID.
+    pub fn update_local_cid(&mut self, new_cid: ConnectionId) {
+        self.local_cid = new_cid;
+    }
+
+    /// Periodic tick handler: runs loss detection and moves lost packets to the retransmit queue.
+    pub fn tick(&mut self, now: u64) {
+        let Self {
+            pn_initial,
+            pn_handshake,
+            pn_app,
+            cong,
+            rtt,
+            retransmit_queue,
+            ..
+        } = self;
+
+        // Level: Initial
+        let lost_initial = super::recovery::detect_lost(pn_initial, cong, now, rtt);
+        for pkt in lost_initial {
+            if pkt.ack_eliciting && !pkt.frames.is_empty() {
+                retransmit_queue.push((pkt.level, pkt.frames));
+            }
+        }
+
+        // Level: Handshake
+        let lost_handshake = super::recovery::detect_lost(pn_handshake, cong, now, rtt);
+        for pkt in lost_handshake {
+            if pkt.ack_eliciting && !pkt.frames.is_empty() {
+                retransmit_queue.push((pkt.level, pkt.frames));
+            }
+        }
+
+        // Level: OneRtt
+        let lost_app = super::recovery::detect_lost(pn_app, cong, now, rtt);
+        for pkt in lost_app {
+            if pkt.ack_eliciting && !pkt.frames.is_empty() {
+                retransmit_queue.push((pkt.level, pkt.frames));
+            }
         }
     }
 
@@ -172,8 +219,8 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::NetworkAddress;
+    use super::*;
 
     fn dummy_path() -> Path {
         Path::new(

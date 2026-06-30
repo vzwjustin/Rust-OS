@@ -35,6 +35,7 @@ pub fn dispatch_syscall(
 
     // Seccomp check — filter syscalls before dispatching
     let args = [arg1, arg2, arg3, arg4, arg5, arg6];
+    crate::audit::audit_syscall_entry(syscall_num as i32, &args);
     if let Err(errno) = crate::seccomp::check_syscall(syscall_num as i32, &args) {
         if crate::audit::is_enabled() {
             crate::audit::audit_log_syscall(syscall_num as i32, &args, errno as i64);

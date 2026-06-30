@@ -464,6 +464,18 @@ pub fn software_dvb_fe_ops() -> DvbFeOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("dvb: subsystem ready");
+    if !DVB_ADAPS.read().is_empty() {
+        return Ok(());
+    }
+
+    let adap_id = register_adapter("software-dvb")?;
+    let fe_ops = software_dvb_fe_ops();
+    let fe_id = register_frontend(adap_id, "sw-dvb-frontend", fe_ops, DvbDelSys::DvbT)?;
+
+    crate::serial_println!(
+        "dvb: adapter {} registered with frontend {} (DVB-T)",
+        adap_id,
+        fe_id
+    );
     Ok(())
 }

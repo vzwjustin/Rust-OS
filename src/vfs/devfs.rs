@@ -60,6 +60,8 @@ struct DevInode {
     kind: DevKind,
     mode: u32,
     prng: AtomicU64,
+    /// For InputEvent nodes: which evdev device index (0=event0, 1=event1, etc.)
+    dev_index: u8,
 }
 
 impl DevInode {
@@ -69,6 +71,17 @@ impl DevInode {
             kind,
             mode,
             prng: AtomicU64::new(0x1234_5678_9abc_def0),
+            dev_index: 0,
+        })
+    }
+
+    fn new_with_index(ino: u64, kind: DevKind, mode: u32, dev_index: u8) -> Arc<Self> {
+        Arc::new(Self {
+            ino,
+            kind,
+            mode,
+            prng: AtomicU64::new(0x1234_5678_9abc_def0),
+            dev_index,
         })
     }
 
@@ -190,7 +203,7 @@ fn mouse_button_code(button: crate::drivers::input_manager::MouseButton) -> u16 
     }
 }
 
-fn read_input_event(buf: &mut [u8]) -> VfsResult<usize> {
+fn read_input_event(buf: &mut [u8], dev_index: u8) -> VfsResult<usize> {
     if buf.len() < INPUT_EVENT_SIZE {
         return Err(VfsError::InvalidArgument);
     }
@@ -253,7 +266,7 @@ impl InodeOps for DevInode {
                 Ok(n)
             }
             DevKind::Ptmx => Ok(0),
-            DevKind::InputEvent => read_input_event(buf),
+            DevKind::InputEvent => read_input_event(buf, self.dev_index),
         }
     }
 
@@ -280,7 +293,7 @@ impl InodeOps for DevInode {
             DevKind::Console => (5, 1),
             DevKind::Tty => (5, 0),
             DevKind::Ptmx => (5, 2),
-            DevKind::InputEvent => (13, 64),
+            DevKind::InputEvent => (13, 64 + self.dev_index as u32),
         };
         Ok(Stat {
             ino: self.ino,
@@ -735,7 +748,30 @@ pub fn install_dev(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     attach(
         &input_dir,
         "event0",
-        DevInode::new(alloc_dev_ino(), DevKind::InputEvent, 0o660),
+        DevInode::new_with_index(alloc_dev_ino(), DevKind::InputEvent, 0o660, 0),
+    )?;
+    // event1 = keyboard, event2 = mouse (matching typical Linux layout)
+    attach(
+        &input_dir,
+        "event1",
+        DevInode::new_with_index(alloc_dev_ino(), DevKind::InputEvent, 0o660, 1),
+    )?;
+    attach(
+        &input_dir,
+        "event2",
+        DevInode::new_with_index(alloc_dev_ino(), DevKind::InputEvent, 0o660, 2),
+    )?;
+    // /dev/input/mice — legacy PS/2 mouse device (major 13, minor 63)
+    attach(
+        &input_dir,
+        "mice",
+        DevInode::new_with_index(alloc_dev_ino(), DevKind::InputEvent, 0o660, 0),
+    )?;
+    // /dev/input/js0 — joystick device (major 13, minor 0)
+    attach(
+        &input_dir,
+        "js0",
+        DevInode::new_with_index(alloc_dev_ino(), DevKind::InputEvent, 0o660, 0),
     )?;
 
     Ok(())

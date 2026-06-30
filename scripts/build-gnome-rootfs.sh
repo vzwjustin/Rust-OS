@@ -30,6 +30,7 @@ if [ "$(uname -s)" = "Linux" ] && command -v apk >/dev/null 2>&1 && [ "${RUSTOS_
         --root "$ROOTFS" \
         --initdb \
         add --no-cache \
+        openrc dbus dbus-openrc elogind polkit \
         gnome-session gnome-shell gnome-settings-daemon \
         gsettings-desktop-schemas adwaita-icon-theme cantarell-fonts
 fi

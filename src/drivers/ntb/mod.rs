@@ -94,6 +94,21 @@ pub fn register_device(
     peer_count: u32,
     mw_count: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("NTB device name is empty");
+    }
+    if peer_count == 0 {
+        return Err("NTB device has no peers");
+    }
+    if mw_count == 0 {
+        return Err("NTB device has no memory windows");
+    }
+
+    let mut devs = NTB_DEVS.write();
+    if devs.values().any(|dev| dev.name == name) {
+        return Err("NTB device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = NtbDev {
         id,
@@ -105,7 +120,7 @@ pub fn register_device(
         link: false,
         ctx: None,
     };
-    NTB_DEVS.write().insert(id, dev);
+    devs.insert(id, dev);
     Ok(id)
 }
 
@@ -158,11 +173,38 @@ pub fn mw_set_trans(
     addr: u64,
     size: u64,
 ) -> Result<(), &'static str> {
-    let set_fn = {
+    if addr == 0 || size == 0 {
+        return Err("NTB memory window translation is empty");
+    }
+
+    let (set_fn, align_fn, peer_count, mw_count) = {
         let devs = NTB_DEVS.read();
         let dev = devs.get(&dev_id).ok_or("NTB device not found")?;
-        dev.ops.mw_set_trans
+        (
+            dev.ops.mw_set_trans,
+            dev.ops.mw_get_align,
+            dev.peer_count,
+            dev.mw_count,
+        )
     };
+    if peer >= peer_count {
+        return Err("NTB peer index out of range");
+    }
+    if mw_idx >= mw_count {
+        return Err("NTB memory window index out of range");
+    }
+
+    let align = (align_fn)(dev_id, peer, mw_idx)?;
+    if align.addr_align != 0 && addr % align.addr_align != 0 {
+        return Err("NTB memory window address is misaligned");
+    }
+    if align.size_align != 0 && size % align.size_align != 0 {
+        return Err("NTB memory window size is misaligned");
+    }
+    if align.size_max != 0 && size > align.size_max {
+        return Err("NTB memory window size too large");
+    }
+
     (set_fn)(dev_id, peer, mw_idx, addr, size)
 }
 
@@ -171,6 +213,12 @@ pub fn mw_clear_trans(dev_id: u32, peer: u32, mw_idx: u32) -> Result<(), &'stati
     let clear_fn = {
         let devs = NTB_DEVS.read();
         let dev = devs.get(&dev_id).ok_or("NTB device not found")?;
+        if peer >= dev.peer_count {
+            return Err("NTB peer index out of range");
+        }
+        if mw_idx >= dev.mw_count {
+            return Err("NTB memory window index out of range");
+        }
         dev.ops.mw_clear_trans
     };
     (clear_fn)(dev_id, peer, mw_idx)
@@ -221,6 +269,10 @@ pub fn spad_write(dev_id: u32, idx: u32, val: u32) -> Result<(), &'static str> {
     let write_fn = {
         let devs = NTB_DEVS.read();
         let dev = devs.get(&dev_id).ok_or("NTB device not found")?;
+        let count = (dev.ops.spad_count)(dev_id)?;
+        if idx >= count {
+            return Err("NTB scratchpad index out of range");
+        }
         dev.ops.spad_write
     };
     (write_fn)(dev_id, idx, val)
@@ -231,6 +283,10 @@ pub fn spad_read(dev_id: u32, idx: u32) -> Result<u32, &'static str> {
     let read_fn = {
         let devs = NTB_DEVS.read();
         let dev = devs.get(&dev_id).ok_or("NTB device not found")?;
+        let count = (dev.ops.spad_count)(dev_id)?;
+        if idx >= count {
+            return Err("NTB scratchpad index out of range");
+        }
         dev.ops.spad_read
     };
     (read_fn)(dev_id, idx)
@@ -402,6 +458,17 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
+    if !NTB_DEVS.read().is_empty() {
+        return Ok(());
+    }
+    register_device(
+        "software-ntb",
+        software_ntb_ops(),
+        NtbPort::Primary,
+        1, // peer_count
+        2, // mw_count
+    )?;
+    crate::serial_println!("ntb: software device registered");
     crate::serial_println!("ntb: subsystem ready");
     Ok(())
 }

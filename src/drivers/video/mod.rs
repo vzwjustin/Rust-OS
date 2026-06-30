@@ -12,7 +12,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::RwLock;
 
-use super::{with_buffer_object, DrmFourCc};
+use crate::drivers::gpu::{with_buffer_object, DrmFourCc};
 
 /// Packed 0x00RRGGBB color used by the XRGB8888/ARGB8888 console.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

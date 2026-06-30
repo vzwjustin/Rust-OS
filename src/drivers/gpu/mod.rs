@@ -11,11 +11,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
-// Software-backed fbdev / framebuffer-console consumer. Files live in
-// `src/drivers/video/`; declared here via `#[path]` because `src/drivers/mod.rs`
-// does not carry a `pub mod video;` declaration and must not be edited.
-#[path = "../video/mod.rs"]
-pub mod video;
+// The fbdev / framebuffer-console consumer lives at `src/drivers/video/` and is
+// declared canonically as `crate::drivers::video` from `src/drivers/mod.rs`.
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -588,7 +585,9 @@ pub fn add_framebuffer(
 ) -> Result<u32, &'static str> {
     let bpp = {
         let objs = DRM_BUFFER_OBJECTS.read();
-        let bo = objs.get(&handle).ok_or("add_framebuffer: bo handle not found")?;
+        let bo = objs
+            .get(&handle)
+            .ok_or("add_framebuffer: bo handle not found")?;
         let needed = (pitch as u64) * (height as u64);
         if (bo.bytes.len() as u64) < needed {
             return Err("add_framebuffer: bo too small for pitch*height");
@@ -636,7 +635,9 @@ pub fn set_mode(
     // 1. connector must be connected and offer the requested mode.
     let encoder_id = {
         let conns = DRM_CONNECTORS.read();
-        let conn = conns.get(&connector_id).ok_or("set_mode: connector not found")?;
+        let conn = conns
+            .get(&connector_id)
+            .ok_or("set_mode: connector not found")?;
         if conn.status != ConnectorStatus::Connected {
             return Err("set_mode: connector not connected");
         }
@@ -647,7 +648,8 @@ pub fn set_mode(
         {
             return Err("set_mode: requested mode not in connector mode list");
         }
-        conn.encoder_id.ok_or("set_mode: connector has no encoder")?
+        conn.encoder_id
+            .ok_or("set_mode: connector has no encoder")?
     };
 
     // 2. encoder must route to this CRTC.
@@ -664,7 +666,8 @@ pub fn set_mode(
     let plane_id = {
         let crtcs = DRM_CRTCS.read();
         let crtc = crtcs.get(&crtc_id).ok_or("set_mode: CRTC not found")?;
-        crtc.primary_plane.ok_or("set_mode: CRTC has no primary plane")?
+        crtc.primary_plane
+            .ok_or("set_mode: CRTC has no primary plane")?
     };
 
     // 4. framebuffer must exist and its format must be supported by the plane.
@@ -672,7 +675,9 @@ pub fn set_mode(
         let fbs = DRM_FRAMEBUFFERS.read();
         let fb = fbs.get(&fb_id).ok_or("set_mode: framebuffer not found")?;
         let planes = DRM_PLANES.read();
-        let plane = planes.get(&plane_id).ok_or("set_mode: primary plane not found")?;
+        let plane = planes
+            .get(&plane_id)
+            .ok_or("set_mode: primary plane not found")?;
         if !plane.formats.is_empty() && !plane.formats.contains(&fb.pixel_format) {
             return Err("set_mode: fb format not supported by primary plane");
         }
@@ -693,7 +698,9 @@ pub fn set_mode(
     }
     {
         let mut planes = DRM_PLANES.write();
-        let plane = planes.get_mut(&plane_id).ok_or("set_mode: primary plane not found")?;
+        let plane = planes
+            .get_mut(&plane_id)
+            .ok_or("set_mode: primary plane not found")?;
         plane.crtc_id = Some(crtc_id);
         plane.fb_id = Some(fb_id);
         plane.crtc_x = 0;
@@ -755,7 +762,10 @@ pub fn vblank_count(crtc_id: u32) -> Result<u64, &'static str> {
 
 /// The framebuffer currently scanned out by a CRTC, if any.
 pub fn crtc_scanout_fb(crtc_id: u32) -> Option<u32> {
-    DRM_CRTCS.read().get(&crtc_id).and_then(|c| c.framebuffer_id)
+    DRM_CRTCS
+        .read()
+        .get(&crtc_id)
+        .and_then(|c| c.framebuffer_id)
 }
 
 // ── Software DRM driver ─────────────────────────────────────────────────
@@ -874,6 +884,18 @@ pub fn probe_connector(connector_id: u32) -> Result<Vec<DrmMode>, &'static str> 
 
 // ── Init ────────────────────────────────────────────────────────────────
 
+/// Publish the DRM device into the unified device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("drm0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("drm", "drm0", "drm,virtual") {
+        let _ = base::set_property(id, "subsystem", "drm");
+        let _ = base::set_property(id, "device_type", "display");
+    }
+}
+
 /// Idempotent: bring up a virtual DRM device with a connected 1024x768@60
 /// display, wire the KMS pipeline, allocate a dumb buffer + framebuffer, and
 /// commit the mode. Safe to call multiple times.
@@ -884,6 +906,7 @@ pub fn init() -> Result<(), &'static str> {
 
     // 1. Virtual DRM device backed by the software driver.
     let dev_id = register_device("virtual-drm", software_drm_ops())?;
+    publish_to_base();
 
     // 2. KMS objects: primary plane, CRTC (pipe 0), encoder, connector.
     let formats = vec![DrmFourCc::XRGB8888, DrmFourCc::ARGB8888];
@@ -927,7 +950,7 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     // 5. Attach the fbdev/console consumer to the scanout framebuffer.
-    video::init_with_framebuffer(dev_id, crtc, fb, handle, w, h, pitch)?;
+    crate::drivers::video::init_with_framebuffer(dev_id, crtc, fb, handle, w, h, pitch)?;
 
     crate::serial_println!(
         "gpu: virtual-drm up: 1024x768@60 crtc={} conn={} fb={} bo={} pitch={} ({} bytes/scanline)",

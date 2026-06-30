@@ -367,11 +367,30 @@ impl IdeDriver {
         }
     }
 
+    fn status_error(&self, status: u8) -> StorageError {
+        if (status & IdeStatus::DF.bits()) != 0 {
+            return StorageError::HardwareError;
+        }
+        let err = self.read_io_reg(IdeIoReg::Features);
+        if (err & (IdeError::UNC.bits() | IdeError::BBK.bits())) != 0 {
+            StorageError::MediaError
+        } else if (err & IdeError::IDNF.bits()) != 0 {
+            StorageError::InvalidSector
+        } else if (err & IdeError::ABRT.bits()) != 0 {
+            StorageError::NotSupported
+        } else {
+            StorageError::HardwareError
+        }
+    }
+
     /// Wait for device to be ready
     fn wait_ready(&self) -> Result<(), StorageError> {
         for _ in 0..50000 {
             let status = self.read_io_reg(IdeIoReg::Status);
             if (status & IdeStatus::BSY.bits()) == 0 {
+                if (status & (IdeStatus::ERR.bits() | IdeStatus::DF.bits())) != 0 {
+                    return Err(self.status_error(status));
+                }
                 if (status & IdeStatus::DRDY.bits()) != 0 {
                     return Ok(());
                 }
@@ -388,8 +407,8 @@ impl IdeDriver {
                 if (status & IdeStatus::DRQ.bits()) != 0 {
                     return Ok(());
                 }
-                if (status & IdeStatus::ERR.bits()) != 0 {
-                    return Err(StorageError::HardwareError);
+                if (status & (IdeStatus::ERR.bits() | IdeStatus::DF.bits())) != 0 {
+                    return Err(self.status_error(status));
                 }
             }
         }
@@ -542,10 +561,10 @@ impl IdeDriver {
             self.capabilities.write_speed_mbps = 150;
         } else {
             // ATAPI device (CD/DVD)
-            self.capabilities.capacity_bytes = 700 * 1024 * 1024; // Assume CD capacity
+            self.capabilities.capacity_bytes = 0;
             self.capabilities.is_removable = true;
-            self.capabilities.read_speed_mbps = 24; // 24x CD speed
-            self.capabilities.write_speed_mbps = 16;
+            self.capabilities.read_speed_mbps = 0;
+            self.capabilities.write_speed_mbps = 0;
         }
 
         // Check for SMART support
@@ -569,6 +588,10 @@ impl IdeDriver {
     ) -> Result<(), StorageError> {
         if !self.supports_lba28 {
             return Err(StorageError::NotSupported);
+        }
+
+        if lba > 0x0FFF_FFFF {
+            return Err(StorageError::InvalidSector);
         }
 
         self.select_drive()?;
@@ -599,6 +622,10 @@ impl IdeDriver {
     ) -> Result<(), StorageError> {
         if !self.supports_lba48 {
             return Err(StorageError::NotSupported);
+        }
+
+        if lba > 0x0000_FFFF_FFFF_FFFF {
+            return Err(StorageError::InvalidSector);
         }
 
         self.select_drive()?;
@@ -777,8 +804,22 @@ impl StorageDriver for IdeDriver {
             return Err(StorageError::NotSupported);
         }
 
+        if buffer.is_empty() || buffer.len() % 512 != 0 {
+            return Err(StorageError::BufferTooSmall);
+        }
         let sector_count = buffer.len() / 512;
-        if sector_count == 0 || sector_count > 256 {
+        if sector_count > 256 {
+            return Err(StorageError::TransferTooLarge);
+        }
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
+            return Err(StorageError::TransferTooLarge);
+        }
+        let end = start_sector
+            .checked_add(sector_count as u64)
+            .ok_or(StorageError::InvalidSector)?;
+        if self.capabilities.capacity_bytes != 0
+            && end > self.capabilities.capacity_bytes / 512
+        {
             return Err(StorageError::InvalidSector);
         }
 
@@ -816,8 +857,22 @@ impl StorageDriver for IdeDriver {
             return Err(StorageError::NotSupported);
         }
 
+        if buffer.is_empty() || buffer.len() % 512 != 0 {
+            return Err(StorageError::BufferTooSmall);
+        }
         let sector_count = buffer.len() / 512;
-        if sector_count == 0 || sector_count > 256 {
+        if sector_count > 256 {
+            return Err(StorageError::TransferTooLarge);
+        }
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
+            return Err(StorageError::TransferTooLarge);
+        }
+        let end = start_sector
+            .checked_add(sector_count as u64)
+            .ok_or(StorageError::InvalidSector)?;
+        if self.capabilities.capacity_bytes != 0
+            && end > self.capabilities.capacity_bytes / 512
+        {
             return Err(StorageError::InvalidSector);
         }
 
@@ -896,17 +951,8 @@ impl StorageDriver for IdeDriver {
         Ok(())
     }
 
-    fn vendor_command(&mut self, command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {
-        if self.state != StorageDeviceState::Ready {
-            return Err(StorageError::DeviceBusy);
-        }
-
-        self.select_drive()?;
-        self.write_io_reg(IdeIoReg::Status, command);
-        self.wait_ready()?;
-
-        // Return empty response
-        Ok(Vec::new())
+    fn vendor_command(&mut self, _command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {
+        Err(StorageError::NotSupported)
     }
 
     fn get_smart_data(&mut self) -> Result<Vec<u8>, StorageError> {

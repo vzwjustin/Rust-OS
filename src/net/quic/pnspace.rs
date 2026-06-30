@@ -37,6 +37,8 @@ pub struct PnSpace {
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+use super::crypto::EncryptionLevel;
+
 /// Bookkeeping for one sent packet, used by loss recovery (RFC 9002 §A.1).
 #[derive(Debug, Clone)]
 pub struct SentInfo {
@@ -47,6 +49,10 @@ pub struct SentInfo {
     pub ack_eliciting: bool,
     /// Encoded packet size in bytes.
     pub size: u64,
+    /// The encryption level this packet was sent at.
+    pub level: EncryptionLevel,
+    /// The unencrypted frames payload (for retransmission).
+    pub frames: Vec<u8>,
 }
 
 impl PnSpace {
@@ -164,8 +170,7 @@ pub fn pn_decode(largest_pn: u64, truncated: u64, pn_nbits: u32) -> u64 {
     let pn_mask = pn_win - 1;
 
     let candidate = (expected & !pn_mask) | truncated;
-    if candidate.wrapping_add(pn_hwin) <= expected
-        && candidate < (1u64 << 62).wrapping_sub(pn_win)
+    if candidate.wrapping_add(pn_hwin) <= expected && candidate < (1u64 << 62).wrapping_sub(pn_win)
     {
         candidate.wrapping_add(pn_win)
     } else if candidate > expected.wrapping_add(pn_hwin) && candidate >= pn_win {

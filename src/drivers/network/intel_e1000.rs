@@ -3,7 +3,7 @@
 //! Driver for Intel 82540/82541/82542/82543/82544/82545/82546/82547/82571/82572/82573/82574/82575/82576
 //! and other Intel Gigabit Ethernet controllers (E1000 and E1000E series).
 
-use super::{EnhancedNetworkStats, ExtendedNetworkCapabilities, PowerState, WakeOnLanConfig};
+use super::{EnhancedNetworkStats, ExtendedNetworkCapabilities, LinkStatus, PowerState, WakeOnLanConfig};
 use crate::net::{MacAddress, NetworkError};
 use alloc::boxed::Box;
 use alloc::format;
@@ -888,6 +888,21 @@ bitflags::bitflags! {
     }
 }
 
+/// Decode the common E1000 STATUS link fields as Linux e1000/e1000e do.
+pub fn decode_e1000_link_status(status: u32) -> LinkStatus {
+    if (status & E1000Status::LU.bits()) == 0 {
+        return LinkStatus::DOWN;
+    }
+
+    let speed = match (status & E1000Status::SPEED.bits()) >> 6 {
+        0 => 10,
+        1 => 100,
+        2 | 3 => 1000,
+        _ => 0,
+    };
+    LinkStatus::up(speed, (status & E1000Status::FD.bits()) != 0)
+}
+
 // E1000 status register bits
 bitflags::bitflags! {
     pub struct E1000Status: u32 {
@@ -986,11 +1001,18 @@ impl IntelE1000Driver {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.max_mtu = 9018; // Jumbo frame support
         capabilities.hw_checksum = true;
+        capabilities.supports_checksum_offload = true;
         capabilities.scatter_gather = true;
         capabilities.vlan = true;
+        capabilities.supports_vlan = true;
         capabilities.jumbo_frames = true;
+        capabilities.supports_jumbo_frames = true;
         capabilities.tso = device_info.supports_tso;
+        capabilities.supports_tso = device_info.supports_tso;
         capabilities.rss = device_info.supports_rss;
+        capabilities.multicast_filter = true;
+        capabilities.max_tx_queues = device_info.queue_count as u16;
+        capabilities.max_rx_queues = device_info.queue_count as u16;
 
         let mut extended_capabilities = ExtendedNetworkCapabilities::default();
         extended_capabilities.base = capabilities;
@@ -1461,15 +1483,9 @@ impl IntelE1000Driver {
 
         if link_up {
             // Link is up, determine speed and duplex
-            let speed_bits = (status & E1000Status::SPEED.bits()) >> 6;
-            self.current_speed = match speed_bits {
-                0 => 10,
-                1 => 100,
-                2 => 1000,
-                _ => 0,
-            };
-
-            self.full_duplex = (status & E1000Status::FD.bits()) != 0;
+            let decoded = decode_e1000_link_status(status);
+            self.current_speed = decoded.speed_mbps;
+            self.full_duplex = decoded.full_duplex;
             self.stats.link_changes += 1;
         } else {
             self.current_speed = 0;
@@ -1506,13 +1522,9 @@ impl IntelE1000Driver {
             let status = self.read_reg(E1000Reg::Status);
             if (status & E1000Status::LU.bits()) != 0 {
                 // Link is up, determine speed and duplex
-                self.current_speed = match (status & E1000Status::SPEED.bits()) >> 6 {
-                    0 => 10,
-                    1 => 100,
-                    2 | 3 => 1000,
-                    _ => 0,
-                };
-                self.full_duplex = (status & E1000Status::FD.bits()) != 0;
+                let decoded = decode_e1000_link_status(status);
+                self.current_speed = decoded.speed_mbps;
+                self.full_duplex = decoded.full_duplex;
                 break;
             }
         }
@@ -1661,6 +1673,8 @@ impl NetworkDriver for IntelE1000Driver {
             return Err(NetworkError::InvalidState);
         }
 
+        self.configure_link()?;
+
         // Enable interrupts
         let ims = (1 << 0) | // Transmit descriptor written back
                   (1 << 7) | // Receive timer
@@ -1722,8 +1736,12 @@ impl NetworkDriver for IntelE1000Driver {
 
     fn get_link_status(&self) -> (bool, u32, bool) {
         let status = self.read_reg(E1000Reg::Status);
-        let link_up = (status & E1000Status::LU.bits()) != 0;
-        (link_up, self.current_speed, self.full_duplex)
+        let decoded = decode_e1000_link_status(status);
+        if decoded.link_up {
+            decoded.as_tuple()
+        } else {
+            (false, 0, false)
+        }
     }
 
     fn get_stats(&self) -> NetworkStats {
@@ -1849,6 +1867,10 @@ pub fn create_intel_e1000_driver(
     ExtendedNetworkCapabilities,
 )> {
     // Find matching device in database
+    if super::classify_common_nic(vendor_id, device_id).is_none() {
+        return None;
+    }
+
     let device_info = INTEL_E1000_DEVICES
         .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)?;
@@ -1869,6 +1891,9 @@ pub fn create_intel_e1000_driver(
 
 /// Check if PCI device is an Intel E1000 controller
 pub fn is_intel_e1000_device(vendor_id: u16, device_id: u16) -> bool {
+    if super::classify_common_nic(vendor_id, device_id).is_none() {
+        return false;
+    }
     INTEL_E1000_DEVICES
         .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id)
@@ -1879,6 +1904,7 @@ pub fn get_intel_e1000_device_info(
     vendor_id: u16,
     device_id: u16,
 ) -> Option<&'static IntelE1000DeviceInfo> {
+    super::classify_common_nic(vendor_id, device_id)?;
     INTEL_E1000_DEVICES
         .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)

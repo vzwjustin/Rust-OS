@@ -312,6 +312,12 @@ pub fn software_cec_ops() -> CecOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("cec: subsystem ready");
+    if !CEC_ADAPS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_cec_ops();
+    let adap_id = register_adapter("sw-cec", ops, 0, 1)?;
+    crate::serial_println!("cec: software adapter registered (id={})", adap_id);
     Ok(())
 }
