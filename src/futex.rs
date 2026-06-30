@@ -13,7 +13,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 // ── Futex op constants (from Linux uapi) ────────────────────────────────
@@ -118,6 +118,21 @@ unsafe impl Send for SyncPtr {}
 unsafe impl Sync for SyncPtr {}
 
 static ROBUST_LISTS: RwLock<BTreeMap<u32, SyncPtr>> = RwLock::new(BTreeMap::new());
+
+// ── Priority-Inheritance futex state ────────────────────────────────────
+
+/// Priority-inheritance state for a PI-futex at a given virtual address.
+struct PiState {
+    /// PID of the task currently holding the PI-futex.
+    owner_pid: u32,
+    /// Owner's original priority before any inheritance boost.
+    saved_priority: crate::process::Priority,
+    /// Pids waiting to acquire this PI-futex, highest priority first.
+    waiters: alloc::collections::VecDeque<u32>,
+}
+
+static PI_STATES: spin::Mutex<alloc::collections::BTreeMap<usize, PiState>> =
+    spin::Mutex::new(alloc::collections::BTreeMap::new());
 
 // ── Statistics ──────────────────────────────────────────────────────────
 
@@ -347,6 +362,226 @@ pub fn futex_requeue(
     woken + requeued
 }
 
+/// FUTEX_WAIT_REQUEUE_PI — wait on a non-PI futex; wake via CMP_REQUEUE_PI
+/// to a PI futex. The waiter blocks on `uaddr` and is requeued to `uaddr2`
+/// by the waker (FUTEX_CMP_REQUEUE_PI). On requeue, we try to acquire `uaddr2`.
+pub fn futex_wait_requeue_pi(
+    uaddr:   *mut i32,
+    val:     i32,
+    uaddr2:  *mut i32,
+    timeout: Option<&FutexTimeout>,
+) -> i32 {
+    if uaddr.is_null() || uaddr2.is_null() {
+        return -14; // EFAULT
+    }
+
+    // Block on uaddr (identical to FUTEX_WAIT)
+    let ret = futex_wait(uaddr, val, FUTEX_BITSET_MATCH_ANY, timeout);
+    if ret != 0 {
+        return ret; // -EAGAIN, -ETIMEDOUT, etc.
+    }
+
+    // Woken. Now try to acquire the PI futex at uaddr2.
+    let pi_key  = uaddr2 as usize;
+    let our_pid = crate::process::current_pid();
+    let our_tid = crate::process::thread::get_thread_manager().current_thread() as i32;
+
+    // Atomically CAS *uaddr2 from 0 to our_tid
+    let pi_atomic = unsafe { &*(uaddr2 as *const AtomicI32) };
+    let prev = pi_atomic.compare_exchange(0, our_tid, Ordering::AcqRel, Ordering::Acquire)
+        .unwrap_or_else(|v| v);
+
+    if prev == 0 {
+        // Acquired the PI-futex immediately
+        let mut pi = PI_STATES.lock();
+        let state = pi.entry(pi_key).or_insert_with(|| PiState {
+            owner_pid:      our_pid,
+            saved_priority: crate::process::Priority::Normal,
+            waiters:        alloc::collections::VecDeque::new(),
+        });
+        state.owner_pid = our_pid;
+        return 0;
+    }
+
+    // PI-futex is owned — register as waiter and boost owner
+    {
+        let mut pi = PI_STATES.lock();
+        let state = pi.entry(pi_key).or_insert_with(|| PiState {
+            owner_pid:      prev as u32,
+            saved_priority: crate::process::Priority::Normal,
+            waiters:        alloc::collections::VecDeque::new(),
+        });
+        state.waiters.push_back(our_pid);
+        // Boost owner to at least our priority (RealTime = 0 = highest)
+        let _ = crate::process::scheduler::set_process_priority(
+            state.owner_pid,
+            crate::process::Priority::High,
+        );
+    }
+
+    // Block until the owner calls futex_pi_unlock
+    let pm = crate::process::get_process_manager();
+    let _ = pm.block_process(our_pid);
+
+    0
+}
+
+/// FUTEX_CMP_REQUEUE_PI — conditional requeue from non-PI to PI-futex.
+/// Wakes `val` waiters on `uaddr` directly, then requeues up to `val2`
+/// more to the PI-futex at `uaddr2`. Returns woken + requeued.
+pub fn futex_cmp_requeue_pi(
+    uaddr:   *mut i32,
+    uaddr2:  *mut i32,
+    val:     i32,
+    val2:    i32,
+    cmpval:  i32,
+) -> i32 {
+    if uaddr.is_null() || uaddr2.is_null() {
+        return -14; // EFAULT
+    }
+
+    // Atomic check: *uaddr must equal cmpval
+    let current = unsafe { core::ptr::read_volatile(uaddr) };
+    if current != cmpval {
+        return -11; // EAGAIN
+    }
+
+    let key1 = uaddr  as usize;
+    let key2 = uaddr2 as usize;
+    let hash1 = futex_hash(key1);
+    let hash2 = futex_hash(key2);
+
+    let mut woken    = 0i32;
+    let mut requeued = 0i32;
+
+    // Wake up to `val` waiters directly from uaddr
+    {
+        let bucket = &FUTEX_BUCKETS[hash1];
+        let mut b = bucket.lock();
+        let mut to_wake = alloc::vec![];
+        for (i, (k, _)) in b.waiters.iter().enumerate() {
+            if *k == key1 {
+                to_wake.push(i);
+                if to_wake.len() >= val as usize {
+                    break;
+                }
+            }
+        }
+        for &i in to_wake.iter().rev() {
+            let (_, waiter) = b.waiters.remove(i);
+            let pm = crate::process::get_process_manager();
+            let _ = pm.unblock_process(waiter.pid);
+            woken += 1;
+        }
+    }
+
+    // Requeue up to `val2` more waiters from uaddr to uaddr2 (PI)
+    if val2 > 0 && hash1 != hash2 {
+        let bucket1 = &FUTEX_BUCKETS[hash1];
+        let bucket2 = &FUTEX_BUCKETS[hash2];
+        let mut b1 = bucket1.lock();
+        let mut b2 = bucket2.lock();
+        let mut to_requeue = alloc::vec![];
+        for (i, (k, _)) in b1.waiters.iter().enumerate() {
+            if *k == key1 {
+                to_requeue.push(i);
+                if to_requeue.len() >= val2 as usize {
+                    break;
+                }
+            }
+        }
+        for &i in to_requeue.iter().rev() {
+            let (_, waiter) = b1.waiters.remove(i);
+            let waiter_pid = waiter.pid;
+            b2.waiters.push((key2, waiter));
+            // Register waiter in PI_STATES and boost owner
+            let mut pi = PI_STATES.lock();
+            let state = pi.entry(key2).or_insert_with(|| PiState {
+                owner_pid:      0,
+                saved_priority: crate::process::Priority::Normal,
+                waiters:        alloc::collections::VecDeque::new(),
+            });
+            state.waiters.push_back(waiter_pid);
+            if state.owner_pid != 0 {
+                let _ = crate::process::scheduler::set_process_priority(
+                    state.owner_pid,
+                    crate::process::Priority::High,
+                );
+            }
+            requeued += 1;
+        }
+    } else if val2 > 0 {
+        // Same hash bucket — just re-key
+        let bucket = &FUTEX_BUCKETS[hash1];
+        let mut b = bucket.lock();
+        let mut count = 0i32;
+        for entry in b.waiters.iter_mut() {
+            if entry.0 == key1 && count < val2 {
+                entry.0 = key2;
+                count += 1;
+            }
+        }
+        requeued = count;
+    }
+
+    FUTEX_STATS_REQUEUE.fetch_add(1, Ordering::Relaxed);
+    woken + requeued
+}
+
+/// Release a PI-futex. Restores the owner's priority and wakes the
+/// highest-priority waiter (if any), transferring the lock to it.
+pub fn futex_pi_unlock(uaddr: *mut i32) -> i32 {
+    if uaddr.is_null() {
+        return -14; // EFAULT
+    }
+
+    let pi_key  = uaddr as usize;
+    let our_pid = crate::process::current_pid();
+
+    let next_pid = {
+        let mut pi = PI_STATES.lock();
+        if let Some(state) = pi.get_mut(&pi_key) {
+            if state.owner_pid != our_pid {
+                return -1; // EPERM
+            }
+            // Restore priority
+            let _ = crate::process::scheduler::set_process_priority(
+                our_pid,
+                state.saved_priority,
+            );
+            state.waiters.pop_front()
+        } else {
+            None
+        }
+    };
+
+    if let Some(next) = next_pid {
+        // Transfer the PI-futex to the next waiter
+        unsafe {
+            core::ptr::write_volatile(uaddr, next as i32);
+        }
+        // Update PI_STATES with new owner
+        {
+            let mut pi = PI_STATES.lock();
+            if let Some(state) = pi.get_mut(&pi_key) {
+                state.owner_pid      = next;
+                state.saved_priority = crate::process::Priority::Normal;
+            }
+        }
+        // Wake the new owner
+        let pm = crate::process::get_process_manager();
+        let _ = pm.unblock_process(next);
+    } else {
+        // No waiters — clear the futex
+        unsafe {
+            core::ptr::write_volatile(uaddr, 0);
+        }
+        PI_STATES.lock().remove(&pi_key);
+    }
+
+    0
+}
+
 /// FUTEX_WAKE_OP — wake waiters on uaddr, conditionally waking on uaddr2
 /// based on a comparison operation.
 pub fn futex_wake_op(uaddr: *mut i32, uaddr2: *mut i32, val: i32, val2: i32, wake_op: i32) -> i32 {
@@ -427,7 +662,9 @@ pub fn do_futex(
             // PI futexes — simplified: treat as regular wait
             futex_wait(uaddr, 0, FUTEX_BITSET_MATCH_ANY, timeout)
         }
-        FUTEX_UNLOCK_PI => futex_wake(uaddr, 1, FUTEX_BITSET_MATCH_ANY),
+        FUTEX_WAIT_REQUEUE_PI => futex_wait_requeue_pi(uaddr, val, uaddr2, timeout),
+        FUTEX_CMP_REQUEUE_PI => futex_cmp_requeue_pi(uaddr, uaddr2, val, val2, val3),
+        FUTEX_UNLOCK_PI => futex_pi_unlock(uaddr),
         FUTEX_TRYLOCK_PI => {
             if uaddr.is_null() {
                 return -14;
