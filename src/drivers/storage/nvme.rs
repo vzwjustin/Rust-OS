@@ -873,11 +873,16 @@ impl NvmeDriver {
     }
 
     /// Submit I/O command (production implementation)
+    /// Submit a single IO command. `data_ptr`/`data_len` describe the caller's
+    /// buffer: for writes it is copied into the DMA buffer before the doorbell,
+    /// for reads the DMA buffer is copied back into it after completion.
     fn submit_io_command(
         &mut self,
         opcode: NvmeIoOpcode,
         lba: u64,
         block_count: u16,
+        data_ptr: *mut u8,
+        data_len: usize,
     ) -> Result<(), StorageError> {
         if !self.controller_ready {
             return Err(StorageError::DeviceNotFound);
@@ -915,6 +920,19 @@ impl NvmeDriver {
                 .ok_or(StorageError::HardwareError)?
                 .as_u64()
         };
+
+        // For writes, stage the caller's data into the DMA buffer before the
+        // device reads it. Bounded by the DMA buffer size.
+        if matches!(opcode, NvmeIoOpcode::Write) && !data_ptr.is_null() {
+            let n = core::cmp::min(data_len, buffer_size);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data_ptr as *const u8,
+                    _dma_buffer.virtual_addr() as *mut u8,
+                    n,
+                );
+            }
+        }
 
         unsafe {
             let sq_entry_ptr = (sq_base + (sq_entry as u64 * 64)) as *mut u64; // Each SQ entry is 64 bytes
@@ -993,6 +1011,19 @@ impl NvmeDriver {
         // 5. Ring completion queue doorbell
         let cq_doorbell_offset = 0x1000 + (4 << self.doorbell_stride); // Queue 0 completion doorbell
         self.write_reg_raw(cq_doorbell_offset as u32, self.current_cq_head as u32);
+
+        // For reads, copy the DMA buffer back into the caller's buffer now that
+        // the device has filled it.
+        if matches!(opcode, NvmeIoOpcode::Read) && !data_ptr.is_null() {
+            let n = core::cmp::min(data_len, buffer_size);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    _dma_buffer.virtual_addr() as *const u8,
+                    data_ptr,
+                    n,
+                );
+            }
+        }
 
         // Update statistics
         match opcode {
@@ -1097,9 +1128,9 @@ impl StorageDriver for NvmeDriver {
         let lba = start_sector;
         let block_count = sector_count as u16;
 
-        self.submit_io_command(NvmeIoOpcode::Read, lba, block_count)?;
+        let buf_len = buffer.len();
+        self.submit_io_command(NvmeIoOpcode::Read, lba, block_count, buffer.as_mut_ptr(), buf_len)?;
 
-        // In real implementation, data would be DMAed into buffer
         Ok(buffer.len())
     }
 
@@ -1122,7 +1153,13 @@ impl StorageDriver for NvmeDriver {
         let lba = start_sector;
         let block_count = sector_count as u16;
 
-        self.submit_io_command(NvmeIoOpcode::Write, lba, block_count)?;
+        self.submit_io_command(
+            NvmeIoOpcode::Write,
+            lba,
+            block_count,
+            buffer.as_ptr() as *mut u8,
+            buffer.len(),
+        )?;
 
         Ok(buffer.len())
     }
@@ -1132,7 +1169,7 @@ impl StorageDriver for NvmeDriver {
             return Err(StorageError::DeviceBusy);
         }
 
-        self.submit_io_command(NvmeIoOpcode::Flush, 0, 0)?;
+        self.submit_io_command(NvmeIoOpcode::Flush, 0, 0, core::ptr::null_mut(), 0)?;
         Ok(())
     }
 

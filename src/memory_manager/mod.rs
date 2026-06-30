@@ -100,8 +100,8 @@ pub mod api {
         prot: ProtectionFlags,
         flags: MmapFlags,
     ) -> VmResult<*mut u8> {
-        let manager_guard = VIRTUAL_MEMORY_MANAGER.lock();
-        let manager = manager_guard.as_ref().ok_or(VmError::NotInitialized)?;
+        let mut manager_guard = VIRTUAL_MEMORY_MANAGER.lock();
+        let manager = manager_guard.as_mut().ok_or(VmError::NotInitialized)?;
 
         manager.mmap(addr, length, prot, flags)
     }
@@ -115,8 +115,8 @@ pub mod api {
         fd: i32,
         offset: usize,
     ) -> VmResult<*mut u8> {
-        let manager_guard = VIRTUAL_MEMORY_MANAGER.lock();
-        let manager = manager_guard.as_ref().ok_or(VmError::NotInitialized)?;
+        let mut manager_guard = VIRTUAL_MEMORY_MANAGER.lock();
+        let manager = manager_guard.as_mut().ok_or(VmError::NotInitialized)?;
 
         manager.mmap_file(addr, length, prot, flags, fd as usize, offset)
     }

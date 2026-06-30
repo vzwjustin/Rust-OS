@@ -83,7 +83,7 @@ impl VirtualMemoryManager {
 
     /// Map virtual memory region (mmap)
     pub fn mmap(
-        &self,
+        &mut self,
         addr: usize,
         length: usize,
         prot: ProtectionFlags,
@@ -96,6 +96,9 @@ impl VirtualMemoryManager {
 
         // Align length to page boundary
         let aligned_length = (length + 4095) & !4095;
+
+        // Whether the kernel is choosing the address (advances the cursor).
+        let kernel_chosen = !flags.fixed && addr == 0;
 
         // Determine start address
         let start_addr = if flags.fixed {
@@ -140,12 +143,20 @@ impl VirtualMemoryManager {
         // Allocate physical frames and map pages
         self.map_region(&region)?;
 
+        // Record the region so find_region_at/stats/page-fault handling see it,
+        // and advance the cursor for kernel-chosen mappings — without this two
+        // mmap(NULL,...) calls returned the same base and the second failed.
+        self.regions.insert(start_addr.as_u64(), region);
+        if kernel_chosen {
+            self.next_mmap_addr = end_addr;
+        }
+
         Ok(start_addr.as_mut_ptr())
     }
 
     /// Map a file-backed region (fd + offset recorded on the region descriptor).
     pub fn mmap_file(
-        &self,
+        &mut self,
         addr: usize,
         length: usize,
         prot: ProtectionFlags,
@@ -158,6 +169,7 @@ impl VirtualMemoryManager {
         }
 
         let aligned_length = (length + 4095) & !4095;
+        let kernel_chosen = !flags.fixed && addr == 0;
         let start_addr = if flags.fixed {
             if addr == 0 || addr % 4096 != 0 {
                 return Err(if addr == 0 {
@@ -184,6 +196,11 @@ impl VirtualMemoryManager {
         region.copy_on_write = flags.private && !flags.shared;
 
         self.map_region(&region)?;
+
+        self.regions.insert(start_addr.as_u64(), region);
+        if kernel_chosen {
+            self.next_mmap_addr = end_addr;
+        }
 
         Ok(start_addr.as_mut_ptr())
     }
@@ -412,7 +429,7 @@ impl VirtualMemoryManager {
     }
 
     /// Allocate a stack for a new thread
-    pub fn allocate_stack(&self, size: usize) -> VmResult<VirtAddr> {
+    pub fn allocate_stack(&mut self, size: usize) -> VmResult<VirtAddr> {
         let aligned_size = (size + 4095) & !4095;
 
         let flags = MmapFlags::anonymous_private();
