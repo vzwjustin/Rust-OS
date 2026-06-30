@@ -110,9 +110,6 @@ pub fn register_device(
     lba48: bool,
     ncq: bool,
 ) -> Result<u32, &'static str> {
-    if !ATA_PORTS.read().contains_key(&port_id) {
-        return Err("ATA port not found");
-    }
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = AtaDevice {
         id,
@@ -130,9 +127,8 @@ pub fn register_device(
     };
     ATA_DEVS.write().insert(id, dev);
     let mut ports = ATA_PORTS.write();
-    if let Some(port) = ports.get_mut(&port_id) {
-        port.device_ids.push(id);
-    }
+    let port = ports.get_mut(&port_id).ok_or("ATA port not found")?;
+    port.device_ids.push(id);
     Ok(id)
 }
 
