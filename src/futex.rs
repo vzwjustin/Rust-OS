@@ -401,6 +401,8 @@ pub fn futex_wait_requeue_pi(
             waiters:        alloc::collections::VecDeque::new(),
         });
         state.owner_pid = our_pid;
+        state.saved_priority = crate::process::scheduler::get_process_priority(our_pid)
+            .map(|p| p as u8).unwrap_or(2u8);
         return 0;
     }
 
