@@ -464,8 +464,13 @@ fn sysctl_lookup(name: &[i32]) -> LinuxResult<SysctlValue> {
             let host = core::str::from_utf8(&hn[..len]).unwrap_or("localhost");
             Ok(SysctlValue::OwnedString(alloc::string::String::from(host)))
         }
-        [2, 6] => Ok(SysctlValue::Int(60)),
-        _ => Err(LinuxError::ENOSYS),
+        [2, 6]  => Ok(SysctlValue::Int(60)),       // vm.dirty_expire_centisecs
+        [2, 11] => Ok(SysctlValue::Int(10)),        // vm.dirty_background_ratio
+        [2, 17] => Ok(SysctlValue::Int(0)),         // vm.nr_hugepages
+        [1, 65] => Ok(SysctlValue::Int(128)),       // net.core.somaxconn
+        [4, 2]  => Ok(SysctlValue::Int(4)),         // kernel.printk log level
+        [1, 7]  => Ok(SysctlValue::Int(0)),         // net.ipv4.ip_forward
+        _       => Err(LinuxError::ENOENT),         // unknown key, not ENOSYS
     }
 }
 
