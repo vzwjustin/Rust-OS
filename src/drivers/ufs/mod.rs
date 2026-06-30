@@ -103,6 +103,15 @@ static UFS_HOSTS: RwLock<BTreeMap<u32, UfsHost>> = RwLock::new(BTreeMap::new());
 
 /// Register a UFS host controller.
 pub fn register_host(name: &str, ops: UfsHcOps) -> Result<u32, &'static str> {
+    if name.trim().is_empty() {
+        return Err("UFS host name required");
+    }
+
+    let mut hosts = UFS_HOSTS.write();
+    if hosts.values().any(|host| host.name == name) {
+        return Err("UFS host already registered");
+    }
+
     let id = HOST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let host = UfsHost {
         id,
@@ -114,68 +123,96 @@ pub fn register_host(name: &str, ops: UfsHcOps) -> Result<u32, &'static str> {
         link_state: UfsLinkState::Off,
         power_mode: UfsPowerMode::Off,
     };
-    UFS_HOSTS.write().insert(id, host);
+    hosts.insert(id, host);
     Ok(id)
 }
 
 /// Initialize a UFS host controller (Linux `ufshcd_init`).
 pub fn init_host(host_id: u32) -> Result<(), &'static str> {
-    let init_fn = {
+    let (enable_fn, init_fn, read_desc_fn, shutdown_fn, disable_fn) = {
         let hosts = UFS_HOSTS.read();
         let host = hosts.get(&host_id).ok_or("UFS host not found")?;
-        host.ops.init
+        if host.active {
+            return Ok(());
+        }
+        (
+            host.ops.enable,
+            host.ops.init,
+            host.ops.read_descriptor,
+            host.ops.shutdown,
+            host.ops.disable,
+        )
     };
-    (init_fn)(host_id)?;
+    (enable_fn)(host_id)?;
+    if let Err(err) = (init_fn)(host_id) {
+        let _ = (disable_fn)(host_id);
+        return Err(err);
+    }
 
     // Read device descriptor
     let mut desc_buf = [0u8; 64];
-    let read_fn = {
-        let hosts = UFS_HOSTS.read();
-        let host = hosts.get(&host_id).ok_or("UFS host not found")?;
-        host.ops.read_descriptor
+    let desc_len = match (read_desc_fn)(host_id, 0, 0, &mut desc_buf) {
+        Ok(len) if len > 0 => len,
+        Ok(_) => {
+            let _ = (shutdown_fn)(host_id);
+            let _ = (disable_fn)(host_id);
+            return Err("UFS device descriptor empty");
+        }
+        Err(err) => {
+            let _ = (shutdown_fn)(host_id);
+            let _ = (disable_fn)(host_id);
+            return Err(err);
+        }
     };
-    let _ = (read_fn)(host_id, 0, 0, &mut desc_buf);
 
     let mut hosts = UFS_HOSTS.write();
-    if let Some(host) = hosts.get_mut(&host_id) {
-        host.active = true;
-        host.link_state = UfsLinkState::Active;
-        host.power_mode = UfsPowerMode::Active;
-        host.dev_desc = Some(UfsDevDesc {
-            device_type: 0,
-            wmanufacturer_id: 0,
-            serial_number: String::from("sw-ufs"),
-            oem_id: [0, 0],
-            model_name: String::from("sw-ufs-128g"),
-            lu_count: 1,
-            max_lu: 8,
-            boot_lu_count: 0,
-            rpmb_lu: 0,
-            total_capacity: 128 * 1024 * 1024 * 1024,
-        });
-
-        // Create a general-purpose LU
-        host.lus.push(UfsLu {
-            index: 0,
-            lu_type: UfsLuType::General,
-            capacity: 128 * 1024 * 1024 * 1024,
-            block_size: 4096,
-            boot_lu: false,
-            rpmb: false,
-            active: true,
-        });
+    let Some(host) = hosts.get_mut(&host_id) else {
+        let _ = (shutdown_fn)(host_id);
+        let _ = (disable_fn)(host_id);
+        return Err("UFS host not found");
+    };
+    if host.active {
+        return Ok(());
     }
+    host.active = true;
+    host.link_state = UfsLinkState::Active;
+    host.power_mode = UfsPowerMode::Active;
+    host.dev_desc = Some(UfsDevDesc {
+        device_type: desc_buf[0],
+        wmanufacturer_id: u16::from_be_bytes([desc_buf[1], desc_buf[2]]),
+        serial_number: String::from("sw-ufs"),
+        oem_id: [desc_buf[3], desc_buf[4]],
+        model_name: String::from("sw-ufs-128g"),
+        lu_count: 1,
+        max_lu: 8,
+        boot_lu_count: 0,
+        rpmb_lu: 0,
+        total_capacity: 128 * 1024 * 1024 * 1024,
+    });
+
+    // Mirror the Linux probe path: publish LUs only after descriptor discovery.
+    host.lus.clear();
+    host.lus.push(UfsLu {
+        index: 0,
+        lu_type: UfsLuType::General,
+        capacity: 128 * 1024 * 1024 * 1024,
+        block_size: 4096,
+        boot_lu: false,
+        rpmb: false,
+        active: desc_len >= 1,
+    });
     Ok(())
 }
 
 /// Shutdown a UFS host controller.
 pub fn shutdown_host(host_id: u32) -> Result<(), &'static str> {
-    let shutdown_fn = {
+    let (shutdown_fn, disable_fn) = {
         let hosts = UFS_HOSTS.read();
         let host = hosts.get(&host_id).ok_or("UFS host not found")?;
-        host.ops.shutdown
+        (host.ops.shutdown, host.ops.disable)
     };
     (shutdown_fn)(host_id)?;
+    (disable_fn)(host_id)?;
 
     let mut hosts = UFS_HOSTS.write();
     if let Some(host) = hosts.get_mut(&host_id) {
@@ -194,6 +231,7 @@ pub fn read(host_id: u32, lun: u8, lba: u64, buf: &mut [u8]) -> Result<usize, &'
         if !host.active {
             return Err("UFS host not active");
         }
+        validate_io_range(host, lun, lba, buf.len())?;
         host.ops.read
     };
     (read_fn)(host_id, lun, lba, buf)
@@ -207,6 +245,7 @@ pub fn write(host_id: u32, lun: u8, lba: u64, data: &[u8]) -> Result<usize, &'st
         if !host.active {
             return Err("UFS host not active");
         }
+        validate_io_range(host, lun, lba, data.len())?;
         host.ops.write
     };
     (write_fn)(host_id, lun, lba, data)
@@ -217,6 +256,9 @@ pub fn query_attr(host_id: u32, attr_id: u8, val: &mut u32) -> Result<(), &'stat
     let query_fn = {
         let hosts = UFS_HOSTS.read();
         let host = hosts.get(&host_id).ok_or("UFS host not found")?;
+        if !host.active {
+            return Err("UFS host not active");
+        }
         host.ops.query_attr
     };
     (query_fn)(host_id, attr_id, true, val)
@@ -227,10 +269,41 @@ pub fn set_attr(host_id: u32, attr_id: u8, val: u32) -> Result<(), &'static str>
     let query_fn = {
         let hosts = UFS_HOSTS.read();
         let host = hosts.get(&host_id).ok_or("UFS host not found")?;
+        if !host.active {
+            return Err("UFS host not active");
+        }
         host.ops.query_attr
     };
     let mut v = val;
     (query_fn)(host_id, attr_id, false, &mut v)
+}
+
+fn validate_io_range(host: &UfsHost, lun: u8, lba: u64, bytes: usize) -> Result<(), &'static str> {
+    let lu = host
+        .lus
+        .iter()
+        .find(|lu| lu.index == lun)
+        .ok_or("UFS LU not found")?;
+    if !lu.active {
+        return Err("UFS LU not active");
+    }
+    if lu.block_size == 0 {
+        return Err("UFS LU block size invalid");
+    }
+    let block_size = lu.block_size as usize;
+    if bytes % block_size != 0 {
+        return Err("UFS transfer is not block aligned");
+    }
+    let offset = lba
+        .checked_mul(lu.block_size as u64)
+        .ok_or("UFS LBA overflow")?;
+    let end = offset
+        .checked_add(bytes as u64)
+        .ok_or("UFS transfer range overflow")?;
+    if end > lu.capacity {
+        return Err("UFS transfer beyond LU capacity");
+    }
+    Ok(())
 }
 
 /// Get device descriptor.
@@ -336,6 +409,10 @@ pub fn software_ufs_ops() -> UfsHcOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
+    if host_count() == 0 {
+        let _ = register_host("software-ufs", software_ufs_ops())?;
+        crate::serial_println!("ufs: software host registered");
+    }
     crate::serial_println!("ufs: subsystem ready");
     Ok(())
 }

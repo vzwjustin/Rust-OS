@@ -101,6 +101,18 @@ pub fn register_device(
     nvqs: u32,
     ops: VhostOps,
 ) -> Result<u32, &'static str> {
+    if name.trim().is_empty() {
+        return Err("vhost device name required");
+    }
+    if nvqs == 0 || nvqs > 1024 {
+        return Err("invalid vhost virtqueue count");
+    }
+
+    let mut devs = VHOST_DEVS.write();
+    if devs.values().any(|dev| dev.name == name) {
+        return Err("vhost device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut vqs = Vec::new();
     for i in 0..nvqs {
@@ -132,7 +144,7 @@ pub fn register_device(
         state: VhostState::Idle,
         memory: None,
     };
-    VHOST_DEVS.write().insert(id, dev);
+    devs.insert(id, dev);
     VHOST_OPS.write().insert(id, ops);
     Ok(id)
 }
@@ -140,6 +152,12 @@ pub fn register_device(
 /// Set device features (Linux `VHOST_SET_FEATURES`).
 pub fn set_features(dev_id: u32, features: u64) -> Result<(), &'static str> {
     let set_fn = {
+        let devs = VHOST_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("vhost device not found")?;
+        if dev.state == VhostState::Running {
+            return Err("cannot change vhost features while running");
+        }
+
         let ops = VHOST_OPS.read();
         let dev_ops = ops.get(&dev_id).ok_or("vhost ops not found")?;
         dev_ops.set_features
@@ -156,7 +174,15 @@ pub fn set_features(dev_id: u32, features: u64) -> Result<(), &'static str> {
 
 /// Set memory table (Linux `VHOST_SET_MEM_TABLE`).
 pub fn set_mem_table(dev_id: u32, mem: VhostMemory) -> Result<(), &'static str> {
+    validate_mem_table(&mem)?;
+
     let set_fn = {
+        let devs = VHOST_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("vhost device not found")?;
+        if dev.state == VhostState::Running {
+            return Err("cannot change vhost memory while running");
+        }
+
         let ops = VHOST_OPS.read();
         let dev_ops = ops.get(&dev_id).ok_or("vhost ops not found")?;
         dev_ops.set_mem_table
@@ -173,6 +199,13 @@ pub fn set_mem_table(dev_id: u32, mem: VhostMemory) -> Result<(), &'static str> 
 /// Set virtqueue configuration (Linux `VHOST_SET_VRING_*`).
 pub fn set_vring(dev_id: u32, vq_index: u32, vq: VhostVirtqueue) -> Result<(), &'static str> {
     let set_fn = {
+        let devs = VHOST_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("vhost device not found")?;
+        validate_vring(dev, vq_index, &vq)?;
+        if dev.state == VhostState::Running {
+            return Err("cannot change vhost vring while running");
+        }
+
         let ops = VHOST_OPS.read();
         let dev_ops = ops.get(&dev_id).ok_or("vhost ops not found")?;
         dev_ops.set_vring
@@ -192,10 +225,16 @@ pub fn set_vring(dev_id: u32, vq_index: u32, vq: VhostVirtqueue) -> Result<(), &
 pub fn enable_vring(dev_id: u32, vq_index: u32, enabled: bool) -> Result<(), &'static str> {
     let mut devs = VHOST_DEVS.write();
     let dev = devs.get_mut(&dev_id).ok_or("vhost device not found")?;
+    if vq_index >= dev.nvqs {
+        return Err("Virtqueue index out of range");
+    }
     let vq = dev
         .vqs
         .get_mut(vq_index as usize)
         .ok_or("Virtqueue index out of range")?;
+    if enabled {
+        validate_vring_ready(vq)?;
+    }
     vq.enabled = enabled;
     Ok(())
 }
@@ -203,6 +242,21 @@ pub fn enable_vring(dev_id: u32, vq_index: u32, enabled: bool) -> Result<(), &'s
 /// Start vhost device (Linux `vhost_dev_start`).
 pub fn start_device(dev_id: u32) -> Result<(), &'static str> {
     let start_fn = {
+        let devs = VHOST_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("vhost device not found")?;
+        if dev.state == VhostState::Running {
+            return Ok(());
+        }
+        if dev.memory.is_none() {
+            return Err("vhost memory table not configured");
+        }
+        if dev.vqs.iter().any(|vq| !vq.enabled) {
+            return Err("vhost virtqueue not enabled");
+        }
+        for vq in &dev.vqs {
+            validate_vring_ready(vq)?;
+        }
+
         let ops = VHOST_OPS.read();
         let dev_ops = ops.get(&dev_id).ok_or("vhost ops not found")?;
         dev_ops.start
@@ -219,6 +273,12 @@ pub fn start_device(dev_id: u32) -> Result<(), &'static str> {
 /// Stop vhost device (Linux `vhost_dev_stop`).
 pub fn stop_device(dev_id: u32) -> Result<(), &'static str> {
     let stop_fn = {
+        let devs = VHOST_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("vhost device not found")?;
+        if dev.state != VhostState::Running {
+            return Ok(());
+        }
+
         let ops = VHOST_OPS.read();
         let dev_ops = ops.get(&dev_id).ok_or("vhost ops not found")?;
         dev_ops.stop
@@ -235,11 +295,107 @@ pub fn stop_device(dev_id: u32) -> Result<(), &'static str> {
 /// Handle a virtqueue kick (Linux `vhost_vring_handle_kick`).
 pub fn handle_kick(dev_id: u32, vq_index: u32) -> Result<(), &'static str> {
     let kick_fn = {
+        let devs = VHOST_DEVS.read();
+        let dev = devs.get(&dev_id).ok_or("vhost device not found")?;
+        if dev.state != VhostState::Running {
+            return Err("vhost device not running");
+        }
+        let vq = dev
+            .vqs
+            .get(vq_index as usize)
+            .ok_or("Virtqueue index out of range")?;
+        if !vq.enabled {
+            return Err("vhost virtqueue not enabled");
+        }
+
         let ops = VHOST_OPS.read();
         let dev_ops = ops.get(&dev_id).ok_or("vhost ops not found")?;
         dev_ops.handle_kick
     };
     (kick_fn)(dev_id, vq_index)
+}
+
+fn validate_mem_table(mem: &VhostMemory) -> Result<(), &'static str> {
+    if mem.nregions as usize != mem.regions.len() {
+        return Err("vhost memory region count mismatch");
+    }
+    if mem.regions.is_empty() {
+        return Err("vhost memory table is empty");
+    }
+
+    for (idx, region) in mem.regions.iter().enumerate() {
+        if region.memory_size == 0 {
+            return Err("vhost memory region has zero size");
+        }
+        let guest_end = region
+            .guest_phys_addr
+            .checked_add(region.memory_size)
+            .ok_or("vhost guest memory range overflow")?;
+        region
+            .userspace_addr
+            .checked_add(region.memory_size)
+            .ok_or("vhost userspace memory range overflow")?;
+
+        for other in mem.regions.iter().skip(idx + 1) {
+            let other_end = other
+                .guest_phys_addr
+                .checked_add(other.memory_size)
+                .ok_or("vhost guest memory range overflow")?;
+            if region.guest_phys_addr < other_end && other.guest_phys_addr < guest_end {
+                return Err("vhost memory regions overlap");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_vring(dev: &VhostDev, vq_index: u32, vq: &VhostVirtqueue) -> Result<(), &'static str> {
+    if vq_index >= dev.nvqs {
+        return Err("Virtqueue index out of range");
+    }
+    if vq.index != vq_index {
+        return Err("vhost virtqueue index mismatch");
+    }
+    if vq.num == 0 || !vq.num.is_power_of_two() || vq.num > 32768 {
+        return Err("invalid vhost virtqueue size");
+    }
+    if vq.enabled {
+        validate_vring_ready(vq)?;
+    }
+    Ok(())
+}
+
+fn validate_vring_ready(vq: &VhostVirtqueue) -> Result<(), &'static str> {
+    if vq.num == 0 || !vq.num.is_power_of_two() || vq.num > 32768 {
+        return Err("invalid vhost virtqueue size");
+    }
+    if vq.desc_addr == 0 || vq.avail_addr == 0 || vq.used_addr == 0 {
+        return Err("vhost virtqueue ring address missing");
+    }
+
+    let num = vq.num as u64;
+    let desc_len = num.checked_mul(16).ok_or("vhost desc ring overflow")?;
+    let avail_len = 4u64
+        .checked_add(num.checked_mul(2).ok_or("vhost avail ring overflow")?)
+        .and_then(|len| len.checked_add(2))
+        .ok_or("vhost avail ring overflow")?;
+    let used_len = 4u64
+        .checked_add(num.checked_mul(8).ok_or("vhost used ring overflow")?)
+        .and_then(|len| len.checked_add(2))
+        .ok_or("vhost used ring overflow")?;
+
+    vq.desc_addr
+        .checked_add(desc_len)
+        .ok_or("vhost desc ring overflow")?;
+    vq.avail_addr
+        .checked_add(avail_len)
+        .ok_or("vhost avail ring overflow")?;
+    vq.used_addr
+        .checked_add(used_len)
+        .ok_or("vhost used ring overflow")?;
+
+    Ok(())
 }
 
 /// Get device state.
@@ -299,6 +455,15 @@ pub fn software_vhost_ops() -> VhostOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("vhost: subsystem ready");
+    if !VHOST_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_vhost_ops();
+    let dev_id = register_device("sw-vhost-net", VhostDevType::Net, 2, ops)?;
+    crate::serial_println!(
+        "vhost: software vhost-net registered (id={}, 2 vqs)",
+        dev_id
+    );
     Ok(())
 }

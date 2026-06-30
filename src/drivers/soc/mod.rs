@@ -194,6 +194,22 @@ pub fn device_count() -> usize {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("soc: subsystem ready");
+    if !SOC_DEVICES.read().is_empty() {
+        return Ok(());
+    }
+
+    let soc_id = register_device(SocInfo {
+        name: String::from("RustOS-VM"),
+        family: String::from("RustOS"),
+        revision: String::from("1.0"),
+        soc_id: String::from("rustos-vm-1"),
+        serial_number: 0,
+    })?;
+    add_attribute(soc_id, "vendor", "RustOS Project")?;
+    add_attribute(soc_id, "machine", "Virtual Machine")?;
+
+    register_syscon("syscon-base", 0xF000_0000, 0x1000)?;
+
+    crate::serial_println!("soc: SoC device registered (id={})", soc_id);
     Ok(())
 }

@@ -9,6 +9,7 @@ use super::{
 };
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::ptr;
@@ -831,7 +832,7 @@ impl AhciDriver {
     }
 
     /// Initialize AHCI controller
-    fn init_controller(&mut self) -> Result<(), StorageError> {
+    pub fn init_controller(&mut self) -> Result<(), StorageError> {
         // Read capability register
         let cap = self.read_reg(AhciReg::Cap);
         let ports_impl = self.read_reg(AhciReg::Pi);
@@ -895,7 +896,7 @@ impl AhciDriver {
     }
 
     /// Initialize AHCI port
-    fn init_port(&mut self, port: u8) -> Result<(), StorageError> {
+    pub fn init_port(&mut self, port: u8) -> Result<(), StorageError> {
         // Stop port
         let mut cmd = self.read_port_reg(port, AhciPortReg::Cmd);
         cmd &= !(PortCmd::ST.bits() | PortCmd::FRE.bits());
@@ -976,7 +977,7 @@ impl AhciDriver {
     }
 
     /// Execute SATA command (production implementation)
-    fn execute_command(
+    pub fn execute_command(
         &mut self,
         port: u8,
         command: u8,
@@ -1008,7 +1009,8 @@ impl AhciDriver {
         // Allocate proper DMA buffer for data transfer - Production implementation
         use crate::net::dma::{DmaBuffer, DMA_ALIGNMENT};
 
-        let data_size = (count as usize) * 512;
+        let transfer_size = (count as usize) * 512;
+        let data_size = transfer_size.max(512);
         let mut _data_dma_buffer = DmaBuffer::allocate(data_size, DMA_ALIGNMENT)
             .map_err(|_| StorageError::HardwareError)?;
 
@@ -1072,13 +1074,13 @@ impl AhciDriver {
                 // PRD Entry 2: Reserved
                 *prd_table.add(2) = 0;
                 // PRD Entry 3: Data Byte Count and Interrupt on Completion
-                *prd_table.add(3) = ((count as u32 * 512) - 1) | (1u32 << 31); // Size - 1 and interrupt bit
+                *prd_table.add(3) = (transfer_size as u32 - 1) | (1u32 << 31); // Size - 1 and interrupt bit
 
                 // Copy write data to DMA buffer using proper buffer access
                 if command == 0x35 && buffer.is_some() {
                     let src_buffer = buffer.as_ref().unwrap();
                     let dst_ptr = _data_dma_buffer.virtual_addr();
-                    let copy_size = core::cmp::min(src_buffer.len(), data_size);
+                    let copy_size = core::cmp::min(src_buffer.len(), transfer_size);
                     core::ptr::copy_nonoverlapping(src_buffer.as_ptr(), dst_ptr, copy_size);
                 }
             }
@@ -1169,7 +1171,7 @@ impl AhciDriver {
             unsafe {
                 let src_ptr = _data_dma_buffer.virtual_addr() as *const u8;
                 let dst_buffer = buffer.as_mut().unwrap();
-                let copy_size = core::cmp::min(dst_buffer.len(), data_size);
+                let copy_size = core::cmp::min(dst_buffer.len(), transfer_size);
                 core::ptr::copy_nonoverlapping(src_ptr, dst_buffer.as_mut_ptr(), copy_size);
             }
         }
@@ -1232,158 +1234,8 @@ impl AhciDriver {
             format!("Unknown AHCI Controller (Base: 0x{:x})", self.base_addr)
         }
     }
-}
 
-impl StorageDriver for AhciDriver {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn device_type(&self) -> StorageDeviceType {
-        StorageDeviceType::SataHdd // Could be SSD too, would need to detect
-    }
-
-    fn state(&self) -> StorageDeviceState {
-        self.state
-    }
-
-    fn capabilities(&self) -> StorageCapabilities {
-        self.capabilities.clone()
-    }
-
-    fn init(&mut self) -> Result<(), StorageError> {
-        self.state = StorageDeviceState::Initializing;
-        self.init_controller()?;
-        self.state = StorageDeviceState::Ready;
-        Ok(())
-    }
-
-    fn read_sectors(
-        &mut self,
-        start_sector: u64,
-        buffer: &mut [u8],
-    ) -> Result<usize, StorageError> {
-        if self.state != StorageDeviceState::Ready {
-            return Err(StorageError::DeviceBusy);
-        }
-
-        let sector_size = self.capabilities.sector_size as usize;
-        let sector_count = buffer.len() / sector_size;
-
-        if sector_count == 0 {
-            return Err(StorageError::BufferTooSmall);
-        }
-
-        // Reject 65536+ : execute_command sizes the DMA buffer from `count as
-        // u16`, and 65536 truncates to 0 (a zero-length buffer for a full
-        // transfer -> overflow). This impl does not use the ATA 0-means-65536
-        // convention, so cap at 65535 sectors per command.
-        if sector_count >= 65536 {
-            return Err(StorageError::TransferTooLarge);
-        }
-
-        // Execute read command on port 0 (first available port)
-        self.execute_command(0, 0x25, start_sector, sector_count as u16, Some(buffer))?;
-
-        Ok(buffer.len())
-    }
-
-    fn write_sectors(&mut self, start_sector: u64, buffer: &[u8]) -> Result<usize, StorageError> {
-        if self.state != StorageDeviceState::Ready {
-            return Err(StorageError::DeviceBusy);
-        }
-
-        let sector_size = self.capabilities.sector_size as usize;
-        let sector_count = buffer.len() / sector_size;
-
-        if sector_count == 0 {
-            return Err(StorageError::BufferTooSmall);
-        }
-
-        // Reject 65536+ : execute_command sizes the DMA buffer from `count as
-        // u16`, and 65536 truncates to 0 (a zero-length buffer for a full
-        // transfer -> overflow). This impl does not use the ATA 0-means-65536
-        // convention, so cap at 65535 sectors per command.
-        if sector_count >= 65536 {
-            return Err(StorageError::TransferTooLarge);
-        }
-
-        // Execute write command on port 0 (first available port)
-        let mut write_buffer = buffer.to_vec();
-        self.execute_command(
-            0,
-            0x35,
-            start_sector,
-            sector_count as u16,
-            Some(&mut write_buffer),
-        )?;
-
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> Result<(), StorageError> {
-        if self.state != StorageDeviceState::Ready {
-            return Err(StorageError::DeviceBusy);
-        }
-
-        // Execute FLUSH CACHE command
-        self.execute_command(0, 0xE7, 0, 0, None)?;
-        Ok(())
-    }
-
-    fn get_stats(&self) -> StorageStats {
-        self.stats.clone()
-    }
-
-    fn reset(&mut self) -> Result<(), StorageError> {
-        self.state = StorageDeviceState::Resetting;
-        self.init_controller()?;
-        self.state = StorageDeviceState::Ready;
-        Ok(())
-    }
-
-    fn standby(&mut self) -> Result<(), StorageError> {
-        // Execute STANDBY command
-        self.execute_command(0, 0xE2, 0, 0, None)?;
-        self.state = StorageDeviceState::Standby;
-        Ok(())
-    }
-
-    fn wake(&mut self) -> Result<(), StorageError> {
-        if self.state == StorageDeviceState::Standby {
-            // Any command will wake the device
-            self.execute_command(0, 0xE1, 0, 0, None)?; // IDLE command
-            self.state = StorageDeviceState::Ready;
-        }
-        Ok(())
-    }
-
-    fn vendor_command(&mut self, command: u8, data: &[u8]) -> Result<Vec<u8>, StorageError> {
-        if self.state != StorageDeviceState::Ready {
-            return Err(StorageError::DeviceBusy);
-        }
-
-        // Allocate a response buffer for the vendor command
-        let response_size = if data.is_empty() { 512 } else { data.len() };
-        let mut response = vec![0u8; response_size];
-
-        // Execute vendor-specific command with data buffer for response
-        self.execute_command(
-            0,
-            command,
-            0,
-            ((response_size + 511) / 512) as u16,
-            Some(&mut response),
-        )?;
-
-        Ok(response)
-    }
-
-    fn get_smart_data(&mut self) -> Result<Vec<u8>, StorageError> {
-        if !self.capabilities.supports_smart {
-            return Err(StorageError::NotSupported);
-        }
-
+    pub fn get_smart_data(&mut self, port: u8) -> Result<Vec<u8>, StorageError> {
         // SMART READ DATA: ATA command 0xB0, features=0xD0, LBA=0xC24F8C0
         // The 512-byte SMART data is returned in the DMA buffer
         let mut smart_data = vec![0u8; 512];
@@ -1394,7 +1246,6 @@ impl StorageDriver for AhciDriver {
         // LBA = 0xC24F8C0 (SMART signature), features = 0xD0 (SMART READ DATA)
         // Since execute_command doesn't expose features, we build the FIS directly
 
-        let port = 0u8;
         let cmd_list_phys = self.command_lists[port as usize];
         let cmd_table_phys = self.command_tables[port as usize];
 
@@ -1443,14 +1294,18 @@ impl StorageDriver for AhciDriver {
             *cmd_table.add(12) = 1; // Sector count
             *cmd_table.add(13) = 0; // Sector count (high)
 
-            // Set up PRDT (Physical Region Descriptor Table) in command table
-            // PRDT starts at offset 0x80 in command table
-            let prdt_ptr = cmd_table.add(0x80) as *mut u64;
-            *prdt_ptr = buffer_phys; // Data base address
-            *prdt_ptr.add(1) = 512; // Data byte count
+            // Set up PRDT (Physical Region Descriptor Table) in command table.
+            let prdt_ptr = cmd_table.add(0x80) as *mut u32;
+            *prdt_ptr = (buffer_phys & 0xFFFF_FFFF) as u32;
+            *prdt_ptr.add(1) = ((buffer_phys >> 32) & 0xFFFF_FFFF) as u32;
+            *prdt_ptr.add(2) = 0;
+            *prdt_ptr.add(3) = (512 - 1) | (1u32 << 31);
 
             // Set up command list entry
             let cmd_list = cmd_list_phys as *mut u32;
+            for i in 0..8 {
+                *cmd_list.add(i) = 0;
+            }
             // Command FIS length: 20 bytes (5 DWORDs)
             *cmd_list = 5 | (1 << 16); // CFL=5, PRDTL=1
                                        // Command table base address
@@ -1484,6 +1339,203 @@ impl StorageDriver for AhciDriver {
 
         Ok(smart_data)
     }
+
+    /// Check if a port is active (i.e., has an initialized device)
+    pub fn is_port_active(&self, port: u8) -> bool {
+        if port >= 32 {
+            return false;
+        }
+        self.command_lists[port as usize] != 0
+    }
+}
+
+/// A storage device representing a single port on the AHCI controller.
+#[derive(Debug)]
+pub struct AhciPortDevice {
+    controller: Arc<spin::Mutex<AhciDriver>>,
+    port: u8,
+    name: String,
+    capabilities: StorageCapabilities,
+    stats: StorageStats,
+    state: StorageDeviceState,
+}
+
+impl AhciPortDevice {
+    pub fn new(controller: Arc<spin::Mutex<AhciDriver>>, port: u8, name: String) -> Self {
+        let mut capabilities = StorageCapabilities::default();
+        {
+            let ctrl = controller.lock();
+            capabilities.max_queue_depth = ctrl.capabilities.max_queue_depth;
+            capabilities.supports_ncq = ctrl.capabilities.supports_ncq;
+            capabilities.sector_size = 512;
+            capabilities.max_transfer_size = 65535 * 512;
+            capabilities.supports_smart = true;
+        }
+        Self {
+            controller,
+            port,
+            name,
+            capabilities,
+            stats: StorageStats::default(),
+            state: StorageDeviceState::Ready,
+        }
+    }
+}
+
+impl StorageDriver for AhciPortDevice {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn device_type(&self) -> StorageDeviceType {
+        StorageDeviceType::SataHdd
+    }
+
+    fn state(&self) -> StorageDeviceState {
+        self.state
+    }
+
+    fn capabilities(&self) -> StorageCapabilities {
+        self.capabilities.clone()
+    }
+
+    fn init(&mut self) -> Result<(), StorageError> {
+        // Port initialization was already done by the controller.
+        Ok(())
+    }
+
+    fn read_sectors(
+        &mut self,
+        start_sector: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StorageError> {
+        if self.state != StorageDeviceState::Ready {
+            return Err(StorageError::DeviceBusy);
+        }
+
+        let sector_size = self.capabilities.sector_size as usize;
+        let sector_count = buffer.len() / sector_size;
+
+        if sector_count == 0 || buffer.len() % sector_size != 0 {
+            return Err(StorageError::BufferTooSmall);
+        }
+
+        if sector_count >= 65536 {
+            return Err(StorageError::TransferTooLarge);
+        }
+
+        let mut ctrl = self.controller.lock();
+        ctrl.execute_command(
+            self.port,
+            0x25,
+            start_sector,
+            sector_count as u16,
+            Some(buffer),
+        )?;
+
+        self.stats.reads_total += 1;
+        self.stats.bytes_read += buffer.len() as u64;
+
+        Ok(buffer.len())
+    }
+
+    fn write_sectors(&mut self, start_sector: u64, buffer: &[u8]) -> Result<usize, StorageError> {
+        if self.state != StorageDeviceState::Ready {
+            return Err(StorageError::DeviceBusy);
+        }
+
+        let sector_size = self.capabilities.sector_size as usize;
+        let sector_count = buffer.len() / sector_size;
+
+        if sector_count == 0 || buffer.len() % sector_size != 0 {
+            return Err(StorageError::BufferTooSmall);
+        }
+
+        if sector_count >= 65536 {
+            return Err(StorageError::TransferTooLarge);
+        }
+
+        let mut write_buffer = buffer.to_vec();
+        let mut ctrl = self.controller.lock();
+        ctrl.execute_command(
+            self.port,
+            0x35,
+            start_sector,
+            sector_count as u16,
+            Some(&mut write_buffer),
+        )?;
+
+        self.stats.writes_total += 1;
+        self.stats.bytes_written += buffer.len() as u64;
+
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> Result<(), StorageError> {
+        if self.state != StorageDeviceState::Ready {
+            return Err(StorageError::DeviceBusy);
+        }
+
+        let mut ctrl = self.controller.lock();
+        ctrl.execute_command(self.port, 0xE7, 0, 0, None)?;
+        Ok(())
+    }
+
+    fn get_stats(&self) -> StorageStats {
+        self.stats.clone()
+    }
+
+    fn reset(&mut self) -> Result<(), StorageError> {
+        self.state = StorageDeviceState::Resetting;
+        let mut ctrl = self.controller.lock();
+        ctrl.init_port(self.port)?;
+        self.state = StorageDeviceState::Ready;
+        Ok(())
+    }
+
+    fn standby(&mut self) -> Result<(), StorageError> {
+        let mut ctrl = self.controller.lock();
+        ctrl.execute_command(self.port, 0xE2, 0, 0, None)?;
+        self.state = StorageDeviceState::Standby;
+        Ok(())
+    }
+
+    fn wake(&mut self) -> Result<(), StorageError> {
+        if self.state == StorageDeviceState::Standby {
+            let mut ctrl = self.controller.lock();
+            ctrl.execute_command(self.port, 0xE1, 0, 0, None)?;
+            self.state = StorageDeviceState::Ready;
+        }
+        Ok(())
+    }
+
+    fn vendor_command(&mut self, command: u8, data: &[u8]) -> Result<Vec<u8>, StorageError> {
+        if self.state != StorageDeviceState::Ready {
+            return Err(StorageError::DeviceBusy);
+        }
+
+        let response_size = if data.is_empty() { 512 } else { data.len() };
+        let mut response = vec![0u8; response_size];
+
+        let mut ctrl = self.controller.lock();
+        ctrl.execute_command(
+            self.port,
+            command,
+            0,
+            ((response_size + 511) / 512) as u16,
+            Some(&mut response),
+        )?;
+
+        Ok(response)
+    }
+
+    fn get_smart_data(&mut self) -> Result<Vec<u8>, StorageError> {
+        if !self.capabilities.supports_smart {
+            return Err(StorageError::NotSupported);
+        }
+        let mut ctrl = self.controller.lock();
+        ctrl.get_smart_data(self.port)
+    }
 }
 
 /// Create AHCI driver from PCI device information
@@ -1501,8 +1553,13 @@ pub fn create_ahci_driver(
     if is_ahci {
         let name =
             device_name.unwrap_or_else(|| format!("AHCI-{:04x}:{:04x}", vendor_id, device_id));
-        let driver = AhciDriver::new(name, vendor_id, device_id, base_addr);
-        Some(Box::new(driver))
+        let mut driver = AhciDriver::new(name.clone(), vendor_id, device_id, base_addr);
+        if driver.init_controller().is_ok() {
+            let controller = Arc::new(spin::Mutex::new(driver));
+            Some(Box::new(AhciPortDevice::new(controller, 0, name)))
+        } else {
+            None
+        }
     } else {
         None
     }

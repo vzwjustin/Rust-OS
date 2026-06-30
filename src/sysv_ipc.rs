@@ -96,6 +96,23 @@ pub struct SemaphoreSet {
     pub perm: IpcPerm,
     pub ctime: u64,
     pub otime: u64,
+    /// PIDs waiting for semaphore values to change.
+    /// Each entry records which sem_num and sem_op the waiter needs,
+    /// plus an optional deadline in nanoseconds since boot (0 = no timeout).
+    pub waiters: Vec<SemWaiter>,
+}
+
+/// A pending semaphore waiter.
+#[derive(Debug, Clone, Copy)]
+pub struct SemWaiter {
+    pub pid: u32,
+    pub sem_num: u16,
+    /// The sem_op value from the blocking operation:
+    /// negative means waiting for semval + sem_op >= 0,
+    /// zero means waiting for semval == 0.
+    pub sem_op: i16,
+    /// Deadline in nanoseconds since boot (0 = no timeout).
+    pub deadline_ns: u64,
 }
 
 // ── Shared memory segment ───────────────────────────────────────────────
@@ -143,7 +160,7 @@ static SEM_SETS: RwLock<BTreeMap<u32, Mutex<SemaphoreSet>>> = RwLock::new(BTreeM
 static SHM_SEGS: RwLock<BTreeMap<u32, Mutex<ShmSegment>>> = RwLock::new(BTreeMap::new());
 /// Maps attach addresses to their `Box<[u8]>` buffers so they stay alive
 /// until `shmdt` frees them.
-static SHM_ATTACHMENTS: RwLock<BTreeMap<u64, Box<[u8]>>> = RwLock::new(BTreeMap::new());
+static SHM_ATTACHMENTS: RwLock<BTreeMap<u64, (u32, Box<[u8]>)>> = RwLock::new(BTreeMap::new());
 static MSG_QUEUES: RwLock<BTreeMap<u32, Mutex<MessageQueue>>> = RwLock::new(BTreeMap::new());
 static NEXT_SEM_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_SHM_ID: AtomicU32 = AtomicU32::new(1);
@@ -179,6 +196,7 @@ pub fn semget(key: u32, nsems: i32, semflg: i32) -> i32 {
             },
             ctime: now,
             otime: 0,
+            waiters: Vec::new(),
         };
         SEM_SETS.write().insert(id, Mutex::new(set));
         return id as i32;
@@ -218,6 +236,7 @@ pub fn semget(key: u32, nsems: i32, semflg: i32) -> i32 {
         },
         ctime: now,
         otime: 0,
+        waiters: Vec::new(),
     };
     SEM_SETS.write().insert(id, Mutex::new(set));
     id as i32
@@ -228,68 +247,190 @@ pub fn semop(semid: i32, sops: *const SemBuf, nsops: u32) -> i32 {
     semtimedop(semid, sops, nsops, core::ptr::null())
 }
 
-/// semtimedop — timed semaphore operation
-pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, _timeout: *const u8) -> i32 {
-    if semid < 0 || sops.is_null() || nsops == 0 || nsops > 500 {
-        return -22;
+/// Parse a `struct timespec` pointer into a deadline in nanoseconds since boot.
+/// Returns 0 if no timeout (null pointer), or the absolute deadline.
+fn parse_timeout(timeout: *const u8) -> u64 {
+    if timeout.is_null() {
+        return 0;
     }
+    // struct timespec { tv_sec: i64, tv_nsec: i64 }
+    let secs = unsafe { *(timeout as *const i64) };
+    let nsecs = unsafe { *((timeout as *const i64).add(1)) };
+    if secs < 0 || nsecs < 0 || nsecs >= 1_000_000_000 {
+        return 0; // Invalid — treat as no timeout
+    }
+    crate::time::uptime_ns() + (secs as u64 * 1_000_000_000) + (nsecs as u64)
+}
 
+/// Check whether a waiter's blocking condition is satisfied.
+fn waiter_can_proceed(sems: &[i16], waiter: &SemWaiter) -> bool {
+    let sem_num = waiter.sem_num as usize;
+    if sem_num >= sems.len() {
+        return true; // Semaphore was removed — let caller retry and get ERANGE
+    }
+    let current = sems[sem_num] as i32;
+    if waiter.sem_op < 0 {
+        current + waiter.sem_op as i32 >= 0
+    } else if waiter.sem_op == 0 {
+        current == 0
+    } else {
+        true
+    }
+}
+
+/// Wake waiters that can now proceed after semaphore values changed.
+/// Called while holding the set mutex.
+fn wake_sem_waiters(set: &mut SemaphoreSet) {
+    let mut to_wake: Vec<u32> = Vec::new();
+    set.waiters.retain(|entry| {
+        if waiter_can_proceed(&set.sems, entry) {
+            to_wake.push(entry.pid);
+            false
+        } else {
+            true
+        }
+    });
+    for pid in to_wake {
+        let _ = crate::process::get_process_manager().unblock_process(pid);
+    }
+}
+
+/// Check for expired semaphore timeouts.  Called from the timer tick to
+/// wake waiters whose deadline has passed with ETIMEDOUT.
+pub fn check_sem_timeouts() {
+    let now = crate::time::uptime_ns();
     let sets = SEM_SETS.read();
-    let set_mutex = match sets.get(&(semid as u32)) {
-        Some(s) => s,
-        None => return -43, // EIDRM
-    };
-    let mut set = set_mutex.lock();
-
-    // Read operations
-    let ops: Vec<SemBuf> = (0..nsops)
-        .map(|i| unsafe { *sops.add(i as usize) })
-        .collect();
-
-    // Check if all operations can succeed
-    let nowait = ops.iter().any(|op| (op.sem_flg as i32) & IPC_NOWAIT != 0);
-    for op in &ops {
-        if op.sem_num as usize >= set.sems.len() {
-            return -34; // ERANGE
+    for (_id, set_mutex) in sets.iter() {
+        let mut set = set_mutex.lock();
+        let mut expired: Vec<u32> = Vec::new();
+        set.waiters.retain(|entry| {
+            if entry.deadline_ns != 0 && now >= entry.deadline_ns {
+                expired.push(entry.pid);
+                false
+            } else {
+                true
+            }
+        });
+        for pid in expired {
+            let _ = crate::process::get_process_manager().unblock_process(pid);
         }
     }
+}
 
-    // Try to apply all operations atomically
-    let mut would_block = false;
-    for op in &ops {
-        let current = set.sems[op.sem_num as usize];
-        let new_val = current as i32 + op.sem_op as i32;
-        if op.sem_op > 0 {
-            // Increment — always succeeds
-        } else if op.sem_op < 0 {
-            if new_val < 0 {
-                if nowait {
-                    return -11; // EAGAIN
+/// semtimedop — timed semaphore operation with blocking
+///
+/// If the operation cannot complete immediately and IPC_NOWAIT is not set,
+/// the calling process blocks until the semaphore values change to allow
+/// the operation, or until the timeout expires (if a timeout is given).
+pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u8) -> i32 {
+    if semid < 0 || sops.is_null() || nsops == 0 || nsops > 500 {
+        return -22; // EINVAL
+    }
+
+    let deadline = parse_timeout(timeout);
+    // If a timeout was provided but resolved to 0, it was invalid.
+    if !timeout.is_null() && deadline == 0 {
+        return -22; // EINVAL
+    }
+
+    let pid = crate::process::current_pid();
+
+    loop {
+        let sets = SEM_SETS.read();
+        let set_mutex = match sets.get(&(semid as u32)) {
+            Some(s) => s,
+            None => return -43, // EIDRM
+        };
+        let mut set = set_mutex.lock();
+
+        // Read operations
+        let ops: Vec<SemBuf> = (0..nsops)
+            .map(|i| unsafe { *sops.add(i as usize) })
+            .collect();
+
+        let nowait = ops.iter().any(|op| (op.sem_flg as i32) & IPC_NOWAIT != 0);
+
+        // Validate sem_num range
+        for op in &ops {
+            if op.sem_num as usize >= set.sems.len() {
+                return -34; // ERANGE
+            }
+        }
+
+        // Try to apply all operations atomically
+        let mut would_block_idx: Option<usize> = None;
+        {
+            let mut temp: Vec<i32> = set.sems.iter().map(|&v| v as i32).collect();
+            for (i, op) in ops.iter().enumerate() {
+                let sem_num = op.sem_num as usize;
+                if op.sem_op > 0 {
+                    temp[sem_num] += op.sem_op as i32;
+                } else if op.sem_op < 0 {
+                    let new_val = temp[sem_num] + op.sem_op as i32;
+                    if new_val < 0 {
+                        would_block_idx = Some(i);
+                        break;
+                    }
+                    temp[sem_num] = new_val;
+                } else {
+                    // sem_op == 0: wait for zero
+                    if temp[sem_num] != 0 {
+                        would_block_idx = Some(i);
+                        break;
+                    }
                 }
-                would_block = true;
             }
         }
-        // sem_op == 0: wait until sem becomes 0
-        if op.sem_op == 0 && current != 0 {
+
+        if let Some(block_idx) = would_block_idx {
             if nowait {
-                return -11;
+                return -11; // EAGAIN
             }
-            would_block = true;
+
+            // Register as a waiter on the blocking semaphore
+            let block_op = ops[block_idx];
+            set.waiters.retain(|waiter| waiter.pid != pid);
+            set.waiters.push(SemWaiter {
+                pid,
+                sem_num: block_op.sem_num,
+                sem_op: block_op.sem_op,
+                deadline_ns: deadline,
+            });
+            drop(set);
+            drop(sets);
+
+            // Block the current process and yield CPU
+            let pm = crate::process::get_process_manager();
+            let _ = pm.block_process(pid);
+            crate::process::scheduler::yield_cpu();
+
+            // When we get rescheduled, check for timeout
+            if deadline != 0 && crate::time::uptime_ns() >= deadline {
+                // Remove ourselves from waiters if still present
+                let sets = SEM_SETS.read();
+                if let Some(set_mutex) = sets.get(&(semid as u32)) {
+                    let mut set = set_mutex.lock();
+                    set.waiters.retain(|w| w.pid != pid);
+                }
+                return -110; // ETIMEDOUT
+            }
+
+            // Retry the operations
+            continue;
         }
-    }
 
-    if would_block {
-        return -11; // EAGAIN — we don't block in this implementation
-    }
+        // Apply operations
+        for op in &ops {
+            set.sems[op.sem_num as usize] =
+                (set.sems[op.sem_num as usize] as i32 + op.sem_op as i32) as i16;
+        }
+        set.otime = crate::time::uptime_ns() / 1_000_000_000;
 
-    // Apply operations
-    for op in &ops {
-        set.sems[op.sem_num as usize] =
-            (set.sems[op.sem_num as usize] as i32 + op.sem_op as i32) as i16;
-    }
-    set.otime = crate::time::uptime_ns() / 1_000_000_000;
+        // Wake any waiters that can now proceed
+        wake_sem_waiters(&mut set);
 
-    0
+        return 0;
+    }
 }
 
 /// semctl — semaphore control
@@ -307,9 +448,14 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
 
     match cmd {
         IPC_RMID => {
+            let waiters: Vec<u32> = set.waiters.iter().map(|waiter| waiter.pid).collect();
+            set.waiters.clear();
             drop(set);
             drop(sets);
             SEM_SETS.write().remove(&(semid as u32));
+            for pid in waiters {
+                let _ = crate::process::get_process_manager().unblock_process(pid);
+            }
             return 0;
         }
         IPC_STAT => {
@@ -337,13 +483,31 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
             }
             set.sems[semnum as usize] = arg as i16;
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
+            wake_sem_waiters(&mut set);
             return 0;
         }
         GETPID => {
             return 0; // No tracking
         }
-        GETNCNT | GETZCNT => {
-            return 0; // No waiters
+        GETNCNT => {
+            if semnum < 0 || semnum as usize >= set.sems.len() {
+                return -34;
+            }
+            return set
+                .waiters
+                .iter()
+                .filter(|w| w.sem_num == semnum as u16 && w.sem_op < 0)
+                .count() as i32;
+        }
+        GETZCNT => {
+            if semnum < 0 || semnum as usize >= set.sems.len() {
+                return -34;
+            }
+            return set
+                .waiters
+                .iter()
+                .filter(|w| w.sem_num == semnum as u16 && w.sem_op == 0)
+                .count() as i32;
         }
         GETALL => {
             let arr = arg as *mut u16;
@@ -367,6 +531,7 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
                 set.sems[i] = unsafe { *arr.add(i) } as i16;
             }
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
+            wake_sem_waiters(&mut set);
             return 0;
         }
         IPC_SET => {
@@ -506,23 +671,15 @@ pub fn shmat(shmid: i32, shmaddr: u64, shmflg: i32) -> i64 {
     // Store the buffer so it lives as long as the attachment.  We keep it
     // in a static map keyed by the attach address so `shmdt` can find and
     // free it.
-    SHM_ATTACHMENTS.write().insert(attach_addr, attach_buf);
+    SHM_ATTACHMENTS
+        .write()
+        .insert(attach_addr, (shmid as u32, attach_buf));
 
-    // If the caller requested a specific address, we still return the
-    // kernel buffer address (we cannot map into user page tables yet),
-    // but we honour SHM_RND alignment for the address the caller *would*
-    // have gotten.
-    let addr = if shmaddr == 0 {
-        attach_addr
-    } else if shmflg & SHM_RND != 0 {
-        // Round down to page boundary — informational only since we
-        // can't actually place the mapping at the requested address.
-        attach_addr & !0xFFF
-    } else {
-        attach_addr
-    };
+    // This implementation cannot place mappings at caller-requested virtual
+    // addresses yet, so return the actual stable attachment handle that shmdt()
+    // can later detach.
+    let addr = attach_addr;
 
-    seg.attach_ptr = attach_addr;
     seg.nattch += 1;
     seg.atime = crate::time::uptime_ns() / 1_000_000_000;
     seg.lpid = crate::process::current_pid();
@@ -533,25 +690,25 @@ pub fn shmat(shmid: i32, shmaddr: u64, shmflg: i32) -> i64 {
 /// shmdt — detach shared memory segment
 pub fn shmdt(shmaddr: u64) -> i32 {
     // Free the attachment buffer and remove it from the map.
-    let removed = SHM_ATTACHMENTS.write().remove(&shmaddr).is_some();
-    if !removed {
-        return -22; // EINVAL — not a valid attachment
-    }
-
-    // Find segment by attach address and decrement nattch
-    let segs = SHM_SEGS.read();
-    for (_, seg_mutex) in segs.iter() {
-        let mut seg = seg_mutex.lock();
-        if seg.attach_ptr == shmaddr {
-            if seg.nattch > 0 {
-                seg.nattch -= 1;
-            }
-            seg.dtime = crate::time::uptime_ns() / 1_000_000_000;
-            seg.lpid = crate::process::current_pid();
-            return 0;
+    let shmid = match SHM_ATTACHMENTS.write().remove(&shmaddr) {
+        Some((shmid, _buf)) => shmid,
+        None => {
+            return -22; // EINVAL — not a valid attachment
         }
+    };
+
+    // Find segment by recorded attachment id and decrement nattch.
+    let segs = SHM_SEGS.read();
+    let Some(seg_mutex) = segs.get(&shmid) else {
+        return -22; // EINVAL — not a valid attachment
+    };
+    let mut seg = seg_mutex.lock();
+    if seg.nattch > 0 {
+        seg.nattch -= 1;
     }
-    -22 // EINVAL
+    seg.dtime = crate::time::uptime_ns() / 1_000_000_000;
+    seg.lpid = crate::process::current_pid();
+    0
 }
 
 /// shmctl — shared memory control

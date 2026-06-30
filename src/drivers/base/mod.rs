@@ -351,6 +351,40 @@ pub fn driver_count() -> usize {
     DRIVERS.read().len()
 }
 
+// ── Public API: integration helpers ───────────────────────────────────────
+
+/// Convenience for subsystems publishing a device into the unified model:
+/// ensures `bus` and a generic "device" class exist (create-or-ignore), then
+/// registers a parentless device with the given `compatible`/modalias string.
+///
+/// Safe to call before [`init`]: because [`register_bus`]/[`register_class`]
+/// are idempotent, a subsystem whose own init runs ahead of [`init`] still
+/// links its device into a real bus. Returns the new device id.
+pub fn register_device_simple(
+    bus: &str,
+    name: &str,
+    compatible: &str,
+) -> Result<u32, &'static str> {
+    register_bus(bus)?;
+    register_class("device")?;
+    register_device(name, None, bus, "device", compatible)
+}
+
+/// List the names of every device currently registered on `bus`.
+pub fn list_devices_on_bus(bus: &str) -> Vec<String> {
+    DEVICES
+        .read()
+        .values()
+        .filter(|d| d.bus == bus)
+        .map(|d| d.name.clone())
+        .collect()
+}
+
+/// Whether a device with the given name is registered.
+pub fn device_exists(name: &str) -> bool {
+    DEVICES.read().values().any(|d| d.name == name)
+}
+
 // ── Sample virtual driver ─────────────────────────────────────────────────
 
 fn virtual_driver_matches(compatible: &str) -> bool {
@@ -378,36 +412,43 @@ const VIRTUAL_DRIVER_OPS: DeviceDriverOps = DeviceDriverOps {
 /// Initialize the unified device model with a platform bus, a virtual class,
 /// and a sample device/driver pair bound together.
 pub fn init() -> Result<(), &'static str> {
-    if !BUSES.read().is_empty() {
-        return Ok(());
+    // Standard buses that subsystems publish their devices onto. register_bus
+    // is idempotent, so this is safe to run repeatedly and regardless of
+    // whether a subsystem created one of these buses earlier in boot.
+    for bus in ["pci", "platform", "input", "block", "scsi", "nvme", "net"] {
+        register_bus(bus)?;
     }
-
-    register_bus("platform")?;
     register_class("virtual")?;
 
-    let dev_id = register_device(
-        "sample0",
-        None,
-        "platform",
-        "virtual",
-        "virtual,sample-device",
-    )?;
+    // Wire up the sample device/driver pair exactly once. Guarding on the
+    // device (rather than an "any bus exists" check) keeps init idempotent even
+    // when another subsystem created one of the standard buses first.
+    if !device_exists("sample0") {
+        let dev_id = register_device(
+            "sample0",
+            None,
+            "platform",
+            "virtual",
+            "virtual,sample-device",
+        )?;
 
-    let drv_id = register_driver(
-        "virtual-sample",
-        "platform",
-        virtual_driver_matches,
-        VIRTUAL_DRIVER_OPS,
-    )?;
+        let drv_id = register_driver(
+            "virtual-sample",
+            "platform",
+            virtual_driver_matches,
+            VIRTUAL_DRIVER_OPS,
+        )?;
 
-    // register_driver already auto-binds; bind explicitly if it did not (e.g.
-    // ordering), so the sample pair is always wired up.
-    if bound_driver(dev_id).is_none() {
-        bind(dev_id, drv_id)?;
+        // register_driver already auto-binds; bind explicitly if it did not
+        // (e.g. ordering), so the sample pair is always wired up.
+        if bound_driver(dev_id).is_none() {
+            bind(dev_id, drv_id)?;
+        }
     }
 
     crate::serial_println!(
-        "base: device model ready, {} devices, {} drivers",
+        "base: device model ready, {} buses, {} devices, {} drivers",
+        bus_count(),
         device_count(),
         driver_count()
     );

@@ -411,8 +411,7 @@ fn load_module(mut image: Vec<u8>, params: String, flags: u32) -> Result<i32, i3
         .map(|off| unsafe { core::mem::transmute(image.as_ptr().add(off)) });
 
     if let Some(init_off) = find_symbol_offset(&image, "init_module") {
-        let init_fn: fn() -> i32 =
-            unsafe { core::mem::transmute(image.as_ptr().add(init_off)) };
+        let init_fn: fn() -> i32 = unsafe { core::mem::transmute(image.as_ptr().add(init_off)) };
         let rc = unsafe { init_fn() };
         if rc != 0 {
             return Err(-rc); // init failed — do not register
@@ -505,11 +504,14 @@ pub fn remove_module(name: &str) -> i32 {
     // Pull the exit function before dropping the lock.
     let exit_fn = {
         let loaded = LOADED_MODULES.read();
-        loaded.iter().find(|m| {
-            let name_bytes = name.as_bytes();
-            let copy_len = name_bytes.len().min(63);
-            m.name[..copy_len] == name_bytes[..copy_len] && m.name[copy_len] == 0
-        }).and_then(|m| m.exit_fn)
+        loaded
+            .iter()
+            .find(|m| {
+                let name_bytes = name.as_bytes();
+                let copy_len = name_bytes.len().min(63);
+                m.name[..copy_len] == name_bytes[..copy_len] && m.name[copy_len] == 0
+            })
+            .and_then(|m| m.exit_fn)
     };
 
     if let Some(f) = exit_fn {
@@ -521,9 +523,7 @@ pub fn remove_module(name: &str) -> i32 {
         let mut loaded = LOADED_MODULES.write();
         let name_bytes = name.as_bytes();
         let copy_len = name_bytes.len().min(63);
-        loaded.retain(|m| {
-            !(m.name[..copy_len] == name_bytes[..copy_len] && m.name[copy_len] == 0)
-        });
+        loaded.retain(|m| !(m.name[..copy_len] == name_bytes[..copy_len] && m.name[copy_len] == 0));
     }
 
     // Remove from image registry.

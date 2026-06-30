@@ -770,11 +770,7 @@ impl DynamicLinker {
     /// let addr = linker.resolve_symbol_for_link_map("printf", &link_map)?;
     /// unsafe { *(got_entry as *mut usize) = addr; }
     /// ```
-    pub fn resolve_symbol_for_link_map(
-        &self,
-        name: &str,
-        _link_map: &LinkMap,
-    ) -> Option<usize> {
+    pub fn resolve_symbol_for_link_map(&self, name: &str, _link_map: &LinkMap) -> Option<usize> {
         self.resolve_symbol(name).map(|a| a.as_u64() as usize)
     }
 
@@ -1251,8 +1247,16 @@ impl DynamicLinker {
     /// This function writes to arbitrary memory addresses.
     /// Caller must ensure the address is valid and writable.
     unsafe fn write_relocation_value(&self, addr: VirtAddr, value: u64) -> DynamicLinkerResult<()> {
-        // In a real kernel, we would check permissions first
-        let ptr = addr.as_u64() as *mut u64;
+        let ptr_addr = addr.as_u64();
+        // Validate that the target address is writable user memory
+        crate::memory::user_space::UserSpaceMemory::validate_user_ptr(
+            ptr_addr,
+            core::mem::size_of::<u64>() as u64,
+            true,
+        )
+        .map_err(|_| DynamicLinkerError::InvalidAddress)?;
+
+        let ptr = ptr_addr as *mut u64;
         core::ptr::write_volatile(ptr, value);
         Ok(())
     }

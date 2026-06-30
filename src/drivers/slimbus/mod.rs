@@ -316,6 +316,16 @@ pub fn software_slimbus_ops() -> SlimCtrlOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("slimbus: subsystem ready");
+    if !SLIM_CTRLS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_slimbus_ops();
+    let ctrl_id = register_controller("sw-slimbus", ops, 32)?;
+    boot_controller(ctrl_id)?;
+    crate::serial_println!(
+        "slimbus: software controller registered and booted (id={})",
+        ctrl_id
+    );
     Ok(())
 }

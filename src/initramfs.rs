@@ -288,9 +288,37 @@ pub unsafe fn execute_init(entry_point: u64, stack_pointer: u64) -> ! {
     crate::usermode::switch_to_user_mode(entry_point, stack_pointer)
 }
 
+const USERSPACE_INIT_PATHS: [&str; 4] = ["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+
+const INIT_SBIN_INIT_C: &[u8] = b"/sbin/init\0";
+const INIT_ETC_INIT_C: &[u8] = b"/etc/init\0";
+const INIT_BIN_INIT_C: &[u8] = b"/bin/init\0";
+const INIT_BIN_SH_C: &[u8] = b"/bin/sh\0";
+const ENV_HOME_C: &[u8] = b"HOME=/root\0";
+const ENV_PATH_C: &[u8] = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
+const ENV_XDG_RUNTIME_DIR_C: &[u8] = b"XDG_RUNTIME_DIR=/run/user/0\0";
+const ENV_XDG_CURRENT_DESKTOP_C: &[u8] = b"XDG_CURRENT_DESKTOP=ubuntu:GNOME\0";
+const ENV_XDG_SESSION_TYPE_C: &[u8] = b"XDG_SESSION_TYPE=wayland\0";
+const ENV_WAYLAND_DISPLAY_C: &[u8] = b"WAYLAND_DISPLAY=wayland-0\0";
+
+fn static_cstr(bytes: &'static [u8]) -> &'static core::ffi::CStr {
+    // SAFETY: all callers pass static byte strings with exactly one trailing NUL.
+    unsafe { core::ffi::CStr::from_bytes_with_nul_unchecked(bytes) }
+}
+
+fn init_path_cstr(path: &str) -> Option<&'static core::ffi::CStr> {
+    match path {
+        "/sbin/init" => Some(static_cstr(INIT_SBIN_INIT_C)),
+        "/etc/init" => Some(static_cstr(INIT_ETC_INIT_C)),
+        "/bin/init" => Some(static_cstr(INIT_BIN_INIT_C)),
+        "/bin/sh" => Some(static_cstr(INIT_BIN_SH_C)),
+        _ => None,
+    }
+}
+
 /// Return the first userspace init path present on the root VFS.
 pub fn find_userspace_init() -> Option<&'static str> {
-    for path in ["/bin/init", "/init"] {
+    for path in USERSPACE_INIT_PATHS {
         if crate::vfs::vfs_stat(path).is_ok() {
             return Some(path);
         }
@@ -298,12 +326,12 @@ pub fn find_userspace_init() -> Option<&'static str> {
     None
 }
 
-/// True when `/bin/init` or `/init` exists and is reachable via the VFS.
+/// True when a Linux-style init fallback exists and is reachable via the VFS.
 pub fn userspace_init_available() -> bool {
     find_userspace_init().is_some()
 }
 
-/// Spawn `/bin/init` or `/init` via `linux_compat::desktop` while the kernel
+/// Spawn a Linux-style init fallback via `linux_compat::desktop` while the kernel
 /// compositor loop keeps running.
 pub fn spawn_userspace_init(
     boot: crate::linux_compat::desktop::SessionBoot,
@@ -313,7 +341,7 @@ pub fn spawn_userspace_init(
         .map_err(|_| InitramfsError::InitNotFound)
 }
 
-/// Try to exec `/bin/init` or `/init` and enter user mode.
+/// Try to exec a Linux-style init fallback and enter user mode.
 ///
 /// # Safety
 /// Never returns on success.
@@ -330,39 +358,22 @@ pub unsafe fn boot_userspace_init() -> ! {
 
             if let Some(path) = find_userspace_init() {
                 crate::serial_println!("init: spawn failed, attempting direct exec of {}", path);
-                let init_c = match path {
-                    "/bin/init" => c"/bin/init",
-                    _ => c"/init",
-                };
-                let (exec_c, argv): (&'static core::ffi::CStr, [*const u8; 3]) = if path == "/init"
-                {
-                    let sh_c = c"/bin/sh";
-                    (
-                        sh_c,
-                        [
-                            sh_c.as_ptr() as *const u8,
-                            init_c.as_ptr() as *const u8,
-                            core::ptr::null(),
-                        ],
-                    )
-                } else {
-                    (
-                        init_c,
-                        [
-                            init_c.as_ptr() as *const u8,
-                            core::ptr::null(),
-                            core::ptr::null(),
-                        ],
-                    )
-                };
+                let init_c = init_path_cstr(path).unwrap_or(static_cstr(INIT_BIN_SH_C));
+                let (exec_c, argv): (&'static core::ffi::CStr, [*const u8; 3]) = (
+                    init_c,
+                    [
+                        init_c.as_ptr() as *const u8,
+                        core::ptr::null(),
+                        core::ptr::null(),
+                    ],
+                );
                 let envp: [*const u8; 7] = [
-                    c"HOME=/root".as_ptr() as *const u8,
-                    c"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".as_ptr()
-                        as *const u8,
-                    c"XDG_RUNTIME_DIR=/run/user/0".as_ptr() as *const u8,
-                    c"XDG_CURRENT_DESKTOP=ubuntu:GNOME".as_ptr() as *const u8,
-                    c"XDG_SESSION_TYPE=wayland".as_ptr() as *const u8,
-                    c"WAYLAND_DISPLAY=wayland-0".as_ptr() as *const u8,
+                    ENV_HOME_C.as_ptr(),
+                    ENV_PATH_C.as_ptr(),
+                    ENV_XDG_RUNTIME_DIR_C.as_ptr(),
+                    ENV_XDG_CURRENT_DESKTOP_C.as_ptr(),
+                    ENV_XDG_SESSION_TYPE_C.as_ptr(),
+                    ENV_WAYLAND_DISPLAY_C.as_ptr(),
                     core::ptr::null(),
                 ];
                 if process_ops::execve_and_enter_user_mode(
@@ -376,7 +387,9 @@ pub unsafe fn boot_userspace_init() -> ! {
                 }
                 crate::serial_println!("init: exec {} failed", path);
             } else {
-                crate::serial_println!("init: no /bin/init or /init on rootfs");
+                crate::serial_println!(
+                    "init: no /sbin/init, /etc/init, /bin/init, or /bin/sh on rootfs"
+                );
             }
         }
     }
@@ -395,12 +408,8 @@ pub unsafe fn try_exec_init() -> ! {
 /// Fix broken symlinks after CPIO extraction.
 ///
 /// The Alpine rootfs ships hundreds of symlinks pointing to `/bin/busybox`.
-/// If the busybox binary is missing from the archive, `/bin/sh` (and every
-/// other utility) becomes a broken symlink and the PID-1 init script
-/// (`#!/bin/sh`) cannot execute.  When busybox is present the symlinks work
-/// as-is; when it's missing we repoint `/bin/sh` to `/bin/bash` as a
-/// last-resort fallback (bash is dynamically linked and may not work
-/// without the musl dynamic linker, but it's better than nothing).
+/// When busybox is present the symlinks work as-is. If it is missing, only
+/// repoint `/bin/sh` when a confirmed shell fallback exists.
 fn fixup_broken_symlinks() {
     use crate::vfs::{vfs_stat, vfs_symlink, vfs_unlink, InodeType};
 
@@ -412,7 +421,16 @@ fn fixup_broken_symlinks() {
         _ => {}
     }
 
-    // busybox is missing — repoint /bin/sh to /bin/bash as fallback.
+    let bash_available =
+        matches!(vfs_stat("/bin/bash"), Ok(stat) if stat.inode_type == InodeType::File);
+    if !bash_available {
+        crate::serial_println!(
+            "initramfs: /bin/busybox missing and /bin/bash unavailable; leaving /bin/sh unchanged"
+        );
+        return;
+    }
+
+    // busybox is missing, but bash is available — repoint /bin/sh as fallback.
     match vfs_stat("/bin/sh") {
         Ok(stat) if stat.inode_type == InodeType::Symlink => {
             crate::serial_println!(
@@ -971,13 +989,27 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
             continue;
         }
 
-        // Normalize path (ensure it starts with /)
-        let entry_name = entry.name.strip_prefix("./").unwrap_or(entry.name.as_str());
-        let path = if entry_name.starts_with('/') {
-            entry_name.to_string()
-        } else {
-            format!("/{}", entry_name)
-        };
+        // Normalize path. Some build pipelines package the root filesystem
+        // under a top-level rootfs/ directory; expose that as / so Linux init
+        // fallback paths like /sbin/init and /bin/sh are actually visible.
+        let mut entry_name = entry.name.strip_prefix("./").unwrap_or(entry.name.as_str());
+        entry_name = entry_name.trim_start_matches('/');
+
+        if entry_name == "rootfs" || entry_name.is_empty() {
+            offset = next_offset;
+            continue;
+        }
+
+        if let Some(stripped) = entry_name.strip_prefix("rootfs/") {
+            entry_name = stripped;
+        }
+
+        if entry_name.is_empty() {
+            offset = next_offset;
+            continue;
+        }
+
+        let path = format!("/{}", entry_name);
 
         // Ensure parent directories exist
         ensure_parent_directories(vfs, &path)?;

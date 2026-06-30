@@ -60,6 +60,22 @@ pub fn register_chip(
     states: u32,
     idle_state: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("Mux chip name is empty");
+    }
+    if num_controls == 0 {
+        return Err("Mux chip has no controls");
+    }
+    if states == 0 {
+        return Err("Mux control has no states");
+    }
+    if idle_state >= states {
+        return Err("Mux idle state out of range");
+    }
+    if MUX_CHIPS.read().values().any(|chip| chip.name == name) {
+        return Err("Mux chip already registered");
+    }
+
     let chip_id = CHIP_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut control_ids = Vec::new();
 
@@ -106,7 +122,13 @@ pub fn select(control_id: u32, state: u32) -> Result<(), &'static str> {
         ctrl.ops.set
     };
 
-    (set_fn)(control_id, state)?;
+    if let Err(err) = (set_fn)(control_id, state) {
+        if let Some(ctrl) = MUX_CONTROLS.write().get_mut(&control_id) {
+            ctrl.lock_held = false;
+            ctrl.current_state = MuxState::Error;
+        }
+        return Err(err);
+    }
 
     let mut controls = MUX_CONTROLS.write();
     if let Some(ctrl) = controls.get_mut(&control_id) {
@@ -119,14 +141,11 @@ pub fn select(control_id: u32, state: u32) -> Result<(), &'static str> {
 /// Deselect a mux (return to idle state) (Linux `mux_control_deselect`).
 pub fn deselect(control_id: u32) -> Result<(), &'static str> {
     let (set_fn, idle_state) = {
-        let mut controls = MUX_CONTROLS.write();
-        let ctrl = controls
-            .get_mut(&control_id)
-            .ok_or("Mux control not found")?;
+        let controls = MUX_CONTROLS.read();
+        let ctrl = controls.get(&control_id).ok_or("Mux control not found")?;
         if !ctrl.lock_held {
             return Err("Mux control not locked");
         }
-        ctrl.lock_held = false;
         (ctrl.ops.set, ctrl.idle_state)
     };
 
@@ -141,19 +160,34 @@ pub fn deselect(control_id: u32) -> Result<(), &'static str> {
 
 /// Try to select a mux state (non-blocking).
 pub fn try_select(control_id: u32, state: u32) -> Result<(), &'static str> {
+    let set_fn = {
+        let mut controls = MUX_CONTROLS.write();
+        let ctrl = controls
+            .get_mut(&control_id)
+            .ok_or("Mux control not found")?;
+        if ctrl.lock_held {
+            return Err("Mux control busy");
+        }
+        if state >= ctrl.states {
+            return Err("Mux state out of range");
+        }
+        ctrl.lock_held = true;
+        ctrl.ops.set
+    };
+
+    if let Err(err) = (set_fn)(control_id, state) {
+        if let Some(ctrl) = MUX_CONTROLS.write().get_mut(&control_id) {
+            ctrl.lock_held = false;
+            ctrl.current_state = MuxState::Error;
+        }
+        return Err(err);
+    }
+
     let mut controls = MUX_CONTROLS.write();
-    let ctrl = controls
-        .get_mut(&control_id)
-        .ok_or("Mux control not found")?;
-    if ctrl.lock_held {
-        return Err("Mux control busy");
+    if let Some(ctrl) = controls.get_mut(&control_id) {
+        ctrl.current_state = MuxState::Active(state);
+        ctrl.cached_state = Some(state);
     }
-    if state >= ctrl.states {
-        return Err("Mux state out of range");
-    }
-    ctrl.lock_held = true;
-    ctrl.current_state = MuxState::Active(state);
-    ctrl.cached_state = Some(state);
     Ok(())
 }
 
@@ -205,6 +239,6 @@ pub fn software_mux_ops() -> MuxControlOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("mux: subsystem ready");
+    crate::serial_println!("mux: framework ready (no software provider)");
     Ok(())
 }

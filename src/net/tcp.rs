@@ -1268,14 +1268,7 @@ fn handle_new_connection(
     // Check if there is a listening socket for this local address/port.
     // If not, send a RST to reject the connection attempt.
     if !TCP_MANAGER.is_listening(&local_addr, local_port) {
-        send_rst_for_segment(
-            local_addr,
-            local_port,
-            remote_addr,
-            remote_port,
-            header,
-            0,
-        )?;
+        send_rst_for_segment(local_addr, local_port, remote_addr, remote_port, header, 0)?;
         return Err(NetworkError::ConnectionRefused);
     }
 
@@ -1605,10 +1598,7 @@ pub fn tcp_send_data(
 
     for chunk in data.chunks(mss) {
         // Enforce congestion window: only send while unacked < min(cwnd, rwnd)
-        let effective_window = cmp::min(
-            connection.cwnd as usize,
-            connection.send_window as usize,
-        );
+        let effective_window = cmp::min(connection.cwnd as usize, connection.send_window as usize);
         if connection.send_unacked.len() + chunk.len() > effective_window {
             break;
         }
@@ -1736,16 +1726,13 @@ pub fn tcp_tick(current_time: u64) {
                 })
             };
 
-            if let Some((
-                src_ip, src_port, dst_ip, dst_port,
-                seq, ack_seq, recv_win, payload,
-            )) = segment_to_send
+            if let Some((src_ip, src_port, dst_ip, dst_port, seq, ack_seq, recv_win, payload)) =
+                segment_to_send
             {
                 let mut flags = TcpFlags::new();
                 flags.ack = true;
                 let _ = send_tcp_packet(
-                    src_ip, src_port, dst_ip, dst_port,
-                    seq, ack_seq, flags, recv_win, &payload,
+                    src_ip, src_port, dst_ip, dst_port, seq, ack_seq, flags, recv_win, &payload,
                 );
             }
 

@@ -613,7 +613,26 @@ pub fn init_network_drivers() -> Result<NetworkDriverManager, NetworkError> {
         crate::serial_println!("net: no NIC drivers loaded");
     }
 
+    // Publish a representative network device into the unified `base` model
+    // (additive; tolerant of a missing bus and never fatal to network init).
+    publish_to_base(&manager);
+
     Ok(manager)
+}
+
+/// Register a representative network device into the unified `base` device model.
+fn publish_to_base(manager: &NetworkDriverManager) {
+    use crate::drivers::base;
+    if base::device_exists("net0") {
+        return;
+    }
+    let drivers = manager.list_drivers();
+    if let Ok(id) = base::register_device_simple("net", "net0", "net,ethernet") {
+        let _ = base::set_property(id, "driver_count", &format!("{}", drivers.len()));
+        if let Some((_, name, _)) = drivers.first() {
+            let _ = base::set_property(id, "primary_driver", name);
+        }
+    }
 }
 
 /// Network driver utilities

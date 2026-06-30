@@ -16,16 +16,27 @@ pub const PACKET_THRESHOLD: u64 = 3;
 /// Time threshold = 9/8 × max(smoothed_rtt, latest_rtt) (RFC 9002 §6.1.2).
 const TIME_THRESHOLD_NUM: u64 = 9;
 const TIME_THRESHOLD_DEN: u64 = 8;
+use super::crypto::EncryptionLevel;
 
 /// Record a sent packet for loss recovery. The caller separately updates the
 /// congestion controller's in-flight bytes via `Cong::on_packet_sent`.
-pub fn on_packet_sent(space: &mut PnSpace, pn: u64, now: u64, ack_eliciting: bool, size: u64) {
+pub fn on_packet_sent(
+    space: &mut PnSpace,
+    pn: u64,
+    now: u64,
+    ack_eliciting: bool,
+    size: u64,
+    level: EncryptionLevel,
+    frames: Vec<u8>,
+) {
     space.sent.insert(
         pn,
         SentInfo {
             time_sent: now,
             ack_eliciting,
             size,
+            level,
+            frames,
         },
     );
 }
@@ -46,7 +57,7 @@ pub fn on_ack_received(
     acked: &[(u64, u64)],
 ) {
     space.largest_acked = Some(match space.largest_acked {
-        Some(c) => c.max(largest_acked),
+        Some(cur) => cur.max(largest_acked),
         None => largest_acked,
     });
 
@@ -71,11 +82,16 @@ pub fn on_ack_received(
 }
 
 /// Detect and remove lost packets, feeding their bytes to the congestion
-/// controller (`Cong::on_loss`). Returns the lost packet numbers.
+/// controller (`Cong::on_loss`). Returns the lost packet info.
 ///
 /// Lost packets are processed in descending order so the congestion window is
 /// halved at most once per loss episode (keyed off the largest lost number).
-pub fn detect_lost(space: &mut PnSpace, cong: &mut Cong, now: u64, rtt: &RttEstimator) -> Vec<u64> {
+pub fn detect_lost(
+    space: &mut PnSpace,
+    cong: &mut Cong,
+    now: u64,
+    rtt: &RttEstimator,
+) -> Vec<SentInfo> {
     let largest_acked = match space.largest_acked {
         Some(l) => l,
         None => return Vec::new(),
@@ -96,14 +112,16 @@ pub fn detect_lost(space: &mut PnSpace, cong: &mut Cong, now: u64, rtt: &RttEsti
         .collect();
 
     lost.sort_unstable_by(|a, b| b.cmp(a)); // descending
+    let mut lost_infos = Vec::new();
     for &pn in &lost {
         if let Some(info) = space.sent.remove(&pn) {
             if info.ack_eliciting {
                 cong.on_loss(info.size, pn);
             }
+            lost_infos.push(info);
         }
     }
-    lost
+    lost_infos
 }
 
 /// Probe Timeout for the current consecutive-PTO `pto_count` (RFC 9002 §6.2.1):
@@ -114,16 +132,32 @@ pub fn pto_duration(rtt: &RttEstimator, pto_count: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::pnspace::PnSpace;
+    use super::*;
 
     #[test]
     fn ack_removes_sent_and_samples_rtt() {
         let mut space = PnSpace::new();
         let mut cong = Cong::new(1452);
         let mut rtt = RttEstimator::new(0);
-        on_packet_sent(&mut space, 0, 0, true, 1200);
-        on_packet_sent(&mut space, 1, 10, true, 1200);
+        on_packet_sent(
+            &mut space,
+            0,
+            0,
+            true,
+            1200,
+            EncryptionLevel::Initial,
+            Vec::new(),
+        );
+        on_packet_sent(
+            &mut space,
+            1,
+            10,
+            true,
+            1200,
+            EncryptionLevel::Initial,
+            Vec::new(),
+        );
         cong.on_packet_sent(2400);
 
         on_ack_received(&mut space, &mut cong, &mut rtt, 1, 0, 60, &[(0, 1)]);
@@ -138,13 +172,20 @@ mod tests {
         let mut cong = Cong::new(1452);
         let mut rtt = RttEstimator::new(0);
         for pn in 0..=4u64 {
-            on_packet_sent(&mut space, pn, pn, true, 1200);
+            on_packet_sent(
+                &mut space,
+                pn,
+                pn,
+                true,
+                1200,
+                EncryptionLevel::Initial,
+                Vec::new(),
+            );
         }
         cong.on_packet_sent(6000);
         // Ack pn 4 → pns 0 and 1 are >= 3 behind, declared lost.
         on_ack_received(&mut space, &mut cong, &mut rtt, 4, 0, 100, &[(4, 4)]);
         let lost = detect_lost(&mut space, &mut cong, 100, &rtt);
-        assert!(lost.contains(&0) && lost.contains(&1));
-        assert!(!lost.contains(&2)); // only 2 behind the largest acked
+        assert_eq!(lost.len(), 2);
     }
 }

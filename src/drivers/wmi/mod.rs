@@ -290,6 +290,6 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("wmi: subsystem ready");
+    crate::serial_println!("wmi: subsystem ready (ACPI WDG enumeration deferred)");
     Ok(())
 }

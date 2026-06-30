@@ -14,6 +14,10 @@ use super::process_ops;
 use super::{LinuxError, LinuxResult};
 
 static DESKTOP_SESSION_READY: AtomicBool = AtomicBool::new(false);
+static GRAPHICAL_TARGET_READY: AtomicBool = AtomicBool::new(false);
+static DRM_KMS_READY: AtomicBool = AtomicBool::new(false);
+static FRAMEBUFFER_FALLBACK_READY: AtomicBool = AtomicBool::new(false);
+static NATIVE_GPU_ACCEL_READY: AtomicBool = AtomicBool::new(false);
 
 /// Userspace session boot intent passed to PID 1 via environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +40,112 @@ pub fn mark_session_ready() {
 /// True once the desktop session bootstrap path is wired through linux compat.
 pub fn is_session_ready() -> bool {
     DESKTOP_SESSION_READY.load(Ordering::Acquire)
+}
+
+/// Record the Linux-style graphical boot target state for PID 1 and desktop services.
+pub fn mark_graphical_boot(
+    boot: SessionBoot,
+    framebuffer_ready: bool,
+    drm_kms_ready: bool,
+    gpu_accelerated: bool,
+    width: usize,
+    height: usize,
+    bpp: u16,
+) {
+    let graphical_boot = matches!(boot, SessionBoot::Desktop | SessionBoot::Live);
+    let graphical_ready = graphical_boot && framebuffer_ready && bpp >= 24;
+    let native_gpu_ready = graphical_ready && drm_kms_ready && gpu_accelerated;
+    let framebuffer_fallback = graphical_ready && !native_gpu_ready;
+
+    GRAPHICAL_TARGET_READY.store(graphical_ready, Ordering::Release);
+    DRM_KMS_READY.store(drm_kms_ready, Ordering::Release);
+    NATIVE_GPU_ACCEL_READY.store(native_gpu_ready, Ordering::Release);
+    FRAMEBUFFER_FALLBACK_READY.store(framebuffer_fallback, Ordering::Release);
+
+    let _ = crate::vfs::vfs_mkdir("/run/systemd", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/systemd/system", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/dbus", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/udev", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/udev/data", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/user", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/user/0", 0o700);
+    let _ = crate::vfs::vfs_mkdir("/tmp", 0o1777);
+    let _ = crate::vfs::vfs_mkdir("/tmp/.X11-unix", 0o1777);
+
+    mark_vfs_file(
+        "/run/rustos/graphical.target",
+        if graphical_ready {
+            b"active\n"
+        } else {
+            b"inactive\n"
+        },
+    );
+    mark_vfs_file(
+        "/run/systemd/system/graphical.target",
+        if graphical_ready {
+            b"active\n"
+        } else {
+            b"inactive\n"
+        },
+    );
+    mark_vfs_file(
+        "/run/rustos/drm-kms",
+        if drm_kms_ready {
+            b"ready\n"
+        } else {
+            b"blocked\n"
+        },
+    );
+    mark_vfs_file(
+        "/run/rustos/gpu-acceleration",
+        if native_gpu_ready {
+            b"native-drm-kms\n"
+        } else if gpu_accelerated {
+            b"gpu-no-kms\n"
+        } else {
+            b"software\n"
+        },
+    );
+    mark_vfs_file(
+        "/run/rustos/display-stack",
+        if native_gpu_ready {
+            b"wayland-drm-kms\n"
+        } else if framebuffer_fallback {
+            b"framebuffer-fallback\n"
+        } else {
+            b"text\n"
+        },
+    );
+    mark_vfs_file(
+        "/run/rustos/framebuffer",
+        if framebuffer_ready {
+            b"ready\n"
+        } else {
+            b"unavailable\n"
+        },
+    );
+
+    crate::serial_println!(
+        "linux_compat/desktop: graphical.target={} drm_kms={} native_gpu={} mode={}x{}x{}",
+        graphical_ready,
+        drm_kms_ready,
+        native_gpu_ready,
+        width,
+        height,
+        bpp
+    );
+}
+
+pub fn is_graphical_target_ready() -> bool {
+    GRAPHICAL_TARGET_READY.load(Ordering::Acquire)
+}
+
+pub fn is_native_gpu_desktop_ready() -> bool {
+    NATIVE_GPU_ACCEL_READY.load(Ordering::Acquire)
+}
+
+pub fn is_framebuffer_fallback_ready() -> bool {
+    FRAMEBUFFER_FALLBACK_READY.load(Ordering::Acquire)
 }
 
 /// Initialize desktop session support (called from `init_linux_compat`).

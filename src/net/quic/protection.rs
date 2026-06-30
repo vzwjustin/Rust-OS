@@ -26,7 +26,12 @@ pub fn packet_nonce(iv: &[u8], pn: u64) -> [u8; 12] {
 
 /// AEAD-protect a packet payload. `aad` is the packet header (with the packet
 /// number in the clear); returns `ciphertext ‖ tag` (RFC 9001 §5.3).
-pub fn seal(keys: &PacketKeys, pn: u64, aad: &[u8], payload: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn seal(
+    keys: &PacketKeys,
+    pn: u64,
+    aad: &[u8],
+    payload: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     if keys.iv.len() < 12 {
         return Err(CryptoError::InvalidIvLength);
     }
@@ -51,7 +56,10 @@ pub fn open(
 
 /// Compute the 5-byte header-protection mask from a 16-byte ciphertext
 /// `sample`, using the AES header-protection key (RFC 9001 §5.4.3).
-pub fn header_protection_mask(hp_key: &[u8], sample: &[u8]) -> Result<[u8; HP_MASK_LEN], CryptoError> {
+pub fn header_protection_mask(
+    hp_key: &[u8],
+    sample: &[u8],
+) -> Result<[u8; HP_MASK_LEN], CryptoError> {
     if sample.len() < 16 {
         return Err(CryptoError::InvalidIvLength);
     }

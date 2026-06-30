@@ -85,7 +85,13 @@ impl CidManager {
 
     /// Record a peer-advertised connection ID (from NEW_CONNECTION_ID), honoring
     /// its `retire_prior_to` by dropping lower-sequence remote CIDs.
-    pub fn add_remote(&mut self, seq: u64, cid: ConnectionId, reset_token: [u8; 16], retire_prior_to: u64) {
+    pub fn add_remote(
+        &mut self,
+        seq: u64,
+        cid: ConnectionId,
+        reset_token: [u8; 16],
+        retire_prior_to: u64,
+    ) {
         self.remote.retain(|e| e.seq >= retire_prior_to);
         if !self.remote.iter().any(|e| e.seq == seq) {
             self.remote.push(ConnIdEntry {
