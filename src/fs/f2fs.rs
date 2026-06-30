@@ -338,8 +338,7 @@ impl F2fsFileSystem {
                 if dentry_off + 4 > block.len() {
                     break;
                 }
-                let ino =
-                    u32::from_le_bytes(block[dentry_off..dentry_off + 4].try_into().unwrap());
+                let ino = u32::from_le_bytes(block[dentry_off..dentry_off + 4].try_into().unwrap());
                 if ino == 0 {
                     continue;
                 }
@@ -523,14 +522,11 @@ impl FileSystem for F2fsFileSystem {
                         break;
                     }
                     let sectors_per_block = self.block_size as u64 / 512;
-                    let sector =
-                        self.sector_base + (block_addr as u64) * sectors_per_block;
+                    let sector = self.sector_base + (block_addr as u64) * sectors_per_block;
                     let mut blk = vec![0u8; block_size];
                     if read_storage_sectors(self.device_id, sector, &mut blk).is_ok() {
-                        let take =
-                            core::cmp::min(blk.len(), existing.len() - dst_off);
-                        existing[dst_off..dst_off + take]
-                            .copy_from_slice(&blk[..take]);
+                        let take = core::cmp::min(blk.len(), existing.len() - dst_off);
+                        existing[dst_off..dst_off + take].copy_from_slice(&blk[..take]);
                         dst_off += take;
                     }
                 }

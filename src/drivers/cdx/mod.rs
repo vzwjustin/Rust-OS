@@ -91,6 +91,17 @@ static CDX_DRIVERS: RwLock<BTreeMap<u32, CdxDriver>> = RwLock::new(BTreeMap::new
 
 /// Register a CDX controller.
 pub fn register_controller(name: &str, ops: CdxCtrlOps, bus_num: u8) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("CDX controller name is empty");
+    }
+    if CDX_CTRLS
+        .read()
+        .values()
+        .any(|ctrl| ctrl.name == name || ctrl.bus_num == bus_num)
+    {
+        return Err("CDX controller already registered");
+    }
+
     let id = CTRL_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let ctrl = CdxController {
         id,
@@ -115,6 +126,16 @@ pub fn scan_bus(ctrl_id: u32) -> Result<Vec<u32>, &'static str> {
     let mut registered = Vec::new();
 
     for info in dev_infos {
+        validate_dev_info(&info, bus_num)?;
+        if CDX_DEVICES.read().values().any(|dev| {
+            dev.bus_num == info.bus_num
+                && dev.dev_num == info.dev_num
+                && dev.vendor_id == info.vendor_id
+                && dev.device_id == info.device_id
+        }) {
+            return Err("CDX device already registered");
+        }
+
         let dev_id = DEVICE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dev = CdxDevice {
             id: dev_id,
@@ -137,7 +158,13 @@ pub fn scan_bus(ctrl_id: u32) -> Result<Vec<u32>, &'static str> {
             ctrl.device_ids.push(dev_id);
         }
         registered.push(dev_id);
-        try_match_driver(dev_id)?;
+        if let Err(err) = try_match_driver(dev_id) {
+            CDX_DEVICES.write().remove(&dev_id);
+            if let Some(ctrl) = CDX_CTRLS.write().get_mut(&ctrl_id) {
+                ctrl.device_ids.retain(|id| *id != dev_id);
+            }
+            return Err(err);
+        }
     }
 
     let _ = bus_num;
@@ -156,6 +183,20 @@ pub fn reset_device(ctrl_id: u32, bus_num: u8, dev_num: u8) -> Result<(), &'stat
 
 /// Register a CDX driver.
 pub fn register_driver(driver: CdxDriver) -> Result<u32, &'static str> {
+    if driver.name.is_empty() {
+        return Err("CDX driver name is empty");
+    }
+    if driver.id_table.is_empty() {
+        return Err("CDX driver ID table is empty");
+    }
+    if CDX_DRIVERS
+        .read()
+        .values()
+        .any(|existing| existing.name == driver.name)
+    {
+        return Err("CDX driver already registered");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let id_table = driver.id_table.clone();
     CDX_DRIVERS.write().insert(id, driver);
@@ -176,9 +217,31 @@ pub fn register_driver(driver: CdxDriver) -> Result<u32, &'static str> {
             .collect()
     };
     for dev_id in device_ids {
-        try_match_driver(dev_id)?;
+        if let Err(err) = try_match_driver(dev_id) {
+            CDX_DRIVERS.write().remove(&id);
+            return Err(err);
+        }
     }
     Ok(id)
+}
+
+fn validate_dev_info(info: &CdxDevInfo, expected_bus: u8) -> Result<(), &'static str> {
+    if info.bus_num != expected_bus {
+        return Err("CDX scanned device belongs to a different bus");
+    }
+    if info.vendor_id == 0 || info.vendor_id == 0xffff {
+        return Err("CDX vendor id is invalid");
+    }
+    if info.device_id == 0 || info.device_id == 0xffff {
+        return Err("CDX device id is invalid");
+    }
+    if info.res_start > info.res_end {
+        return Err("CDX resource range is invalid");
+    }
+    info.res_start
+        .checked_add(info.res_end - info.res_start)
+        .ok_or("CDX resource range overflow")?;
+    Ok(())
 }
 
 /// Try to match a device with a driver.
@@ -303,6 +366,12 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
+    if !CDX_CTRLS.read().is_empty() {
+        return Ok(());
+    }
+    let ctrl_id = register_controller("software-cdx", software_cdx_ops(), 0)?;
+    let _ = scan_bus(ctrl_id)?;
+    crate::serial_println!("cdx: software controller and devices registered");
     crate::serial_println!("cdx: subsystem ready");
     Ok(())
 }

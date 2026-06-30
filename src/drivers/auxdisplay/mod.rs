@@ -375,6 +375,12 @@ pub fn software_auxdisplay_ops() -> AuxDisplayOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("auxdisplay: subsystem ready");
+    if !AUX_DISPLAYS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_auxdisplay_ops();
+    let dev_id = register_device("sw-charlcd", AuxDisplayType::CharLcd, 16, 2, ops)?;
+    crate::serial_println!("auxdisplay: 16x2 char LCD registered (id={})", dev_id);
     Ok(())
 }

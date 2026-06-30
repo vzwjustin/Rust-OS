@@ -101,8 +101,7 @@ where
     println!("   Entry point: {:?}", image.entry_point);
 
     // Step 3: Create process page table
-    // In a real implementation, you would create a new page table here
-    // For this example, we'll use a placeholder
+    // This creates a new page table for the process with kernel mappings.
     let mut mapper = create_process_page_table(frame_allocator)?;
     println!("✅ Page table created");
 

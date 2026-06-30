@@ -511,8 +511,10 @@ impl ElfLoader {
         )
         .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
 
-        // Allocate stack with guard pages (8MB)
-        let stack_size = 8 * 1024 * 1024;
+        // Commit a small initial stack. Linux reserves a grow-down stack VMA and
+        // faults pages in lazily; this VM layer maps eagerly, so committing the
+        // full 8 MiB stack here can exhaust early boot memory before PID 1 runs.
+        let stack_size = 64 * 1024;
         let stack_bottom = allocate_memory_with_guards(
             stack_size,
             MemoryRegionType::UserStack,

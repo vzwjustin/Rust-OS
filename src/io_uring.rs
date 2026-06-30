@@ -890,12 +890,21 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
         }
         IORING_OP_FADVISE => {
             // advisory only — always succeeds
-            let _ = linux_compat::advanced_io::fadvise64(sqe.fd, sqe.off as i64, sqe.len as i64, sqe.rw_flags as i32);
+            let _ = linux_compat::advanced_io::fadvise64(
+                sqe.fd,
+                sqe.off as i64,
+                sqe.len as i64,
+                sqe.rw_flags as i32,
+            );
             0
         }
         IORING_OP_MADVISE => {
             // advisory only — always succeeds
-            let _ = linux_compat::memory_ops::madvise(sqe.addr as *mut u8, sqe.len as usize, sqe.rw_flags as i32);
+            let _ = linux_compat::memory_ops::madvise(
+                sqe.addr as *mut u8,
+                sqe.len as usize,
+                sqe.rw_flags as i32,
+            );
             0
         }
         IORING_OP_EPOLL_CTL => {
@@ -1137,7 +1146,11 @@ pub fn register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> LinuxResult<i32
             for i in 0..nr_args as u64 {
                 let fd_addr = arg + i * 4;
                 let raw_fd: u32 = copy_from_user(fd_addr)?;
-                files.push(if raw_fd as i32 == -1 { None } else { Some(raw_fd as i32) });
+                files.push(if raw_fd as i32 == -1 {
+                    None
+                } else {
+                    Some(raw_fd as i32)
+                });
             }
             let mut rings = RINGS.write();
             let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
@@ -1167,7 +1180,11 @@ pub fn register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> LinuxResult<i32
                 if ring.registered_files.len() <= slot {
                     ring.registered_files.resize(slot + 1, None);
                 }
-                ring.registered_files[slot] = if raw_fd as i32 == -1 { None } else { Some(raw_fd as i32) };
+                ring.registered_files[slot] = if raw_fd as i32 == -1 {
+                    None
+                } else {
+                    Some(raw_fd as i32)
+                };
             }
             Ok(nr_args as i32)
         }

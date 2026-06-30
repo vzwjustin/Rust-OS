@@ -370,6 +370,15 @@ pub fn software_hte_ops() -> HteOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("hte: subsystem ready");
+    if !HTE_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_hte_ops();
+    let dev_id = register_device("sw-hte", 0, 8, ops)?;
+    crate::serial_println!(
+        "hte: software timestamp device registered (id={}, 8 lines)",
+        dev_id
+    );
     Ok(())
 }

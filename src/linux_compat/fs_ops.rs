@@ -57,7 +57,12 @@ fn remove_mount(target: &str) {
 
 /// `/proc/mounts` content for userspace mount checks.
 pub fn mounts_proc_content() -> String {
-    let mut out = String::from("rootfs / rootfs rw 0 0\n");
+    let mut out = String::from(
+        "rootfs / rootfs rw 0 0\n\
+         proc /proc proc rw 0 0\n\
+         sysfs /sys sysfs rw 0 0\n\
+         devtmpfs /dev devtmpfs rw 0 0\n",
+    );
     for entry in MOUNT_TABLE.lock().iter() {
         let ro = if entry.flags & mount_flags::MS_RDONLY != 0 {
             "ro"
@@ -437,6 +442,13 @@ fn should_preserve_kernel_runtime_mount(target: &str) -> bool {
         && kernel_overlay_socket_ready(crate::gnome_overlay::WAYLAND_SOCKET)
 }
 
+fn should_preserve_virtual_runtime_mount(fstype: &str, target: &str) -> bool {
+    matches!(
+        (fstype, target),
+        ("proc", "/proc") | ("sysfs", "/sys") | ("devtmpfs", "/dev")
+    )
+}
+
 fn root_inode() -> Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root mount")
 }
@@ -719,6 +731,18 @@ pub fn mount(
             Ok(0)
         }
         "proc" | "sysfs" | "devtmpfs" | "devpts" => {
+            if should_preserve_virtual_runtime_mount(&fstype, &target_str)
+                && vfs::vfs_stat(&target_str).is_ok()
+            {
+                let src = if source.is_null() {
+                    fstype.clone()
+                } else {
+                    c_str_to_string(source)?
+                };
+                record_mount(&src, &target_str, &fstype, mountflags);
+                return Ok(0);
+            }
+
             // Mount a real in-memory filesystem at the target. This is a
             // best-effort virtual filesystem implementation; userspace can read
             // and write entries in the mounted tree.

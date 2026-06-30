@@ -66,10 +66,10 @@ struct NvmemDevice {
 
 // ── Software NVMEM (backed by in-memory array) ──────────────────────────
 
-static mut SW_NVMEM_DATA: Vec<u8> = Vec::new();
+static SW_NVMEM_DATA: RwLock<Vec<u8>> = RwLock::new(Vec::new());
 
 fn sw_read(offset: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-    let data = unsafe { &SW_NVMEM_DATA };
+    let data = SW_NVMEM_DATA.read();
     let start = offset as usize;
     if start >= data.len() {
         return Err("NVMEM read offset out of range");
@@ -81,7 +81,7 @@ fn sw_read(offset: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
 }
 
 fn sw_write(offset: u32, buf: &[u8]) -> Result<usize, &'static str> {
-    let data = unsafe { &mut SW_NVMEM_DATA };
+    let mut data = SW_NVMEM_DATA.write();
     let start = offset as usize;
     if start >= data.len() {
         return Err("NVMEM write offset out of range");
@@ -141,7 +141,24 @@ pub fn add_cell(device_id: u32, cell: NvmemCellInfo) -> Result<(), &'static str>
         .get_mut(&device_id)
         .ok_or("NVMEM device not found")?;
 
-    let end = cell.offset.saturating_add(cell.bytes);
+    if cell.bytes == 0 {
+        return Err("NVMEM cell size must be non-zero");
+    }
+    if cell.bit_offset >= 8 {
+        return Err("NVMEM cell bit offset out of range");
+    }
+    let bit_len = cell
+        .bytes
+        .checked_mul(8)
+        .and_then(|bits| bits.checked_sub(cell.bit_offset as u32))
+        .ok_or("NVMEM cell bit range overflow")?;
+    if cell.nbits == 0 || cell.nbits > bit_len {
+        return Err("NVMEM cell bit length out of range");
+    }
+    let end = cell
+        .offset
+        .checked_add(cell.bytes)
+        .ok_or("NVMEM cell range overflow")?;
     if end > dev.size {
         return Err("NVMEM cell extends beyond device size");
     }
@@ -197,7 +214,10 @@ pub fn read_raw(device_id: u32, offset: u32, len: usize) -> Result<Vec<u8>, &'st
         (dev.ops, dev.size)
     };
 
-    if offset + len as u32 > size {
+    let end = offset
+        .checked_add(len as u32)
+        .ok_or("NVMEM read range overflow")?;
+    if end > size {
         return Err("NVMEM read extends beyond device size");
     }
 
@@ -217,7 +237,10 @@ pub fn write_raw(device_id: u32, offset: u32, data: &[u8]) -> Result<usize, &'st
         (dev.ops, dev.size)
     };
 
-    if offset + data.len() as u32 > size {
+    let end = offset
+        .checked_add(data.len() as u32)
+        .ok_or("NVMEM write range overflow")?;
+    if end > size {
         return Err("NVMEM write extends beyond device size");
     }
 
@@ -250,6 +273,53 @@ pub fn total_cells() -> usize {
 
 /// Initialize NVMEM subsystem with a software device.
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("nvmem: subsystem ready");
+    if !NVMEM_DEVICES.read().is_empty() {
+        return Ok(());
+    }
+
+    let size = (SOFTWARE_NVMEM_OPS.get_size)();
+    *SW_NVMEM_DATA.write() = vec![0u8; size as usize];
+
+    let dev_id = register_device("software-nvmem", SOFTWARE_NVMEM_OPS)?;
+
+    add_cell(
+        dev_id,
+        NvmemCellInfo {
+            name: String::from("serial-number"),
+            offset: 0,
+            bytes: 16,
+            bit_offset: 0,
+            nbits: 128,
+            access: NvmemAccess::read_only(),
+        },
+    )?;
+    add_cell(
+        dev_id,
+        NvmemCellInfo {
+            name: String::from("mac-address"),
+            offset: 16,
+            bytes: 6,
+            bit_offset: 0,
+            nbits: 48,
+            access: NvmemAccess::read_only(),
+        },
+    )?;
+    add_cell(
+        dev_id,
+        NvmemCellInfo {
+            name: String::from("config"),
+            offset: 32,
+            bytes: 64,
+            bit_offset: 0,
+            nbits: 512,
+            access: NvmemAccess::read_write(),
+        },
+    )?;
+
+    crate::serial_println!(
+        "nvmem: software device registered ({} bytes, {} cells)",
+        size,
+        total_cells()
+    );
     Ok(())
 }

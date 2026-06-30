@@ -359,9 +359,13 @@ pub fn msgsnd(msqid: MsqId, msgp: *const u8, msgsz: usize, _msgflg: i32) -> Linu
         return Err(LinuxError::EINVAL);
     }
 
-    // Read message type (first 4 bytes) and data
-    let msg_type = unsafe { *(msgp as *const u32) };
-    let data_ptr = unsafe { msgp.add(4) };
+    // SysV msgbuf starts with long mtype. This kernel target is 64-bit.
+    let msg_type_long = unsafe { *(msgp as *const i64) };
+    if msg_type_long <= 0 || msg_type_long > u32::MAX as i64 {
+        return Err(LinuxError::EINVAL);
+    }
+    let msg_type = msg_type_long as u32;
+    let data_ptr = unsafe { msgp.add(core::mem::size_of::<i64>()) };
 
     // Copy message data
     let mut data = Vec::with_capacity(msgsz);
@@ -393,19 +397,22 @@ pub fn msgrcv(
     }
 
     let ipc_manager = get_ipc_manager();
+    if msgtyp < 0 || msgtyp > u32::MAX as i64 {
+        return Err(LinuxError::EINVAL);
+    }
     let msg_type = msgtyp as u32;
 
     match ipc_manager.receive_message(msqid as IpcId, msg_type) {
         Ok(Some(message)) => {
             let copy_size = core::cmp::min(message.data.len(), msgsz);
 
-            // Write message type
+            // Write message type as SysV long mtype. This kernel target is 64-bit.
             unsafe {
-                *(msgp as *mut u32) = message.msg_type;
+                *(msgp as *mut i64) = message.msg_type as i64;
             }
 
             // Write message data
-            let data_ptr = unsafe { msgp.add(4) };
+            let data_ptr = unsafe { msgp.add(core::mem::size_of::<i64>()) };
             for i in 0..copy_size {
                 unsafe {
                     *data_ptr.add(i) = message.data[i];
@@ -786,17 +793,26 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
 
 /// semtimedop - semaphore operations with timeout
 ///
-/// The timeout is not yet fully implemented — the operation will block
-/// indefinitely until it can complete. A future enhancement should use the
-/// timeout to wake the process with ETIMEDOUT.
+/// Delegates to sysv_ipc::semtimedop which implements proper blocking
+/// with timeout support via the process scheduler.
 pub fn semtimedop(
     semid: SemId,
     sops: *mut u8,
     nsops: usize,
-    _timeout: *const u8,
+    timeout: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
-    semop(semid, sops, nsops)
+    let ret = crate::sysv_ipc::semtimedop(
+        semid as i32,
+        sops as *const crate::sysv_ipc::SemBuf,
+        nsops as u32,
+        timeout,
+    );
+    if ret < 0 {
+        Err(LinuxError::from_errno(-ret))
+    } else {
+        Ok(ret)
+    }
 }
 
 /// shmget - get shared memory segment identifier

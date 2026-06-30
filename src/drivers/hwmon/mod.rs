@@ -371,6 +371,17 @@ pub fn check_alarms() -> Vec<(String, String, u64, &'static str)> {
 
 /// Initialize hwmon subsystem with CPU temp, voltage, and fan sensors.
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("hwmon: subsystem ready");
+    if !HWMON_DEVICES.read().is_empty() {
+        return Ok(());
+    }
+
+    register_device("coretemp", CPU_TEMP_OPS)?;
+    register_device("platform-voltage", PLATFORM_VOLTAGE_OPS)?;
+    register_device("platform-fan", FAN_OPS)?;
+
+    crate::serial_println!(
+        "hwmon: {} devices registered (coretemp, voltage, fan)",
+        device_count()
+    );
     Ok(())
 }

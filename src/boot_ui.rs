@@ -771,10 +771,12 @@ pub fn acpi_init_progress(rsdp_addr: Option<u64>, physical_offset: u64) -> AcpiI
     if result.rsdp_found {
         match crate::acpi::init(result.rsdp_address.into(), Some(physical_offset.into())) {
             Ok(()) => {
+                crate::kernel::mark_subsystem_ready("acpi");
                 report_success("RSDT/XSDT parsed successfully");
                 result.tables_parsed = true;
             }
             Err(e) => {
+                crate::kernel::mark_subsystem_failed("acpi");
                 report_error("RSDT/XSDT", e);
             }
         }
@@ -1124,10 +1126,12 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     update_substage(7, "Loading timer driver...");
     match crate::time::init() {
         Ok(()) => {
+            crate::kernel::mark_subsystem_ready("time");
             report_success("Timer system initialized");
             result.timer_loaded = true;
         }
         Err(e) => {
+            crate::kernel::mark_subsystem_failed("time");
             report_warning("Timer", e);
         }
     }
@@ -1180,13 +1184,20 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     update_substage(8, "Initializing sound subsystem...");
     match crate::sound::init() {
         Ok(stats) if stats.dev_nodes > 0 => {
+            crate::kernel::mark_subsystem_ready("sound");
             report_success(&format!(
                 "Sound: {} PCM nodes under /dev/snd",
                 stats.dev_nodes
             ));
         }
-        Ok(_) => report_warning("Sound", "No PCM devices registered"),
-        Err(e) => report_warning("Sound", e),
+        Ok(_) => {
+            crate::kernel::mark_subsystem_ready("sound");
+            report_warning("Sound", "No PCM devices registered");
+        }
+        Err(e) => {
+            crate::kernel::mark_subsystem_failed("sound");
+            report_warning("Sound", e);
+        }
     }
 
     // Network drivers
@@ -1287,11 +1298,13 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
     match crate::initramfs::init_initramfs() {
         Ok(_) => {
             crate::serial_println!("filesystem_mount: initramfs OK, calling report_success");
+            crate::kernel::mark_subsystem_ready("initramfs");
             report_success("Initramfs loaded");
             result.initramfs_loaded = true;
         }
         Err(_) => {
             crate::serial_println!("filesystem_mount: initramfs failed, calling report_warning");
+            crate::kernel::mark_subsystem_failed("initramfs");
             report_warning("Initramfs", "Using minimal filesystem");
         }
     }

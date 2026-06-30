@@ -602,13 +602,25 @@ fn load_executable_from_vfs(
 > {
     use crate::process::elf_loader::ElfLoader;
 
+    crate::serial_println!("exec: load_executable_from_vfs start path={}", path);
     let resolved = resolve_executable(path, user_argv)?;
+    crate::serial_println!("exec: resolved load_path={}", resolved.load_path);
     let binary_data = read_file_bytes_from_vfs(&resolved.load_path)?;
+    crate::serial_println!(
+        "exec: loaded {} bytes from {} (e_type/abi check next)",
+        binary_data.len(),
+        resolved.load_path
+    );
 
     let elf_loader = ElfLoader::new(true, true);
-    let loaded = elf_loader
-        .load_elf_binary(&binary_data, pid)
-        .map_err(elf_error_to_linux)?;
+    let loaded = elf_loader.load_elf_binary(&binary_data, pid).map_err(|e| {
+        crate::serial_println!(
+            "exec: ELF load of {} failed: {:?}",
+            resolved.load_path,
+            e
+        );
+        elf_error_to_linux(e)
+    })?;
 
     Ok((binary_data, loaded, resolved))
 }
@@ -622,6 +634,7 @@ pub fn exec_program_for_pid(
 ) -> Result<(), LinuxError> {
     use crate::process::elf_loader::Elf64Header;
 
+    crate::serial_println!("exec: exec_program_for_pid pid={} path={}", pid, path);
     let (binary_data, loaded, resolved) = load_executable_from_vfs(path, pid, user_argv)?;
     if binary_data.len() < core::mem::size_of::<Elf64Header>() {
         return Err(LinuxError::ENOEXEC);

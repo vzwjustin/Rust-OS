@@ -369,6 +369,15 @@ pub fn software_isdn_ops() -> IsdnOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("isdn: subsystem ready");
+    if !ISDN_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_isdn_ops();
+    let dev_id = register_device("sw-isdn", 2, IsdnFeatures::default(), ops)?;
+    crate::serial_println!(
+        "isdn: software device registered (id={}, 2 channels)",
+        dev_id
+    );
     Ok(())
 }

@@ -66,8 +66,20 @@ static NVMEM_LAYOUT_DRIVERS: RwLock<BTreeMap<u32, NvmemLayoutDriver>> =
 
 /// Register an NVMEM layout driver.
 pub fn register_driver(driver: NvmemLayoutDriver) -> Result<u32, &'static str> {
+    if driver.name.is_empty() {
+        return Err("NVMEM layout driver name is empty");
+    }
+
+    let mut drivers = NVMEM_LAYOUT_DRIVERS.write();
+    if drivers
+        .values()
+        .any(|existing| existing.name == driver.name && existing.layout_type == driver.layout_type)
+    {
+        return Err("NVMEM layout driver already registered");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-    NVMEM_LAYOUT_DRIVERS.write().insert(id, driver);
+    drivers.insert(id, driver);
     Ok(id)
 }
 
@@ -78,6 +90,18 @@ pub fn register_layout(
     layout_type: NvmemLayoutType,
     cells: Vec<NvmemLayoutCell>,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("NVMEM layout name is empty");
+    }
+    for cell in &cells {
+        validate_cell(cell)?;
+    }
+
+    let mut layouts = NVMEM_LAYOUTS.write();
+    if layouts.values().any(|layout| layout.nvmem_id == nvmem_id) {
+        return Err("NVMEM layout already registered for device");
+    }
+
     let id = LAYOUT_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let layout = NvmemLayout {
         id,
@@ -87,7 +111,7 @@ pub fn register_layout(
         cells,
         fixed_area: layout_type == NvmemLayoutType::Fixed,
     };
-    NVMEM_LAYOUTS.write().insert(id, layout);
+    layouts.insert(id, layout);
     Ok(id)
 }
 
@@ -127,11 +151,45 @@ pub fn find_cell(layout_id: u32, name: &str) -> Result<NvmemLayoutCell, &'static
 /// Read cell data from raw NVMEM buffer.
 pub fn read_cell(layout_id: u32, cell_name: &str, data: &[u8]) -> Result<Vec<u8>, &'static str> {
     let cell = find_cell(layout_id, cell_name)?;
-    let end = (cell.offset as usize + cell.bytes as usize).min(data.len());
     if cell.offset as usize >= data.len() {
         return Err("Cell offset out of bounds");
     }
+    let end = (cell.offset as usize)
+        .checked_add(cell.bytes as usize)
+        .ok_or("Cell range overflow")?;
+    if end > data.len() {
+        return Err("Cell range out of bounds");
+    }
     Ok(data[cell.offset as usize..end].to_vec())
+}
+
+fn validate_cell(cell: &NvmemLayoutCell) -> Result<(), &'static str> {
+    if cell.name.is_empty() {
+        return Err("NVMEM layout cell name is empty");
+    }
+    if cell.bytes == 0 {
+        return Err("NVMEM layout cell has zero length");
+    }
+    if cell.bit_offset >= 8 {
+        return Err("NVMEM layout cell bit offset out of bounds");
+    }
+    if cell.nbits == 0 {
+        return Err("NVMEM layout cell has zero bit length");
+    }
+    let total_bits = cell
+        .bytes
+        .checked_mul(8)
+        .ok_or("NVMEM layout cell bit range overflow")?;
+    let usable_bits = total_bits
+        .checked_sub(cell.bit_offset as u32)
+        .ok_or("NVMEM layout cell bit range overflow")?;
+    if cell.nbits > usable_bits {
+        return Err("NVMEM layout cell bit range out of bounds");
+    }
+    cell.offset
+        .checked_add(cell.bytes)
+        .ok_or("NVMEM layout cell range overflow")?;
+    Ok(())
 }
 
 /// List all layouts.
@@ -216,6 +274,15 @@ pub fn software_fixed_layout_driver() -> NvmemLayoutDriver {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("nvmem_layouts: subsystem ready");
+    if !NVMEM_LAYOUT_DRIVERS.read().is_empty() {
+        return Ok(());
+    }
+
+    let driver = software_fixed_layout_driver();
+    let drv_id = register_driver(driver)?;
+    crate::serial_println!(
+        "nvmem_layouts: fixed layout driver registered (id={})",
+        drv_id
+    );
     Ok(())
 }

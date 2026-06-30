@@ -98,10 +98,91 @@ static ACPI_DEVICES: RwLock<BTreeMap<u32, AcpiDevice>> = RwLock::new(BTreeMap::n
 static ACPI_DRIVERS: RwLock<BTreeMap<u32, AcpiDriver>> = RwLock::new(BTreeMap::new());
 static ACPI_TABLES: RwLock<BTreeMap<u32, AcpiTable>> = RwLock::new(BTreeMap::new());
 
+const ACPI_TABLE_HEADER_LEN: usize = 36;
+
+fn acpi_table_checksum(header: &AcpiTableHeader, data: &[u8]) -> u8 {
+    let mut sum = 0u8;
+    for byte in header.signature {
+        sum = sum.wrapping_add(byte);
+    }
+    for byte in header.length.to_le_bytes() {
+        sum = sum.wrapping_add(byte);
+    }
+    sum = sum.wrapping_add(header.revision);
+    sum = sum.wrapping_add(header.checksum);
+    for byte in header.oem_id {
+        sum = sum.wrapping_add(byte);
+    }
+    for byte in header.oem_table_id {
+        sum = sum.wrapping_add(byte);
+    }
+    for byte in header.oem_revision.to_le_bytes() {
+        sum = sum.wrapping_add(byte);
+    }
+    for byte in header.asl_compiler_id {
+        sum = sum.wrapping_add(byte);
+    }
+    for byte in header.asl_compiler_revision.to_le_bytes() {
+        sum = sum.wrapping_add(byte);
+    }
+    for byte in data {
+        sum = sum.wrapping_add(*byte);
+    }
+    sum
+}
+
+fn validate_table(header: &AcpiTableHeader, data: &[u8]) -> Result<(), &'static str> {
+    let length = header.length as usize;
+    if length < ACPI_TABLE_HEADER_LEN {
+        return Err("ACPI table length is smaller than header");
+    }
+    if length - ACPI_TABLE_HEADER_LEN != data.len() {
+        return Err("ACPI table length does not match payload");
+    }
+    if acpi_table_checksum(header, data) != 0 {
+        return Err("ACPI table checksum mismatch");
+    }
+    Ok(())
+}
+
+fn validate_resource(resource: &AcpiResource) -> Result<(), &'static str> {
+    match resource.kind {
+        AcpiResKind::Io | AcpiResKind::Mem => {
+            if resource.start > resource.end {
+                return Err("ACPI resource range is inverted");
+            }
+        }
+        AcpiResKind::Irq => {
+            if resource.irq.is_none() {
+                return Err("ACPI IRQ resource missing IRQ number");
+            }
+        }
+        AcpiResKind::Dma => {}
+    }
+    Ok(())
+}
+
+fn find_existing_device(
+    devices: &BTreeMap<u32, AcpiDevice>,
+    hid: &str,
+    uid: &str,
+    adr: u64,
+    parent_id: Option<u32>,
+) -> Option<u32> {
+    devices
+        .iter()
+        .find(|(_, dev)| {
+            dev.hid == hid && dev.uid == uid && dev.adr == adr && dev.parent_id == parent_id
+        })
+        .map(|(id, _)| *id)
+}
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Register a parsed ACPI table.
 pub fn register_table(header: AcpiTableHeader, data: Vec<u8>) -> Result<u32, &'static str> {
+    validate_table(&header, &data)?;
+
     let id = TABLE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let table = AcpiTable { id, header, data };
     ACPI_TABLES.write().insert(id, table);
@@ -128,6 +209,25 @@ pub fn register_device(
     parent_id: Option<u32>,
     resources: Vec<AcpiResource>,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("ACPI device name is empty");
+    }
+    for resource in &resources {
+        validate_resource(resource)?;
+    }
+
+    {
+        let devices = ACPI_DEVICES.read();
+        if let Some(pid) = parent_id {
+            if !devices.contains_key(&pid) {
+                return Err("ACPI parent device not found");
+            }
+        }
+        if let Some(id) = find_existing_device(&devices, hid, uid, adr, parent_id) {
+            return Ok(id);
+        }
+    }
+
     let id = DEVICE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = AcpiDevice {
         id,
@@ -147,7 +247,9 @@ pub fn register_device(
     if let Some(pid) = parent_id {
         let mut devices = ACPI_DEVICES.write();
         if let Some(parent) = devices.get_mut(&pid) {
-            parent.child_ids.push(id);
+            if !parent.child_ids.contains(&id) {
+                parent.child_ids.push(id);
+            }
         }
     }
 
@@ -155,12 +257,20 @@ pub fn register_device(
     Ok(id)
 }
 
-/// Enumerate ACPI devices from DSDT/SSDT (simplified).
+/// Enumerate ACPI devices from DSDT/SSDT/MADT/FADT.
 pub fn enumerate_devices() -> Result<Vec<u32>, &'static str> {
-    // In a real implementation, this would parse the DSDT/SSDT AML bytecode.
-    // For the software implementation, we return already-registered devices.
-    let devices = ACPI_DEVICES.read();
-    Ok(devices.keys().copied().collect())
+    let acpi_devs = crate::acpi::enumerate_devices()?;
+    let mut registered_ids = Vec::new();
+    for dev in acpi_devs {
+        let hid = dev.hid.unwrap_or_default();
+        let name = dev.name.clone();
+        let uid = dev
+            .uid
+            .map_or(String::from("0"), |u| alloc::format!("{}", u));
+        let id = register_device(&name, &hid, &uid, 0, None, Vec::new())?;
+        registered_ids.push(id);
+    }
+    Ok(registered_ids)
 }
 
 /// Register an ACPI driver.
@@ -279,6 +389,6 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("acpi: subsystem ready");
+    crate::serial_println!("acpi: framework ready (table enumeration via ACPICA)");
     Ok(())
 }
