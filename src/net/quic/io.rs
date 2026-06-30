@@ -261,8 +261,27 @@ pub struct FrameOutcome {
     pub error: bool,
 }
 
-/// Walk the frames in a decrypted payload and apply them to `conn`.
-pub fn apply_frames(conn: &mut Connection, payload: &[u8]) -> FrameOutcome {
+/// Expand an ACK frame's `(largest, first_range, [(gap, len)])` into inclusive
+/// `(low, high)` packet-number ranges (RFC 9000 §19.3.1).
+fn expand_ack_ranges(largest: u64, first_range: u64, ranges: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut out = Vec::with_capacity(ranges.len() + 1);
+    let mut low = largest.saturating_sub(first_range);
+    out.push((low, largest));
+    for &(gap, len) in ranges {
+        // The next (lower) range's high is gap+2 below the current low.
+        let high = match low.checked_sub(gap + 2) {
+            Some(h) => h,
+            None => break,
+        };
+        low = high.saturating_sub(len);
+        out.push((low, high));
+    }
+    out
+}
+
+/// Walk the frames in a decrypted payload and apply them to `conn`. `now` (ms)
+/// drives RTT/loss recovery when an ACK frame is processed.
+pub fn apply_frames(conn: &mut Connection, payload: &[u8], now: u64) -> FrameOutcome {
     let mut outcome = FrameOutcome::default();
     let mut off = 0;
     while off < payload.len() {
@@ -278,7 +297,27 @@ pub fn apply_frames(conn: &mut Connection, payload: &[u8]) -> FrameOutcome {
             }
         };
         match frame {
-            Frame::Padding(_) | Frame::Ack { .. } => {}
+            Frame::Padding(_) => {}
+            Frame::Ack {
+                largest,
+                delay,
+                first_range,
+                ranges,
+            } => {
+                // ACK frames are not themselves ack-eliciting. Feed them to
+                // loss recovery against the application PN space.
+                let acked = expand_ack_ranges(largest, first_range, &ranges);
+                super::recovery::on_ack_received(
+                    &mut conn.pn_app,
+                    &mut conn.cong,
+                    &mut conn.rtt,
+                    largest,
+                    delay,
+                    now,
+                    &acked,
+                );
+                let _ = super::recovery::detect_lost(&mut conn.pn_app, &mut conn.cong, now, &conn.rtt);
+            }
             Frame::Ping => outcome.ack_eliciting = true,
             Frame::Crypto { offset, data } => {
                 outcome.ack_eliciting = true;
@@ -291,15 +330,9 @@ pub fn apply_frames(conn: &mut Connection, payload: &[u8]) -> FrameOutcome {
                 data,
             } => {
                 outcome.ack_eliciting = true;
-                outcome.stream_bytes += data.len();
-                let stream = conn.stream_mut(stream_id);
-                // Deliver in-order data; out-of-order handling is a follow-up.
-                if offset == stream.recv_offset {
-                    stream.recv_offset += data.len() as u64;
-                    if fin {
-                        stream.final_size = Some(stream.recv_offset);
-                    }
-                }
+                // Reassemble: buffer out-of-order, deliver in order.
+                let delivered = conn.stream_mut(stream_id).recv(offset, data, fin);
+                outcome.stream_bytes += delivered.len();
             }
             Frame::MaxData(v) => {
                 conn.max_data_remote = conn.max_data_remote.max(v);
@@ -316,6 +349,21 @@ pub fn apply_frames(conn: &mut Connection, payload: &[u8]) -> FrameOutcome {
             Frame::ConnectionClose { .. } => {
                 outcome.closed = true;
                 conn.begin_close();
+            }
+            Frame::NewConnectionId {
+                seq,
+                retire_prior_to,
+                cid,
+                reset_token,
+            } => {
+                outcome.ack_eliciting = true;
+                if let Some(cid) = super::connid::ConnectionId::new(cid) {
+                    conn.cids.add_remote(seq, cid, reset_token, retire_prior_to);
+                }
+            }
+            Frame::RetireConnectionId(seq) => {
+                outcome.ack_eliciting = true;
+                conn.cids.retire_local(seq);
             }
             Frame::HandshakeDone => {
                 outcome.ack_eliciting = true;

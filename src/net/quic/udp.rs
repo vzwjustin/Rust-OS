@@ -111,7 +111,12 @@ fn accept_initial(
         };
         if let Ok((_typ, pn, plaintext)) = open_long_packet(&keys, datagram, dcid.len(), None) {
             conn.pn_initial.on_received(pn);
-            let _ = apply_frames(&mut conn, &plaintext);
+            let outcome = apply_frames(&mut conn, &plaintext, super::now_ms());
+            // Only ack-eliciting packets oblige us to send an ACK (RFC 9000
+            // §13.2.1); acking pure-ACK packets would risk an ACK loop.
+            if outcome.ack_eliciting {
+                conn.pn_initial.ack_pending = true;
+            }
         }
     }
 
@@ -136,7 +141,12 @@ fn process_existing(conn: &mut Connection, datagram: &[u8]) {
 
     if let Ok((pn, payload)) = open_short_packet(&keys, datagram, dcid_len, largest) {
         conn.pn_app.on_received(pn);
-        let _ = apply_frames(conn, &payload);
+        let outcome = apply_frames(conn, &payload, super::now_ms());
+        // Only ack-eliciting packets oblige us to send an ACK (RFC 9000
+        // §13.2.1); acking pure-ACK packets would risk an ACK loop.
+        if outcome.ack_eliciting {
+            conn.pn_app.ack_pending = true;
+        }
     }
 }
 

@@ -29,9 +29,25 @@ pub struct PnSpace {
     pub received: Vec<(u64, u64)>,
     /// Set when an ack-eliciting packet has arrived since the last ACK we sent.
     pub ack_pending: bool,
+    /// In-flight sent packets awaiting acknowledgement, keyed by packet number
+    /// (RFC 9002 loss recovery).
+    pub sent: BTreeMap<u64, SentInfo>,
 }
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+
+/// Bookkeeping for one sent packet, used by loss recovery (RFC 9002 §A.1).
+#[derive(Debug, Clone)]
+pub struct SentInfo {
+    /// Time the packet was sent (ms).
+    pub time_sent: u64,
+    /// Whether the packet is ack-eliciting (and so counts toward in-flight
+    /// bytes / RTT sampling).
+    pub ack_eliciting: bool,
+    /// Encoded packet size in bytes.
+    pub size: u64,
+}
 
 impl PnSpace {
     pub fn new() -> Self {

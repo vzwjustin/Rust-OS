@@ -6,7 +6,7 @@
 //! stream table, and drives the connection state machine.
 
 use super::cong::Cong;
-use super::connid::ConnectionId;
+use super::connid::{CidManager, ConnectionId};
 use super::crypto::{CryptoState, EncryptionLevel};
 use super::keys::{derive_packet_keys, initial_keys};
 use super::path::Path;
@@ -65,6 +65,9 @@ pub struct Connection {
     pub streams: BTreeMap<u64, Stream>,
     /// Per-stream initial flow-control limit advertised to the peer.
     pub initial_max_stream_data: u64,
+
+    /// Connection ID set management (issued + peer-advertised CIDs).
+    pub cids: CidManager,
 }
 
 impl Connection {
@@ -94,6 +97,7 @@ impl Connection {
             data_recv: 0,
             streams: BTreeMap::new(),
             initial_max_stream_data: 256 * 1024,
+            cids: CidManager::new(),
         }
     }
 

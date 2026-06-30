@@ -46,6 +46,7 @@ pub mod packet;
 pub mod path;
 pub mod pnspace;
 pub mod protection;
+pub mod recovery;
 pub mod send;
 pub mod stream;
 pub mod timer;
@@ -60,6 +61,11 @@ pub use packet::{parse_header, PacketHeader};
 /// IP protocol number used by the in-kernel QUIC socket family
 /// (matches lxin/quic's `IPPROTO_QUIC`).
 pub const IPPROTO_QUIC: u8 = 144;
+
+/// Monotonic millisecond timestamp used for RTT/loss recovery.
+pub fn now_ms() -> u64 {
+    crate::time::uptime_ms()
+}
 
 /// Default QUIC server UDP port for HTTP/3 (RFC 9114 uses 443; this is the
 /// conventional test port).

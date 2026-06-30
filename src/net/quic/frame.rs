@@ -84,6 +84,13 @@ pub enum Frame<'a> {
         reason: &'a [u8],
         application: bool,
     },
+    NewConnectionId {
+        seq: u64,
+        retire_prior_to: u64,
+        cid: &'a [u8],
+        reset_token: [u8; 16],
+    },
+    RetireConnectionId(u64),
     HandshakeDone,
 }
 
@@ -256,6 +263,42 @@ pub fn parse_frame(buf: &[u8]) -> Option<(Frame<'_>, usize)> {
                 end,
             ))
         }
+        frame_type::NEW_CONNECTION_ID => {
+            let (seq, n) = decode_varint(&buf[off..])?;
+            off += n;
+            let (retire_prior_to, n) = decode_varint(&buf[off..])?;
+            off += n;
+            let len = *buf.get(off)? as usize;
+            off += 1;
+            if len == 0 || len > 20 {
+                return None;
+            }
+            let cid_end = off.checked_add(len)?;
+            if cid_end > buf.len() {
+                return None;
+            }
+            let cid = &buf[off..cid_end];
+            off = cid_end;
+            if off + 16 > buf.len() {
+                return None;
+            }
+            let mut reset_token = [0u8; 16];
+            reset_token.copy_from_slice(&buf[off..off + 16]);
+            off += 16;
+            Some((
+                Frame::NewConnectionId {
+                    seq,
+                    retire_prior_to,
+                    cid,
+                    reset_token,
+                },
+                off,
+            ))
+        }
+        frame_type::RETIRE_CONNECTION_ID => {
+            let (seq, n) = decode_varint(&buf[off..])?;
+            Some((Frame::RetireConnectionId(seq), off + n))
+        }
         frame_type::HANDSHAKE_DONE => Some((Frame::HandshakeDone, off)),
         _ => None, // Unknown/unsupported frame type.
     }
@@ -338,6 +381,38 @@ pub fn encode_ack(
         off += encode_varint(gap, &mut buf[off..])?;
         off += encode_varint(len, &mut buf[off..])?;
     }
+    Some(off)
+}
+
+/// Encode a NEW_CONNECTION_ID frame (RFC 9000 §19.15).
+pub fn encode_new_connection_id(
+    seq: u64,
+    retire_prior_to: u64,
+    cid: &[u8],
+    reset_token: &[u8; 16],
+    buf: &mut [u8],
+) -> Option<usize> {
+    if cid.is_empty() || cid.len() > 20 {
+        return None;
+    }
+    let mut off = encode_varint(frame_type::NEW_CONNECTION_ID, buf)?;
+    off += encode_varint(seq, &mut buf[off..])?;
+    off += encode_varint(retire_prior_to, &mut buf[off..])?;
+    if buf.len() < off + 1 + cid.len() + 16 {
+        return None;
+    }
+    buf[off] = cid.len() as u8;
+    off += 1;
+    buf[off..off + cid.len()].copy_from_slice(cid);
+    off += cid.len();
+    buf[off..off + 16].copy_from_slice(reset_token);
+    Some(off + 16)
+}
+
+/// Encode a RETIRE_CONNECTION_ID frame (RFC 9000 §19.16).
+pub fn encode_retire_connection_id(seq: u64, buf: &mut [u8]) -> Option<usize> {
+    let mut off = encode_varint(frame_type::RETIRE_CONNECTION_ID, buf)?;
+    off += encode_varint(seq, &mut buf[off..])?;
     Some(off)
 }
 

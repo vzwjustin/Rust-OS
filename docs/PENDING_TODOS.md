@@ -29,18 +29,37 @@ Done (each validated against RFC test vectors where applicable):
       window into protected packets.
 - [x] **Handshake secret install** (`connection.rs`) — `install_initial_keys`
       from the DCID and `install_secret` for per-level traffic secrets.
+- [x] **Stream reassembly** (`stream.rs`) — `recv` buffers out-of-order STREAM
+      data, delivers in order, trims duplicates/overlap, and records the
+      final size on FIN (RFC 9000 §2.2).
+- [x] **Loss recovery** (`recovery.rs`, `pnspace.rs`) — per-space sent-packet
+      tracking, ACK processing (RTT sample + cwnd feedback), and packet/time-
+      threshold loss detection (RFC 9002). Wired into `apply_frames` (ACK) and
+      `poll_send`/`poll_handshake` (sent tracking).
+- [x] **Connection ID management** (`connid.rs`, `frame.rs`) — `CidManager`
+      issues/retires local CIDs and records peer-advertised CIDs honoring
+      `retire_prior_to`; NEW_CONNECTION_ID / RETIRE_CONNECTION_ID codec + apply.
+- [x] **Handshake CRYPTO send driver** (`crypto.rs`, `send.rs`) — per-level
+      outgoing CRYPTO stream (`CryptoSendStream`) drained by `poll_handshake`
+      into protected Initial/Handshake long-header packets carrying CRYPTO
+      frames, tracked for loss recovery in their own PN space.
+- [x] **ACK scheduling wired** (`udp.rs`) — the receive path now sets
+      `ack_pending` from the `apply_frames` ack-eliciting outcome (was never
+      set, so ACKs were never emitted); only ack-eliciting packets elicit an
+      ACK (RFC 9000 §13.2.1).
 
 Remaining:
-- [ ] **TLS handshake driver** — feed reassembled CRYPTO to the userspace TLS
-      side and pump its output back as CRYPTO frames until the handshake
-      completes and 1-RTT secrets are installed (the offload interface).
-- [ ] **Loss recovery** — arm PTO from `timer`, detect loss, and retransmit
-      (ACK generation + cwnd are wired; the retransmit timer loop is not).
-- [ ] **Stream reassembly** — out-of-order STREAM data buffering (in-order
-      delivery is wired today).
-- [ ] **Connection ID management** — issue/retire NEW_CONNECTION_ID, stateless
-      reset tokens; migrate the server connection key from the client DCID to
-      the server-issued SCID after the handshake.
+- [ ] **TLS handshake driver (offload interface)** — the in-kernel transport
+      now queues/drains CRYPTO both directions; the remaining piece is the
+      hand-off to the userspace TLS stack: deliver reassembled CRYPTO up, take
+      its records back via `queue_crypto`, and install Handshake/1-RTT secrets
+      as they are produced.
+- [ ] **Retransmit timer loop** — `recovery::pto_duration` + `detect_lost`
+      compute what is lost and when to probe; arming the `timer` and re-queuing
+      the lost frames for retransmission is not yet wired.
+- [ ] **CID migration** — migrate the server connection key from the client
+      DCID to a server-issued SCID after the handshake (manager exists; the
+      endpoint rekeying is not wired).
 - [ ] (optional) **ChaCha20-Poly1305** as the alternate cipher suite.
 
 ## Audit follow-ups (deferred, not safety bugs)

@@ -4,7 +4,8 @@
 //! encode the initiator (client/server) and directionality (bidi/uni); the
 //! remaining bits are the per-category sequence number.
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::vec::Vec;
 
 /// Which endpoint opened a stream (RFC 9000 §2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +83,9 @@ pub struct Stream {
     pub final_size: Option<u64>,
     /// Buffered outgoing bytes not yet packetized.
     pub send_buf: VecDeque<u8>,
+    /// Out-of-order received chunks keyed by their start offset, awaiting the
+    /// gap before them to be filled.
+    recv_buf: BTreeMap<u64, Vec<u8>>,
 }
 
 impl Stream {
@@ -96,7 +100,66 @@ impl Stream {
             recv_max_data: initial_max_data,
             final_size: None,
             send_buf: VecDeque::new(),
+            recv_buf: BTreeMap::new(),
         }
+    }
+
+    /// Accept received STREAM data at `offset`, buffering out-of-order pieces,
+    /// and return the bytes that are now deliverable in order (advancing
+    /// `recv_offset`). `fin` fixes the final size at the end of this chunk.
+    ///
+    /// Duplicate or already-delivered bytes are dropped. Chunks are keyed by
+    /// start offset; contiguous chunks are coalesced as gaps fill.
+    pub fn recv(&mut self, offset: u64, data: &[u8], fin: bool) -> Vec<u8> {
+        let end = offset + data.len() as u64;
+        if fin {
+            self.final_size = Some(end);
+            if self.recv_state == RecvState::Recv {
+                self.recv_state = RecvState::SizeKnown;
+            }
+        }
+        // Drop data entirely below what we've already delivered.
+        if end <= self.recv_offset {
+            return Vec::new();
+        }
+        // Trim a prefix that overlaps already-delivered bytes.
+        let (offset, data) = if offset < self.recv_offset {
+            let skip = (self.recv_offset - offset) as usize;
+            (self.recv_offset, &data[skip..])
+        } else {
+            (offset, data)
+        };
+        if !data.is_empty() {
+            // Keep the longer chunk if one already starts here.
+            let replace = self
+                .recv_buf
+                .get(&offset)
+                .map_or(true, |existing| existing.len() < data.len());
+            if replace {
+                self.recv_buf.insert(offset, data.to_vec());
+            }
+        }
+
+        // Deliver every chunk that now starts exactly at recv_offset, skipping
+        // any portion already covered by a previous (longer) chunk.
+        let mut delivered = Vec::new();
+        while let Some((&start, _)) = self.recv_buf.range(..=self.recv_offset).next_back() {
+            let chunk = self.recv_buf.remove(&start).unwrap();
+            let chunk_end = start + chunk.len() as u64;
+            if chunk_end <= self.recv_offset {
+                continue; // fully superseded
+            }
+            let skip = (self.recv_offset - start) as usize;
+            delivered.extend_from_slice(&chunk[skip..]);
+            self.recv_offset = chunk_end;
+        }
+
+        if let Some(fs) = self.final_size {
+            if self.recv_offset >= fs && self.recv_state == RecvState::SizeKnown {
+                self.recv_state = RecvState::DataReceived;
+            }
+        }
+        delivered
     }
 
     /// Queue `data` for sending, respecting the peer's flow-control limit.
@@ -139,5 +202,35 @@ mod tests {
         assert_eq!(s.write(b"hello"), 4); // capped at send_max_data
         assert_eq!(s.send_offset, 4);
         assert_eq!(s.write(b"x"), 0); // window exhausted
+    }
+
+    #[test]
+    fn recv_reassembles_out_of_order() {
+        let mut s = Stream::new(0, 1024);
+        // Out-of-order: [4..8) arrives first and is buffered.
+        assert_eq!(s.recv(4, b"defg", false), b"");
+        assert_eq!(s.recv_offset, 0);
+        // The gap [0..4) fills → both chunks deliver in order.
+        assert_eq!(s.recv(0, b"abcd", false), b"abcddefg");
+        assert_eq!(s.recv_offset, 8);
+    }
+
+    #[test]
+    fn recv_drops_duplicate_and_trims_overlap() {
+        let mut s = Stream::new(0, 1024);
+        assert_eq!(s.recv(0, b"abcd", false), b"abcd");
+        // Fully duplicate.
+        assert_eq!(s.recv(0, b"abcd", false), b"");
+        // Overlapping: [2..6) — only [4..6) is new.
+        assert_eq!(s.recv(2, b"cdef", false), b"ef");
+        assert_eq!(s.recv_offset, 6);
+    }
+
+    #[test]
+    fn recv_fin_marks_final_size() {
+        let mut s = Stream::new(0, 1024);
+        assert_eq!(s.recv(0, b"hello", true), b"hello");
+        assert_eq!(s.final_size, Some(5));
+        assert_eq!(s.recv_state, RecvState::DataReceived);
     }
 }
