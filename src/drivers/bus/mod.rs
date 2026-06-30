@@ -117,9 +117,6 @@ pub fn register_device(
     resource_base: u64,
     resource_size: u64,
 ) -> Result<u32, &'static str> {
-    if !BUSES.read().contains_key(&bus_id) {
-        return Err("Bus not found");
-    }
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = BusDevice {
         id,
@@ -138,9 +135,8 @@ pub fn register_device(
     BUS_DEVS.write().insert(id, dev);
     {
         let mut buses = BUSES.write();
-        if let Some(bus) = buses.get_mut(&bus_id) {
-            bus.device_ids.push(id);
-        }
+        let bus = buses.get_mut(&bus_id).ok_or("Bus not found")?;
+        bus.device_ids.push(id);
     }
     try_match_device(id)?;
     Ok(id)
@@ -153,9 +149,6 @@ pub fn register_driver(
     probe: fn(u32) -> Result<(), &'static str>,
     remove: fn(u32) -> Result<(), &'static str>,
 ) -> Result<u32, &'static str> {
-    if !BUSES.read().contains_key(&bus_id) {
-        return Err("Bus not found");
-    }
     let id = DRV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let drv = BusDriver {
         id,
@@ -171,9 +164,8 @@ pub fn register_driver(
     BUS_DRVS.write().insert(id, drv);
     {
         let mut buses = BUSES.write();
-        if let Some(bus) = buses.get_mut(&bus_id) {
-            bus.driver_ids.push(id);
-        }
+        let bus = buses.get_mut(&bus_id).ok_or("Bus not found")?;
+        bus.driver_ids.push(id);
     }
     try_match_devices(bus_id)?;
     Ok(id)
