@@ -315,6 +315,10 @@ pub struct DhcpClient {
     server_ip: Option<Ipv4Address>,
     discover_count: u32,
     request_count: u32,
+    /// Time (ms) when last packet was sent (for timeout tracking)
+    last_packet_time: u64,
+    /// Number of retries in current state
+    retry_count: u8,
 }
 
 impl DhcpClient {
@@ -328,6 +332,8 @@ impl DhcpClient {
             server_ip: None,
             discover_count: 0,
             request_count: 0,
+            last_packet_time: 0,
+            retry_count: 0,
         }
     }
 
@@ -440,6 +446,193 @@ impl DhcpClient {
             current_state: self.state,
         }
     }
+
+    /// Drive the DHCP state machine.
+    ///
+    /// `current_time` is a monotonic timestamp in milliseconds.
+    ///
+    /// Returns `Some((dest_ip, packet_bytes))` when a packet must be sent, or
+    /// `None` when no action is required yet.  The caller is responsible for
+    /// transmitting the returned bytes via UDP from source port 68 to
+    /// `dest_ip:67`.
+    ///
+    /// State transitions driven here:
+    ///   Init        → send DISCOVER broadcast → Selecting
+    ///   Selecting   → timeout 4 s             → Init (retry)
+    ///   Requesting  → timeout 4 s             → Init (after 3 retries)
+    ///   Bound       → T1 reached              → send unicast REQUEST → Renewing
+    ///   Renewing    → T2 reached              → send broadcast REQUEST → Rebinding
+    ///   Rebinding   → expired                 → Init
+    pub fn poll(&mut self, current_time: u64) -> Option<([u8; 4], [u8; 240])> {
+        const TIMEOUT_MS: u64 = 4_000; // 4-second inter-state timeout
+        const MAX_RETRIES: u8 = 3;
+
+        match self.state {
+            DhcpClientState::Init => {
+                let pkt = self.start_discovery();
+                self.last_packet_time = current_time;
+                self.retry_count = 0;
+                let dest = [255, 255, 255, 255];
+                Some((dest, pkt.to_bytes()))
+            }
+
+            DhcpClientState::Selecting => {
+                // Waiting for OFFER; if we time out, restart
+                if current_time.saturating_sub(self.last_packet_time) >= TIMEOUT_MS {
+                    self.state = DhcpClientState::Init;
+                    let pkt = self.start_discovery();
+                    self.last_packet_time = current_time;
+                    let dest = [255, 255, 255, 255];
+                    Some((dest, pkt.to_bytes()))
+                } else {
+                    None
+                }
+            }
+
+            DhcpClientState::Requesting => {
+                if current_time.saturating_sub(self.last_packet_time) >= TIMEOUT_MS {
+                    if self.retry_count >= MAX_RETRIES {
+                        // Give up and restart discovery
+                        self.state = DhcpClientState::Init;
+                        self.retry_count = 0;
+                        let pkt = self.start_discovery();
+                        self.last_packet_time = current_time;
+                        Some(([255, 255, 255, 255], pkt.to_bytes()))
+                    } else {
+                        // Resend REQUEST
+                        self.retry_count += 1;
+                        self.request_count += 1;
+                        self.last_packet_time = current_time;
+                        // Build a fresh REQUEST with the same offered IP
+                        // We need the server_ip; if absent fall back to broadcast
+                        let server = self.server_ip.unwrap_or([255, 255, 255, 255]);
+                        // The your_ip is stored in the lease (if partial) or we
+                        // use 0.0.0.0 — best we can do without storing it separately
+                        let pkt = DhcpPacket::create_request(
+                            self.transaction_id,
+                            self.mac_address,
+                            [0, 0, 0, 0],
+                            server,
+                        );
+                        Some(([255, 255, 255, 255], pkt.to_bytes()))
+                    }
+                } else {
+                    None
+                }
+            }
+
+            DhcpClientState::Bound => {
+                // Update timers; may transition to Renewing
+                let ts32 = (current_time / 1000) as u32;
+                self.update(ts32);
+                if self.state == DhcpClientState::Renewing {
+                    // Send unicast REQUEST to the DHCP server
+                    let server = self.server_ip.unwrap_or([255, 255, 255, 255]);
+                    let pkt = DhcpPacket::create_request(
+                        self.transaction_id,
+                        self.mac_address,
+                        [0, 0, 0, 0],
+                        server,
+                    );
+                    self.request_count += 1;
+                    self.last_packet_time = current_time;
+                    Some((server, pkt.to_bytes()))
+                } else {
+                    None
+                }
+            }
+
+            DhcpClientState::Renewing => {
+                let ts32 = (current_time / 1000) as u32;
+                self.update(ts32);
+                if self.state == DhcpClientState::Rebinding {
+                    // Broadcast REQUEST
+                    let pkt = DhcpPacket::create_request(
+                        self.transaction_id,
+                        self.mac_address,
+                        [0, 0, 0, 0],
+                        [255, 255, 255, 255],
+                    );
+                    self.request_count += 1;
+                    self.last_packet_time = current_time;
+                    Some(([255, 255, 255, 255], pkt.to_bytes()))
+                } else if current_time.saturating_sub(self.last_packet_time) >= TIMEOUT_MS {
+                    // Resend renewal unicast
+                    let server = self.server_ip.unwrap_or([255, 255, 255, 255]);
+                    let pkt = DhcpPacket::create_request(
+                        self.transaction_id,
+                        self.mac_address,
+                        [0, 0, 0, 0],
+                        server,
+                    );
+                    self.request_count += 1;
+                    self.last_packet_time = current_time;
+                    Some((server, pkt.to_bytes()))
+                } else {
+                    None
+                }
+            }
+
+            DhcpClientState::Rebinding => {
+                let ts32 = (current_time / 1000) as u32;
+                self.update(ts32);
+                if self.state == DhcpClientState::Init {
+                    // Lease expired — restart
+                    let pkt = self.start_discovery();
+                    self.last_packet_time = current_time;
+                    Some(([255, 255, 255, 255], pkt.to_bytes()))
+                } else if current_time.saturating_sub(self.last_packet_time) >= TIMEOUT_MS {
+                    // Resend rebinding broadcast
+                    let pkt = DhcpPacket::create_request(
+                        self.transaction_id,
+                        self.mac_address,
+                        [0, 0, 0, 0],
+                        [255, 255, 255, 255],
+                    );
+                    self.request_count += 1;
+                    self.last_packet_time = current_time;
+                    Some(([255, 255, 255, 255], pkt.to_bytes()))
+                } else {
+                    None
+                }
+            }
+
+            // InitReboot / Rebooting / unknown — no automated action
+            _ => None,
+        }
+    }
+
+    /// Handle an incoming raw DHCP packet (received on UDP port 68).
+    ///
+    /// Returns `Ok(Some(pkt))` if a packet should be sent in response,
+    /// `Ok(None)` if the packet was handled with no reply needed, or `Err` if
+    /// the incoming data is malformed / unexpected.
+    pub fn handle_incoming(
+        &mut self,
+        data: &[u8],
+        current_time: u64,
+    ) -> Result<Option<([u8; 4], [u8; 240])>, NetworkError> {
+        let pkt = DhcpPacket::from_bytes(data)?;
+        match pkt.message_type() {
+            Some(DhcpMessageType::Offer) => {
+                let request = self.handle_offer(&pkt)?;
+                self.last_packet_time = current_time;
+                let dest = self.server_ip.unwrap_or([255, 255, 255, 255]);
+                Ok(Some((dest, request.to_bytes())))
+            }
+            Some(DhcpMessageType::Ack) => {
+                self.handle_ack(&pkt, (current_time / 1000) as u32)?;
+                Ok(None)
+            }
+            Some(DhcpMessageType::Nak) => {
+                // Server refused — go back to Init
+                self.state = DhcpClientState::Init;
+                self.lease = None;
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 /// DHCP client statistics
@@ -470,6 +663,51 @@ impl fmt::Display for DhcpError {
             Self::NetworkError => write!(f, "Network error"),
         }
     }
+}
+
+/// Drive the DHCP state machine and send any pending packets over UDP.
+///
+/// `client`       – mutable DHCP client state.
+/// `current_time` – monotonic time in milliseconds.
+/// `src_ip`       – our current IP address (use 0.0.0.0 before we have one).
+///
+/// Returns `Ok(true)` if the client reached the BOUND state during this call,
+/// `Ok(false)` otherwise, or `Err` on network send failure.
+pub fn dhcp_send_poll(
+    client: &mut DhcpClient,
+    current_time: u64,
+    src_ip: Ipv4Address,
+) -> Result<bool, DhcpError> {
+    if let Some((dest_ip, pkt_bytes)) = client.poll(current_time) {
+        let src_addr = super::NetworkAddress::IPv4(src_ip);
+        let dst_addr = super::NetworkAddress::IPv4(dest_ip);
+        super::udp::send_udp_packet(src_addr, 68, dst_addr, 67, &pkt_bytes)
+            .map_err(|_| DhcpError::NetworkError)?;
+    }
+    Ok(client.state() == DhcpClientState::Bound)
+}
+
+/// Process a raw UDP payload received on port 68 and update the DHCP client.
+///
+/// If a response packet must be sent (e.g. after receiving an OFFER), this
+/// function sends it immediately.  Call this from the UDP receive path.
+pub fn dhcp_handle_packet(
+    client: &mut DhcpClient,
+    data: &[u8],
+    current_time: u64,
+    src_ip: Ipv4Address,
+) -> Result<(), DhcpError> {
+    match client.handle_incoming(data, current_time) {
+        Ok(Some((dest_ip, pkt_bytes))) => {
+            let src_addr = super::NetworkAddress::IPv4(src_ip);
+            let dst_addr = super::NetworkAddress::IPv4(dest_ip);
+            super::udp::send_udp_packet(src_addr, 68, dst_addr, 67, &pkt_bytes)
+                .map_err(|_| DhcpError::NetworkError)?;
+        }
+        Ok(None) => {}
+        Err(_) => return Err(DhcpError::InvalidPacket),
+    }
+    Ok(())
 }
 
 // Test functions (simplified, without #[cfg(feature = "std-tests")] // Disabled: #[cfg(feature = "disabled-tests")] // #[cfg(feature = "disabled-tests")] // #[test_case] attributes)
