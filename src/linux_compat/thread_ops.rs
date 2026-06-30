@@ -303,9 +303,14 @@ pub fn futex(
                     pid: pid as Pid,
                     bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
                 });
+                // Mark ourselves Blocked while still holding the queue lock. A
+                // concurrent FUTEX_WAKE must take this same lock to drain us, so
+                // it cannot deliver the wakeup before we have transitioned to
+                // Blocked — closing the lost-wakeup race. block_process only
+                // updates state and the scheduler queue (it does not yield), so
+                // holding the lock across it is deadlock-free.
+                let _ = process::get_process_manager().block_process(pid);
             }
-
-            let _ = process::get_process_manager().block_process(pid);
 
             // A return from block_process means we were woken — normally by
             // FUTEX_WAKE, which already drained our entry. Report success.
@@ -430,9 +435,10 @@ pub fn futex(
                     pid: pid as Pid,
                     bitset,
                 });
+                // Block under the queue lock to close the lost-wakeup race with
+                // a concurrent FUTEX_WAKE_BITSET (see FUTEX_WAIT above).
+                let _ = process::get_process_manager().block_process(pid);
             }
-
-            let _ = process::get_process_manager().block_process(pid);
 
             // Woken (normally by FUTEX_WAKE_BITSET). Report success rather than
             // re-checking *uaddr, which would spuriously return EAGAIN.
@@ -491,8 +497,10 @@ pub fn futex(
                     pid: pid as Pid,
                     bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
                 });
+                // Block under the queue lock to close the lost-wakeup race
+                // against FUTEX_UNLOCK_PI (see FUTEX_WAIT above).
+                let _ = process::get_process_manager().block_process(pid as u32);
             }
-            let _ = process::get_process_manager().block_process(pid as u32);
             // When woken, try to acquire again
             let _ = futex_word.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst);
             Ok(0)

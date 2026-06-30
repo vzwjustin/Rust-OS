@@ -259,7 +259,8 @@ impl SyncObject {
     fn release_rwlock(&self, pid: Pid) -> Result<Vec<Pid>, &'static str> {
         let current_value = self.value.load(Ordering::Acquire);
 
-        if (current_value & 0x80000000) != 0 {
+        // Whether this release frees the lock (and so should wake a waiter).
+        let fully_released = if (current_value & 0x80000000) != 0 {
             // Write lock held
             if self.owner.load(Ordering::Acquire) != pid {
                 return Err("Process does not own this write lock");
@@ -267,19 +268,24 @@ impl SyncObject {
 
             self.owner.store(0, Ordering::Release);
             self.value.store(0, Ordering::Release);
+            true
         } else if current_value > 0 {
-            // Read lock held
-            self.value.fetch_sub(1, Ordering::AcqRel);
+            // Read lock held. Decide "last reader" from the value returned by
+            // the atomic decrement, not the separately-loaded snapshot above:
+            // two readers releasing concurrently both read current_value == 2
+            // and would both miss the `== 1` test, losing the writer's wakeup.
+            let prev = self.value.fetch_sub(1, Ordering::AcqRel);
+            prev == 1
         } else {
             return Err("No lock held");
-        }
+        };
 
         // Wake up waiting processes
         let mut wait_queue = self.wait_queue.lock();
         let mut to_wake = Vec::new();
 
         // For rwlock, we might wake multiple readers or one writer
-        if current_value == 1 || (current_value & 0x80000000) != 0 {
+        if fully_released {
             // Last read lock or write lock released, wake appropriate waiters
             if let Some(entry) = wait_queue.pop_front() {
                 to_wake.push(entry.pid);
@@ -375,6 +381,41 @@ impl SyncObject {
             .unwrap_or(wait_queue.len());
 
         wait_queue.insert(insert_pos, entry);
+    }
+
+    /// Atomically (under the wait-queue lock) re-check acquisition and, if it
+    /// still fails, enqueue the caller and mark it Blocked.
+    ///
+    /// This closes the lost-wakeup race in `SyncManager::acquire`: a releaser
+    /// frees ownership without the wait-queue lock but must take it to pop and
+    /// wake a waiter. Re-checking `try_acquire` under that same lock means
+    /// either we observe the freed ownership and acquire (returning `true`
+    /// without blocking), or we enqueue+block before the releaser can pop — so
+    /// the wakeup cannot be lost. `block_process` only updates state and the
+    /// scheduler queue (it does not yield), so blocking under the lock is safe.
+    ///
+    /// Returns `Ok(true)` if the object was acquired on the re-check, `Ok(false)`
+    /// if the caller was enqueued and blocked.
+    fn enqueue_and_block(&self, pid: Pid, priority: super::Priority) -> Result<bool, &'static str> {
+        let mut wait_queue = self.wait_queue.lock();
+
+        if self.try_acquire(pid)? {
+            return Ok(true);
+        }
+
+        let entry = WaitQueueEntry {
+            pid,
+            priority,
+            wait_start_time: super::get_system_time(),
+        };
+        let insert_pos = wait_queue
+            .iter()
+            .position(|e| e.priority > priority)
+            .unwrap_or(wait_queue.len());
+        wait_queue.insert(insert_pos, entry);
+
+        get_process_manager().block_process(pid)?;
+        Ok(false)
     }
 
     /// Remove process from wait queue
@@ -506,19 +547,25 @@ impl SyncManager {
                 Ok(true)
             }
             Ok(false) => {
-                // Need to wait
+                // Need to wait. enqueue_and_block re-checks acquisition under
+                // the wait-queue lock and only blocks if it still fails,
+                // closing the lost-wakeup race against a concurrent release().
                 let process_manager = get_process_manager();
                 if let Some(pcb) = process_manager.get_process(pid) {
-                    sync_obj.add_to_wait_queue(pid, pcb.priority);
-                    process_manager.block_process(pid)?;
-
+                    let acquired = sync_obj.enqueue_and_block(pid, pcb.priority)?;
+                    let new_state = if acquired {
+                        SyncState::Acquired
+                    } else {
+                        SyncState::Waiting
+                    };
                     {
                         let mut states = self.process_states.write();
                         states
                             .entry(pid)
                             .or_insert_with(BTreeMap::new)
-                            .insert(sync_id, SyncState::Waiting);
+                            .insert(sync_id, new_state);
                     }
+                    return Ok(acquired);
                 }
                 Ok(false)
             }
