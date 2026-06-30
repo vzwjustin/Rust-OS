@@ -131,6 +131,16 @@ impl BufferCache {
 
     /// Get buffer for reading
     pub fn get_buffer(&self, device_id: u32, block_num: u64) -> Result<Vec<u8>, StorageError> {
+        let data = self.load_buffer(device_id, block_num)?;
+        // Trigger read-ahead. load_buffer never recurses, so this prefetches
+        // exactly one window rather than walking the whole device on the stack.
+        self.read_ahead(device_id, block_num + 1);
+        Ok(data)
+    }
+
+    /// Load a single block into the cache, returning its data. Does NOT trigger
+    /// read-ahead, so it is safe to call from read_ahead without recursing.
+    fn load_buffer(&self, device_id: u32, block_num: u64) -> Result<Vec<u8>, StorageError> {
         let key = (device_id, block_num);
 
         // Check if buffer is in cache
@@ -187,9 +197,6 @@ impl BufferCache {
             let mut lru = self.lru_queue.lock();
             lru.push_front(key);
         }
-
-        // Trigger read-ahead
-        self.read_ahead(device_id, block_num + 1);
 
         Ok(data)
     }
@@ -393,8 +400,8 @@ impl BufferCache {
                 }
             }
 
-            // Asynchronously read buffer (simplified - would use background thread)
-            if let Ok(_) = self.get_buffer(device_id, block_num) {
+            // Load the block without recursing back into read-ahead.
+            if let Ok(_) = self.load_buffer(device_id, block_num) {
                 // Buffer loaded successfully
             }
         }

@@ -250,10 +250,16 @@ pub fn software_hwspinlock_ops() -> HwspinlockOps {
 
 // ── Init ────────────────────────────────────────────────────────────────
 
+/// Number of locks exposed by the built-in software hwspinlock bank.
+const SW_HWSPINLOCK_NUM_LOCKS: u32 = 32;
+
 pub fn init() -> Result<(), &'static str> {
+    if !HWSPINLOCK_DEVICES.read().is_empty() {
+        return Ok(());
+    }
+
     let ops = software_hwspinlock_ops();
-    let _ = ops;
+    register_device("software-hwspinlock", ops, SW_HWSPINLOCK_NUM_LOCKS)?;
     crate::serial_println!("hwspinlock: subsystem ready");
-    return Ok(());
     Ok(())
 }

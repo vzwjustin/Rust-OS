@@ -445,6 +445,9 @@ fn ioctl_by_id(id: u32, request: u64, argp: u64) -> LinuxResult<i32> {
             if copy.src == 0 || copy.len == 0 {
                 return Err(LinuxError::EINVAL);
             }
+            // Reject a source range that wraps the address space before reading
+            // from it (the dst range is already checked by validate_range).
+            copy.src.checked_add(copy.len).ok_or(LinuxError::EINVAL)?;
             if !range_registered(id, copy.dst, copy.len)? {
                 return Err(LinuxError::ENOENT);
             }

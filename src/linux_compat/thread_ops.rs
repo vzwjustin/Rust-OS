@@ -32,8 +32,17 @@ static ROBUST_LISTS: RwLock<BTreeMap<Pid, usize>> = RwLock::new(BTreeMap::new())
 /// Legacy x86 thread area entries keyed by tid.
 static THREAD_AREAS: RwLock<BTreeMap<Pid, [u8; 32]>> = RwLock::new(BTreeMap::new());
 
+/// A thread blocked on a futex, together with the bitset it is waiting on.
+/// Non-bitset operations use `FUTEX_BITSET_MATCH_ANY`, so FUTEX_WAKE wakes them
+/// the same as a bitset wake with an all-ones mask.
+#[derive(Clone, Copy)]
+struct FutexWaiter {
+    pid: Pid,
+    bitset: u32,
+}
+
 /// Futex wait queues keyed by userspace address.
-static FUTEX_WAITERS: RwLock<BTreeMap<usize, Vec<Pid>>> = RwLock::new(BTreeMap::new());
+static FUTEX_WAITERS: RwLock<BTreeMap<usize, Vec<FutexWaiter>>> = RwLock::new(BTreeMap::new());
 
 #[inline(always)]
 unsafe fn wrmsr(msr: u32, value: u64) {
@@ -179,6 +188,9 @@ pub mod futex_op {
     pub const FUTEX_PRIVATE_FLAG: i32 = 128;
     /// Clock realtime flag
     pub const FUTEX_CLOCK_REALTIME: i32 = 256;
+
+    /// Bitset matching any waiter (used by non-bitset waits/wakes).
+    pub const FUTEX_BITSET_MATCH_ANY: u32 = 0xffff_ffff;
 }
 
 // ============================================================================
@@ -270,7 +282,10 @@ pub fn futex(
         return Err(LinuxError::EFAULT);
     }
 
-    let op = futex_op & !futex_op::FUTEX_PRIVATE_FLAG;
+    // Strip the flag bits before matching the operation. FUTEX_CLOCK_REALTIME
+    // only selects the clock used for the (currently best-effort) timeout, so
+    // a CLOCK_REALTIME-flagged FUTEX_WAIT_BITSET still dispatches correctly.
+    let op = futex_op & !(futex_op::FUTEX_PRIVATE_FLAG | futex_op::FUTEX_CLOCK_REALTIME);
 
     match op {
         futex_op::FUTEX_WAIT => {
@@ -284,16 +299,23 @@ pub fn futex(
             let pid = process::current_pid();
             {
                 let mut waiters = FUTEX_WAITERS.write();
-                waiters.entry(key).or_default().push(pid as Pid);
+                waiters.entry(key).or_default().push(FutexWaiter {
+                    pid: pid as Pid,
+                    bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                });
+                // Mark ourselves Blocked while still holding the queue lock. A
+                // concurrent FUTEX_WAKE must take this same lock to drain us, so
+                // it cannot deliver the wakeup before we have transitioned to
+                // Blocked — closing the lost-wakeup race. block_process only
+                // updates state and the scheduler queue (it does not yield), so
+                // holding the lock across it is deadlock-free.
+                let _ = process::get_process_manager().block_process(pid);
             }
 
-            let _ = process::get_process_manager().block_process(pid);
-
-            unsafe {
-                if *uaddr != val {
-                    return Err(LinuxError::EAGAIN);
-                }
-            }
+            // A return from block_process means we were woken — normally by
+            // FUTEX_WAKE, which already drained our entry. Report success.
+            // Re-checking *uaddr and returning EAGAIN here would spuriously
+            // fail the normal wake path, since the waker just changed the word.
             Ok(0)
         }
         futex_op::FUTEX_WAKE => {
@@ -304,7 +326,7 @@ pub fn futex(
                 if let Some(queue) = waiters.get_mut(&key) {
                     let count = core::cmp::min(val as usize, queue.len());
                     for waiter in queue.drain(..count) {
-                        let _ = process::get_process_manager().unblock_process(waiter as u32);
+                        let _ = process::get_process_manager().unblock_process(waiter.pid as u32);
                         woke += 1;
                     }
                     if queue.is_empty() {
@@ -329,11 +351,11 @@ pub fn futex(
             if let Some(queue) = waiters.get_mut(&key) {
                 let count = core::cmp::min(nr_wake, queue.len());
                 for waiter in queue.drain(..count) {
-                    let _ = process::get_process_manager().unblock_process(waiter as u32);
+                    let _ = process::get_process_manager().unblock_process(waiter.pid as u32);
                     woke += 1;
                 }
             }
-            let drained: Vec<Pid> = {
+            let drained: Vec<FutexWaiter> = {
                 let queue = match waiters.get_mut(&key) {
                     Some(q) if !q.is_empty() => q,
                     _ => return Ok(woke),
@@ -370,11 +392,11 @@ pub fn futex(
             if let Some(queue) = waiters.get_mut(&key) {
                 let count = core::cmp::min(nr_wake, queue.len());
                 for waiter in queue.drain(..count) {
-                    let _ = process::get_process_manager().unblock_process(waiter as u32);
+                    let _ = process::get_process_manager().unblock_process(waiter.pid as u32);
                     woke += 1;
                 }
             }
-            let drained: Vec<Pid> = {
+            let drained: Vec<FutexWaiter> = {
                 let queue = match waiters.get_mut(&key) {
                     Some(q) if !q.is_empty() => q,
                     _ => return Ok(woke),
@@ -391,7 +413,71 @@ pub fn futex(
             }
             Ok(woke + moved)
         }
-        futex_op::FUTEX_WAIT_BITSET | futex_op::FUTEX_WAKE_BITSET => Err(LinuxError::ENOSYS),
+        futex_op::FUTEX_WAIT_BITSET => {
+            // Like FUTEX_WAIT but the waiter records a bitset; a zero bitset is
+            // invalid. `val3` carries the mask. The timeout is absolute rather
+            // than relative, but timeouts are still best-effort here.
+            let bitset = _val3 as u32;
+            if bitset == 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            unsafe {
+                if *uaddr != val {
+                    return Err(LinuxError::EAGAIN);
+                }
+            }
+
+            let key = uaddr as usize;
+            let pid = process::current_pid();
+            {
+                let mut waiters = FUTEX_WAITERS.write();
+                waiters.entry(key).or_default().push(FutexWaiter {
+                    pid: pid as Pid,
+                    bitset,
+                });
+                // Block under the queue lock to close the lost-wakeup race with
+                // a concurrent FUTEX_WAKE_BITSET (see FUTEX_WAIT above).
+                let _ = process::get_process_manager().block_process(pid);
+            }
+
+            // Woken (normally by FUTEX_WAKE_BITSET). Report success rather than
+            // re-checking *uaddr, which would spuriously return EAGAIN.
+            Ok(0)
+        }
+        futex_op::FUTEX_WAKE_BITSET => {
+            // Like FUTEX_WAKE but only wakes waiters whose bitset intersects
+            // `val3`. A zero bitset is invalid.
+            let bitset = _val3 as u32;
+            if bitset == 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            let key = uaddr as usize;
+            let mut woke = 0i32;
+            if val > 0 {
+                let nr_wake = val as usize;
+                let mut waiters = FUTEX_WAITERS.write();
+                if let Some(queue) = waiters.get_mut(&key) {
+                    // Retain non-matching waiters; wake (and remove) up to
+                    // nr_wake matching ones, preserving FIFO order.
+                    let mut remaining = Vec::with_capacity(queue.len());
+                    for waiter in queue.drain(..) {
+                        if woke < nr_wake as i32 && (waiter.bitset & bitset) != 0 {
+                            let _ = process::get_process_manager()
+                                .unblock_process(waiter.pid as u32);
+                            woke += 1;
+                        } else {
+                            remaining.push(waiter);
+                        }
+                    }
+                    if remaining.is_empty() {
+                        waiters.remove(&key);
+                    } else {
+                        *queue = remaining;
+                    }
+                }
+            }
+            Ok(woke)
+        }
         futex_op::FUTEX_LOCK_PI => {
             // FUTEX_LOCK_PI: Lock a PI futex. If the futex word is 0 (unlocked),
             // atomically set it to our TID. Otherwise, wait.
@@ -407,9 +493,14 @@ pub fn futex(
             let key = uaddr as usize;
             {
                 let mut waiters = FUTEX_WAITERS.write();
-                waiters.entry(key).or_default().push(pid as Pid);
+                waiters.entry(key).or_default().push(FutexWaiter {
+                    pid: pid as Pid,
+                    bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                });
+                // Block under the queue lock to close the lost-wakeup race
+                // against FUTEX_UNLOCK_PI (see FUTEX_WAIT above).
+                let _ = process::get_process_manager().block_process(pid as u32);
             }
-            let _ = process::get_process_manager().block_process(pid as u32);
             // When woken, try to acquire again
             let _ = futex_word.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst);
             Ok(0)
@@ -430,7 +521,7 @@ pub fn futex(
             let mut waiters = FUTEX_WAITERS.write();
             if let Some(queue) = waiters.get_mut(&key) {
                 if let Some(waiter) = queue.first().copied() {
-                    let _ = process::get_process_manager().unblock_process(waiter as u32);
+                    let _ = process::get_process_manager().unblock_process(waiter.pid as u32);
                     queue.remove(0);
                     woke = 1;
                 }

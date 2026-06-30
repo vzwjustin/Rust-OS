@@ -761,10 +761,13 @@ static int decode_sequences(const uint8_t *src, size_t src_size,
     }
 
     if (num_seq == 0) {
-        /* No sequences: literals are the block content */
+        /* No sequences: literals are the block content. Return bytes WRITTEN
+         * (every other path and the caller's *out_written use that contract);
+         * returning hdr_consumed made the frame advance ~1 byte and the next
+         * block overwrite these literals. */
         if (dst_pos + lit_size > dst_cap) return -1;
         kmemcpy(dst + dst_pos, literals, lit_size);
-        return hdr_consumed;
+        return (int)lit_size;
     }
 
     if ((size_t)(hdr_consumed + 1) > src_size) return -1;
@@ -1032,13 +1035,15 @@ static int decode_block(const uint8_t *src, size_t src_size,
         /* Compressed block */
         if ((size_t)block_size > block_data_size) return -1;
 
-        /* Decode literals */
-        uint8_t literals[65536]; /* 64KB max literals */
+        /* Decode literals. Heap-allocate the 64KB buffer: a stack array this
+         * large overflows the kernel stack (typically 16KB). */
+        uint8_t *literals = (uint8_t *)kmalloc(65536); /* 64KB max literals */
+        if (!literals) return -1;
         size_t lit_size = 0;
         int lit_consumed = decode_literals(block_data, block_size,
-                                           literals, sizeof(literals),
+                                           literals, 65536,
                                            &lit_size, prev_huf);
-        if (lit_consumed < 0) return -1;
+        if (lit_consumed < 0) { kfree(literals); return -1; }
 
         /* Decode sequences */
         const uint8_t *seq_src = block_data + lit_consumed;
@@ -1049,6 +1054,7 @@ static int decode_block(const uint8_t *src, size_t src_size,
                                           repeat_offsets,
                                           prev_ll, prev_ml, prev_off,
                                           has_prev_seq);
+        kfree(literals);
         if (seq_result < 0) return -1;
         *out_written = (size_t)seq_result;
         return 3 + block_size;

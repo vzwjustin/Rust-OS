@@ -186,7 +186,14 @@ pub fn try_collapse_region(virt: usize) -> Result<(), &'static str> {
         memory::unmap_user_page(virt + i * page_size)?;
     }
 
-    memory::map_user_huge_page(virt, huge_phys, flags)?;
+    // If installing the huge mapping fails (e.g. an intermediate page-table
+    // allocation OOMs), return the huge frame to the allocator instead of
+    // leaking it. The old 4 KiB frames have already been freed above, so the
+    // region is left unmapped and faults back in on next access.
+    if let Err(e) = memory::map_user_huge_page(virt, huge_phys, flags) {
+        memory::free_huge_frame(huge_phys);
+        return Err(e);
+    }
     COLLAPSED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }

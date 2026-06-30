@@ -264,25 +264,48 @@ pub fn seccomp_set_mode(op: u32, flags: u32, filter_data: *const u8) -> i32 {
 /// Parse a BPF filter from userspace data.
 /// Simplified format: [default_action:u32] [nr_rules:u32] [rules...]
 fn parse_filter(data: *const u8, flags: u32) -> Option<SeccompFilter> {
-    unsafe {
-        let ptr = data as *const u32;
-        let default_action = *ptr;
-        let nr_rules = *ptr.add(1);
+    use crate::memory::user_space::UserSpaceMemory;
 
-        if nr_rules > 256 {
-            return None; // Sanity limit
-        }
+    let base = data as u64;
+    if base == 0 {
+        return None;
+    }
 
-        let mut filter = SeccompFilter::new(default_action, flags);
+    // Copy the 8-byte header (default_action:u32, nr_rules:u32) through the
+    // validated user-copy path instead of dereferencing the raw user pointer,
+    // which could fault the kernel or read kernel memory for a hostile pointer.
+    let mut header = [0u8; 8];
+    UserSpaceMemory::copy_from_user(base, &mut header).ok()?;
+    let default_action = u32::from_ne_bytes([header[0], header[1], header[2], header[3]]);
+    let nr_rules = u32::from_ne_bytes([header[4], header[5], header[6], header[7]]);
 
-        let rule_base = ptr.add(2) as *const (i32, u32);
-        for i in 0..nr_rules {
-            let (syscall_nr, action) = *rule_base.add(i as usize);
+    if nr_rules > 256 {
+        return None; // Sanity limit
+    }
+
+    let mut filter = SeccompFilter::new(default_action, flags);
+
+    // Each rule is (i32 syscall_nr, u32 action) = 8 bytes, following the header.
+    let rules_len = (nr_rules as usize).checked_mul(8)?;
+    if rules_len > 0 {
+        let rules_addr = base.checked_add(8)?;
+        let mut rules = alloc::vec![0u8; rules_len];
+        UserSpaceMemory::copy_from_user(rules_addr, &mut rules).ok()?;
+        for i in 0..nr_rules as usize {
+            let off = i * 8;
+            let syscall_nr =
+                i32::from_ne_bytes([rules[off], rules[off + 1], rules[off + 2], rules[off + 3]]);
+            let action = u32::from_ne_bytes([
+                rules[off + 4],
+                rules[off + 5],
+                rules[off + 6],
+                rules[off + 7],
+            ]);
             filter.add_rule(syscall_nr, action);
         }
-
-        Some(filter)
     }
+
+    Some(filter)
 }
 
 /// Check if a syscall is allowed for the current process.

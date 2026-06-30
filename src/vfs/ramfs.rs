@@ -154,7 +154,9 @@ impl InodeOps for RamFsInode {
 
                 let mut content = content.write();
                 let start = offset as usize;
-                let end = start + buf.len();
+                // Guard against offset+len overflow (a huge pwrite offset would
+                // otherwise wrap and corrupt the slice range / resize).
+                let end = start.checked_add(buf.len()).ok_or(VfsError::InvalidArgument)?;
 
                 // Extend file if necessary
                 if end > content.len() {

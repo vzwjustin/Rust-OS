@@ -209,7 +209,13 @@ pub fn attach_device(domain_id: u32) -> Result<(), &'static str> {
     // Power on the domain if this is the first active device.
     if dom.active_devices == 1 && dom.state != PowerDomainState::On {
         if !dom.always_on {
-            (dom.ops.power_on)();
+            if let Err(e) = (dom.ops.power_on)() {
+                // Roll back the bookkeeping so a failed power-on does not leave
+                // the domain counted as active.
+                dom.device_count -= 1;
+                dom.active_devices -= 1;
+                return Err(e);
+            }
         }
         dom.state = PowerDomainState::On;
     }

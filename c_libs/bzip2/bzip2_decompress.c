@@ -126,8 +126,12 @@ static int bz_huffman_decode(BitReaderBE *br, const BzHuffman *h) {
 }
 
 /* ── BWT inverse ────────────────────────────────────────────────── */
-static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
-                        uint8_t *out) {
+static int bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
+                       uint8_t *out) {
+    /* orig_ptr is read straight from the (attacker-controlled) block header and
+     * used to index next[]; reject anything outside the block. */
+    if (orig_ptr < 0 || orig_ptr >= bwt_size) return -1;
+
     /* Build the T vector (character counts) */
     int count[256];
     kmemset(count, 0, sizeof(count));
@@ -140,10 +144,10 @@ static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
 
     /* Build the next vector */
     int *next = (int *)kmalloc(sizeof(int) * bwt_size);
-    if (!next) return;
+    if (!next) return -1;
 
     int *bucket = (int *)kmalloc(sizeof(int) * 256);
-    if (!bucket) { kfree(next); return; }
+    if (!bucket) { kfree(next); return -1; }
     kmemset(bucket, 0, sizeof(int) * 256);
 
     for (int i = 0; i < bwt_size; i++) {
@@ -161,13 +165,19 @@ static void bwt_inverse(const uint8_t *bwt_data, int bwt_size, int orig_ptr,
 
     kfree(bucket);
     kfree(next);
+    return 0;
 }
 
 /* ── MTF inverse ────────────────────────────────────────────────── */
 static void mtf_inverse(const uint8_t *mtf_data, int mtf_size,
-                        uint8_t *out, int n_groups) {
+                        uint8_t *out, int n_groups,
+                        const uint8_t *alpha_map) {
+    /* The MTF list is seeded with the actual in-use byte values (sorted
+     * ascending) — bzip2's "seqToUnseq" table — not the raw alphabet indices.
+     * Seeding with 0..n-1 only happens to be correct when the in-use set is
+     * exactly {0,1,...,n-1}, so it silently corrupts most real payloads. */
     uint8_t order[256];
-    for (int i = 0; i < n_groups; i++) order[i] = (uint8_t)i;
+    for (int i = 0; i < n_groups; i++) order[i] = alpha_map[i];
 
     int out_pos = 0;
     int run_len = 0;
@@ -357,14 +367,21 @@ int bzip2_decompress(const uint8_t *src, size_t src_size,
             uint8_t *bwt_buf = (uint8_t *)kmalloc(max_block + 20);
             if (!bwt_buf) { kfree(mtf_buf); return -1; }
 
-            mtf_inverse(mtf_buf, mtf_pos, bwt_buf, n_in_use);
+            /* A malformed block can encode an empty alphabet. mtf_inverse would
+             * then leave `order` uninitialized and read order[0], so reject it. */
+            if (n_in_use == 0) { kfree(bwt_buf); kfree(mtf_buf); return -1; }
+            mtf_inverse(mtf_buf, mtf_pos, bwt_buf, n_in_use, alpha_map);
             kfree(mtf_buf);
 
             /* BWT inverse */
             uint8_t *raw_buf = (uint8_t *)kmalloc(max_block + 20);
             if (!raw_buf) { kfree(bwt_buf); return -1; }
 
-            bwt_inverse(bwt_buf, mtf_pos, orig_ptr, raw_buf);
+            if (bwt_inverse(bwt_buf, mtf_pos, orig_ptr, raw_buf) != 0) {
+                kfree(bwt_buf);
+                kfree(raw_buf);
+                return -1;
+            }
             kfree(bwt_buf);
 
             /* RLE inverse */

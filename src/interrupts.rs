@@ -931,14 +931,10 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         crate::softirq::run_workqueue();
     }
 
-    unsafe {
-        // Send EOI directly to PIC port 0x20
-        core::arch::asm!(
-            "mov al, 0x20",
-            "out 0x20, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    // Route EOI through notify_irq_eoi so it reaches the Local APIC when the
+    // system is running in APIC mode. EOIing the (masked) PIC directly left
+    // the LAPIC ISR bit set, blocking all further interrupts after one tick.
+    notify_irq_eoi(InterruptIndex::Timer);
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {

@@ -155,11 +155,18 @@ mutter:
 	@echo "$(BLUE)[INFO]$(NC) Building Mutter userspace binary..."
 	@./scripts/build-mutter.sh
 
-# Rebuild initramfs with current rootfs contents
+# Rebuild initramfs with current rootfs contents.
+# When userspace/rootfs is absent (a fresh checkout has only the committed
+# initramfs.cpio.gz), skip regeneration: build.rs decompresses the committed
+# archive so the kernel still builds.
 initramfs:
-	@echo "$(BLUE)[INFO]$(NC) Rebuilding initramfs from rootfs..."
-	@./scripts/build_initramfs.sh userspace/rootfs userspace/initramfs.cpio
-	@echo "$(GREEN)[DONE]$(NC) initramfs rebuilt"
+	@if [ -d userspace/rootfs ]; then \
+		echo "$(BLUE)[INFO]$(NC) Rebuilding initramfs from rootfs..."; \
+		./scripts/build_initramfs.sh userspace/rootfs userspace/initramfs.cpio; \
+		echo "$(GREEN)[DONE]$(NC) initramfs rebuilt"; \
+	else \
+		echo "$(BLUE)[INFO]$(NC) userspace/rootfs absent; using committed initramfs.cpio.gz (build.rs decompresses it)"; \
+	fi
 
 # Minimal installer rootfs for live/install media
 installer-rootfs:
