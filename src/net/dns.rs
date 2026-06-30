@@ -857,6 +857,144 @@ pub struct DnsResolverStats {
     pub errors: u64,
 }
 
+/// Error type for the synchronous DNS resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsError {
+    /// Hostname does not exist (NXDOMAIN)
+    NotFound,
+    /// Server failure (SERVFAIL / REFUSED)
+    ServerError,
+    /// Query timed out after all retries
+    Timeout,
+    /// Could not send or bind the UDP socket
+    NetworkError,
+    /// Response packet is malformed
+    MalformedResponse,
+}
+
+impl DnsResolver {
+    /// Resolve `hostname` to an IPv4 address using `dns_server`.
+    ///
+    /// Synchronous spin-wait: sends a UDP query and busy-waits up to 5 seconds
+    /// per attempt, retrying up to 3 times.  Successful results are cached.
+    ///
+    /// # no_std constraints
+    /// No floating point.  Uses `crate::time::get_system_time_ms()` for timing.
+    pub fn resolve(
+        &mut self,
+        hostname: &str,
+        dns_server: Ipv4Address,
+        current_time: u64,
+    ) -> Result<Ipv4Address, DnsError> {
+        // Cache hit short-circuit
+        if let Some(addrs) = self.resolve_ipv4(hostname, current_time) {
+            if let Some(&addr) = addrs.first() {
+                return Ok(addr);
+            }
+        }
+
+        const MAX_RETRIES: u8 = 3;
+        const TIMEOUT_MS: u64 = 5_000;
+
+        // Ephemeral source port derived from time (avoids 0 and well-known ports)
+        let src_port: u16 = 49152u16.wrapping_add((current_time & 0x3FFF) as u16);
+        let src_addr = super::NetworkAddress::IPv4([0u8; 4]);
+        let dst_addr = super::NetworkAddress::IPv4(dns_server);
+
+        // Bind a UDP socket so the stack routes replies to us
+        let _ = super::udp::udp_bind(src_addr, src_port);
+
+        for _attempt in 0..MAX_RETRIES {
+            let query = self.create_query(String::from(hostname), DnsRecordType::A);
+            let query_id = query.header.id;
+            let query_bytes = match query.to_bytes() {
+                Ok(b) => b,
+                Err(_) => {
+                    let _ = super::udp::udp_close(src_addr, src_port);
+                    return Err(DnsError::MalformedResponse);
+                }
+            };
+
+            if super::udp::send_udp_packet(src_addr, src_port, dst_addr, DNS_PORT, &query_bytes)
+                .is_err()
+            {
+                let _ = super::udp::udp_close(src_addr, src_port);
+                return Err(DnsError::NetworkError);
+            }
+
+            let deadline = crate::time::get_system_time_ms() + TIMEOUT_MS;
+            loop {
+                let now = crate::time::get_system_time_ms();
+                if now >= deadline {
+                    break; // timed out — next attempt
+                }
+
+                if let Ok(Some((data, _from_ip, _from_port))) =
+                    super::udp::udp_recv(src_addr, src_port)
+                {
+                    match DnsMessage::from_bytes(&data) {
+                        Ok(response) if response.header.qr && response.header.id == query_id => {
+                            match response.header.rcode {
+                                DnsResponseCode::NxDomain => {
+                                    let _ = super::udp::udp_close(src_addr, src_port);
+                                    return Err(DnsError::NotFound);
+                                }
+                                DnsResponseCode::ServFail | DnsResponseCode::Refused => {
+                                    let _ = super::udp::udp_close(src_addr, src_port);
+                                    return Err(DnsError::ServerError);
+                                }
+                                DnsResponseCode::NoError => {
+                                    let addrs: Vec<Ipv4Address> = response
+                                        .answers
+                                        .iter()
+                                        .filter(|r| r.rtype == DnsRecordType::A)
+                                        .filter_map(|r| r.as_ipv4_address().ok())
+                                        .collect();
+                                    if let Some(&addr) = addrs.first() {
+                                        // Cache the result
+                                        let min_ttl = response
+                                            .answers
+                                            .iter()
+                                            .filter(|r| r.rtype == DnsRecordType::A)
+                                            .map(|r| r.ttl)
+                                            .min()
+                                            .unwrap_or(60);
+                                        let records: Vec<DnsResourceRecord> = addrs
+                                            .iter()
+                                            .map(|&ip| DnsResourceRecord::new(
+                                                String::from(hostname),
+                                                DnsRecordType::A,
+                                                DnsClass::In,
+                                                min_ttl,
+                                                ip.to_vec(),
+                                            ))
+                                            .collect();
+                                        let key = (
+                                            StringExt::to_lowercase(hostname),
+                                            DnsRecordType::A,
+                                        );
+                                        self.cache.insert(key, (records, now));
+                                        self.stats.cache_entries += 1;
+                                        let _ = super::udp::udp_close(src_addr, src_port);
+                                        return Ok(addr);
+                                    }
+                                    // NoError but no A records — retry
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {} // malformed / wrong ID — keep waiting
+                    }
+                }
+                core::hint::spin_loop();
+            }
+        }
+
+        let _ = super::udp::udp_close(src_addr, src_port);
+        Err(DnsError::Timeout)
+    }
+}
+
 /// High-level DNS functions
 pub fn create_dns_query(id: u16, hostname: &str, record_type: DnsRecordType) -> Vec<u8> {
     let message = DnsMessage::new_query(id, String::from(hostname), record_type);

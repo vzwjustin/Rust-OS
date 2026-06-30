@@ -315,6 +315,13 @@ impl TcpHeader {
     }
 }
 
+/// Congestion control phase (TCP Tahoe)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CongestionPhase {
+    SlowStart,
+    CongestionAvoidance,
+}
+
 /// TCP connection with complete state management
 #[derive(Debug, Clone)]
 pub struct TcpConnection {
@@ -331,9 +338,15 @@ pub struct TcpConnection {
     pub recv_window: u16,
     pub mss: u16,
     pub rtt: u32,
+    /// RTT variance for RTO calculation (Jacobson/Karels)
+    pub rtt_var: u32,
     pub cwnd: u32,
     pub ssthresh: u32,
+    /// Current congestion control phase
+    pub congestion_phase: CongestionPhase,
     pub retransmit_timeout: u32,
+    /// Absolute timestamp (ms) at which to fire next retransmit; 0 = no timer
+    pub retransmit_at: u64,
     pub send_buffer: Vec<u8>,
     pub recv_buffer: Vec<u8>,
     pub send_unacked: Vec<u8>,
@@ -348,6 +361,10 @@ pub struct TcpConnection {
     pub timestamps_enabled: bool,
     pub syn_retries: u8,
     pub established_time: u64,
+    /// Sequence number of segment currently being timed (for Karn's algorithm)
+    pub rtt_measure_seq: Option<u32>,
+    /// Wall-clock time (ms) when the timed segment was first sent
+    pub rtt_send_time: Option<u64>,
     /// Out-of-order segments pending reassembly: (seq_num, data)
     pub ooo_segments: Vec<(u32, Vec<u8>)>,
 }
@@ -372,10 +389,13 @@ impl TcpConnection {
             send_window: 65535,
             recv_window: 65535,
             mss: 1460,
-            rtt: 100,
-            cwnd: 1,
+            rtt: 1000, // Initial RTT estimate: 1 second
+            rtt_var: 500,
+            cwnd: 1460, // 1 MSS in bytes
             ssthresh: 65535,
+            congestion_phase: CongestionPhase::SlowStart,
             retransmit_timeout: 3000,
+            retransmit_at: 0,
             send_buffer: Vec::new(),
             recv_buffer: Vec::new(),
             send_unacked: Vec::new(),
@@ -390,6 +410,8 @@ impl TcpConnection {
             timestamps_enabled: false,
             syn_retries: 0,
             established_time: 0,
+            rtt_measure_seq: None,
+            rtt_send_time: None,
             ooo_segments: Vec::new(),
         }
     }
@@ -459,28 +481,48 @@ impl TcpConnection {
         self.keep_alive_time = current_time_ms();
     }
 
-    /// Update RTT estimate
+    /// Update RTT estimate using Jacobson/Karels algorithm.
+    /// Must NOT be called for retransmitted segments (Karn's algorithm).
     pub fn update_rtt(&mut self, measured_rtt: u32) {
-        // Simple RTT estimation (Jacobson's algorithm would be better)
+        let diff = if self.rtt > measured_rtt {
+            self.rtt - measured_rtt
+        } else {
+            measured_rtt - self.rtt
+        };
+        self.rtt_var = (self.rtt_var * 3 + diff) / 4;
         self.rtt = (self.rtt * 7 + measured_rtt) / 8;
-        self.retransmit_timeout = self.rtt * 2;
+        // RTO = SRTT + max(1, 4*RTTVAR), capped at 64s, floor 200ms
+        let rto = self.rtt + cmp::max(1, 4 * self.rtt_var);
+        self.retransmit_timeout = cmp::min(cmp::max(rto, 200), 64_000);
     }
 
-    /// Update congestion window (simplified congestion control)
+    /// Update congestion window on new ACK receipt.
     pub fn update_cwnd(&mut self, acked_bytes: u32) {
-        if self.cwnd < self.ssthresh {
-            // Slow start
-            self.cwnd += acked_bytes;
-        } else {
-            // Congestion avoidance
-            self.cwnd += (acked_bytes * self.mss as u32) / self.cwnd;
+        let mss = self.mss as u32;
+        match self.congestion_phase {
+            CongestionPhase::SlowStart => {
+                // Increase by 1 MSS per MSS acked
+                self.cwnd = self.cwnd.saturating_add(cmp::min(acked_bytes, mss));
+                if self.cwnd >= self.ssthresh {
+                    self.congestion_phase = CongestionPhase::CongestionAvoidance;
+                }
+            }
+            CongestionPhase::CongestionAvoidance => {
+                // Increase by MSS²/cwnd per ACK (~1 MSS per RTT)
+                let increment = (mss * mss) / cmp::max(self.cwnd, 1);
+                self.cwnd = self.cwnd.saturating_add(cmp::max(increment, 1));
+            }
         }
     }
 
-    /// Handle congestion event
+    /// Handle congestion event (timeout): TCP Tahoe.
     pub fn handle_congestion(&mut self) {
-        self.ssthresh = cmp::max(self.cwnd / 2, 2 * self.mss as u32);
-        self.cwnd = self.mss as u32;
+        let mss = self.mss as u32;
+        self.ssthresh = cmp::max(self.cwnd / 2, 2 * mss);
+        self.cwnd = mss;
+        self.congestion_phase = CongestionPhase::SlowStart;
+        // Exponential backoff, cap at 64 seconds
+        self.retransmit_timeout = cmp::min(self.retransmit_timeout * 2, 64_000);
     }
 }
 
@@ -991,16 +1033,40 @@ fn handle_established_state(
     if header.flags.ack {
         let ack_num = header.acknowledgment_number;
         if seq_gt(ack_num, connection.send_ack) && seq_leq(ack_num, connection.send_sequence) {
-            // Valid ACK
+            // Valid new ACK
             let acked_bytes = ack_num.wrapping_sub(connection.send_ack);
             connection.send_ack = ack_num;
+
+            // Karn's algorithm: only update RTT if this ACK is not for a
+            // retransmitted segment.  rtt_measure_seq holds the *end* seq of
+            // the segment being timed (None if currently retransmitting).
+            if let (Some(measure_seq), Some(send_time)) =
+                (connection.rtt_measure_seq, connection.rtt_send_time)
+            {
+                if seq_leq(measure_seq, ack_num) {
+                    let now = current_time_ms();
+                    let measured = (now.saturating_sub(send_time)) as u32;
+                    connection.update_rtt(measured);
+                    connection.rtt_measure_seq = None;
+                    connection.rtt_send_time = None;
+                }
+            }
 
             // Update congestion window
             connection.update_cwnd(acked_bytes);
 
-            // Remove acknowledged data from send buffer
+            // Remove acknowledged data from send_unacked
             if acked_bytes as usize <= connection.send_unacked.len() {
                 connection.send_unacked.drain(0..acked_bytes as usize);
+            }
+
+            // Reset or arm retransmit timer
+            if connection.send_unacked.is_empty() {
+                connection.retransmit_at = 0; // nothing to retransmit
+                connection.retransmit_count = 0;
+            } else {
+                let now = current_time_ms();
+                connection.retransmit_at = now + connection.retransmit_timeout as u64;
             }
 
             connection.reset_duplicate_acks();
@@ -1480,7 +1546,17 @@ pub fn tcp_send_data(
     let mut total_sent = 0usize;
 
     for chunk in data.chunks(mss) {
+        // Enforce congestion window: only send while unacked < min(cwnd, rwnd)
+        let effective_window = cmp::min(
+            connection.cwnd as usize,
+            connection.send_window as usize,
+        );
+        if connection.send_unacked.len() + chunk.len() > effective_window {
+            break;
+        }
+
         let seq = connection.send_sequence;
+        let now = current_time_ms();
         let mut flags = TcpFlags::new();
         flags.ack = true;
 
@@ -1500,10 +1576,22 @@ pub fn tcp_send_data(
 
         total_sent += chunk.len();
 
-        // Update connection state: advance send_sequence and track unacked data
+        // Update connection state: advance send_sequence, track unacked data,
+        // arm the retransmit timer, and start RTT measurement for the first
+        // new unacked segment (Karn's algorithm: only time un-retransmitted).
         TCP_MANAGER.update_connection(key, |conn| {
-            conn.send_sequence = conn.send_sequence.wrapping_add(chunk.len() as u32);
+            let end_seq = conn.send_sequence.wrapping_add(chunk.len() as u32);
+            conn.send_sequence = end_seq;
             conn.send_unacked.extend_from_slice(chunk);
+            // Arm retransmit timer if not already running
+            if conn.retransmit_at == 0 {
+                conn.retransmit_at = now + conn.retransmit_timeout as u64;
+            }
+            // Start RTT measurement for the first new segment
+            if conn.rtt_measure_seq.is_none() {
+                conn.rtt_measure_seq = Some(end_seq);
+                conn.rtt_send_time = Some(now);
+            }
         })?;
 
         // Re-read connection for next chunk
@@ -1531,6 +1619,91 @@ pub fn tcp_get_send_confirmed(
     // send_unacked contains data sent but not yet acknowledged.
     // Bytes confirmed = total sent - unacked length
     Ok(connection.send_unacked.len())
+}
+
+/// TCP timer tick — retransmit timed-out segments and handle connection cleanup.
+///
+/// Call this from the kernel timer interrupt handler at regular intervals
+/// (e.g. every 100 ms).  `current_time` is the current monotonic clock in ms.
+pub fn tcp_tick(current_time: u64) {
+    // Collect keys that need retransmit or cleanup to avoid holding the lock
+    // while calling send helpers.
+    let keys_to_process: Vec<_> = {
+        let conns = TCP_MANAGER.connections.read();
+        conns
+            .iter()
+            .filter_map(|(k, conn)| {
+                let needs_retransmit = conn.retransmit_at != 0
+                    && current_time >= conn.retransmit_at
+                    && !conn.send_unacked.is_empty();
+                let needs_cleanup = conn.is_timed_out();
+                if needs_retransmit || needs_cleanup {
+                    Some((*k, needs_retransmit, needs_cleanup))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    for (key, needs_retransmit, needs_cleanup) in keys_to_process {
+        if needs_cleanup {
+            // Connection has been idle too long — force close
+            let _ = TCP_MANAGER.update_connection(key, |conn| {
+                conn.state = TcpState::Closed;
+                conn.retransmit_at = 0;
+            });
+            continue;
+        }
+
+        if needs_retransmit {
+            // Snapshot the segment to retransmit and update state
+            let segment_to_send = {
+                let conns = TCP_MANAGER.connections.read();
+                conns.get(&key).and_then(|conn| {
+                    if conn.send_unacked.is_empty() {
+                        return None;
+                    }
+                    let len = cmp::min(conn.mss as usize, conn.send_unacked.len());
+                    Some((
+                        conn.local_addr,
+                        conn.local_port,
+                        conn.remote_addr,
+                        conn.remote_port,
+                        conn.send_ack, // retransmit from oldest unacked seq
+                        conn.recv_sequence,
+                        conn.recv_window,
+                        conn.send_unacked[..len].to_vec(),
+                    ))
+                })
+            };
+
+            if let Some((
+                src_ip, src_port, dst_ip, dst_port,
+                seq, ack_seq, recv_win, payload,
+            )) = segment_to_send
+            {
+                let mut flags = TcpFlags::new();
+                flags.ack = true;
+                let _ = send_tcp_packet(
+                    src_ip, src_port, dst_ip, dst_port,
+                    seq, ack_seq, flags, recv_win, &payload,
+                );
+            }
+
+            // Update retransmit state: congestion control + backoff
+            let _ = TCP_MANAGER.update_connection(key, |conn| {
+                conn.retransmit_count = conn.retransmit_count.saturating_add(1);
+                // Congestion event on timeout (TCP Tahoe)
+                conn.handle_congestion();
+                // Karn: discard timing info for retransmitted segment
+                conn.rtt_measure_seq = None;
+                conn.rtt_send_time = None;
+                // Next retransmit deadline uses the already-doubled RTO
+                conn.retransmit_at = current_time + conn.retransmit_timeout as u64;
+            });
+        }
+    }
 }
 
 /// TCP get bytes sent — returns total bytes sent (including unacked).
