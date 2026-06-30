@@ -1153,29 +1153,24 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     }
 
     update_substage(8, "Initializing USB host...");
-    match crate::drivers::usb::init() {
-        Ok(stats) if stats.msc_enumerated > 0 => {
-            report_success(&format!(
-                "USB: {} hosts, {} MSC devices",
-                stats.host_count, stats.msc_enumerated
-            ));
-        }
-        Ok(stats) => {
-            report_success(&format!("USB: {} host controllers", stats.host_count));
-        }
-        Err(e) => report_warning("USB", e),
+    if let Err(e) = crate::drivers::usb::init() {
+        report_warning("USB", e);
+    }
+    unsafe {
+        crate::early_serial_write_str("BOOTUI:usb-done\n");
     }
 
     update_substage(8, "Initializing SCSI mid-layer...");
     let scsi = crate::drivers::scsi::init();
-    if scsi.hosts_registered > 0 {
-        report_success(&format!(
-            "SCSI: {} hosts, {} devices",
-            scsi.hosts_registered, scsi.devices_registered
-        ));
+    if !scsi.errors.is_empty() {
+        report_warning("SCSI", "one or more devices failed to register");
+    } else {
+        let _ = scsi;
+    }
+    unsafe {
+        crate::early_serial_write_str("BOOTUI:scsi-done\n");
     }
 
-    update_substage(8, "Scanning md arrays...");
     let md = crate::md::init();
     if md.arrays_registered > 0 {
         report_success(&format!("md: {} arrays registered", md.arrays_registered));

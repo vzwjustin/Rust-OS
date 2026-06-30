@@ -232,9 +232,9 @@ fn enumerate_on_host(host: &XhciHost) -> usize {
 
 // ── Software USB stack exercise ─────────────────────────────────────────
 
-/// Build a virtual controller, enumerate the attached devices and run both a
-/// HID interrupt poll and a BOT read/write round-trip. Returns the controller
-/// id together with the number of HID devices and BOT round-trips that worked.
+/// Build a virtual controller, enumerate the attached devices and run a HID
+/// interrupt poll plus non-destructive BOT discovery. Returns the controller id
+/// together with the number of HID and BOT devices found.
 fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
     let mut controller = xhci::XhciController::new("soft-xhci", 4);
     controller.run();
@@ -273,7 +273,7 @@ fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
             match exercise_bot(&mut controller, &mut bot) {
                 Ok(()) => {
                     crate::serial_println!(
-                        "usb-bot: slot={} {} blocks x {} bytes verified",
+                        "usb-bot: slot={} {} blocks x {} bytes",
                         bot.slot,
                         bot.block_count,
                         bot.block_size
@@ -290,7 +290,7 @@ fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
     (id, hid_devices, bot_devices)
 }
 
-/// Run INQUIRY → READ CAPACITY → WRITE(10) → READ(10) and verify the data.
+/// Run INQUIRY and READ CAPACITY for early boot discovery.
 fn exercise_bot(
     hc: &mut dyn hcd::HostController,
     bot: &mut class::storage::BotDevice,
@@ -300,88 +300,81 @@ fn exercise_bot(
     if blocks == 0 || block_size == 0 {
         return Err("usb-bot: zero capacity");
     }
-
-    let mut write_buf = alloc::vec![0u8; block_size as usize];
-    for (i, b) in write_buf.iter_mut().enumerate() {
-        *b = (i as u8) ^ 0xA5;
-    }
-    bot.write10(hc, 0, 1, &mut write_buf)?;
-
-    let mut read_buf = alloc::vec![0u8; block_size as usize];
-    bot.read10(hc, 0, 1, &mut read_buf)?;
-
-    if read_buf != write_buf {
-        return Err("usb-bot: read-back mismatch");
-    }
     Ok(())
 }
 
 // ── Public init / stats ─────────────────────────────────────────────────
 
 /// Initialize USB host controllers and enumerate devices. Idempotent.
-pub fn init() -> Result<UsbInitStats, &'static str> {
+pub fn init() -> Result<(), &'static str> {
     {
         let mut init = USB_INITIALIZED.write();
         if *init {
-            return Ok(get_stats());
+            return Ok(());
         }
         *init = true;
     }
 
-    let pci_devices = crate::pci::list_devices();
     let mut hosts = alloc::vec::Vec::new();
     let mut msc_enumerated = 0usize;
 
-    for dev in pci_devices.iter() {
-        if dev.class != XHCI_PCI_CLASS
-            || dev.subclass != XHCI_PCI_SUBCLASS
-            || dev.prog_if != XHCI_PCI_PROG_IF
-        {
-            continue;
-        }
-
-        match probe_xhci_controller(dev) {
-            Ok(host) => {
-                crate::serial_println!(
-                    "usb: xHCI {} {:04x}:{:04x} slots={} ports={} ver={:x}",
-                    host.location,
-                    host.vendor_id,
-                    host.device_id,
-                    host.max_slots,
-                    host.max_ports,
-                    host.hci_version
-                );
-                msc_enumerated += enumerate_on_host(&host);
-                hosts.push(host);
+    {
+        let scanner = crate::pci::get_pci_scanner().lock();
+        for dev in scanner.get_devices().iter() {
+            if dev.class != XHCI_PCI_CLASS
+                || dev.subclass != XHCI_PCI_SUBCLASS
+                || dev.prog_if != XHCI_PCI_PROG_IF
+            {
+                continue;
             }
-            Err(e) => {
-                crate::serial_println!("usb: xHCI probe failed for {}: {}", dev.location(), e);
+
+            match probe_xhci_controller(dev) {
+                Ok(host) => {
+                    crate::serial_println!(
+                        "usb: xHCI {} {:04x}:{:04x} slots={} ports={} ver={:x}",
+                        host.location,
+                        host.vendor_id,
+                        host.device_id,
+                        host.max_slots,
+                        host.max_ports,
+                        host.hci_version
+                    );
+                    msc_enumerated += enumerate_on_host(&host);
+                    hosts.push(host);
+                }
+                Err(e) => {
+                    crate::serial_println!("usb: xHCI probe failed for {}: {}", dev.location(), e);
+                }
             }
         }
     }
 
     if hosts.is_empty() {
-        let host = XhciHost {
-            id: NEXT_HOST_ID.fetch_add(1, Ordering::SeqCst),
-            location: String::from("soft"),
-            vendor_id: 0,
-            device_id: 0,
-            mmio_base: 0,
-            cap_length: 0,
-            hci_version: 0x0100,
-            max_slots: 32,
-            max_ports: 8,
-            state: UsbHostState::Running,
+        let stats = UsbInitStats {
+            host_count: 0,
+            device_count: 0,
+            msc_enumerated,
+            enumerated_devices: 0,
+            hid_devices: 0,
+            bot_devices: 0,
         };
-        msc_enumerated += enumerate_on_host(&host);
-        hosts.push(host);
-        crate::serial_println!("usb: soft xHCI host (no PCI controller)");
+        *XHCI_HOSTS.write() = alloc::vec::Vec::new();
+        *LAST_STATS.write() = stats;
+        crate::serial_println!("usb: ready hosts=0 soft-ctrl=0 enum=0 hid=0 bot=0 msc=0");
+        crate::serial_println!("usb: no hardware devices to publish");
+        unsafe {
+            crate::early_serial_write_str("USB:fast-ret\n");
+        }
+        return Ok(());
     }
 
     *XHCI_HOSTS.write() = hosts;
 
-    // Bring up the software USB stack and exercise the transfer paths.
-    let (_ctrl_id, hid_devices, bot_devices) = build_and_exercise_virtual_stack();
+    // Linux does not fabricate USB devices during boot. The synthetic xHCI
+    // stack remains available to tests, but boot init only publishes real
+    // hardware discovered above.
+    let hid_devices = 0usize;
+    let bot_devices = 0usize;
     let enumerated_devices = hid_devices + bot_devices;
 
     let stats = UsbInitStats {
@@ -404,21 +397,24 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
         msc_enumerated
     );
 
-    publish_to_base();
-    Ok(stats)
+    if stats.host_count != 0 || stats.device_count != 0 || stats.enumerated_devices != 0 {
+        crate::serial_println!("usb: publishing devices to driver core");
+        publish_to_base();
+        crate::serial_println!("usb: published devices to driver core");
+    } else {
+        crate::serial_println!("usb: no hardware devices to publish");
+    }
+    Ok(())
 }
 
 /// Publish representative USB devices into the unified device model.
 fn publish_to_base() {
     use crate::drivers::base;
-    if base::device_exists("usb-kbd0") {
-        return;
-    }
-    if let Ok(id) = base::register_device_simple("usb", "usb-kbd0", "usb,hid-keyboard") {
+    if let Ok(id) = base::register_device_simple_deferred("usb", "usb-kbd0", "usb,hid-keyboard") {
         let _ = base::set_property(id, "subsystem", "usb");
         let _ = base::set_property(id, "device_type", "hid");
     }
-    if let Ok(id) = base::register_device_simple("usb", "usb-disk0", "usb,mass-storage") {
+    if let Ok(id) = base::register_device_simple_deferred("usb", "usb-disk0", "usb,mass-storage") {
         let _ = base::set_property(id, "subsystem", "usb");
         let _ = base::set_property(id, "device_type", "mass-storage");
     }
@@ -435,11 +431,7 @@ pub struct UsbInitStats {
 }
 
 pub fn get_stats() -> UsbInitStats {
-    let mut stats = *LAST_STATS.read();
-    // Reflect live registry sizes in case they changed since init.
-    stats.host_count = XHCI_HOSTS.read().len() + CONTROLLERS.read().len();
-    stats.device_count = USB_DEVICES.read().len();
-    stats
+    *LAST_STATS.read()
 }
 
 pub fn host_count() -> usize {

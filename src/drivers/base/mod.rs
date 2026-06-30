@@ -121,6 +121,17 @@ pub fn register_device(
     class: &str,
     compatible: &str,
 ) -> Result<u32, &'static str> {
+    register_device_with_probe(name, parent, bus, class, compatible, true)
+}
+
+fn register_device_with_probe(
+    name: &str,
+    parent: Option<u32>,
+    bus: &str,
+    class: &str,
+    compatible: &str,
+    probe_now: bool,
+) -> Result<u32, &'static str> {
     if let Some(p) = parent {
         if !DEVICES.read().contains_key(&p) {
             return Err("base: parent device not found");
@@ -150,7 +161,9 @@ pub fn register_device(
         c.device_ids.push(id);
     }
 
-    try_bind_device(id);
+    if probe_now {
+        try_bind_device(id);
+    }
     Ok(id)
 }
 
@@ -368,6 +381,21 @@ pub fn register_device_simple(
     register_bus(bus)?;
     register_class("device")?;
     register_device(name, None, bus, "device", compatible)
+}
+
+/// Register a simple device without synchronously probing drivers.
+///
+/// Early boot buses use this when publishing discovered devices before the full
+/// driver-core probe phase is ready. The device is still visible through the
+/// unified model and can be bound later by driver registration or explicit bind.
+pub fn register_device_simple_deferred(
+    bus: &str,
+    name: &str,
+    compatible: &str,
+) -> Result<u32, &'static str> {
+    register_bus(bus)?;
+    register_class("device")?;
+    register_device_with_probe(name, None, bus, "device", compatible, false)
 }
 
 /// List the names of every device currently registered on `bus`.

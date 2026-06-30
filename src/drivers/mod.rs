@@ -1001,58 +1001,77 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("ufs: init failed: {}", e);
     }
 
+    unsafe {
+        crate::early_serial_write_str("DRV:usb-call\n");
+    }
     if let Err(e) = usb::init() {
         crate::serial_println!("usb: init failed: {}", e);
     }
+    unsafe {
+        crate::early_serial_write_str("DRV:usb-ret\n");
+    }
 
+    crate::serial_println!("drivers: post-usb vhost");
     if let Err(e) = vhost::init() {
         crate::serial_println!("vhost: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb w1");
     if let Err(e) = w1::init() {
         crate::serial_println!("w1: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb vdpa");
     if let Err(e) = vdpa::init() {
         crate::serial_println!("vdpa: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb uio");
     if let Err(e) = uio::init() {
         crate::serial_println!("uio: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb remoteproc");
     if let Err(e) = remoteproc::init() {
         crate::serial_println!("remoteproc: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb perf");
     if let Err(e) = perf::init() {
         crate::serial_println!("perf: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb pnp");
     if let Err(e) = pnp::init() {
         crate::serial_println!("pnp: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb ata");
     if let Err(e) = ata::init() {
         crate::serial_println!("ata: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb bus");
     if let Err(e) = bus::init() {
         crate::serial_println!("bus: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb cache");
     if let Err(e) = cache::init() {
         crate::serial_println!("cache: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb clocksource");
     if let Err(e) = clocksource::init() {
         crate::serial_println!("clocksource: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb irqchip");
     if let Err(e) = irqchip::init() {
         crate::serial_println!("irqchip: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb media");
     if let Err(e) = media::init() {
         crate::serial_println!("media: init failed: {}", e);
     }

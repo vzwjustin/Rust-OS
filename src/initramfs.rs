@@ -383,8 +383,10 @@ pub fn spawn_userspace_init(
     // Prefer the native Rust init: install it at /sbin/init before resolving.
     install_native_init();
     let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
-    crate::linux_compat::desktop::spawn_session_init(path, boot)
-        .map_err(|_| InitramfsError::ExtractionFailed)
+    let pid = crate::linux_compat::desktop::spawn_session_init(path, boot)
+        .map_err(|_| InitramfsError::ExtractionFailed)?;
+    crate::user_sched::queue_user_pid(pid);
+    Ok(pid)
 }
 
 /// Try to exec a Linux-style init fallback and enter user mode.

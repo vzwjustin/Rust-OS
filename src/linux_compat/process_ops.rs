@@ -399,6 +399,7 @@ fn build_linux_initial_stack(
     }
 
     let execfn_addr = unsafe { push_cstring(&mut sp, exec_path) };
+    sp &= !0xF;
 
     let phdr_addr = compute_phdr_addr(loaded, header);
     let auxv_entries: [(u64, u64); 9] = [
@@ -415,6 +416,14 @@ fn build_linux_initial_stack(
         (auxv::AT_RANDOM, random_addr),
         (auxv::AT_NULL, 0),
     ];
+
+    let stack_qwords =
+        auxv_entries.len() * 2 + 1 + env_addrs.len() + 1 + arg_addrs.len() + 1;
+    if stack_qwords % 2 != 0 {
+        unsafe {
+            push_u64(&mut sp, 0);
+        }
+    }
 
     for &(tag, val) in auxv_entries.iter().rev() {
         unsafe {
