@@ -210,9 +210,9 @@ struct IoUring {
     /// IORING_REGISTER_BUFFERS: list of (base_addr, len) registered buffer regions
     registered_buffers: Vec<(u64, u64)>,
     /// Registered file-descriptors for IORING_REGISTER_FILES
-    registered_files: Vec<i32>,
-    /// Per-SQE timeout deadlines (sqe user_data → absolute tick deadline)
-    timeout_deadlines: Vec<u64>,
+    registered_files: Vec<Option<i32>>,
+    /// Per-SQE timeout deadlines stored as (user_data, deadline_ns) pairs
+    timeout_deadlines: Vec<(u64, u64)>,
 }
 
 pub fn init() {
@@ -1123,11 +1123,11 @@ pub fn register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> LinuxResult<i32
             if nr_args == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let mut files: Vec<i32> = Vec::new();
+            let mut files: Vec<Option<i32>> = Vec::new();
             for i in 0..nr_args as u64 {
                 let fd_addr = arg + i * 4;
                 let raw_fd: u32 = copy_from_user(fd_addr)?;
-                files.push(if raw_fd as i32 == -1 { -1 } else { raw_fd as i32 });
+                files.push(if raw_fd as i32 == -1 { None } else { Some(raw_fd as i32) });
             }
             let mut rings = RINGS.write();
             let ring = rings.get_mut(&id).ok_or(LinuxError::EBADF)?;
@@ -1155,9 +1155,9 @@ pub fn register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> LinuxResult<i32
                 let fd_addr = update.fds + i * 4;
                 let raw_fd: u32 = copy_from_user(fd_addr)?;
                 if ring.registered_files.len() <= slot {
-                    ring.registered_files.resize(slot + 1, -1);
+                    ring.registered_files.resize(slot + 1, None);
                 }
-                ring.registered_files[slot] = if raw_fd as i32 == -1 { -1 } else { raw_fd as i32 };
+                ring.registered_files[slot] = if raw_fd as i32 == -1 { None } else { Some(raw_fd as i32) };
             }
             Ok(nr_args as i32)
         }
