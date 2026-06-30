@@ -2,6 +2,42 @@
 //!
 //! This module handles loading and extracting the initial RAM filesystem
 //! which contains the Linux userspace environment (Alpine Linux).
+//!
+//! ## Fidelity notes vs. Linux `init/do_mounts*.c`
+//!
+//! - **devtmpfs-equivalent**: Linux's `do_mounts.c::prepare_namespace()`
+//!   calls `devtmpfs_mount()` to populate a minimal `/dev` (console, null,
+//!   ...) before the real root is mounted. This kernel does the analogous
+//!   thing in a different order: `vfs::init()` mounts an in-memory ramfs at
+//!   `/` and calls `vfs::devfs::install_dev()` to create `/dev/console`,
+//!   `/dev/null`, etc, *before* `init_initramfs()` (this module) extracts
+//!   the cpio archive on top of that same root. So `/dev` device nodes exist
+//!   prior to extraction, matching the devtmpfs-before-real-root ordering;
+//!   see `boot_ui.rs`'s `FileSystemMount` stage for the call order.
+//!
+//! - **No initrd-style pivot**: Linux's `do_mounts_initrd.c::handle_initrd()`
+//!   pivots a *legacy initrd* image into `/root`, optionally execs
+//!   `/linuxrc`, then moves `/root` to `/` before handing off to the real
+//!   init. That dance only applies when the kernel intends to mount a
+//!   separate real root device afterward. This kernel's cpio image follows
+//!   modern Linux's *unified initramfs* model instead (the same model the
+//!   mainline kernel uses since dracut/initramfs-tools became standard):
+//!   the cpio contents are extracted directly onto the final root VFS and,
+//!   if `/init` (or one of the Linux init fallbacks below) is present, it is
+//!   exec'd in place — see `init/main.c: kernel_init()`'s
+//!   "if rootfs has /init, run it directly" path, which likewise skips
+//!   `prepare_namespace()`/`do_mounts` entirely. There is currently no
+//!   separate real root block device to switch to, so no switch_root
+//!   equivalent is implemented; `root=`/`rootfstype=` are parsed by
+//!   `kernel_cmdline` for future use but not yet consulted here.
+//!
+//! - **`root=`/`rootfstype=`/`init=` cmdline**: parsed by
+//!   `crate::kernel_cmdline`. `init=` is consulted by
+//!   `find_userspace_init()` below. `root=`/`rootfstype=` have no effect yet
+//!   because there is no real root device to mount (see above) — this
+//!   kernel also has no actual boot command line source wired up yet (the
+//!   `bootloader` 0.9.x `BootInfo` does not carry one); see
+//!   `kernel_cmdline`'s module docs for the plan.
 
 use crate::vfs::{get_vfs, InodeType, OpenFlags};
 use alloc::format;
@@ -300,6 +336,8 @@ const ENV_XDG_RUNTIME_DIR_C: &[u8] = b"XDG_RUNTIME_DIR=/run/user/0\0";
 const ENV_XDG_CURRENT_DESKTOP_C: &[u8] = b"XDG_CURRENT_DESKTOP=ubuntu:GNOME\0";
 const ENV_XDG_SESSION_TYPE_C: &[u8] = b"XDG_SESSION_TYPE=wayland\0";
 const ENV_WAYLAND_DISPLAY_C: &[u8] = b"WAYLAND_DISPLAY=wayland-0\0";
+const ENV_DISPLAY_C: &[u8] = b"DISPLAY=:0\0";
+const ENV_DESKTOP_SESSION_C: &[u8] = b"DESKTOP_SESSION=ubuntu\0";
 
 fn static_cstr(bytes: &'static [u8]) -> &'static core::ffi::CStr {
     // SAFETY: all callers pass static byte strings with exactly one trailing NUL.
@@ -317,7 +355,34 @@ fn init_path_cstr(path: &str) -> Option<&'static core::ffi::CStr> {
 }
 
 /// Return the first userspace init path present on the root VFS.
+///
+/// Linux (`init/main.c: kernel_init`) tries an explicit `init=<path>`
+/// command line override first via `run_init_process(execute_command)`, and
+/// only falls back to the built-in search order
+/// (`/sbin/init`, `/etc/init`, `/bin/init`, `/bin/sh`) when no override was
+/// given. We mirror that: consult `kernel_cmdline::init_override()` before
+/// walking `USERSPACE_INIT_PATHS`.
+///
+/// Note: unlike Linux, where a failed `init=` exec is fatal (panic, no
+/// fallback), an override that does not resolve on this VFS here falls
+/// through to the default search order rather than failing boot outright —
+/// this kernel does not yet have a hard "no init found" panic path.
 pub fn find_userspace_init() -> Option<&'static str> {
+    if let Some(override_path) = crate::kernel_cmdline::init_override() {
+        // USERSPACE_INIT_PATHS are the only paths we can hand back as a
+        // `&'static str` (and the only ones `init_path_cstr` knows how to
+        // turn into a NUL-terminated exec path below); an override that
+        // happens to match one of them takes priority over the scan order.
+        if let Some(known) = USERSPACE_INIT_PATHS
+            .iter()
+            .find(|p| **p == override_path.as_str())
+        {
+            if crate::vfs::vfs_stat(known).is_ok() {
+                return Some(known);
+            }
+        }
+    }
+
     for path in USERSPACE_INIT_PATHS {
         if crate::vfs::vfs_stat(path).is_ok() {
             return Some(path);
@@ -338,7 +403,7 @@ pub fn spawn_userspace_init(
 ) -> Result<u32, InitramfsError> {
     let path = find_userspace_init().ok_or(InitramfsError::InitNotFound)?;
     crate::linux_compat::desktop::spawn_session_init(path, boot)
-        .map_err(|_| InitramfsError::InitNotFound)
+        .map_err(|_| InitramfsError::ExtractionFailed)
 }
 
 /// Try to exec a Linux-style init fallback and enter user mode.
@@ -367,13 +432,15 @@ pub unsafe fn boot_userspace_init() -> ! {
                         core::ptr::null(),
                     ],
                 );
-                let envp: [*const u8; 7] = [
+                let envp: [*const u8; 9] = [
                     ENV_HOME_C.as_ptr(),
                     ENV_PATH_C.as_ptr(),
                     ENV_XDG_RUNTIME_DIR_C.as_ptr(),
                     ENV_XDG_CURRENT_DESKTOP_C.as_ptr(),
                     ENV_XDG_SESSION_TYPE_C.as_ptr(),
                     ENV_WAYLAND_DISPLAY_C.as_ptr(),
+                    ENV_DISPLAY_C.as_ptr(),
+                    ENV_DESKTOP_SESSION_C.as_ptr(),
                     core::ptr::null(),
                 ];
                 if process_ops::execve_and_enter_user_mode(
@@ -681,8 +748,15 @@ pub fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, InitramfsError> {
         data[footer_offset + 3],
     ]) as usize;
 
-    // Decompress using miniz_oxide's streaming decompressor
-    const TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF: u32 = 0x00000008;
+    // Decompress using miniz_oxide's streaming decompressor.
+    //
+    // We feed the full payload at once and grow a single contiguous output
+    // buffer, so the decompressor must treat the output as a non-wrapping
+    // buffer. Use miniz_oxide's own constant (value 4) — a previous hand-coded
+    // literal of 0x08 was actually TINFL_FLAG_COMPUTE_ADLER32, which put the
+    // decoder in wrapping/ring-buffer mode and corrupted every back-reference,
+    // failing decompression of the entire initramfs.
+    use miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
 
     let mut decompressor = DecompressorOxide::new();
     // Pre-allocate with expected size if reasonable, otherwise start smaller
@@ -1064,15 +1138,35 @@ fn extract_cpio(data: &[u8]) -> Result<(), InitramfsError> {
             InodeType::Symlink => {
                 // Symbolic links: file_data contains the target path as UTF-8.
                 // Use the VFS symlink() function to create a real symlink.
-                let target = core::str::from_utf8(file_data).map_err(|_| {
-                    crate::serial_println!("initramfs: bad symlink target: {}", path);
-                    InitramfsError::ExtractionFailed
-                })?;
-                let target = target.trim_end_matches('\0');
-                vfs.symlink(target, &path).map_err(|_| {
-                    crate::serial_println!("initramfs: symlink failed: {} -> {}", path, target);
-                    InitramfsError::ExtractionFailed
-                })?;
+                //
+                // Extraction is best-effort, like a real initramfs unpacker: a
+                // single link that can't be created (e.g. its path was already
+                // materialized by early kernel init such as /var/run, or its
+                // parent is missing) must NOT abort the whole rootfs. Aborting
+                // here previously discarded the entire Alpine tree — including
+                // the /sbin/init and /bin/sh links to /bin/busybox that the
+                // kernel needs to exec userspace.
+                match core::str::from_utf8(file_data) {
+                    Ok(raw) => {
+                        let target = raw.trim_end_matches('\0');
+                        match vfs.symlink(target, &path) {
+                            Ok(()) => {}
+                            Err(crate::vfs::VfsError::AlreadyExists) => {
+                                // Already present (kernel pre-created it). Fine.
+                            }
+                            Err(_) => {
+                                crate::serial_println!(
+                                    "initramfs: skipped symlink: {} -> {}",
+                                    path,
+                                    target
+                                );
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        crate::serial_println!("initramfs: bad symlink target: {}", path);
+                    }
+                }
             }
 
             InodeType::CharDevice | InodeType::BlockDevice => {

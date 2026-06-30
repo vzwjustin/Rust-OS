@@ -68,6 +68,37 @@ const DRM_IOCTL_PRIME_HANDLE_TO_FD: u32 = drm_iowr(0x2C, 0);
 const DRM_IOCTL_PRIME_FD_TO_HANDLE: u32 = drm_iowr(0x2D, 0);
 const DRM_IOCTL_SET_VERSION: u32 = drm_iowr(0x07, 0);
 const DRM_IOCTL_MODESET_CTL: u32 = drm_iow(0x08, 0);
+const DRM_IOCTL_GET_UNIQUE: u32 = drm_iowr(0x01, 0);
+const DRM_IOCTL_GET_CLIENT: u32 = drm_iowr(0x05, 0);
+const DRM_IOCTL_GET_STATS: u32 = drm_ior(0x06, 0);
+const DRM_IOCTL_SET_MASTER: u32 = drm_io(0x1E);
+const DRM_IOCTL_DROP_MASTER: u32 = drm_io(0x1F);
+const DRM_IOCTL_GEM_CLOSE: u32 = drm_iow(0x0B, 0);
+const DRM_IOCTL_GEM_FLINK: u32 = drm_iowr(0x0A, 0);
+const DRM_IOCTL_GEM_OPEN: u32 = drm_iowr(0x0C, 0);
+const DRM_IOCTL_WAIT_VBLANK: u32 = drm_iowr(0x3A, 0);
+const DRM_IOCTL_MODE_GETPLANE: u32 = drm_iowr(0x0B, 0);
+const DRM_IOCTL_MODE_SETPLANE: u32 = drm_iowr(0x0D, 0);
+const DRM_IOCTL_MODE_ADDFB2: u32 = drm_iowr(0xB8, 0);
+const DRM_IOCTL_MODE_GETFB2: u32 = drm_iowr(0xCE, 0);
+const DRM_IOCTL_MODE_CLOSEFB: u32 = drm_iowr(0xD0, 0);
+const DRM_IOCTL_MODE_CURSOR2: u32 = drm_iowr(0xBB, 0);
+const DRM_IOCTL_MODE_ATOMIC: u32 = drm_iowr(0xBC, 0);
+const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u32 = drm_iowr(0xB9, 0);
+const DRM_IOCTL_MODE_OBJ_SETPROPERTY: u32 = drm_iowr(0xBA, 0);
+const DRM_IOCTL_MODE_CREATEPROPBLOB: u32 = drm_iowr(0xBD, 0);
+const DRM_IOCTL_MODE_DESTROYPROPBLOB: u32 = drm_iowr(0xBE, 0);
+const DRM_IOCTL_SYNCOBJ_CREATE: u32 = drm_iowr(0xBF, 0);
+const DRM_IOCTL_SYNCOBJ_DESTROY: u32 = drm_iowr(0xC0, 0);
+const DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD: u32 = drm_iowr(0xC1, 0);
+const DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE: u32 = drm_iowr(0xC2, 0);
+const DRM_IOCTL_SYNCOBJ_TRANSFER: u32 = drm_iowr(0xCC, 0);
+const DRM_IOCTL_SYNCOBJ_WAIT: u32 = drm_iowr(0xC3, 0);
+const DRM_IOCTL_SYNCOBJ_RESET: u32 = drm_iowr(0xC4, 0);
+const DRM_IOCTL_SYNCOBJ_SIGNAL: u32 = drm_iowr(0xC5, 0);
+const DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT: u32 = drm_iowr(0xCA, 0);
+const DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL: u32 = drm_iowr(0xCD, 0);
+const DRM_IOCTL_SET_CLIENT_NAME: u32 = drm_iow(0x33, 0);
 
 // ── DRM Device Inode ────────────────────────────────────────────────────
 
@@ -176,6 +207,59 @@ impl DrmInode {
                 }
             }
             DRM_IOCTL_SET_VERSION | DRM_IOCTL_MODESET_CTL => Ok(0),
+            DRM_IOCTL_GET_UNIQUE => Ok(0),
+            DRM_IOCTL_GET_CLIENT => Ok(0),
+            DRM_IOCTL_GET_STATS => Ok(0),
+            DRM_IOCTL_SET_MASTER => Ok(0),
+            DRM_IOCTL_DROP_MASTER => Ok(0),
+            DRM_IOCTL_GEM_CLOSE => Ok(0),
+            DRM_IOCTL_GEM_FLINK => Ok(0),
+            DRM_IOCTL_GEM_OPEN => Ok(0),
+            DRM_IOCTL_WAIT_VBLANK => {
+                if let Some(drm) = drm_compat::get_drm_compat() {
+                    let crtc_id = 0u32;
+                    let _ = drm.wait_vblank(crtc_id, 0);
+                    Ok(0)
+                } else {
+                    Err("DRM not initialized")
+                }
+            }
+            DRM_IOCTL_MODE_GETPLANE | DRM_IOCTL_MODE_SETPLANE => {
+                if drm_compat::get_drm_compat().is_some() {
+                    Ok(0)
+                } else {
+                    Err("DRM not initialized")
+                }
+            }
+            DRM_IOCTL_MODE_ADDFB2 | DRM_IOCTL_MODE_GETFB2 | DRM_IOCTL_MODE_CLOSEFB => {
+                if drm_compat::get_drm_compat().is_some() {
+                    Ok(0)
+                } else {
+                    Err("DRM not initialized")
+                }
+            }
+            DRM_IOCTL_MODE_CURSOR2 => Ok(0),
+            DRM_IOCTL_MODE_ATOMIC => {
+                if drm_compat::get_drm_compat().is_some() {
+                    Ok(0)
+                } else {
+                    Err("DRM not initialized")
+                }
+            }
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES | DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
+                if drm_compat::get_drm_compat().is_some() {
+                    Ok(0)
+                } else {
+                    Err("DRM not initialized")
+                }
+            }
+            DRM_IOCTL_MODE_CREATEPROPBLOB | DRM_IOCTL_MODE_DESTROYPROPBLOB => Ok(0),
+            DRM_IOCTL_SYNCOBJ_CREATE | DRM_IOCTL_SYNCOBJ_DESTROY => Ok(0),
+            DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD | DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE => Ok(0),
+            DRM_IOCTL_SYNCOBJ_TRANSFER => Ok(0),
+            DRM_IOCTL_SYNCOBJ_WAIT | DRM_IOCTL_SYNCOBJ_RESET | DRM_IOCTL_SYNCOBJ_SIGNAL => Ok(0),
+            DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT | DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL => Ok(0),
+            DRM_IOCTL_SET_CLIENT_NAME => Ok(0),
             _ => {
                 // Unknown DRM ioctl
                 Err("Unknown DRM ioctl")

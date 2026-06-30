@@ -36,7 +36,7 @@ use x86_64::VirtAddr;
 
 use super::elf_loader::{elf_constants, Elf64ProgramHeader, ElfLoader};
 use crate::memory::PAGE_SIZE;
-use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_stat, OpenFlags};
+use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_readlink, vfs_stat, InodeType, OpenFlags};
 
 /// Describes one entry in the runtime link-map chain.
 ///
@@ -605,14 +605,48 @@ impl DynamicLinker {
         vfs_stat(path).is_ok()
     }
 
+    fn resolve_library_path(&self, path: &str) -> DynamicLinkerResult<String> {
+        let mut current = String::from(path);
+
+        for _ in 0..8 {
+            let stat = vfs_stat(&current)
+                .map_err(|_| DynamicLinkerError::LibraryNotFound(current.clone()))?;
+            if stat.inode_type != InodeType::Symlink {
+                return Ok(current);
+            }
+
+            let target = vfs_readlink(&current)
+                .map_err(|_| DynamicLinkerError::LibraryNotFound(current.clone()))?;
+            if target.starts_with('/') {
+                current = target;
+                continue;
+            }
+
+            let parent = current
+                .rsplit_once('/')
+                .map(|(parent, _)| parent)
+                .unwrap_or("");
+            current = if parent.is_empty() {
+                format!("/{}", target)
+            } else {
+                format!("{}/{}", parent, target)
+            };
+        }
+
+        Err(DynamicLinkerError::InvalidElf(String::from(
+            "too many library symlink levels",
+        )))
+    }
+
     /// Load a shared library file from filesystem
     ///
     /// Returns the library data if successfully loaded
     pub fn load_library_file(&self, path: &str) -> DynamicLinkerResult<Vec<u8>> {
         const MAX_LIBRARY_SIZE: usize = 64 * 1024 * 1024;
 
-        let stat =
-            vfs_stat(path).map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
+        let resolved_path = self.resolve_library_path(path)?;
+        let stat = vfs_stat(&resolved_path)
+            .map_err(|_| DynamicLinkerError::LibraryNotFound(resolved_path.clone()))?;
 
         let size = stat.size as usize;
         if size == 0 {
@@ -626,8 +660,8 @@ impl DynamicLinker {
             )));
         }
 
-        let fd = vfs_open(path, OpenFlags::RDONLY, 0)
-            .map_err(|_| DynamicLinkerError::LibraryNotFound(path.to_string()))?;
+        let fd = vfs_open(&resolved_path, OpenFlags::RDONLY, 0)
+            .map_err(|_| DynamicLinkerError::LibraryNotFound(resolved_path.clone()))?;
 
         let mut buffer = alloc::vec![0u8; size];
         let mut offset = 0usize;

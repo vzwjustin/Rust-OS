@@ -210,40 +210,35 @@ pub fn prepare_userspace_session() {
 /// on the given PID.  Mirrors Linux's `console_on_rootfs()` which does
 /// `sys_open("/dev/console", O_RDWR)` then `sys_dup(0)` twice.
 pub fn console_on_rootfs(pid: crate::process::Pid) {
-    let pm = crate::process::get_process_manager();
-    pm.with_process_mut(pid, |pcb| {
-        // Open /dev/console through the kernel VFS manager.
-        if let Ok(vfs_fd) =
-            crate::fs::vfs().open("/dev/console", crate::fs::OpenFlags::read_write())
-        {
-            let console_desc = crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0);
-            // Replace the default StandardInput/Output/Error with the real
-            // /dev/console VFS handle, matching Linux's fd 0/1/2 setup.
-            pcb.file_descriptors.insert(0, console_desc.clone());
-            pcb.file_descriptors.insert(1, console_desc.clone());
-            pcb.file_descriptors.insert(2, console_desc);
-            pcb.fd_table
-                .insert(0, crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0));
-            pcb.fd_table
-                .insert(1, crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0));
-            pcb.fd_table
-                .insert(2, crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0));
-        }
-    });
+    crate::serial_println!("linux_compat/desktop: console setup begin pid={}", pid);
+    // create_process() has already installed fd 0/1/2 as kernel-backed
+    // StandardInput/Output/Error. Do not block PID 1 on /dev/console here:
+    // devfs console open currently depends on later userspace/device plumbing.
+    crate::serial_println!("linux_compat/desktop: console setup done pid={}", pid);
 }
 
 pub fn spawn_session_init(path: &str, boot: SessionBoot) -> LinuxResult<u32> {
+    crate::serial_println!(
+        "linux_compat/desktop: spawn_session_init begin path={} boot={:?}",
+        path,
+        boot
+    );
     if !super::is_linux_compat_ready() {
+        crate::serial_println!("linux_compat/desktop: linux compat not ready");
         return Err(LinuxError::ENOSYS);
     }
 
+    crate::serial_println!("linux_compat/desktop: prepare session runtime");
     prepare_userspace_session();
+    crate::serial_println!("linux_compat/desktop: mark session boot");
     mark_session_boot(boot);
 
     use crate::process::scheduler::create_process;
     use crate::process::Priority;
 
+    crate::serial_println!("linux_compat/desktop: create init process");
     let pid = create_process(Some(0), Priority::Normal, "init").map_err(|_| LinuxError::EAGAIN)?;
+    crate::serial_println!("linux_compat/desktop: created init pid={}", pid);
 
     // Open /dev/console as fd 0/1/2 for the init process.
     // Mirrors Linux's console_on_rootfs() in kernel_init_freeable().
@@ -253,13 +248,23 @@ pub fn spawn_session_init(path: &str, boot: SessionBoot) -> LinuxResult<u32> {
     let extra: &[&str] = match boot {
         SessionBoot::Install => &["RUSTOS_BOOT=install"],
         SessionBoot::Live => &["RUSTOS_LIVE=1", "RUSTOS_BOOT=live"],
-        SessionBoot::Desktop => &[],
+        SessionBoot::Desktop => &[
+            "RUSTOS_BOOT=desktop",
+            "XDG_RUNTIME_DIR=/run/user/0",
+            "XDG_CURRENT_DESKTOP=ubuntu:GNOME",
+            "XDG_SESSION_TYPE=wayland",
+            "WAYLAND_DISPLAY=wayland-0",
+            "DISPLAY=:0",
+            "DESKTOP_SESSION=ubuntu",
+        ],
     };
+    crate::serial_println!("linux_compat/desktop: exec init pid={} path={}", pid, path);
     exec_program(pid, path, &argv, extra)?;
+    crate::serial_println!("linux_compat/desktop: exec init done pid={}", pid);
 
     crate::user_sched::queue_user_pid(pid);
     crate::serial_println!(
-        "linux_compat/desktop: spawned {} as PID {} (Alpine userspace on RustOS)",
+        "linux_compat/desktop: spawned {} as PID {} (Linux userspace desktop on RustOS)",
         path,
         pid
     );

@@ -108,6 +108,9 @@ pub fn register_device(
     removable: bool,
     ops: BlockDevOps,
 ) -> Result<u32, &'static str> {
+    if sector_size == 0 || num_sectors == 0 {
+        return Err("invalid block geometry");
+    }
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let major = MAJOR_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = BlockDevice {
@@ -171,6 +174,18 @@ pub fn read_sectors(
         if dev.state != BlockDevState::Active {
             return Err("Block device not active");
         }
+        let bytes = (count as usize)
+            .checked_mul(dev.sector_size as usize)
+            .ok_or("Block read too large")?;
+        if buf.len() < bytes {
+            return Err("Block read buffer too small");
+        }
+        let end = sector
+            .checked_add(count as u64)
+            .ok_or("Block read sector overflow")?;
+        if end > dev.num_sectors {
+            return Err("Block read beyond device");
+        }
         dev.ops.read
     };
     let read = (read_fn)(dev_id, sector, count, buf)?;
@@ -191,6 +206,16 @@ pub fn write_sectors(dev_id: u32, sector: u64, data: &[u8]) -> Result<u32, &'sta
         }
         if dev.read_only {
             return Err("Block device is read-only");
+        }
+        if data.is_empty() || data.len() % dev.sector_size as usize != 0 {
+            return Err("Block write data is not sector aligned");
+        }
+        let count = data.len() / dev.sector_size as usize;
+        let end = sector
+            .checked_add(count as u64)
+            .ok_or("Block write sector overflow")?;
+        if end > dev.num_sectors {
+            return Err("Block write beyond device");
         }
         dev.ops.write
     };
@@ -369,41 +394,13 @@ pub fn software_block_ops() -> BlockDevOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    // Register a software (RAM-backed) block device for testing and fallback.
-    let ops = software_block_ops();
-    let dev_id = register_device(
-        "sw-blk0",
-        512,
-        1024 * 1024, // 512 MB
-        false,
-        false,
-        ops,
-    )?;
-
-    // Add a partition
-    add_partition(dev_id, 1, 2048, 1024 * 1024 - 2048, "sw-blk0p1", false)?;
-
-    // Open and self-test
-    open(dev_id, 0)?;
-    let mut buf = alloc::vec![0u8; 512];
-    let n = read_sectors(dev_id, 0, 1, &mut buf)?;
-    let _ = write_sectors(dev_id, 0, &buf)?;
-    flush(dev_id)?;
-    release(dev_id)?;
-
-    crate::serial_println!(
-        "block: subsystem ready (sw-blk0 id={}, test read {} sectors)",
-        dev_id,
-        n
-    );
-
-    // Publish a representative block device into the unified `base` model
-    // (additive; tolerant of a missing bus and never fatal to block init).
-    publish_to_base();
-
-    // If virtio-blk is available, register it as a real block device too.
+    // Register only hardware-backed boot block devices.  The software block
+    // ops remain available to tests but are not published as real disks.
     if crate::drivers::virtio::blk::is_available() {
         let cap = crate::drivers::virtio::blk::capacity_sectors().unwrap_or(0);
+        if cap == 0 {
+            return Err("virtio-blk capacity is zero");
+        }
         let vops = virtio_blk_block_ops();
         let vid = register_device("virtio-blk0", 512, cap, false, false, vops)?;
         crate::serial_println!(
@@ -414,19 +411,9 @@ pub fn init() -> Result<(), &'static str> {
         );
     }
 
-    Ok(())
-}
+    crate::serial_println!("block: subsystem ready ({} hardware device(s))", device_count());
 
-/// Register a representative block device into the unified `base` device model.
-fn publish_to_base() {
-    use crate::drivers::base;
-    if base::device_exists("sw-blk0") {
-        return;
-    }
-    if let Ok(id) = base::register_device_simple("block", "sw-blk0", "block,ramdisk") {
-        let _ = base::set_property(id, "logical_block_size", "512");
-        let _ = base::set_property(id, "size_mb", "512");
-    }
+    Ok(())
 }
 
 // ── VirtIO-blk block device adapter ──────────────────────────────────────

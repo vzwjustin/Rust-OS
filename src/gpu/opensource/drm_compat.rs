@@ -301,6 +301,148 @@ impl DRMCompatLayer {
         Ok(())
     }
 
+    fn display_mode_for(width: u32, height: u32, refresh: u32) -> DRMDisplayMode {
+        if width == 800 && height == 600 && refresh == 60 {
+            return DRMDisplayMode {
+                clock: 40000,
+                hdisplay: 800,
+                hsync_start: 840,
+                hsync_end: 968,
+                htotal: 1056,
+                hskew: 0,
+                vdisplay: 600,
+                vsync_start: 601,
+                vsync_end: 605,
+                vtotal: 628,
+                vscan: 0,
+                vrefresh: 60,
+                flags: 0x5,
+                type_flags: 0x40,
+                name: "800x600".to_string(),
+            };
+        }
+
+        let h_front_porch = (width / 16).max(8);
+        let h_sync = (width / 32).max(8);
+        let h_back_porch = (width / 8).max(32);
+        let hsync_start = width.saturating_add(h_front_porch);
+        let hsync_end = hsync_start.saturating_add(h_sync);
+        let htotal = hsync_end.saturating_add(h_back_porch);
+
+        let vsync_start = height.saturating_add(3);
+        let vsync_end = vsync_start.saturating_add(5);
+        let vtotal = vsync_end.saturating_add((height / 25).max(20));
+        let clock_hz = (htotal as u64)
+            .saturating_mul(vtotal as u64)
+            .saturating_mul(refresh as u64);
+        let clock = core::cmp::min(clock_hz / 1000, u32::MAX as u64) as u32;
+        let timing = |value: u32| core::cmp::min(value, u16::MAX as u32) as u16;
+
+        DRMDisplayMode {
+            clock,
+            hdisplay: timing(width),
+            hsync_start: timing(hsync_start),
+            hsync_end: timing(hsync_end),
+            htotal: timing(htotal),
+            hskew: 0,
+            vdisplay: timing(height),
+            vsync_start: timing(vsync_start),
+            vsync_end: timing(vsync_end),
+            vtotal: timing(vtotal),
+            vscan: 0,
+            vrefresh: refresh,
+            flags: 0x5,
+            type_flags: 0x40,
+            name: format!("{}x{}", width, height),
+        }
+    }
+
+    pub fn configure_primary_mode(
+        &mut self,
+        width: u32,
+        height: u32,
+        bpp: u32,
+    ) -> Result<(), &'static str> {
+        if width == 0 || height == 0 {
+            return Err("Invalid DRM primary mode dimensions");
+        }
+
+        let format = match bpp {
+            16 => 0x36314752, // DRM_FORMAT_RGB565
+            32 => 0x34325258, // DRM_FORMAT_XRGB8888
+            _ => return Err("Unsupported DRM primary mode bpp"),
+        };
+
+        if self.device_nodes.is_empty() {
+            self.register_device(0, "rustosdrm")?;
+        }
+
+        let primary_crtc_id = self
+            .crtcs
+            .keys()
+            .next()
+            .copied()
+            .ok_or("DRM primary mode missing CRTC")?;
+        if self.connectors.is_empty() {
+            return Err("DRM primary mode missing connector");
+        }
+        if self.planes.is_empty() {
+            return Err("DRM primary mode missing plane");
+        }
+
+        let fb_id = match self
+            .framebuffers
+            .iter()
+            .find(|(_, fb)| {
+                fb.width == width && fb.height == height && fb.bpp == bpp && fb.format == format
+            })
+            .map(|(id, _)| *id)
+        {
+            Some(id) => id,
+            None => self.create_framebuffer(width, height, format, 0)?,
+        };
+
+        let mode = Self::display_mode_for(width, height, 60);
+        for crtc in self.crtcs.values_mut() {
+            crtc.x = 0;
+            crtc.y = 0;
+            crtc.width = width;
+            crtc.height = height;
+            crtc.fb_id = fb_id;
+            crtc.mode = mode.clone();
+            crtc.mode_valid = true;
+        }
+
+        for connector in self.connectors.values_mut() {
+            connector.modes = vec![mode.clone()];
+            connector.mmwidth = ((width as u64 * 254 + 479) / 960) as u32;
+            connector.mmheight = ((height as u64 * 254 + 479) / 960) as u32;
+        }
+
+        let src_w = width.saturating_mul(1 << 16);
+        let src_h = height.saturating_mul(1 << 16);
+        for plane in self.planes.values_mut() {
+            plane.crtc_id = primary_crtc_id;
+            plane.fb_id = fb_id;
+            plane.crtc_x = 0;
+            plane.crtc_y = 0;
+            plane.crtc_w = width;
+            plane.crtc_h = height;
+            plane.src_x = 0;
+            plane.src_y = 0;
+            plane.src_w = src_w;
+            plane.src_h = src_h;
+            if !plane.formats.contains(&format) {
+                plane.formats.push(format);
+            }
+            if !plane.modifiers.contains(&0) {
+                plane.modifiers.push(0);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create a framebuffer object
     pub fn create_framebuffer(
         &mut self,
@@ -639,6 +781,12 @@ pub fn init_drm_compat() -> Result<(), &'static str> {
 /// Get DRM compatibility layer instance
 pub fn get_drm_compat() -> Option<&'static mut DRMCompatLayer> {
     unsafe { DRM_COMPAT.as_mut() }
+}
+
+pub fn configure_primary_mode(width: u32, height: u32, bpp: u32) -> Result<(), &'static str> {
+    init_drm_compat()?;
+    let drm = get_drm_compat().ok_or("DRM layer not initialized")?;
+    drm.configure_primary_mode(width, height, bpp)
 }
 
 /// Register a new GPU with DRM compatibility layer

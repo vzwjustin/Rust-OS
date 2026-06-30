@@ -1,8 +1,18 @@
-//! vDPA (vhost DataPath Acceleration) subsystem
+//! # vDPA (vhost Data Path Acceleration) bus
 //!
-//! Provides a framework for vDPA devices that expose a virtio datapath
-//! with a vendor-specific control path. Mirrors Linux's `drivers/vdpa/`.
+//! Models the vDPA bus: devices that expose a virtqueue-compatible datapath
+//! together with a management interface for feature negotiation, vring
+//! programming, and status control. Unlike full vhost offload, a vDPA device's
+//! datapath is "accelerated" (here, serviced directly by a backend) while its
+//! control plane is mediated by the bus. The datapath is the transport-agnostic
+//! software virtqueue from `virtio::software`.
+//!
+//! Mirrors Linux's `drivers/vdpa/vdpa.c` and the `vdpa_config_ops` interface.
 
+use crate::drivers::virtio::software::{
+    NetLoopback, Segment, SplitVirtqueue, VirtioBackend, NET_HDR_LEN,
+};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -11,325 +21,291 @@ use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-/// vDPA device (Linux `struct vdpa_device`).
+/// vDPA device class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VdpaClass {
+    Net,
+    Block,
+}
+
+/// VirtIO status bits used by the vDPA control plane.
+pub mod status {
+    pub const RESET: u8 = 0;
+    pub const ACKNOWLEDGE: u8 = 1;
+    pub const DRIVER: u8 = 2;
+    pub const DRIVER_OK: u8 = 4;
+    pub const FEATURES_OK: u8 = 8;
+    pub const FAILED: u8 = 128;
+}
+
+/// A single accelerated virtqueue of a vDPA device.
+pub struct VdpaVq {
+    pub index: u32,
+    pub num: u16,
+    pub ready: bool,
+    pub desc_addr: u64,
+    pub driver_addr: u64,
+    pub device_addr: u64,
+    pub vq: SplitVirtqueue,
+    backend: Box<dyn VirtioBackend>,
+    pub kicks: u32,
+}
+
+impl VdpaVq {
+    fn new(index: u32, num: u16, backend: Box<dyn VirtioBackend>) -> Result<Self, &'static str> {
+        Ok(VdpaVq {
+            index,
+            num,
+            ready: false,
+            desc_addr: 0,
+            driver_addr: 0,
+            device_addr: 0,
+            vq: SplitVirtqueue::new(num)?,
+            backend,
+            kicks: 0,
+        })
+    }
+}
+
+/// A vDPA device registered on the bus.
 pub struct VdpaDevice {
     pub id: u32,
     pub name: String,
-    pub bus_id: u32,
-    pub vendor: u32,
-    pub device_id: u32,
-    pub features: u64,
-    pub num_vqs: u32,
-    pub vq_states: Vec<VqState>,
-    pub status: VdpaStatus,
-    pub config: Vec<u8>,
-    pub ops: VdpaOps,
+    pub class: VdpaClass,
+    pub device_features: u64,
+    pub driver_features: u64,
+    pub status: u8,
+    pub vqs: Vec<VdpaVq>,
 }
 
-/// vDPA virtqueue state (Linux `struct vdpa_vq_state`).
-#[derive(Debug, Clone, Default)]
-pub struct VqState {
-    pub avail_idx: u16,
-    pub used_idx: u16,
-    pub ready: bool,
-}
-
-/// vDPA status flags (Linux `VIRTIO_CONFIG_S_*`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VdpaStatus {
-    Reset,
-    Acknowledge,
-    Driver,
-    DriverOk,
-    FeaturesOk,
-}
-
-/// vDPA device operations (Linux `struct vdpa_config_ops`).
-pub struct VdpaOps {
-    pub get_features: fn(dev_id: u32) -> u64,
-    pub set_features: fn(dev_id: u32, features: u64) -> Result<(), &'static str>,
-    pub get_status: fn(dev_id: u32) -> VdpaStatus,
-    pub set_status: fn(dev_id: u32, status: VdpaStatus) -> Result<(), &'static str>,
-    pub get_config: fn(dev_id: u32, buf: &mut [u8]) -> Result<usize, &'static str>,
-    pub set_config: fn(dev_id: u32, buf: &[u8]) -> Result<(), &'static str>,
-    pub get_vq_state: fn(dev_id: u32, vq_idx: u32) -> Result<VqState, &'static str>,
-    pub set_vq_state: fn(dev_id: u32, vq_idx: u32, state: &VqState) -> Result<(), &'static str>,
-    pub get_vq_num_max: fn(dev_id: u32, vq_idx: u32) -> u32,
-    pub get_vq_align: fn(dev_id: u32) -> u32,
-    pub get_device_id: fn(dev_id: u32) -> u32,
-    pub get_vendor_id: fn(dev_id: u32) -> u32,
-}
-
-/// vDPA driver (Linux `struct vdpa_driver`).
-pub struct VdpaDriver {
-    pub name: String,
-    pub probe: fn(dev_id: u32) -> Result<(), &'static str>,
-    pub remove: fn(dev_id: u32) -> Result<(), &'static str>,
-}
-
-// ── Registry ────────────────────────────────────────────────────────────
+// ── Bus registry ──────────────────────────────────────────────────────────
 
 static DEV_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
-static DRIVER_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
+static VDPA_DEVICES: RwLock<BTreeMap<u32, VdpaDevice>> = RwLock::new(BTreeMap::new());
 
-static VDPA_DEVS: RwLock<BTreeMap<u32, VdpaDevice>> = RwLock::new(BTreeMap::new());
-static VDPA_DRIVERS: RwLock<BTreeMap<u32, VdpaDriver>> = RwLock::new(BTreeMap::new());
-
-// ── Public API ──────────────────────────────────────────────────────────
-
-/// Register a vDPA device.
+/// Register a vDPA device on the bus. `backends` provides one backend per
+/// accelerated virtqueue.
 pub fn register_device(
     name: &str,
-    bus_id: u32,
-    vendor: u32,
-    device_id: u32,
-    num_vqs: u32,
-    ops: VdpaOps,
+    class: VdpaClass,
+    num: u16,
+    device_features: u64,
+    mut backends: Vec<Box<dyn VirtioBackend>>,
 ) -> Result<u32, &'static str> {
+    if backends.is_empty() {
+        return Err("vdpa: at least one virtqueue backend required");
+    }
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let vq_states = (0..num_vqs).map(|_| VqState::default()).collect();
+    let mut vqs = Vec::new();
+    let nvqs = backends.len();
+    for i in 0..nvqs {
+        let backend = backends.remove(0);
+        vqs.push(VdpaVq::new(i as u32, num, backend)?);
+    }
     let dev = VdpaDevice {
         id,
         name: String::from(name),
-        bus_id,
-        vendor,
-        device_id,
-        features: 0,
-        num_vqs,
-        vq_states,
-        status: VdpaStatus::Reset,
-        config: Vec::new(),
-        ops,
+        class,
+        device_features,
+        driver_features: 0,
+        status: status::RESET,
+        vqs,
     };
-    VDPA_DEVS.write().insert(id, dev);
+    VDPA_DEVICES.write().insert(id, dev);
     Ok(id)
 }
 
-/// Unregister a vDPA device.
-pub fn unregister_device(dev_id: u32) -> Result<(), &'static str> {
-    VDPA_DEVS
-        .write()
-        .remove(&dev_id)
-        .ok_or("vDPA device not found")?;
-    Ok(())
-}
+// ── Management ops (vdpa_config_ops) ───────────────────────────────────────
 
-/// Register a vDPA driver.
-pub fn register_driver(driver: VdpaDriver) -> Result<u32, &'static str> {
-    let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-    VDPA_DRIVERS.write().insert(id, driver);
-    Ok(id)
-}
-
-/// Get device features.
+/// get_device_features.
 pub fn get_features(dev_id: u32) -> Result<u64, &'static str> {
-    let devs = VDPA_DEVS.read();
-    let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-    Ok((dev.ops.get_features)(dev_id))
+    let devs = VDPA_DEVICES.read();
+    devs.get(&dev_id)
+        .map(|d| d.device_features)
+        .ok_or("vdpa device not found")
 }
 
-/// Set device features.
+/// set_driver_features — only bits the device offers may be acked.
 pub fn set_features(dev_id: u32, features: u64) -> Result<(), &'static str> {
-    let ops_fn = {
-        let devs = VDPA_DEVS.read();
-        let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-        dev.ops.set_features
-    };
-    (ops_fn)(dev_id, features)?;
-    let mut devs = VDPA_DEVS.write();
-    if let Some(dev) = devs.get_mut(&dev_id) {
-        dev.features = features;
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    if features & !dev.device_features != 0 {
+        return Err("vdpa: unsupported features requested");
     }
+    dev.driver_features = features;
     Ok(())
 }
 
-/// Get device status.
-pub fn get_status(dev_id: u32) -> Result<VdpaStatus, &'static str> {
-    let devs = VDPA_DEVS.read();
-    let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-    Ok((dev.ops.get_status)(dev_id))
+pub fn driver_features(dev_id: u32) -> Result<u64, &'static str> {
+    let devs = VDPA_DEVICES.read();
+    devs.get(&dev_id)
+        .map(|d| d.driver_features)
+        .ok_or("vdpa device not found")
 }
 
-/// Set device status.
-pub fn set_status(dev_id: u32, status: VdpaStatus) -> Result<(), &'static str> {
-    let ops_fn = {
-        let devs = VDPA_DEVS.read();
-        let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-        dev.ops.set_status
-    };
-    (ops_fn)(dev_id, status)?;
-    let mut devs = VDPA_DEVS.write();
-    if let Some(dev) = devs.get_mut(&dev_id) {
-        dev.status = status;
+/// set_status. Clears FEATURES_OK if the driver acked unsupported features.
+pub fn set_status(dev_id: u32, value: u8) -> Result<(), &'static str> {
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    let mut effective = value;
+    if value & status::FEATURES_OK != 0 && dev.driver_features & !dev.device_features != 0 {
+        effective &= !status::FEATURES_OK;
     }
+    dev.status = effective;
     Ok(())
 }
 
-/// Get device config.
-pub fn get_config(dev_id: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-    let ops_fn = {
-        let devs = VDPA_DEVS.read();
-        let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-        dev.ops.get_config
-    };
-    (ops_fn)(dev_id, buf)
+pub fn get_status(dev_id: u32) -> Result<u8, &'static str> {
+    let devs = VDPA_DEVICES.read();
+    devs.get(&dev_id)
+        .map(|d| d.status)
+        .ok_or("vdpa device not found")
 }
 
-/// Set device config.
-pub fn set_config(dev_id: u32, buf: &[u8]) -> Result<(), &'static str> {
-    let ops_fn = {
-        let devs = VDPA_DEVS.read();
-        let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-        dev.ops.set_config
-    };
-    (ops_fn)(dev_id, buf)
-}
-
-/// Get virtqueue state.
-pub fn get_vq_state(dev_id: u32, vq_idx: u32) -> Result<VqState, &'static str> {
-    let ops_fn = {
-        let devs = VDPA_DEVS.read();
-        let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-        dev.ops.get_vq_state
-    };
-    (ops_fn)(dev_id, vq_idx)
-}
-
-/// Set virtqueue state.
-pub fn set_vq_state(dev_id: u32, vq_idx: u32, state: &VqState) -> Result<(), &'static str> {
-    let ops_fn = {
-        let devs = VDPA_DEVS.read();
-        let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-        dev.ops.set_vq_state
-    };
-    (ops_fn)(dev_id, vq_idx, state)?;
-    let mut devs = VDPA_DEVS.write();
-    if let Some(dev) = devs.get_mut(&dev_id) {
-        if let Some(vq) = dev.vq_states.get_mut(vq_idx as usize) {
-            *vq = state.clone();
-        }
-    }
+/// set_vq_num.
+pub fn set_vq_num(dev_id: u32, idx: u32, num: u16) -> Result<(), &'static str> {
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    let vq = dev.vqs.get_mut(idx as usize).ok_or("vdpa: bad vq index")?;
+    vq.num = num;
     Ok(())
 }
 
-/// List all vDPA devices.
-pub fn list_devices() -> Vec<(u32, String, u32, u32, u32)> {
-    VDPA_DEVS
+/// set_vq_address.
+pub fn set_vq_address(
+    dev_id: u32,
+    idx: u32,
+    desc: u64,
+    driver: u64,
+    device: u64,
+) -> Result<(), &'static str> {
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    let vq = dev.vqs.get_mut(idx as usize).ok_or("vdpa: bad vq index")?;
+    vq.desc_addr = desc;
+    vq.driver_addr = driver;
+    vq.device_addr = device;
+    Ok(())
+}
+
+/// set_vq_ready.
+pub fn set_vq_ready(dev_id: u32, idx: u32, ready: bool) -> Result<(), &'static str> {
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    let vq = dev.vqs.get_mut(idx as usize).ok_or("vdpa: bad vq index")?;
+    vq.ready = ready;
+    Ok(())
+}
+
+/// get_vq_ready.
+pub fn get_vq_ready(dev_id: u32, idx: u32) -> Result<bool, &'static str> {
+    let devs = VDPA_DEVICES.read();
+    let dev = devs.get(&dev_id).ok_or("vdpa device not found")?;
+    let vq = dev.vqs.get(idx as usize).ok_or("vdpa: bad vq index")?;
+    Ok(vq.ready)
+}
+
+/// kick_vq — drive the accelerated datapath for one virtqueue.
+pub fn kick_vq(dev_id: u32, idx: u32) -> Result<(), &'static str> {
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    if dev.status & status::DRIVER_OK == 0 {
+        return Err("vdpa: device not DRIVER_OK");
+    }
+    let vq = dev.vqs.get_mut(idx as usize).ok_or("vdpa: bad vq index")?;
+    if !vq.ready {
+        return Err("vdpa: vq not ready");
+    }
+    vq.kicks += 1;
+    vq.backend.service(&mut vq.vq);
+    Ok(())
+}
+
+/// Run a driver-side operation against a vq's datapath (for consumers/tests).
+pub fn with_vq<F, R>(dev_id: u32, idx: u32, f: F) -> Result<R, &'static str>
+where
+    F: FnOnce(&mut SplitVirtqueue) -> R,
+{
+    let mut devs = VDPA_DEVICES.write();
+    let dev = devs.get_mut(&dev_id).ok_or("vdpa device not found")?;
+    let vq = dev.vqs.get_mut(idx as usize).ok_or("vdpa: bad vq index")?;
+    Ok(f(&mut vq.vq))
+}
+
+pub fn list_devices() -> Vec<(u32, String, VdpaClass, u8, usize)> {
+    VDPA_DEVICES
         .read()
         .iter()
-        .map(|(id, d)| (*id, d.name.clone(), d.bus_id, d.vendor, d.device_id))
+        .map(|(id, d)| (*id, d.name.clone(), d.class, d.status, d.vqs.len()))
         .collect()
 }
 
-/// Count registered devices.
 pub fn device_count() -> usize {
-    VDPA_DEVS.read().len()
+    VDPA_DEVICES.read().len()
 }
 
-// ── Software vDPA ───────────────────────────────────────────────────────
+// ── vDPA-net consumer + handshake ──────────────────────────────────────────
 
-fn sw_get_features(_dev_id: u32) -> u64 {
-    0x1 | 0x2 // VIRTIO_F_VERSION_1 | RING_INDIRECT_DESC
-}
+const VIRTIO_NET_F_MAC: u64 = 1 << 5;
+const VIRTIO_NET_F_STATUS: u64 = 1 << 16;
 
-fn sw_set_features(dev_id: u32, features: u64) -> Result<(), &'static str> {
-    let mut devs = VDPA_DEVS.write();
-    if let Some(dev) = devs.get_mut(&dev_id) {
-        dev.features = features;
+/// Bind a vDPA-net device through the standard control-plane handshake and
+/// drive one frame through its accelerated datapath. Returns the device id.
+fn setup_vdpa_net() -> Result<u32, &'static str> {
+    let dev_features = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
+    let backends: Vec<Box<dyn VirtioBackend>> =
+        alloc::vec![Box::new(NetLoopback::new()) as Box<dyn VirtioBackend>];
+    let id = register_device("vdpa-net0", VdpaClass::Net, 16, dev_features, backends)?;
+
+    // Control-plane handshake.
+    set_status(id, status::ACKNOWLEDGE)?;
+    set_status(id, status::ACKNOWLEDGE | status::DRIVER)?;
+    let offered = get_features(id)?;
+    set_features(id, offered & dev_features)?;
+    set_status(
+        id,
+        status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK,
+    )?;
+    if get_status(id)? & status::FEATURES_OK == 0 {
+        return Err("vdpa-net: FEATURES_OK rejected");
     }
-    Ok(())
-}
 
-fn sw_get_status(dev_id: u32) -> VdpaStatus {
-    let devs = VDPA_DEVS.read();
-    devs.get(&dev_id).map_or(VdpaStatus::Reset, |d| d.status)
-}
+    // Program and ready the datapath vq.
+    set_vq_num(id, 0, 16)?;
+    set_vq_address(id, 0, 0x1000, 0x2000, 0x3000)?;
+    set_vq_ready(id, 0, true)?;
+    set_status(
+        id,
+        status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK,
+    )?;
 
-fn sw_set_status(dev_id: u32, status: VdpaStatus) -> Result<(), &'static str> {
-    let mut devs = VDPA_DEVS.write();
-    if let Some(dev) = devs.get_mut(&dev_id) {
-        dev.status = status;
-    }
-    Ok(())
-}
-
-fn sw_get_config(_dev_id: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-    for b in buf.iter_mut() {
-        *b = 0;
-    }
-    Ok(buf.len())
-}
-
-fn sw_set_config(_dev_id: u32, _buf: &[u8]) -> Result<(), &'static str> {
-    Ok(())
-}
-
-fn sw_get_vq_state(dev_id: u32, vq_idx: u32) -> Result<VqState, &'static str> {
-    let devs = VDPA_DEVS.read();
-    let dev = devs.get(&dev_id).ok_or("vDPA device not found")?;
-    dev.vq_states
-        .get(vq_idx as usize)
-        .cloned()
-        .ok_or("VQ index out of range")
-}
-
-fn sw_set_vq_state(dev_id: u32, vq_idx: u32, state: &VqState) -> Result<(), &'static str> {
-    let mut devs = VDPA_DEVS.write();
-    let dev = devs.get_mut(&dev_id).ok_or("vDPA device not found")?;
-    let vq = dev
-        .vq_states
-        .get_mut(vq_idx as usize)
-        .ok_or("VQ index out of range")?;
-    *vq = state.clone();
-    Ok(())
-}
-
-fn sw_get_vq_num_max(_dev_id: u32, _vq_idx: u32) -> u32 {
-    256
-}
-
-fn sw_get_vq_align(_dev_id: u32) -> u32 {
-    4096
-}
-
-fn sw_get_device_id(_dev_id: u32) -> u32 {
-    1 // VIRTIO_ID_NET
-}
-
-fn sw_get_vendor_id(_dev_id: u32) -> u32 {
-    0x1AF4 // Red Hat / virtio
-}
-
-/// Software vDPA ops.
-pub fn software_vdpa_ops() -> VdpaOps {
-    VdpaOps {
-        get_features: sw_get_features,
-        set_features: sw_set_features,
-        get_status: sw_get_status,
-        set_status: sw_set_status,
-        get_config: sw_get_config,
-        set_config: sw_set_config,
-        get_vq_state: sw_get_vq_state,
-        set_vq_state: sw_set_vq_state,
-        get_vq_num_max: sw_get_vq_num_max,
-        get_vq_align: sw_get_vq_align,
-        get_device_id: sw_get_device_id,
-        get_vendor_id: sw_get_vendor_id,
-    }
+    // Driver side: submit a frame then kick the accelerated datapath.
+    let frame = [0x11u8, 0x22, 0x33, 0x44];
+    let mut tx = Vec::new();
+    tx.extend_from_slice(&[0u8; NET_HDR_LEN]);
+    tx.extend_from_slice(&frame);
+    with_vq(id, 0, |vq| vq.add_buf(&[Segment::Out(&tx)]))??;
+    kick_vq(id, 0)?;
+    with_vq(id, 0, |vq| vq.get_buf())?;
+    Ok(id)
 }
 
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    if !VDPA_DEVS.read().is_empty() {
-        return Ok(());
+    match setup_vdpa_net() {
+        Ok(id) => {
+            let feat = driver_features(id).unwrap_or(0);
+            let st = get_status(id).unwrap_or(0);
+            crate::serial_println!(
+                "vdpa: {} device(s) on bus (vdpa-net id={} feat=0x{:X} status=0x{:02X})",
+                device_count(),
+                id,
+                feat,
+                st
+            );
+        }
+        Err(e) => crate::serial_println!("vdpa: setup failed: {}", e),
     }
-
-    let ops = software_vdpa_ops();
-    let dev_id = register_device("sw-vdpa-net", 0, 0x1AF4, 1, 2, ops)?;
-    crate::serial_println!(
-        "vdpa: software net device registered (id={}, 2 vqs)",
-        dev_id
-    );
     Ok(())
 }

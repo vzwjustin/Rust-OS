@@ -276,23 +276,30 @@ pub fn init() -> Result<(), &'static str> {
     // Initialize mouse state
     let mut state = MouseState::new();
 
-    // Try to enable IntelliMouse protocol
+    // Quiesce the device and establish a known baseline before the protocol
+    // knock sequences. SET_DEFAULTS resets sample rate/resolution/scaling, so
+    // it must precede IntelliMouse detection rather than follow it.
+    let _ = send_mouse_command(MOUSE_CMD_DISABLE);
+    send_mouse_command(MOUSE_CMD_SET_DEFAULTS).map_err(|_| "Failed to set mouse defaults")?;
+
+    // Linear scaling, 4 counts/mm and 100 reports/sec match Linux psmouse's
+    // conservative boot setup.
+    send_mouse_command(MOUSE_CMD_SET_SCALING).map_err(|_| "Failed to set mouse scaling")?;
+    set_resolution(3)?;
+    set_sample_rate(100)?;
+
+    // Try to enable IntelliMouse protocol. The first successful knock changes
+    // the ID to 0x03; the Explorer knock then changes it to 0x04 on 5-button
+    // devices. Leave standard 3-byte mode if either sequence fails.
     if try_enable_intellimouse().is_ok() {
         state.protocol = MouseProtocol::IntelliMouse;
-
-        // Try to enable IntelliMouse Explorer (5 buttons)
         if try_enable_intellimouse_explorer().is_ok() {
             state.protocol = MouseProtocol::IntelliMouseExplorer;
         }
     }
 
-    // Set defaults
-    send_mouse_command(MOUSE_CMD_SET_DEFAULTS).map_err(|_| "Failed to set mouse defaults")?;
-
-    // Set sample rate to 100 reports/second
+    // Restore runtime reporting cadence after the detection sequences.
     set_sample_rate(100)?;
-
-    // Set resolution to 4 counts/mm
     set_resolution(3)?;
 
     // Enable mouse data reporting
