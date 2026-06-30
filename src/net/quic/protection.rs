@@ -27,6 +27,9 @@ pub fn packet_nonce(iv: &[u8], pn: u64) -> [u8; 12] {
 /// AEAD-protect a packet payload. `aad` is the packet header (with the packet
 /// number in the clear); returns `ciphertext ‖ tag` (RFC 9001 §5.3).
 pub fn seal(keys: &PacketKeys, pn: u64, aad: &[u8], payload: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    if keys.iv.len() < 12 {
+        return Err(CryptoError::InvalidIvLength);
+    }
     let nonce = packet_nonce(&keys.iv, pn);
     aes_gcm_seal(&keys.key, &nonce, aad, payload)
 }
@@ -39,6 +42,9 @@ pub fn open(
     aad: &[u8],
     ciphertext_and_tag: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
+    if keys.iv.len() < 12 {
+        return Err(CryptoError::InvalidIvLength);
+    }
     let nonce = packet_nonce(&keys.iv, pn);
     aes_gcm_open(&keys.key, &nonce, aad, ciphertext_and_tag)
 }

@@ -9,8 +9,10 @@
 use super::super::NetworkAddress;
 use super::connection::Connection;
 use super::endpoint::{DemuxResult, QuicEndpoint};
-use super::io::{apply_frames, open_short_packet};
+use super::io::{apply_frames, open_long_packet, open_short_packet};
 use super::keys::PacketKeys;
+use super::packet::{parse_header, PacketHeader};
+use super::path::Path;
 use super::Role;
 use alloc::collections::BTreeMap;
 use lazy_static::lazy_static;
@@ -66,15 +68,55 @@ pub fn deliver(
             }
             true
         }
-        DemuxResult::NewConnection => {
-            // Server-side Initial for an unknown connection. Initial-key
-            // derivation and the userspace handshake hand-off complete this
-            // path; for now the datagram is recognized as QUIC and consumed
-            // rather than being mistaken for an unbound UDP port.
-            true
-        }
+        DemuxResult::NewConnection => accept_initial(endpoint, _src, _src_port, payload),
         DemuxResult::Dropped => false,
     }
+}
+
+/// Accept a server-side Initial packet for an unknown connection: create the
+/// connection keyed by the client-chosen DCID, derive the Initial keys from
+/// that DCID, remove protection, and feed the CRYPTO frames into the handshake
+/// buffer. The TLS handshake itself is driven by the offloaded userspace side,
+/// which then installs the Handshake/1-RTT secrets via `install_secret`.
+///
+/// Returns `true` (consumed) only if a connection was actually created.
+fn accept_initial(
+    endpoint: &mut QuicEndpoint,
+    src: NetworkAddress,
+    src_port: u16,
+    datagram: &[u8],
+) -> bool {
+    let (version, dcid, scid) = match parse_header(datagram, 0) {
+        Some(PacketHeader::Long {
+            version,
+            dcid,
+            scid,
+            ..
+        }) => (version, dcid, scid),
+        _ => return false,
+    };
+
+    // The server's connection is addressed by the DCID the client chose; route
+    // subsequent client packets to it under that CID.
+    let path = Path::new(NetworkAddress::ipv4(0, 0, 0, 0), 0, src, src_port);
+    let mut conn = Connection::new(Role::Server, version, dcid.clone(), scid, path);
+    conn.install_initial_keys(dcid.as_bytes());
+
+    let km = &conn.crypto.rx_initial;
+    if km.installed {
+        let keys = PacketKeys {
+            key: km.key.clone(),
+            iv: km.iv.clone(),
+            hp: km.hp.clone(),
+        };
+        if let Ok((_typ, pn, plaintext)) = open_long_packet(&keys, datagram, dcid.len(), None) {
+            conn.pn_initial.on_received(pn);
+            let _ = apply_frames(&mut conn, &plaintext);
+        }
+    }
+
+    endpoint.insert(conn);
+    true
 }
 
 /// Process a datagram for an established connection: if 1-RTT receive keys are

@@ -840,14 +840,6 @@ pub fn process_packet(
         .read(payload_length)
         .ok_or(NetworkError::InvalidPacket)?;
 
-    // QUIC runs over UDP: if a QUIC endpoint is bound to this port, hand the
-    // datagram to it before the generic socket-delivery path.
-    if super::quic::udp::is_bound(header.dest_port)
-        && super::quic::udp::deliver(header.dest_port, src_ip, header.source_port, payload)
-    {
-        return Ok(());
-    }
-
     // Verify checksum (if not zero)
     if header.checksum != 0 {
         let mut checksum_header = header.clone();
@@ -857,6 +849,16 @@ pub fn process_packet(
             // Production: checksum validation failed
             return Err(NetworkError::InvalidPacket);
         }
+    }
+
+    // QUIC runs over UDP: once the datagram passes UDP checksum validation, if a
+    // QUIC endpoint is bound to this port, hand it off before the generic
+    // socket-delivery path. (After the checksum so QUIC doesn't bypass the
+    // stack's integrity enforcement; QUIC AEAD does not cover the UDP header.)
+    if super::quic::udp::is_bound(header.dest_port)
+        && super::quic::udp::deliver(header.dest_port, src_ip, header.source_port, payload)
+    {
+        return Ok(());
     }
 
     // Find receiving sockets
