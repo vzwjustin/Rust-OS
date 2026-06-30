@@ -200,7 +200,9 @@ pub fn device_count() -> usize {
     ATA_DEVS.read().len()
 }
 
-// ── Software ATA ────────────────────────────────────────────────────────
+// ── Software ATA helpers ────────────────────────────────────────────────
+// These operations are kept for unit-level wiring tests only.  The ATA boot
+// path must not publish a synthetic disk as if it were real hardware.
 
 fn sw_init(_port_id: u32) -> Result<(), &'static str> {
     Ok(())
@@ -244,27 +246,6 @@ pub fn software_ata_ops() -> AtaPortOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    if !ATA_PORTS.read().is_empty() {
-        return Ok(());
-    }
-
-    let ops = software_ata_ops();
-    let port_id = register_port("sw-ata-port0", ops, 0)?;
-    let dev_id = register_device(
-        port_id,
-        AtaDeviceClass::Sata,
-        "RustOS-ATA-DISK",
-        "SW0001",
-        "1.0",
-        1_048_576,
-        512,
-        true,
-        true,
-    )?;
-    crate::serial_println!(
-        "ata: software SATA port registered (port_id={}, dev_id={}, 512MB)",
-        port_id,
-        dev_id
-    );
+    crate::serial_println!("ata: subsystem ready ({} hardware port(s))", ATA_PORTS.read().len());
     Ok(())
 }

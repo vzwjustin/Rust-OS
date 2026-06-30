@@ -651,8 +651,26 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("backlight: init failed: {}", e);
     }
 
-    if let Err(e) = input::init() {
-        crate::serial_println!("input: init failed: {}", e);
+    let input_hardware_ready = ps2_controller::get_device_info()
+        .map(|(port1_available, port1_device, port2_available, port2_device)| {
+            (port1_available && port1_device == ps2_controller::Ps2DeviceType::Keyboard)
+                || (port2_available
+                    && matches!(
+                        port2_device,
+                        ps2_controller::Ps2DeviceType::StandardMouse
+                            | ps2_controller::Ps2DeviceType::MouseWithScrollWheel
+                            | ps2_controller::Ps2DeviceType::Mouse5Button
+                    ))
+        })
+        .unwrap_or(false);
+
+    if input_hardware_ready {
+        if let Err(e) = input::init() {
+            crate::serial_println!("input: init failed: {}", e);
+        }
+        input::evdev::init_evdev_devices();
+    } else {
+        crate::serial_println!("input: no initialized hardware; skipping generic device registration");
     }
 
     if let Err(e) = char::init() {
@@ -1001,58 +1019,77 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("ufs: init failed: {}", e);
     }
 
+    unsafe {
+        crate::early_serial_write_str("DRV:usb-call\n");
+    }
     if let Err(e) = usb::init() {
         crate::serial_println!("usb: init failed: {}", e);
     }
+    unsafe {
+        crate::early_serial_write_str("DRV:usb-ret\n");
+    }
 
+    crate::serial_println!("drivers: post-usb vhost");
     if let Err(e) = vhost::init() {
         crate::serial_println!("vhost: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb w1");
     if let Err(e) = w1::init() {
         crate::serial_println!("w1: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb vdpa");
     if let Err(e) = vdpa::init() {
         crate::serial_println!("vdpa: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb uio");
     if let Err(e) = uio::init() {
         crate::serial_println!("uio: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb remoteproc");
     if let Err(e) = remoteproc::init() {
         crate::serial_println!("remoteproc: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb perf");
     if let Err(e) = perf::init() {
         crate::serial_println!("perf: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb pnp");
     if let Err(e) = pnp::init() {
         crate::serial_println!("pnp: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb ata");
     if let Err(e) = ata::init() {
         crate::serial_println!("ata: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb bus");
     if let Err(e) = bus::init() {
         crate::serial_println!("bus: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb cache");
     if let Err(e) = cache::init() {
         crate::serial_println!("cache: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb clocksource");
     if let Err(e) = clocksource::init() {
         crate::serial_println!("clocksource: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb irqchip");
     if let Err(e) = irqchip::init() {
         crate::serial_println!("irqchip: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb media");
     if let Err(e) = media::init() {
         crate::serial_println!("media: init failed: {}", e);
     }

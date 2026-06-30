@@ -292,6 +292,9 @@ impl UsbMassStorageDriver {
             return Err(StorageError::NotSupported);
         }
 
+        // Boot storage currently supports Bulk-Only Transport only.  UAS needs
+        // stream/task-management plumbing in the USB host stack before it can
+        // be exposed as a reliable disk path.
         if self.protocol != UsbMscProtocol::BulkOnly as u8 {
             return Err(StorageError::NotSupported);
         }
@@ -389,8 +392,25 @@ impl UsbMassStorageDriver {
         buffer: Option<&mut [u8]>,
     ) -> Result<CommandStatusWrapper, StorageError> {
         self.validate_transport()?;
-        let _command_id =
-            self.validate_command_transfer(command, data_length, buffer.as_deref())?;
+        let command_id = self.validate_command_transfer(command, data_length, buffer.as_deref())?;
+
+        match command_id {
+            ScsiCommand::Read10
+            | ScsiCommand::Read16
+            | ScsiCommand::Inquiry
+            | ScsiCommand::ReadCapacity10
+            | ScsiCommand::ReadCapacity16 => {
+                if !direction_in {
+                    return Err(StorageError::HardwareError);
+                }
+            }
+            ScsiCommand::Write10 | ScsiCommand::Write16 => {
+                if direction_in {
+                    return Err(StorageError::HardwareError);
+                }
+            }
+            _ => {}
+        }
 
         let tag = self.next_tag();
         if let Some(host_id) = self.host_device_id {
@@ -550,7 +570,10 @@ impl UsbMassStorageDriver {
                 0, // Group number
                 0, // Control
             ];
-            self.execute_scsi_command(&command, data_length, true, Some(_buffer))?;
+            let csw = self.execute_scsi_command(&command, data_length, true, Some(_buffer))?;
+            if !csw.is_success() {
+                return Err(StorageError::MediaError);
+            }
         } else {
             // Use READ(10) for smaller LBAs
             let command = [
@@ -565,7 +588,10 @@ impl UsbMassStorageDriver {
                 (block_count & 0xFF) as u8,
                 0, // Control
             ];
-            self.execute_scsi_command(&command, data_length, true, Some(_buffer))?;
+            let csw = self.execute_scsi_command(&command, data_length, true, Some(_buffer))?;
+            if !csw.is_success() {
+                return Err(StorageError::MediaError);
+            }
         }
 
         Ok(())
@@ -611,7 +637,11 @@ impl UsbMassStorageDriver {
                 0, // Group number
                 0, // Control
             ];
-            self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
+            let csw =
+                self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
+            if !csw.is_success() {
+                return Err(StorageError::MediaError);
+            }
         } else {
             // Use WRITE(10) for smaller LBAs
             let command = [
@@ -626,7 +656,11 @@ impl UsbMassStorageDriver {
                 (block_count & 0xFF) as u8,
                 0, // Control
             ];
-            self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
+            let csw =
+                self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
+            if !csw.is_success() {
+                return Err(StorageError::MediaError);
+            }
         }
 
         Ok(())
@@ -772,11 +806,17 @@ impl StorageDriver for UsbMassStorageDriver {
         if sector_count > u32::MAX as usize {
             return Err(StorageError::TransferTooLarge);
         }
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
+            return Err(StorageError::TransferTooLarge);
+        }
 
         self.validate_block_range(start_sector, sector_count as u32)?;
 
         let lba = start_sector;
         self.scsi_read(lba, sector_count as u32, buffer)?;
+
+        self.stats.reads_total += 1;
+        self.stats.bytes_read += buffer.len() as u64;
 
         Ok(buffer.len())
     }
@@ -799,11 +839,17 @@ impl StorageDriver for UsbMassStorageDriver {
         if sector_count > u32::MAX as usize {
             return Err(StorageError::TransferTooLarge);
         }
+        if buffer.len() > self.capabilities.max_transfer_size as usize {
+            return Err(StorageError::TransferTooLarge);
+        }
 
         self.validate_block_range(start_sector, sector_count as u32)?;
 
         let lba = start_sector;
         self.scsi_write(lba, sector_count as u32, buffer)?;
+
+        self.stats.writes_total += 1;
+        self.stats.bytes_written += buffer.len() as u64;
 
         Ok(buffer.len())
     }
@@ -830,7 +876,10 @@ impl StorageDriver for UsbMassStorageDriver {
             0,
             0,
         ];
-        self.execute_scsi_command(&command, 0, false, None)?;
+        let csw = self.execute_scsi_command(&command, 0, false, None)?;
+        if !csw.is_success() {
+            return Err(StorageError::HardwareError);
+        }
 
         Ok(())
     }
@@ -864,7 +913,10 @@ impl StorageDriver for UsbMassStorageDriver {
 
         // Execute START STOP UNIT command to stop
         let command = [ScsiCommand::StartStopUnit as u8, 0, 0, 0, 0, 0];
-        self.execute_scsi_command(&command, 0, false, None)?;
+        let csw = self.execute_scsi_command(&command, 0, false, None)?;
+        if !csw.is_success() {
+            return Err(StorageError::HardwareError);
+        }
 
         self.state = StorageDeviceState::Standby;
         Ok(())
@@ -874,29 +926,21 @@ impl StorageDriver for UsbMassStorageDriver {
         if self.state == StorageDeviceState::Standby {
             // Execute START STOP UNIT command to start
             let command = [ScsiCommand::StartStopUnit as u8, 0, 0, 0, 1, 0];
-            self.execute_scsi_command(&command, 0, false, None)?;
+            let csw = self.execute_scsi_command(&command, 0, false, None)?;
+            if !csw.is_success() {
+                return Err(StorageError::HardwareError);
+            }
 
             self.state = StorageDeviceState::Ready;
         }
         Ok(())
     }
 
-    fn vendor_command(&mut self, command: u8, data: &[u8]) -> Result<Vec<u8>, StorageError> {
-        if self.state != StorageDeviceState::Ready {
-            return Err(StorageError::DeviceBusy);
-        }
-
-        // Create vendor-specific SCSI command
-        let mut cmd = [0u8; 16];
-        cmd[0] = command;
-        if data.len() > 15 {
-            return Err(StorageError::BufferTooSmall);
-        }
-        cmd[1..1 + data.len()].copy_from_slice(data);
-
-        self.execute_scsi_command(&cmd, 0, false, None)?;
-
-        Ok(Vec::new())
+    fn vendor_command(&mut self, _command: u8, _data: &[u8]) -> Result<Vec<u8>, StorageError> {
+        // Do not pass arbitrary vendor CDBs through the boot storage path; BOT
+        // reset/recovery and sense interpretation are only wired for the block
+        // commands above.
+        Err(StorageError::NotSupported)
     }
 
     fn get_smart_data(&mut self) -> Result<Vec<u8>, StorageError> {

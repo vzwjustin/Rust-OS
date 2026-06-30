@@ -4,6 +4,7 @@
 //! window management, graphics rendering, and user interface components.
 
 pub mod app_grid;
+pub mod widgets;
 pub mod window_manager;
 
 use crate::graphics::framebuffer::{self, Color, FramebufferInfo, Rect};
@@ -595,6 +596,83 @@ pub fn gnome_show_osd(text: &str) -> bool {
     if let Some(ref mut desktop) = *global {
         if let Some(ref mut wm) = desktop.window_manager_mut() {
             return wm.gnome_show_osd(text);
+        }
+    }
+    false
+}
+
+/// Push a desktop notification (GNOME-style).
+pub fn push_notification(app: &str, summary: &str, body: &str) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.notifications.push(app, summary, body);
+            return true;
+        }
+    }
+    false
+}
+
+/// Open the power dialog (shutdown / restart / logoff).
+pub fn open_power_dialog() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.power_dialog.open();
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Toggle the calendar / notification center dropdown.
+pub fn toggle_calendar_dropdown() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.calendar_open = !wm.calendar_open;
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Set battery state for the battery indicator.
+pub fn set_battery_state(percent: u8, charging: bool) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.battery = widgets::BatteryState::new(percent, charging);
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Set brightness level (0-100).
+pub fn set_brightness(level: u8) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.brightness = level.min(100);
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Set volume level (0-100).
+pub fn set_volume(level: u8) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.volume = level.min(100);
+            wm.needs_redraw = true;
+            return true;
         }
     }
     false

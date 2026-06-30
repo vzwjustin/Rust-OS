@@ -119,6 +119,27 @@ pub struct VirtioCommonConfig {
     pub queue_device_hi: u32,
 }
 
+/// Byte offsets in the packed virtio-pci common configuration structure.
+/// Keep these in sync with `VirtioCommonConfig` and VirtIO 1.x §4.1.4.3.
+pub mod common_cfg_offset {
+    pub const DEVICE_FEATURE_SELECT: u32 = 0;
+    pub const DEVICE_FEATURE: u32 = 4;
+    pub const DRIVER_FEATURE_SELECT: u32 = 8;
+    pub const DRIVER_FEATURE: u32 = 12;
+    pub const CONFIG_MSIX_VECTOR: u32 = 16;
+    pub const NUM_QUEUES: u32 = 18;
+    pub const DEVICE_STATUS: u32 = 20;
+    pub const CONFIG_GENERATION: u32 = 21;
+    pub const QUEUE_SELECT: u32 = 22;
+    pub const QUEUE_SIZE: u32 = 24;
+    pub const QUEUE_MSIX_VECTOR: u32 = 26;
+    pub const QUEUE_ENABLE: u32 = 28;
+    pub const QUEUE_NOTIFY_OFF: u32 = 30;
+    pub const QUEUE_DESC: u32 = 32;
+    pub const QUEUE_DRIVER: u32 = 40;
+    pub const QUEUE_DEVICE: u32 = 48;
+}
+
 /// VirtIO device status bits
 pub mod status {
     pub const RESET: u8 = 0;
@@ -286,6 +307,34 @@ impl VirtQueue {
             if desc.addr == 0 && desc.len == 0 {
                 return Some(i);
             }
+        }
+        None
+    }
+
+    /// Allocate a descriptor chain and mark each entry reserved immediately.
+    /// This mirrors Linux virtio-ring's free-list semantics and avoids handing
+    /// the same free descriptor out repeatedly before callers fill it.
+    pub fn alloc_desc_chain<const N: usize>(&self) -> Option<[u16; N]> {
+        let mut out = [0u16; N];
+        let mut found = 0usize;
+
+        for i in 0..self.size {
+            let desc = unsafe { &mut *self.desc_virt.add(i as usize) };
+            if desc.addr == 0 && desc.len == 0 {
+                desc.addr = 1; // reserved sentinel; overwritten by set_desc
+                desc.len = 1;
+                desc.flags = 0;
+                desc.next = 0;
+                out[found] = i;
+                found += 1;
+                if found == N {
+                    return Some(out);
+                }
+            }
+        }
+
+        for idx in out.iter().take(found) {
+            self.free_desc(*idx);
         }
         None
     }
@@ -500,52 +549,81 @@ impl VirtioTransport {
     /// Read device features
     pub fn read_device_features(&self) -> u64 {
         // Select feature word 0
-        write_cap_mmio(self.common_base, 0, 0);
-        let lo = read_cap_mmio(self.common_base, 4);
+        write_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE_SELECT, 0);
+        let lo = read_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE);
         // Select feature word 1
-        write_cap_mmio(self.common_base, 0, 1);
-        let hi = read_cap_mmio(self.common_base, 4);
+        write_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE_SELECT, 1);
+        let hi = read_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE);
         ((hi as u64) << 32) | (lo as u64)
     }
 
     /// Write driver features (negotiated)
     pub fn write_driver_features(&self, features: u64) {
-        write_cap_mmio(self.common_base, 8, 0); // select word 0
-        write_cap_mmio(self.common_base, 12, features as u32);
-        write_cap_mmio(self.common_base, 8, 1); // select word 1
-        write_cap_mmio(self.common_base, 12, (features >> 32) as u32);
+        write_cap_mmio(self.common_base, common_cfg_offset::DRIVER_FEATURE_SELECT, 0);
+        write_cap_mmio(self.common_base, common_cfg_offset::DRIVER_FEATURE, features as u32);
+        write_cap_mmio(self.common_base, common_cfg_offset::DRIVER_FEATURE_SELECT, 1);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::DRIVER_FEATURE,
+            (features >> 32) as u32,
+        );
     }
 
     /// Read device status
     pub fn read_status(&self) -> u8 {
-        read_cap_mmio8(self.common_base, 20)
+        read_cap_mmio8(self.common_base, common_cfg_offset::DEVICE_STATUS)
     }
 
     /// Write device status
     pub fn write_status(&self, status: u8) {
-        write_cap_mmio8(self.common_base, 20, status);
+        write_cap_mmio8(self.common_base, common_cfg_offset::DEVICE_STATUS, status);
     }
 
     /// Select a virtqueue and get its size
     pub fn select_queue(&self, queue_idx: u16) -> u16 {
-        write_cap_mmio16(self.common_base, 16, queue_idx);
-        read_cap_mmio16(self.common_base, 18)
+        write_cap_mmio16(self.common_base, common_cfg_offset::QUEUE_SELECT, queue_idx);
+        read_cap_mmio16(self.common_base, common_cfg_offset::QUEUE_SIZE)
+    }
+
+    /// Read the notify offset for the currently selected virtqueue.
+    pub fn selected_queue_notify_off(&self) -> u16 {
+        read_cap_mmio16(self.common_base, common_cfg_offset::QUEUE_NOTIFY_OFF)
     }
 
     /// Configure a virtqueue's memory addresses in the device
     pub fn setup_queue(&self, queue: &VirtQueue) {
         // Write descriptor address
-        write_cap_mmio(self.common_base, 32, queue.desc_phys as u32);
-        write_cap_mmio(self.common_base, 36, (queue.desc_phys >> 32) as u32);
+        write_cap_mmio(self.common_base, common_cfg_offset::QUEUE_DESC, queue.desc_phys as u32);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::QUEUE_DESC + 4,
+            (queue.desc_phys >> 32) as u32,
+        );
         // Write available ring address
-        write_cap_mmio(self.common_base, 40, queue.avail_phys as u32);
-        write_cap_mmio(self.common_base, 44, (queue.avail_phys >> 32) as u32);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::QUEUE_DRIVER,
+            queue.avail_phys as u32,
+        );
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::QUEUE_DRIVER + 4,
+            (queue.avail_phys >> 32) as u32,
+        );
         // Write used ring address
-        write_cap_mmio(self.common_base, 48, queue.used_phys as u32);
-        write_cap_mmio(self.common_base, 52, (queue.used_phys >> 32) as u32);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::QUEUE_DEVICE,
+            queue.used_phys as u32,
+        );
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::QUEUE_DEVICE + 4,
+            (queue.used_phys >> 32) as u32,
+        );
 
         // Enable the queue
-        write_cap_mmio16(self.common_base, 28, 1);
+        write_cap_mmio16(self.common_base, common_cfg_offset::QUEUE_ENABLE, 1);
     }
 
     /// Notify the device that a queue has pending buffers
@@ -658,50 +736,11 @@ pub fn scan_virtio_devices() -> Vec<VirtioTransport> {
     transports
 }
 
-/// Run the software/loopback virtio datapath self-tests and log a summary.
-/// These exercise the split-virtqueue `add_buf`/`get_buf` path, the feature
-/// negotiation handshake, and the virtio-net/virtio-blk device logic without
-/// any real hardware.
-fn init_software_samples() {
-    let blk = software::selftest_blk();
-    let net = software::selftest_net();
-    match (blk, net) {
-        (Ok(bf), Ok(nf)) => crate::serial_println!(
-            "virtio: software loopback ready (blk feat=0x{:X} ok, net feat=0x{:X} ok)",
-            bf,
-            nf
-        ),
-        (b, n) => crate::serial_println!("virtio: software loopback blk={:?} net={:?}", b, n),
-    }
-}
-
-/// Initialize all VirtIO devices found on the PCI bus
-/// Publish representative virtio devices into the unified device model.
-fn publish_to_base() {
-    use crate::drivers::base;
-    if base::device_exists("virtio-net0") {
-        return;
-    }
-    if let Ok(id) = base::register_device_simple("virtio", "virtio-net0", "virtio,net") {
-        let _ = base::set_property(id, "subsystem", "virtio");
-        let _ = base::set_property(id, "device_type", "network");
-    }
-    if let Ok(id) = base::register_device_simple("virtio", "virtio-blk0", "virtio,blk") {
-        let _ = base::set_property(id, "subsystem", "virtio");
-        let _ = base::set_property(id, "device_type", "block");
-    }
-}
-
 pub fn init() -> Result<(), &'static str> {
-    // Always bring up the transport-agnostic software/loopback datapath so the
-    // virtqueue stack is exercised even on machines with no virtio hardware.
-    init_software_samples();
-    publish_to_base();
-
     let transports = scan_virtio_devices();
 
     if transports.is_empty() {
-        crate::serial_println!("virtio: no PCI devices found (software datapath active)");
+        crate::serial_println!("virtio: no PCI devices found");
         return Ok(());
     }
 

@@ -267,7 +267,7 @@ pub fn scan_and_register() -> MdScanResult {
 }
 
 pub fn init() -> MdScanResult {
-    scan_and_register()
+    MdScanResult::default()
 }
 
 #[derive(Debug, Clone, Default)]

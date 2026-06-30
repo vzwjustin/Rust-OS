@@ -364,6 +364,7 @@ pub fn has_events(fd: i32) -> bool {
 /// Called by the VFS when a file operation occurs.
 pub fn notify_path(path: &str, mask: u32, name: Option<&str>) {
     EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::audit::audit_watch_notify(path, mask);
 
     let instances = INOTIFY_INSTANCES.read();
     for (_, instance_mutex) in instances.iter() {
