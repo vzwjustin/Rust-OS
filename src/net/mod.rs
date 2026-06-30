@@ -18,6 +18,7 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ip;
 pub mod netfilter;
+pub mod quic;
 pub mod raw;
 pub mod routing;
 pub mod socket;
