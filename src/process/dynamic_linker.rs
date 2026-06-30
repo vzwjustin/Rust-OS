@@ -627,7 +627,7 @@ impl DynamicLinker {
                 .map(|(parent, _)| parent)
                 .unwrap_or("");
             current = if parent.is_empty() {
-                format!("/{}", target)
+                target
             } else {
                 format!("{}/{}", parent, target)
             };
