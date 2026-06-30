@@ -220,8 +220,14 @@ pub fn waitpid(pid: Pid, status: *mut i32, options: i32) -> LinuxResult<Pid> {
     match process_mgr.reap_zombie_child(parent_pid, matches) {
         Ok((child_pid, exit_status)) => {
             if !status.is_null() {
+                // Encode as a Linux wait status: a normal exit places the
+                // low 8 bits of the exit code in bits 8..16, leaving the low
+                // 7 bits zero so WIFEXITED() is true and WEXITSTATUS() returns
+                // the code. Previously the raw code was written, so
+                // WEXITSTATUS(exit(5)) read 0 and WIFEXITED was false.
+                let wait_status = (exit_status & 0xff) << 8;
                 unsafe {
-                    *status = exit_status;
+                    *status = wait_status;
                 }
             }
             Ok(child_pid as i32)

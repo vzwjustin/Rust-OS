@@ -180,6 +180,13 @@ pub struct HpetInfo {
 pub struct HpetTable {
     pub header: SdtHeader,
     pub event_timer_block_id: u32,
+    // Base address is a 12-byte ACPI Generic Address Structure; the 64-bit
+    // MMIO address lives at offset +4 within it. Omitting this GAS prefix made
+    // base_address read the GAS metadata + low address bytes as the address.
+    pub address_space_id: u8,
+    pub register_bit_width: u8,
+    pub register_bit_offset: u8,
+    pub gas_reserved: u8,
     pub base_address: u64,
     pub hpet_number: u8,
     pub minimum_tick: u16,

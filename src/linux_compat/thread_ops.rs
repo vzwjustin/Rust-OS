@@ -307,11 +307,10 @@ pub fn futex(
 
             let _ = process::get_process_manager().block_process(pid);
 
-            unsafe {
-                if *uaddr != val {
-                    return Err(LinuxError::EAGAIN);
-                }
-            }
+            // A return from block_process means we were woken — normally by
+            // FUTEX_WAKE, which already drained our entry. Report success.
+            // Re-checking *uaddr and returning EAGAIN here would spuriously
+            // fail the normal wake path, since the waker just changed the word.
             Ok(0)
         }
         futex_op::FUTEX_WAKE => {
@@ -435,11 +434,8 @@ pub fn futex(
 
             let _ = process::get_process_manager().block_process(pid);
 
-            unsafe {
-                if *uaddr != val {
-                    return Err(LinuxError::EAGAIN);
-                }
-            }
+            // Woken (normally by FUTEX_WAKE_BITSET). Report success rather than
+            // re-checking *uaddr, which would spuriously return EAGAIN.
             Ok(0)
         }
         futex_op::FUTEX_WAKE_BITSET => {

@@ -400,6 +400,9 @@ impl TcpConnection {
         let time_component = current_time_ms() as u32;
         let random_component = secure_random_u32();
         self.send_sequence = time_component.wrapping_add(random_component);
+        // snd.una starts at the ISN; without this it stays 0 and the first
+        // ACK in ESTABLISHED computes a bogus acked-byte count.
+        self.send_ack = self.send_sequence;
     }
 
     /// Check if connection has timed out
@@ -864,6 +867,8 @@ fn handle_syn_sent_state(connection: &mut TcpConnection, header: &TcpHeader) -> 
         // SYN-ACK received
         if header.acknowledgment_number == connection.send_sequence.wrapping_add(1) {
             connection.send_sequence = connection.send_sequence.wrapping_add(1);
+            // Our SYN is now acknowledged: snd.una == snd.nxt (ISN+1).
+            connection.send_ack = connection.send_sequence;
             connection.recv_sequence = header.sequence_number.wrapping_add(1);
             connection.state = TcpState::Established;
             connection.established_time = current_time_ms();
@@ -904,6 +909,8 @@ fn handle_syn_received_state(
         // ACK received — 3-way handshake complete
         if header.acknowledgment_number == connection.send_sequence.wrapping_add(1) {
             connection.send_sequence = connection.send_sequence.wrapping_add(1);
+            // Our SYN-ACK is now acknowledged: snd.una == snd.nxt (ISN+1).
+            connection.send_ack = connection.send_sequence;
             connection.state = TcpState::Established;
             connection.established_time = current_time_ms();
 
@@ -1347,12 +1354,16 @@ pub fn tcp_connect(
 
     // Start connection process
     let key = (local_addr, local_port, remote_addr, remote_port);
+    let mut isn: u32 = 0;
     TCP_MANAGER.update_connection(key, |conn| {
         conn.generate_isn();
         conn.state = TcpState::SynSent;
+        isn = conn.send_sequence;
     })?;
 
-    // Send SYN packet
+    // Send SYN packet with our ISN as the sequence number. The peer's
+    // SYN-ACK acknowledges ISN+1, which handle_syn_sent_state checks against
+    // send_sequence; sending seq=0 here made every active connect fail.
     let mut flags = TcpFlags::new();
     flags.syn = true;
 
@@ -1361,7 +1372,7 @@ pub fn tcp_connect(
         local_port,
         remote_addr,
         remote_port,
-        0,
+        isn,
         0,
         flags,
         65535,
