@@ -341,6 +341,25 @@ fn ds18b20_write(_slave_id: u32, data: &[u8]) -> Result<usize, &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("w1: subsystem ready");
+    if !W1_MASTERS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_w1_ops();
+    let master_id = register_master("sw-w1-master", ops, 16)?;
+
+    register_family(
+        0x28,
+        W1FamilyDriver {
+            family: W1Family::Ds18b20,
+            name: String::from("ds18b20"),
+            add_slave: ds18b20_add,
+            remove_slave: ds18b20_remove,
+            read_data: ds18b20_read,
+            write_data: ds18b20_write,
+        },
+    )?;
+
+    crate::serial_println!("w1: software master registered (id={})", master_id);
     Ok(())
 }

@@ -12,6 +12,7 @@ use core::cmp;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
+use crate::linux_compat::advanced_io::IoVec;
 use crate::linux_compat::{self, LinuxError, LinuxResult};
 use crate::memory::user_space::UserSpaceMemory;
 use crate::vfs::{self, FdKind};
@@ -150,12 +151,6 @@ struct IoUringSqe {
     splice_fd_in: i32,
     addr3: u64,
     pad2: u64,
-}
-
-#[repr(C)]
-struct IoVec {
-    base: *mut u8,
-    len: usize,
 }
 
 impl IoUringSqe {
@@ -462,7 +457,7 @@ pub fn enter(
         }
         let sqe_addr = sqes + sqe_index as usize * core::mem::size_of::<IoUringSqe>();
         let sqe: IoUringSqe = copy_from_user(sqe_addr as u64)?;
-        let res = execute_sqe(&sqe);
+        let res = execute_sqe(&sqe, &ring, id);
         push_cqe(
             cq_ring,
             ring.cq_entries,
@@ -509,7 +504,7 @@ const IORING_REGISTER_FILES: u32 = 2;
 const IORING_UNREGISTER_FILES: u32 = 3;
 const IORING_REGISTER_FILES_UPDATE: u32 = 7;
 
-fn execute_sqe(sqe: &IoUringSqe) -> i32 {
+fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
     match sqe.opcode {
         IORING_OP_NOP => 0,
         IORING_OP_READ => {
@@ -548,10 +543,10 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 let mut total = 0usize;
                 for i in 0..sqe.len as usize {
                     let iov = unsafe { &*iovs.add(i) };
-                    if iov.base.is_null() && iov.len != 0 {
+                    if iov.iov_base.is_null() && iov.iov_len != 0 {
                         return -14;
                     }
-                    match linux_compat::file_ops::read(sqe.fd, iov.base, iov.len) {
+                    match linux_compat::file_ops::read(sqe.fd, iov.iov_base, iov.iov_len) {
                         Ok(0) => break,
                         Ok(n) => total += n as usize,
                         Err(e) => return -(e as i32),
@@ -584,10 +579,14 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 let mut total = 0usize;
                 for i in 0..sqe.len as usize {
                     let iov = unsafe { &*iovs.add(i) };
-                    if iov.base.is_null() && iov.len != 0 {
+                    if iov.iov_base.is_null() && iov.iov_len != 0 {
                         return -14;
                     }
-                    match linux_compat::file_ops::write(sqe.fd, iov.base as *const u8, iov.len) {
+                    match linux_compat::file_ops::write(
+                        sqe.fd,
+                        iov.iov_base as *const u8,
+                        iov.iov_len,
+                    ) {
                         Ok(0) => break,
                         Ok(n) => total += n as usize,
                         Err(e) => return -(e as i32),
@@ -597,28 +596,31 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
             }
         }
         IORING_OP_READ_FIXED => {
-            // READ_FIXED: like READ but with a pre-registered buffer and
-            // an explicit file offset.  In this synchronous implementation
-            // we treat it as pread(buf, len, off).
-            match linux_compat::advanced_io::pread(
-                sqe.fd,
-                sqe.addr as *mut u8,
-                sqe.len as usize,
-                sqe.off as i64,
-            ) {
+            let idx = sqe.buf_index as usize;
+            if idx >= ring.registered_buffers.len() {
+                return -(LinuxError::EINVAL as i32);
+            }
+            let (buf_addr, buf_len) = ring.registered_buffers[idx];
+            let len = sqe.len as usize;
+            if len > buf_len as usize {
+                return -(LinuxError::EINVAL as i32);
+            }
+            match linux_compat::file_ops::read(sqe.fd, buf_addr as *mut u8, len) {
                 Ok(n) => n as i32,
                 Err(e) => -(e as i32),
             }
         }
         IORING_OP_WRITE_FIXED => {
-            // WRITE_FIXED: like WRITE but with a pre-registered buffer and
-            // an explicit file offset.  Treated as pwrite(buf, len, off).
-            match linux_compat::advanced_io::pwrite(
-                sqe.fd,
-                sqe.addr as *const u8,
-                sqe.len as usize,
-                sqe.off as i64,
-            ) {
+            let idx = sqe.buf_index as usize;
+            if idx >= ring.registered_buffers.len() {
+                return -(LinuxError::EINVAL as i32);
+            }
+            let (buf_addr, buf_len) = ring.registered_buffers[idx];
+            let len = sqe.len as usize;
+            if len > buf_len as usize {
+                return -(LinuxError::EINVAL as i32);
+            }
+            match linux_compat::file_ops::write(sqe.fd, buf_addr as *const u8, len) {
                 Ok(n) => n as i32,
                 Err(e) => -(e as i32),
             }
@@ -887,29 +889,14 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
             }
         }
         IORING_OP_FADVISE => {
-            // fadvise(fd, offset, len, advice)
-            // off = offset, len = len, rw_flags = advice
-            match linux_compat::advanced_io::fadvise64(
-                sqe.fd,
-                sqe.off as i64,
-                sqe.len as i64,
-                sqe.rw_flags as i32,
-            ) {
-                Ok(v) => v as i32,
-                Err(e) => -(e as i32),
-            }
+            // advisory only — always succeeds
+            let _ = linux_compat::advanced_io::fadvise64(sqe.fd, sqe.off as i64, sqe.len as i64, sqe.rw_flags as i32);
+            0
         }
         IORING_OP_MADVISE => {
-            // madvise(addr, length, advice)
-            // addr = start address, len = length, rw_flags = advice
-            match linux_compat::memory_ops::madvise(
-                sqe.addr as *mut u8,
-                sqe.len as usize,
-                sqe.rw_flags as i32,
-            ) {
-                Ok(v) => v as i32,
-                Err(e) => -(e as i32),
-            }
+            // advisory only — always succeeds
+            let _ = linux_compat::memory_ops::madvise(sqe.addr as *mut u8, sqe.len as usize, sqe.rw_flags as i32);
+            0
         }
         IORING_OP_EPOLL_CTL => {
             // epoll_ctl(epfd, op, fd, event)
@@ -974,8 +961,9 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
         }
         IORING_OP_SPLICE => {
             // splice(fd_in, off_in, fd_out, off_out, len, flags)
-            // fd_in = fd, off_in = off, fd_out = splice_fd_in,
-            // off_out = addr, len = len, flags = rw_flags
+            // fd_in = splice_fd_in (source), off_in = off,
+            // fd_out = fd (destination), off_out = addr,
+            // len = len, flags = rw_flags
             // The splice syscall takes *mut i64 pointers for offsets;
             // io_uring passes the values directly.  Pass null when the
             // offset is -1 (u64::MAX) to signal "use current position".
@@ -992,9 +980,9 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
                 &off_out_val as *const i64 as *mut i64
             };
             match linux_compat::advanced_io::splice(
-                sqe.fd,
-                off_in_ptr,
                 sqe.splice_fd_in,
+                off_in_ptr,
+                sqe.fd,
                 off_out_ptr,
                 sqe.len as usize,
                 sqe.rw_flags,
@@ -1005,10 +993,11 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
         }
         IORING_OP_TEE => {
             // tee(fd_in, fd_out, len, flags)
-            // fd_in = fd, fd_out = splice_fd_in, len = len, flags = rw_flags
+            // fd_in = splice_fd_in (source), fd_out = fd (destination),
+            // len = len, flags = rw_flags
             match linux_compat::advanced_io::tee(
-                sqe.fd,
                 sqe.splice_fd_in,
+                sqe.fd,
                 sqe.len as usize,
                 sqe.rw_flags,
             ) {
@@ -1070,9 +1059,30 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
             0
         }
         IORING_OP_FILES_UPDATE => {
-            // FILES_UPDATE: update the registered file table.
-            // We don't implement registered files, so this is a no-op success.
-            0
+            // FILES_UPDATE: update registered file table slots from userspace fd array.
+            let nr = sqe.len as usize;
+            if nr == 0 || sqe.addr == 0 {
+                return -(LinuxError::EINVAL as i32);
+            }
+            let base_slot = sqe.off as usize;
+            let mut rings = RINGS.write();
+            let r = match rings.get_mut(&ring_id) {
+                Some(r) => r,
+                None => return -(LinuxError::EBADF as i32),
+            };
+            for i in 0..nr {
+                let fd_addr = sqe.addr + (i * 4) as u64;
+                let raw_fd = match copy_from_user::<u32>(fd_addr) {
+                    Ok(v) => v as i32,
+                    Err(_) => return -(LinuxError::EFAULT as i32),
+                };
+                let slot = base_slot + i;
+                if slot >= r.registered_files.len() {
+                    r.registered_files.resize(slot + 1, None);
+                }
+                r.registered_files[slot] = if raw_fd == -1 { None } else { Some(raw_fd) };
+            }
+            nr as i32
         }
         _ => -(LinuxError::ENOSYS as i32),
     }
