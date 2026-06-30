@@ -636,7 +636,44 @@ lazy_static! {
 
 /// Initialize PCI subsystem
 pub fn init() -> PciResult<()> {
-    PCI_BUS.init()
+    PCI_BUS.init()?;
+
+    // Publish a representative PCI device into the unified `base` model
+    // (additive; tolerant of a missing bus and never fatal to PCI init).
+    publish_to_base();
+
+    Ok(())
+}
+
+/// Register a representative PCI device into the unified `base` device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    let devices = PCI_BUS.list_devices();
+    let (name, compatible, vendor, devid) = match devices.first() {
+        Some(d) => (
+            format!(
+                "pci-{:02x}:{:02x}.{}",
+                d.address.bus, d.address.device, d.address.function
+            ),
+            format!("pci:v{:04X}d{:04X}", d.vendor_id, d.device_id),
+            format!("0x{:04x}", d.vendor_id),
+            format!("0x{:04x}", d.device_id),
+        ),
+        None => (
+            format!("pci-host-bridge"),
+            format!("pci,host-bridge"),
+            format!("none"),
+            format!("none"),
+        ),
+    };
+    if base::device_exists(&name) {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("pci", &name, &compatible) {
+        let _ = base::set_property(id, "vendor_id", &vendor);
+        let _ = base::set_property(id, "device_id", &devid);
+        let _ = base::set_property(id, "device_count", &format!("{}", devices.len()));
+    }
 }
 
 /// Get the global PCI bus

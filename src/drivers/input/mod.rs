@@ -299,6 +299,22 @@ pub fn init() -> Result<(), &'static str> {
     register_device("RustOS Keyboard", &KBD_INPUT_OPS)?;
     register_device("RustOS Mouse", &MOUSE_INPUT_OPS)?;
 
+    // Publish a representative device into the unified device model (additive;
+    // tolerant of a missing bus and never fatal to input init).
+    publish_to_base();
+
     crate::serial_println!("input: {} device(s) registered", device_count());
     Ok(())
+}
+
+/// Register a representative input device into the unified `base` device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("RustOS Keyboard") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("input", "RustOS Keyboard", "input,ps2-keyboard") {
+        let _ = base::set_property(id, "type", "keyboard");
+        let _ = base::set_property(id, "subsystem", "input");
+    }
 }

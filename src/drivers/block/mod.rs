@@ -397,6 +397,10 @@ pub fn init() -> Result<(), &'static str> {
         n
     );
 
+    // Publish a representative block device into the unified `base` model
+    // (additive; tolerant of a missing bus and never fatal to block init).
+    publish_to_base();
+
     // If virtio-blk is available, register it as a real block device too.
     if crate::drivers::virtio::blk::is_available() {
         let cap = crate::drivers::virtio::blk::capacity_sectors().unwrap_or(0);
@@ -411,6 +415,18 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     Ok(())
+}
+
+/// Register a representative block device into the unified `base` device model.
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("sw-blk0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("block", "sw-blk0", "block,ramdisk") {
+        let _ = base::set_property(id, "logical_block_size", "512");
+        let _ = base::set_property(id, "size_mb", "512");
+    }
 }
 
 // ── VirtIO-blk block device adapter ──────────────────────────────────────

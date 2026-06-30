@@ -213,7 +213,22 @@ pub fn queue_command(
 }
 
 pub fn init() -> ScsiScanResult {
-    scan_hosts()
+    let result = scan_hosts();
+    publish_to_base();
+    result
+}
+
+/// Register a representative SCSI device into the unified `base` device model
+/// (additive; tolerant of a missing bus and never fatal to SCSI init).
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("scsi-disk0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("scsi", "scsi-disk0", "scsi,disk") {
+        let _ = base::set_property(id, "vendor", "RustOS");
+        let _ = base::set_property(id, "type", "disk");
+    }
 }
 
 #[derive(Debug, Clone, Default)]
