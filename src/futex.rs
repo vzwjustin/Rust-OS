@@ -125,10 +125,10 @@ static ROBUST_LISTS: RwLock<BTreeMap<u32, SyncPtr>> = RwLock::new(BTreeMap::new(
 struct PiState {
     /// PID of the task currently holding the PI-futex.
     owner_pid: u32,
-    /// Owner's original priority before any inheritance boost.
-    saved_priority: crate::process::Priority,
-    /// Pids waiting to acquire this PI-futex, highest priority first.
-    waiters: alloc::collections::VecDeque<u32>,
+    /// Owner's original priority (as u8 discriminant) before any inheritance boost.
+    saved_priority: u8,
+    /// Pids (and their original priority as u8) waiting to acquire this PI-futex.
+    waiters: alloc::collections::VecDeque<(u32, u8)>,
 }
 
 static PI_STATES: spin::Mutex<alloc::collections::BTreeMap<usize, PiState>> =
@@ -396,7 +396,8 @@ pub fn futex_wait_requeue_pi(
         let mut pi = PI_STATES.lock();
         let state = pi.entry(pi_key).or_insert_with(|| PiState {
             owner_pid:      our_pid,
-            saved_priority: crate::process::Priority::Normal,
+            saved_priority: crate::process::scheduler::get_process_priority(our_pid)
+                                .map(|p| p as u8).unwrap_or(2u8),
             waiters:        alloc::collections::VecDeque::new(),
         });
         state.owner_pid = our_pid;
@@ -408,10 +409,13 @@ pub fn futex_wait_requeue_pi(
         let mut pi = PI_STATES.lock();
         let state = pi.entry(pi_key).or_insert_with(|| PiState {
             owner_pid:      prev as u32,
-            saved_priority: crate::process::Priority::Normal,
+            saved_priority: crate::process::scheduler::get_process_priority(prev as u32)
+                                .map(|p| p as u8).unwrap_or(2u8),
             waiters:        alloc::collections::VecDeque::new(),
         });
-        state.waiters.push_back(our_pid);
+        let our_prio = crate::process::scheduler::get_process_priority(our_pid)
+            .map(|p| p as u8).unwrap_or(2u8);
+        state.waiters.push_back((our_pid, our_prio));
         // Boost owner to at least our priority (RealTime = 0 = highest)
         let _ = crate::process::scheduler::set_process_priority(
             state.owner_pid,
@@ -441,7 +445,7 @@ pub fn futex_cmp_requeue_pi(
     }
 
     // Atomic check: *uaddr must equal cmpval
-    let current = unsafe { core::ptr::read_volatile(uaddr) };
+    let current = unsafe { &*(uaddr as *const AtomicI32) }.load(Ordering::Acquire);
     if current != cmpval {
         return -11; // EAGAIN
     }
@@ -498,10 +502,12 @@ pub fn futex_cmp_requeue_pi(
             let mut pi = PI_STATES.lock();
             let state = pi.entry(key2).or_insert_with(|| PiState {
                 owner_pid:      0,
-                saved_priority: crate::process::Priority::Normal,
+                saved_priority: 2u8, // Priority::Normal as u8
                 waiters:        alloc::collections::VecDeque::new(),
             });
-            state.waiters.push_back(waiter_pid);
+            let waiter_prio = crate::process::scheduler::get_process_priority(waiter_pid)
+                .map(|p| p as u8).unwrap_or(2u8);
+            state.waiters.push_back((waiter_pid, waiter_prio));
             if state.owner_pid != 0 {
                 let _ = crate::process::scheduler::set_process_priority(
                     state.owner_pid,
@@ -544,35 +550,33 @@ pub fn futex_pi_unlock(uaddr: *mut i32) -> i32 {
             if state.owner_pid != our_pid {
                 return -1; // EPERM
             }
-            // Restore priority
-            let _ = crate::process::scheduler::set_process_priority(
-                our_pid,
-                state.saved_priority,
-            );
+            // Restore priority: convert saved u8 back to Priority discriminant
+            let restored_priority = match state.saved_priority {
+                0 => crate::process::Priority::RealTime,
+                1 => crate::process::Priority::High,
+                3 => crate::process::Priority::Low,
+                4 => crate::process::Priority::Idle,
+                _ => crate::process::Priority::Normal,
+            };
+            let _ = crate::process::scheduler::set_process_priority(our_pid, restored_priority);
             state.waiters.pop_front()
         } else {
             None
         }
     };
 
-    if let Some(next) = next_pid {
-        // Transfer the PI-futex to the next waiter
+    if let Some((next, _waiter_prio)) = next_pid {
+        // Clear the futex so the new owner can CAS 0 → own_tid (standard FUTEX_UNLOCK_PI).
         unsafe {
-            core::ptr::write_volatile(uaddr, next as i32);
+            core::ptr::write_volatile(uaddr, 0);
         }
-        // Update PI_STATES with new owner
-        {
-            let mut pi = PI_STATES.lock();
-            if let Some(state) = pi.get_mut(&pi_key) {
-                state.owner_pid      = next;
-                state.saved_priority = crate::process::Priority::Normal;
-            }
-        }
-        // Wake the new owner
+        // Remove the PI_STATES entry; the woken waiter will recreate it on CAS success.
+        PI_STATES.lock().remove(&pi_key);
+        // Wake the new owner — it will re-establish PI_STATES ownership.
         let pm = crate::process::get_process_manager();
         let _ = pm.unblock_process(next);
     } else {
-        // No waiters — clear the futex
+        // No waiters — clear the futex and remove state.
         unsafe {
             core::ptr::write_volatile(uaddr, 0);
         }
