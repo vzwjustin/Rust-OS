@@ -395,14 +395,16 @@ static int lzma2_decode(const uint8_t *src, size_t src_size,
                 }
                 len += 2; /* minimum match length is 2 */
 
+                /* Validate the back-reference distance once: it is loop-
+                 * invariant and out_pos only grows, so the first iteration is
+                 * the tightest. Computed in 64-bit because the unsigned size_t
+                 * arithmetic in the copy below wraps (the original
+                 * `out_pos - s.rep0 - 1 < 0` check could never fire). */
+                if ((uint64_t)s.rep0 + 1 > (uint64_t)out_pos) return -1;
+
                 /* Copy match */
                 for (int i = 0; i < len; i++) {
                     if (out_pos >= dst_cap) return -1;
-                    /* out_pos and rep0 are unsigned, so the original
-                     * `out_pos - s.rep0 - 1 < 0` check could never fire and
-                     * an invalid distance read out of bounds. Compare in
-                     * 64-bit instead. */
-                    if ((uint64_t)s.rep0 + 1 > (uint64_t)out_pos) return -1;
                     dst[out_pos] = dst[out_pos - s.rep0 - 1];
                     out_pos++;
                 }

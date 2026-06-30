@@ -362,6 +362,9 @@ int bzip2_decompress(const uint8_t *src, size_t src_size,
             uint8_t *bwt_buf = (uint8_t *)kmalloc(max_block + 20);
             if (!bwt_buf) { kfree(mtf_buf); return -1; }
 
+            /* A malformed block can encode an empty alphabet. mtf_inverse would
+             * then leave `order` uninitialized and read order[0], so reject it. */
+            if (n_in_use == 0) { kfree(bwt_buf); kfree(mtf_buf); return -1; }
             mtf_inverse(mtf_buf, mtf_pos, bwt_buf, n_in_use, alpha_map);
             kfree(mtf_buf);
 

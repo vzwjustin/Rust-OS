@@ -322,9 +322,12 @@ pub fn software_gnss_ops() -> GnssOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
+    if !GNSS_DEVICES.read().is_empty() {
+        return Ok(());
+    }
+
     let ops = software_gnss_ops();
-    let _ = ops;
+    register_device("software-gnss", GnssType::Combined, ops)?;
     crate::serial_println!("gnss: subsystem ready");
-    return Ok(());
     Ok(())
 }

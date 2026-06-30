@@ -397,8 +397,7 @@ pub fn init() -> Result<(), &'static str> {
     protocols.push(NfcProtocol::NfcDep);
 
     let ops = software_nfc_ops();
-    let _ = (ops, protocols);
-
+    register_device("software-nfc", ops, protocols)?;
     register_se("sw-se0")?;
 
     crate::serial_println!("nfc: subsystem ready");

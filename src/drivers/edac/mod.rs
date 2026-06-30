@@ -305,9 +305,8 @@ pub fn init() -> Result<(), &'static str> {
     register_mc("sw-mc0", "sw-edac", 2, 2, ops)?;
 
     let block_names: &[&str] = &["L1", "L2", "L3"];
-    let _ = block_names;
-    crate::serial_println!("edac: subsystem ready");
-    return Ok(());
+    register_device("sw-edac-dev", "sw-edac", block_names)?;
 
+    crate::serial_println!("edac: subsystem ready");
     Ok(())
 }
