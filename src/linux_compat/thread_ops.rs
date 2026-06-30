@@ -583,6 +583,7 @@ pub fn futex(
                 // Block under the queue lock to close the lost-wakeup race.
                 let _ = process::get_process_manager().block_process(pid);
             }
+            crate::scheduler::yield_cpu();
 
             // When woken, we've been requeued to uaddr2 and it's our turn.
             // Try to acquire the PI futex at uaddr2 by atomically setting it
