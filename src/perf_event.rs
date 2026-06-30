@@ -147,6 +147,102 @@ pub fn read_event(fd: i32, buf: &mut [u8]) -> isize {
     bytes_len as isize
 }
 
+// ── Hardware PMU MSR programming ────────────────────────────────────────────
+
+/// MSR addresses for Intel IA32_PERFEVTSELx (up to 4 general-purpose counters)
+const IA32_PERFEVTSEL0: u32 = 0x186;
+/// MSR addresses for Intel IA32_PMCx (general-purpose performance counters)
+const IA32_PMC0: u32 = 0xC1;
+
+/// Maximum number of general-purpose PMU counters supported.
+const PMU_MAX_COUNTERS: u8 = 4;
+
+/// Enable a hardware PMU counter.
+///
+/// Writes to `IA32_PERFEVTSELx` to configure and start counting.
+///
+/// # Arguments
+/// * `counter` – counter index (0–3)
+/// * `event`   – event select byte (e.g. 0x3C for cycles, 0xC0 for instructions)
+/// * `umask`   – unit mask byte
+/// * `user`    – count events in user mode (CPL > 0)
+/// * `kernel`  – count events in kernel mode (CPL == 0)
+pub fn enable_counter(counter: u8, event: u8, umask: u8, user: bool, kernel: bool) {
+    if counter >= PMU_MAX_COUNTERS {
+        return;
+    }
+    let msr = IA32_PERFEVTSEL0 + counter as u32;
+    // Bit layout: [7:0]=EventSelect [15:8]=UMask [16]=USR [17]=OS [22]=EN
+    let mut value: u64 = (event as u64) | ((umask as u64) << 8);
+    if user {
+        value |= 1 << 16; // USR bit
+    }
+    if kernel {
+        value |= 1 << 17; // OS bit
+    }
+    value |= 1 << 22; // EN (enable) bit
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") (value & 0xFFFF_FFFF) as u32,
+            in("edx") (value >> 32) as u32,
+            options(nostack, nomem),
+        );
+    }
+}
+
+/// Read the current value of a hardware PMU counter via `rdmsr` on `IA32_PMCx`.
+///
+/// Returns 0 for out-of-range counter indices.
+pub fn read_counter(counter: u8) -> u64 {
+    if counter >= PMU_MAX_COUNTERS {
+        return 0;
+    }
+    let msr = IA32_PMC0 + counter as u32;
+    let (lo, hi): (u32, u32);
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") lo,
+            out("edx") hi,
+            options(nostack, nomem),
+        );
+    }
+    ((hi as u64) << 32) | (lo as u64)
+}
+
+/// Disable a hardware PMU counter by clearing the EN bit in `IA32_PERFEVTSELx`.
+pub fn disable_counter(counter: u8) {
+    if counter >= PMU_MAX_COUNTERS {
+        return;
+    }
+    let msr = IA32_PERFEVTSEL0 + counter as u32;
+    // Read current value, clear EN bit (bit 22), write back
+    let (lo, hi): (u32, u32);
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") lo,
+            out("edx") hi,
+            options(nostack, nomem),
+        );
+    }
+    let mut value = ((hi as u64) << 32) | (lo as u64);
+    value &= !(1u64 << 22); // Clear EN bit
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") (value & 0xFFFF_FFFF) as u32,
+            in("edx") (value >> 32) as u32,
+            options(nostack, nomem),
+        );
+    }
+}
+
 fn read_value(event: &PerfEvent) -> u64 {
     let stats = crate::performance_monitor::get_stats();
     match (event.attr.type_, event.attr.config) {

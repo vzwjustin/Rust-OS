@@ -38,6 +38,19 @@ use super::elf_loader::{elf_constants, Elf64ProgramHeader, ElfLoader};
 use crate::memory::PAGE_SIZE;
 use crate::vfs::{vfs_close, vfs_open, vfs_read, vfs_stat, OpenFlags};
 
+/// Describes one entry in the runtime link-map chain.
+///
+/// In a real ELF loader this would mirror the `struct link_map` used by
+/// `dl_iterate_phdr`.  Here it carries the minimal information needed for
+/// the lazy-binding resolver to locate the right `DynamicLinker` state.
+#[derive(Debug, Clone)]
+pub struct LinkMap {
+    /// Base load address of the object this link-map entry describes.
+    pub base_address: VirtAddr,
+    /// Human-readable name of the shared object (e.g. "libc.so.6").
+    pub name: String,
+}
+
 /// Dynamic linker for loading shared libraries and resolving symbols
 #[derive(Clone)]
 pub struct DynamicLinker {
@@ -746,6 +759,23 @@ impl DynamicLinker {
     /// Check if a library is loaded
     pub fn is_loaded(&self, name: &str) -> bool {
         self.loaded_libraries.contains_key(name)
+    }
+
+    /// Resolve a symbol name against the loaded libraries reachable from
+    /// `link_map`.  Returns the raw virtual address (as `usize`) of the symbol,
+    /// or `None` if not found.
+    ///
+    /// This is the public entry point used by the lazy-binding resolver:
+    /// ```text
+    /// let addr = linker.resolve_symbol_for_link_map("printf", &link_map)?;
+    /// unsafe { *(got_entry as *mut usize) = addr; }
+    /// ```
+    pub fn resolve_symbol_for_link_map(
+        &self,
+        name: &str,
+        _link_map: &LinkMap,
+    ) -> Option<usize> {
+        self.resolve_symbol(name).map(|a| a.as_u64() as usize)
     }
 
     /// Complete dynamic linking workflow for a binary
