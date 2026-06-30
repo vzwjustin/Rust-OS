@@ -408,7 +408,7 @@ pub fn msgrcv(
 
             // Write message type as SysV long mtype. This kernel target is 64-bit.
             unsafe {
-                *(msgp as *mut i64) = message.msg_type as i64;
+                (msgp as *mut i64).write_unaligned(message.msg_type as i64);
             }
 
             // Write message data
