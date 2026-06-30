@@ -530,7 +530,7 @@ pub fn clone_ns(parent_pid: u32, child_pid: u32, clone_flags: u64) {
 
     let parent_ns = get_nsproxy(parent_pid);
     let child_ns = {
-        let mut ns = parent_ns.clone();
+        let ns = parent_ns.clone();
         let mut current = ns.clone();
 
         let ns_types = [

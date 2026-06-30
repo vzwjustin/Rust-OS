@@ -4,7 +4,6 @@
 //! Thread creation/joining is abstracted via [`ThreadPlatform`].
 //! Fully `no_std` compatible using `spin`.
 
-use alloc::collections::BTreeMap;
 use spin::{Mutex, Once as SpinOnce, RwLock};
 
 /// Thread error (`GThreadError`).
@@ -161,12 +160,12 @@ impl<T> GMutex<T> {
     }
 
     /// Lock the mutex (`g_mutex_lock`).
-    pub fn lock(&self) -> spin::MutexGuard<T> {
+    pub fn lock(&self) -> spin::MutexGuard<'_, T> {
         self.inner.lock()
     }
 
     /// Try to lock the mutex (`g_mutex_trylock`).
-    pub fn try_lock(&self) -> Option<spin::MutexGuard<T>> {
+    pub fn try_lock(&self) -> Option<spin::MutexGuard<'_, T>> {
         self.inner.try_lock()
     }
 }
@@ -204,12 +203,12 @@ impl GRecMutex {
     }
 
     /// Lock (`g_rec_mutex_lock`).
-    pub fn lock(&self) -> spin::MutexGuard<()> {
+    pub fn lock(&self) -> spin::MutexGuard<'_, ()> {
         self.inner.lock()
     }
 
     /// Try to lock (`g_rec_mutex_trylock`).
-    pub fn try_lock(&self) -> Option<spin::MutexGuard<()>> {
+    pub fn try_lock(&self) -> Option<spin::MutexGuard<'_, ()>> {
         self.inner.try_lock()
     }
 }
@@ -236,22 +235,22 @@ impl GRWLock {
     }
 
     /// Acquire writer lock (`g_rw_lock_writer_lock`).
-    pub fn writer_lock(&self) -> spin::RwLockWriteGuard<()> {
+    pub fn writer_lock(&self) -> spin::RwLockWriteGuard<'_, ()> {
         self.inner.write()
     }
 
     /// Try writer lock (`g_rw_lock_writer_trylock`).
-    pub fn try_writer_lock(&self) -> Option<spin::RwLockWriteGuard<()>> {
+    pub fn try_writer_lock(&self) -> Option<spin::RwLockWriteGuard<'_, ()>> {
         self.inner.try_write()
     }
 
     /// Acquire reader lock (`g_rw_lock_reader_lock`).
-    pub fn reader_lock(&self) -> spin::RwLockReadGuard<()> {
+    pub fn reader_lock(&self) -> spin::RwLockReadGuard<'_, ()> {
         self.inner.read()
     }
 
     /// Try reader lock (`g_rw_lock_reader_trylock`).
-    pub fn try_reader_lock(&self) -> Option<spin::RwLockReadGuard<()>> {
+    pub fn try_reader_lock(&self) -> Option<spin::RwLockReadGuard<'_, ()>> {
         self.inner.try_read()
     }
 }

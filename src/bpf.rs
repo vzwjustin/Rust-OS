@@ -5,7 +5,6 @@
 //! static verifier, and an in-kernel interpreter for program execution.
 
 use alloc::collections::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, RwLock};
@@ -1094,7 +1093,7 @@ fn bpf_prog_load(attr: u64, size: u32) -> i32 {
     }
 
     // Copy instructions (each BPF insn is 8 bytes: u8 code, u8 regs, s16 off, s32 imm)
-    let insn_bytes = a.insn_cnt as usize * 8;
+    let _insn_bytes = a.insn_cnt as usize * 8;
     let insn_ptr = a.insns as *const u64;
     let mut insns = Vec::with_capacity(a.insn_cnt as usize);
     for i in 0..a.insn_cnt as usize {

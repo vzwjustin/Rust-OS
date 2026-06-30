@@ -32,3 +32,4 @@ backup_*.tar.gz
 
 # Deepwork session state (local only)
 .slim/deepwork/
+.tokensave

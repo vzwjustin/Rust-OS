@@ -445,7 +445,7 @@ pub fn notify_attrib(path: &str) {
 }
 
 /// Convenience function to notify a file move.
-pub fn notify_move(from_dir: &str, to_dir: &str, filename: &str, cookie: u32) {
+pub fn notify_move(from_dir: &str, to_dir: &str, filename: &str, _cookie: u32) {
     notify_path(from_dir, IN_MOVED_FROM, Some(filename));
     notify_path(to_dir, IN_MOVED_TO, Some(filename));
 }

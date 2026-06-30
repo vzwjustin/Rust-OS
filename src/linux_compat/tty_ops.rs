@@ -14,7 +14,7 @@ use crate::drivers::tty::{self, pty};
 use crate::process;
 
 /// Re-export termios types from the TTY driver layer.
-pub use crate::drivers::tty::{c_cflag, c_iflag, c_lflag, c_oflag, cc_index, Termios, WinSize};
+pub use crate::drivers::tty::{Termios, WinSize};
 
 /// Operation counter for statistics
 static TTY_OPS_COUNT: AtomicU64 = AtomicU64::new(0);

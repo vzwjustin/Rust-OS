@@ -7,7 +7,6 @@
 use crate::giconstantinfo::ConstantInfo;
 use crate::gifieldinfo::FieldInfo;
 use crate::gifunctioninfo::FunctionInfo;
-use crate::prelude::*;
 use alloc::string::String;
 use alloc::vec::Vec;
 

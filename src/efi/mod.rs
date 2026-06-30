@@ -183,7 +183,7 @@ fn try_parse_system_table(phys: u64, phys_off: u64) -> Option<EfiFirmwareInfo> {
     })
 }
 
-fn read_uefi_string(wide_ptr: u64, phys_off: u64) -> String {
+fn read_uefi_string(wide_ptr: u64, _phys_off: u64) -> String {
     if wide_ptr == 0 {
         return String::from("(unknown)");
     }

@@ -246,7 +246,7 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
             // Special keyring
             if create {
                 let pid = crate::process::current_pid();
-                let mut sessions = SESSION_KEYRINGS.write();
+                let sessions = SESSION_KEYRINGS.write();
                 if let Some(&sk_id) = sessions.get(&pid) {
                     return sk_id as i32;
                 }
@@ -400,7 +400,7 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
             -2
         }
         KEYCTL_SEARCH => {
-            let keyring_id = arg2 as i32;
+            let _keyring_id = arg2 as i32;
             let ktype = read_cstr(arg3 as *const u8);
             let desc = read_cstr(arg4 as *const u8);
             let _dest = arg5 as i32;
@@ -685,4 +685,45 @@ pub fn init() {
     KEYS.write().insert(id, Mutex::new(key));
     SESSION_KEYRINGS.write().insert(1, id);
     crate::serial_println!("[keyring] Keyring subsystem initialized");
+}
+
+/// Attempt to load integrity keys from the root filesystem.
+/// Mirrors Linux's `integrity_load_keys()` in kernel_init_freeable().
+/// Reads key files from `/etc/keys/` and installs them into the kernel
+/// keyring.  Silently succeeds if no key files are present.
+pub fn load_keys_from_rootfs() {
+    let vfs = crate::fs::vfs();
+    if vfs.stat("/etc/keys").is_err() {
+        return;
+    }
+
+    let key_paths = [
+        "/etc/keys/ima.km",
+        "/etc/keys/evm.km",
+        "/etc/keys/x509_ima.der",
+        "/etc/keys/x509_evm.der",
+    ];
+    let mut loaded = 0;
+    for path in &key_paths {
+        if let Ok(meta) = vfs.stat(path) {
+            if meta.size > 0 {
+                if let Ok(fd) = vfs.open(path, crate::fs::OpenFlags::read_only()) {
+                    let mut buf = alloc::vec![0u8; meta.size as usize];
+                    if let Ok(n) = vfs.read(fd, &mut buf) {
+                        if n > 0 {
+                            let kid = NEXT_KEY_ID.fetch_add(1, Ordering::SeqCst);
+                            let name = path.rsplit('/').next().unwrap_or(path);
+                            let key = Key::new(kid, "user", name, buf[..n].to_vec(), 0);
+                            KEYS.write().insert(kid, Mutex::new(key));
+                            loaded += 1;
+                        }
+                    }
+                    let _ = vfs.close(fd);
+                }
+            }
+        }
+    }
+    if loaded > 0 {
+        crate::serial_println!("[keyring] loaded {} integrity keys from /etc/keys/", loaded);
+    }
 }

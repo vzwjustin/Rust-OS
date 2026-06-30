@@ -7,8 +7,6 @@
 
 pub use crate::gitypelib::Typelib;
 
-use crate::prelude::*;
-use alloc::string::String;
 
 /// Typelib header magic (mirrors the typelib magic bytes).
 pub const TYPELIB_MAGIC: &[u8; 8] = b"GOBJ-IR\0";

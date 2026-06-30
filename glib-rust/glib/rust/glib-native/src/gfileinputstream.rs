@@ -9,9 +9,7 @@
 use crate::error::Error;
 use crate::gcancellable::GCancellable;
 use crate::gfile::FileInfo;
-use crate::ginputstream::InputStream;
 use crate::gseekable::SeekType;
-use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 

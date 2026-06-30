@@ -3,10 +3,9 @@
 //! Bundles a separate input stream and output stream into a single `GIOStream`.
 //! No_std compatible; streams are modelled as byte-buffer mocks.
 
-use crate::bytes::Bytes;
 use crate::error::Error;
-use crate::ginputstream::{InputStream, MemoryInputStream};
-use crate::goutputstream::{MemoryOutputStream, OutputStream};
+use crate::ginputstream::InputStream;
+use crate::goutputstream::OutputStream;
 
 /// A `GIOStream` that owns a separate `InputStream` and `OutputStream`.
 pub struct SimpleIOStream {

@@ -6,7 +6,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use spin::Mutex;
 
 /// A simple asynchronous result (`GSimpleAsyncResult`).

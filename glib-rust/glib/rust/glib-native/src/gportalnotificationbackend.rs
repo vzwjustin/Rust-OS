@@ -13,7 +13,6 @@
 use crate::gnotification::Notification;
 use crate::gnotificationbackend::NotificationBackend;
 use crate::gportalsupport::PortalSupport;
-use crate::prelude::*;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use spin::Mutex;

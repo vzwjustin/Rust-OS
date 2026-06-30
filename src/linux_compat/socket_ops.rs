@@ -43,7 +43,7 @@ const SOCK_NONBLOCK: i32 = 0o20000;
 const SOCK_CLOEXEC: i32 = 0o2000000;
 
 use crate::net::raw::{self, AF_PACKET};
-use crate::net::unix::{self, UnixSocketType};
+use crate::net::unix::{self};
 
 pub use crate::net::unix::UnixSocketRole;
 
@@ -1473,7 +1473,7 @@ pub fn accept4(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -
 
 /// socketpair - create a pair of connected sockets
 /// For AF_UNIX, creates a bidirectional pipe.
-pub fn socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> LinuxResult<i32> {
+pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> LinuxResult<i32> {
     inc_ops();
 
     if sv.is_null() {

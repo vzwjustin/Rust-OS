@@ -8,7 +8,7 @@
 use crate::gfile::{File, FileCreateFlags};
 use crate::gio_tool::{
     file_get_child, file_is_dir, print_file_error, register_tool_file_platform, reset_tool_state,
-    show_help, vfs_store_from_stream, with_tool_vfs,
+    show_help, vfs_store_from_stream,
 };
 use crate::prelude::*;
 

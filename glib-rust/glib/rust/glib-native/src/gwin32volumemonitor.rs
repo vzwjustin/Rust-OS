@@ -7,8 +7,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::gwin32mount::Win32Mount;
-use crate::prelude::*;
-use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 

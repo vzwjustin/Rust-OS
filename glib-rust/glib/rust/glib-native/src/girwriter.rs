@@ -5,9 +5,7 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::girnode::{Node, NodeTag};
-use crate::prelude::*;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// Writes a node tree to GIR XML string (mirrors `g_ir_writer_write`).
 pub fn write_to_string(node: &Node) -> String {

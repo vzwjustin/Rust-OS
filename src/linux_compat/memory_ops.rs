@@ -53,7 +53,7 @@ use crate::memory_manager::{
         get_memory_stats, vm_brk, vm_file_backed_regions_in_range, vm_mmap, vm_mmap_file,
         vm_mprotect, vm_munmap, vm_sbrk,
     },
-    MemoryRegion, MmapFlags, ProtectionFlags, VmError,
+    MmapFlags, ProtectionFlags, VmError,
 };
 
 // ============================================================================
@@ -1121,7 +1121,7 @@ pub fn sbrk(increment: isize) -> LinuxResult<*mut u8> {
 // ============================================================================
 
 /// NUMA memory policy modes (delegated to `crate::numa`).
-pub use crate::numa::{MPOL_BIND, MPOL_DEFAULT, MPOL_INTERLEAVE, MPOL_LOCAL, MPOL_PREFERRED};
+pub use crate::numa::{MPOL_DEFAULT, MPOL_LOCAL};
 
 /// get_mempolicy - retrieve NUMA memory policy
 ///

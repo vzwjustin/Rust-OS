@@ -45,11 +45,11 @@ pub fn run(args: &[&str]) -> i32 {
     }
     let file = File::new_for_commandline_arg(positional[0]);
     match rename_file(&file, positional[1]) {
-        Ok(uri) => {
+        Ok(_uri) => {
             gwarn!("Rename successful. New uri: {uri}");
             0
         }
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             1
         }

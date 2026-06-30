@@ -465,11 +465,7 @@ fn read_file_bytes_from_vfs(path: &str) -> Result<Vec<u8>, LinuxError> {
                 let target_str = core::str::from_utf8(&target[..n])
                     .map_err(|_| LinuxError::ENOEXEC)?
                     .trim_end_matches('\0');
-                crate::serial_println!(
-                    "exec: following symlink {} -> {}",
-                    path,
-                    target_str
-                );
+                crate::serial_println!("exec: following symlink {} -> {}", path, target_str);
                 return read_file_bytes_from_vfs(target_str);
             }
             _ => {
@@ -549,17 +545,32 @@ pub fn default_session_envp() -> Vec<String> {
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "XDG_RUNTIME_DIR=/run/user/0",
         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus",
+        "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket",
         "XDG_CURRENT_DESKTOP=ubuntu:GNOME",
         "XDG_SESSION_DESKTOP=ubuntu",
         "XDG_SESSION_TYPE=wayland",
+        "XDG_SESSION_CLASS=user",
+        "XDG_SESSION_ID=1",
+        "XDG_DATA_DIRS=/usr/share:/usr/local/share",
+        "XDG_CONFIG_DIRS=/etc/xdg",
+        "XDG_CONFIG_HOME=/root/.config",
+        "XDG_DATA_HOME=/root/.local/share",
+        "XDG_CACHE_HOME=/root/.cache",
+        "XDG_MENU_PREFIX=gnome-",
         "WAYLAND_DISPLAY=wayland-0",
         "GDK_BACKEND=wayland",
         "CLUTTER_BACKEND=wayland",
+        "QT_QPA_PLATFORM=wayland",
+        "GNOME_SHELL_SESSION_MODE=ubuntu",
         "NO_AT_BRIDGE=1",
+        "LANG=C.UTF-8",
+        "LC_ALL=C.UTF-8",
+        "TERM=linux",
         "HOME=/root",
         "USER=root",
         "LOGNAME=root",
         "SHELL=/bin/sh",
+        "HOSTNAME=rustos",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -623,10 +634,7 @@ pub fn exec_program_for_pid(
             loaded.base_address,
         ) {
             Ok(n) => {
-                crate::serial_println!(
-                    "exec: dynamic linking OK ({} relocations applied)",
-                    n
-                );
+                crate::serial_println!("exec: dynamic linking OK ({} relocations applied)", n);
             }
             Err(e) => {
                 crate::serial_println!(
@@ -756,10 +764,7 @@ pub fn execve(
             loaded.base_address,
         ) {
             Ok(n) => {
-                crate::serial_println!(
-                    "execve: dynamic linking OK ({} relocations)",
-                    n
-                );
+                crate::serial_println!("execve: dynamic linking OK ({} relocations)", n);
             }
             Err(e) => {
                 crate::serial_println!(
@@ -830,10 +835,7 @@ pub unsafe fn execve_and_enter_user_mode(
             loaded.base_address,
         ) {
             Ok(n) => {
-                crate::serial_println!(
-                    "execve_direct: dynamic linking OK ({} relocations)",
-                    n
-                );
+                crate::serial_println!("execve_direct: dynamic linking OK ({} relocations)", n);
             }
             Err(e) => {
                 crate::serial_println!(

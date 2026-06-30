@@ -4,7 +4,6 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::prelude::*;
 use alloc::string::String;
 
 /// Inotify subscription (mirrors `inotify_sub`).

@@ -6,7 +6,6 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::girnode::Node;
-use crate::prelude::*;
 use alloc::string::String;
 
 /// Parses a GIR XML string (mirrors `g_ir_parser_parse_string`).

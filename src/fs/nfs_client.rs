@@ -13,7 +13,6 @@ use alloc::vec::Vec;
 use spin::RwLock;
 
 use super::{FileSystemType, FsError, FsResult};
-use crate::vfs::{VfsError, VfsResult};
 
 /// NFSv3 file handle (up to 64 bytes on the wire).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

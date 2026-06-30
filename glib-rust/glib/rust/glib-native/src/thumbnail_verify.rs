@@ -3,8 +3,7 @@
 //! basic thumbnail validation checks.
 //! Fully `no_std` compatible using `alloc`.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::String;
 
 /// Thumbnail verification result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

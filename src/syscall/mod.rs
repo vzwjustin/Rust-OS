@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use core::arch::asm;
 
+pub mod abi;
 mod linux;
 
 /// Linux x86_64 syscall numbers (see `syscall/linux.rs`).

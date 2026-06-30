@@ -310,7 +310,7 @@ impl ThreadManager {
             boxed();
         }
 
-        let entry_addr = thread_trampoline::<F> as u64;
+        let entry_addr = thread_trampoline::<F> as *const () as u64;
         let tid = self.create_thread_internal(
             0, // Kernel process PID
             ThreadType::Kernel,

@@ -7,8 +7,6 @@
 
 use crate::gwin32inputstream::Win32InputStream;
 use crate::gwin32outputstream::Win32OutputStream;
-use crate::prelude::*;
-use alloc::string::String;
 
 /// Creates a `Win32InputStream` from a file descriptor
 /// (mirrors `g_win32_input_stream_new_from_fd`).

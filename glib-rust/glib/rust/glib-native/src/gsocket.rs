@@ -19,9 +19,7 @@ use crate::error::Error;
 use crate::gcancellable::GCancellable;
 pub use crate::ginetaddress::SocketFamily;
 use crate::gioerror::{io_error_quark, IOErrorEnum};
-use crate::gsocketaddress::SocketAddress;
 use alloc::collections::VecDeque;
-use alloc::vec::Vec;
 use spin::Mutex;
 
 // ──────────────────────────── Enums ────────────────────────────────────────

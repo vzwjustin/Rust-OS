@@ -7,7 +7,6 @@
 use crate::gfileinfo::FileAttributeValue;
 use crate::gfileinfo::FileInfo;
 use crate::prelude::*;
-use alloc::string::String;
 
 // ── Attribute ID constants (mirrors `G_FILE_ATTRIBUTE_ID_*`) ──────────────
 

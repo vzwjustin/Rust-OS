@@ -146,7 +146,7 @@ impl BufferedInputStream {
 
         // Re-acquire and apply.
         let mut buf = self.buffer.lock();
-        let mut pos = self.pos.lock();
+        let pos = self.pos.lock();
         // Trim the reservation to the actual bytes read.
         buf.truncate(old_len + n);
         // Write the received bytes at the position we reserved.
@@ -170,7 +170,7 @@ impl BufferedInputStream {
                 ));
             }
         }
-        let mut buf = self.buffer.lock();
+        let buf = self.buffer.lock();
         let mut pos = self.pos.lock();
         let byte = buf[*pos];
         *pos += 1;
@@ -189,7 +189,7 @@ impl BufferedInputStream {
         let avail = self.get_available();
         if avail > 0 {
             let n = avail.min(out.len());
-            let mut buf = self.buffer.lock();
+            let buf = self.buffer.lock();
             let mut pos = self.pos.lock();
             out[..n].copy_from_slice(&buf[*pos..*pos + n]);
             *pos += n;

@@ -97,7 +97,7 @@ pub fn run(args: &[&str]) -> i32 {
         } else {
             dest.clone()
         };
-        if let Err(msg) = move_file(&source, &target, &opts) {
+        if let Err(_msg) = move_file(&source, &target, &opts) {
             gwarn!("{msg}");
             status = 1;
         }

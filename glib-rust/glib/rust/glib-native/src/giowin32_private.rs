@@ -9,8 +9,7 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::prelude::*;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Computes the length of a UTF-16 string (number of code units until nul).

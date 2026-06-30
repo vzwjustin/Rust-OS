@@ -4,7 +4,7 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::gdbusauthmechanism::{AuthMechanismState, DBusAuthMechanism};
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 /// ANONYMOUS auth mechanism (`GDBusAuthMechanismAnon`).
 pub struct DBusAuthMechanismAnon {

@@ -8,12 +8,7 @@ use super::{
     FileSystemType, FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
 use crate::drivers::storage::read_storage_sectors;
-use alloc::{
-    collections::BTreeMap,
-    string::{String, ToString},
-    vec,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 use spin::RwLock;
 
 const BTRFS_MAGIC: &[u8; 8] = b"_BHRfS_M";

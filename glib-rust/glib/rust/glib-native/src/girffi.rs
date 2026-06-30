@@ -6,7 +6,6 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::gitypes::GIArgument;
-use crate::prelude::*;
 use alloc::string::String;
 
 /// FFI closure callback type (mirrors `GIFFIClosureCallback`).

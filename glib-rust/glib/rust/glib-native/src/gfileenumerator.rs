@@ -8,7 +8,7 @@
 use crate::error::Error;
 use crate::gcancellable::GCancellable;
 use crate::gfile::{File, FileInfo};
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use spin::Mutex;
 

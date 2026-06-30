@@ -6,9 +6,8 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::prelude::*;
-use crate::winhttp::{self, HInternet, UrlComponents};
+use crate::winhttp::{self, HInternet};
 use alloc::string::String;
-use alloc::vec::Vec;
 use spin::Mutex;
 
 /// WinHTTP DLL function table (mirrors `GWinHttpDllFuncs`).

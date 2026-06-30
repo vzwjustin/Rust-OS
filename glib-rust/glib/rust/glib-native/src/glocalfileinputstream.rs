@@ -26,7 +26,7 @@ impl LocalFileInputStream {
         if *self.closed.lock() {
             return 0;
         }
-        let mut data = self.data.lock();
+        let data = self.data.lock();
         let mut pos = self.position.lock();
         let available = data.len().saturating_sub(*pos);
         let count = buf.len().min(available);

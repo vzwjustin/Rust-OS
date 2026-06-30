@@ -12,7 +12,6 @@
 use crate::error::Error;
 use crate::gioerror::{io_error_quark, IOErrorEnum};
 use crate::poll::PollFD;
-use crate::prelude::*;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;

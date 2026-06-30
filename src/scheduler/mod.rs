@@ -10,9 +10,6 @@
 pub mod completion;
 pub mod wait;
 
-pub use completion::Completion;
-pub use wait::{WaitQueue, WaitTimeoutResult};
-
 use alloc::{collections::VecDeque, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use lazy_static::lazy_static;

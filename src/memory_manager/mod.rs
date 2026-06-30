@@ -8,7 +8,7 @@ pub mod memory_region;
 pub mod page_table;
 pub mod virtual_memory;
 
-pub use memory_region::{MemoryRegion, MemoryType, ProtectionFlags};
+pub use memory_region::{MemoryRegion, ProtectionFlags};
 pub use page_table::{PageTable, PageTableFlags};
 pub use virtual_memory::{VirtualMemoryManager, VmError, VmResult};
 

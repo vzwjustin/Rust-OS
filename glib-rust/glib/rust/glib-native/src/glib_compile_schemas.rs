@@ -105,11 +105,11 @@ pub fn run(args: &[&str]) -> i32 {
     }
     let xml = r#"<schema id="org.test.App" path="/org/test/app/"><key name="enabled" type="b" value="true"/></schema>"#;
     match compile_schemas(xml) {
-        Ok(blob) => {
+        Ok(_blob) => {
             gwarn!("compiled {} bytes", blob.len());
             0
         }
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             1
         }

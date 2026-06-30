@@ -8,7 +8,6 @@
 use crate::error::Error;
 use crate::gconverter::{Converter, ConverterFlags, ConverterResult};
 use crate::gfile::FileInfo;
-use crate::gioerror::{io_error_quark, IOErrorEnum};
 use alloc::vec::Vec;
 use miniz_oxide::deflate::{compress_to_vec, compress_to_vec_zlib};
 use spin::Mutex;

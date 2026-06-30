@@ -69,7 +69,7 @@ pub fn is_enabled() -> bool {
 
 /// Instrumentation hook for sized accesses.
 #[inline(always)]
-pub fn check_access(access: KcsanAccessType, addr: u64, size: usize, pc: u64) {
+pub fn check_access(_access: KcsanAccessType, _addr: u64, size: usize, _pc: u64) {
     if !is_enabled() || size == 0 {
         return;
     }

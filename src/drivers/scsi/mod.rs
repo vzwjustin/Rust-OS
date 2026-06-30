@@ -3,7 +3,6 @@
 //! Connects AHCI and NVMe storage drivers as SCSI hosts and exposes a unified
 //! request path for upper layers (USB MSC, md, block).
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;

@@ -8,10 +8,8 @@
 
 use crate::gaction::Action;
 use crate::gactiongroup::{ActionGroup, ActionInfo};
-use crate::gactionmap::{ActionEntry, ActionMap};
-use crate::gsimpleaction::SimpleAction;
+use crate::gactionmap::ActionMap;
 use crate::variant::Variant;
-use crate::varianttype::VariantType;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

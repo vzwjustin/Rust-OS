@@ -14,9 +14,8 @@
 //! - PTRACE_GETEVENTMSG: get event data
 
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 // ── Ptrace request constants (from include/uapi/linux/ptrace.h) ─────────
 

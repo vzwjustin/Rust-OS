@@ -70,12 +70,12 @@ pub fn run_with_stdin(args: &[&str], stdin_data: &[u8]) -> i32 {
     }
     let file = File::new_for_commandline_arg(positional[0]);
     match save_data(&file, stdin_data, &opts) {
-        Ok(Some(etag)) => {
+        Ok(Some(_etag)) => {
             gwarn!("Etag: {etag}");
             0
         }
         Ok(None) => 0,
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             2
         }

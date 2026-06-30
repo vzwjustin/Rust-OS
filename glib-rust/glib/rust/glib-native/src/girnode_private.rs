@@ -5,8 +5,6 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::girnode::{Node, NodeTag};
-use crate::prelude::*;
-use alloc::string::String;
 
 /// Creates a new node (internal constructor, same as `Node::new`).
 pub fn node_new(tag: NodeTag, name: &str) -> Node {

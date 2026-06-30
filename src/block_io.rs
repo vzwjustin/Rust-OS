@@ -161,7 +161,7 @@ impl RequestQueue {
     }
 
     /// Add a bio to the queue. Attempts to merge with existing requests.
-    fn add_bio(&mut self, mut bio: Bio) {
+    fn add_bio(&mut self, bio: Bio) {
         // Try to merge with the last pending bio if contiguous
         if let Some(last) = self.pending.last_mut() {
             if last.bi_dir == bio.bi_dir

@@ -6,7 +6,6 @@
 use crate::prelude::*;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// Function type for creating a new value from a key.
 pub type CacheNewFunc = fn(&str) -> String;
@@ -46,7 +45,7 @@ impl Cache {
     /// Otherwise, creates a new value using `new_func`.
     pub fn insert(&mut self, key: &str) -> &str {
         let dup_key = (self.key_dup_func)(key);
-        if let Some((value, count)) = self.entries.get_mut(&dup_key) {
+        if let Some((_value, count)) = self.entries.get_mut(&dup_key) {
             *count += 1;
         } else {
             let value = (self.new_func)(&dup_key);

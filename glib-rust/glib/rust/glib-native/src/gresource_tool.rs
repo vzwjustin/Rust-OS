@@ -288,7 +288,7 @@ fn parse_gresource_value(data: &[u8], start: usize, end: usize) -> Result<(Vec<u
         return Err("value too small for GResource tuple".into());
     }
 
-    let size = u32::from_le_bytes([value_data[0], value_data[1], value_data[2], value_data[3]]);
+    let _size = u32::from_le_bytes([value_data[0], value_data[1], value_data[2], value_data[3]]);
     let flags = u32::from_le_bytes([value_data[4], value_data[5], value_data[6], value_data[7]]);
 
     // The byte array payload starts after the two u32s.
@@ -355,13 +355,13 @@ pub fn run(args: &[&str]) -> i32 {
             let details = args.contains(&"--details");
             let resource = match load_resource(args[1].as_bytes()) {
                 Ok(r) => r,
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     return 1;
                 }
             };
             let prefix = args.get(2).copied().unwrap_or("/");
-            for line in list_resources(&resource, prefix, details) {
+            for _line in list_resources(&resource, prefix, details) {
                 gwarn!("{line}");
             }
             0
@@ -372,17 +372,17 @@ pub fn run(args: &[&str]) -> i32 {
             }
             let resource = match load_resource(args[1].as_bytes()) {
                 Ok(r) => r,
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     return 1;
                 }
             };
             match extract_resource(&resource, args[2]) {
-                Ok(data) => {
+                Ok(_data) => {
                     gwarn!("extracted {} bytes", data.len());
                     0
                 }
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }

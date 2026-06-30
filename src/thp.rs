@@ -6,12 +6,11 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::RwLock;
 use x86_64::structures::paging::PageTableFlags;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
 use crate::linux_compat::{LinuxError, LinuxResult};
 use crate::memory::{self, HUGEPAGE_4K_PAGES, HUGEPAGE_SIZE};

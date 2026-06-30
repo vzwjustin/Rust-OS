@@ -5,9 +5,8 @@
 //! registry backs `require` and `find_by_name` for now.
 
 use crate::error::Error;
-use crate::gibaseinfo::{BaseInfo, InfoType};
-use crate::gienuminfo::EnumInfo;
-use crate::gitypelib::{register_entry, Typelib};
+use crate::gibaseinfo::BaseInfo;
+use crate::gitypelib::Typelib;
 use crate::prelude::*;
 use crate::quark::{quark_from_static_string, Quark};
 use crate::stdio::read_file_bytes;

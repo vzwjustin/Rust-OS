@@ -21,7 +21,6 @@ use crate::gtype::{
     G_TYPE_LONG, G_TYPE_STRING, G_TYPE_UCHAR, G_TYPE_UINT, G_TYPE_UINT64, G_TYPE_ULONG,
 };
 use crate::gvalue::{GValue, TransformFunc};
-use crate::prelude::*;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use spin::mutex::Mutex;

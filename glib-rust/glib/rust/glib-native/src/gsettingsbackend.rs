@@ -38,7 +38,7 @@ impl SettingsBackend {
     ///
     /// Mirrors `g_settings_backend_write`.
     pub fn write(&self, key: &str, value: &str) -> bool {
-        let mut writable = self.writable.lock();
+        let writable = self.writable.lock();
         let is_writable = writable.get(key).copied().unwrap_or(true);
         if !is_writable {
             return false;

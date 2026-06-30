@@ -46,7 +46,7 @@ pub struct DnsRecord {
 /// In our no_std port, we do a minimal parse of the response buffer.
 pub fn records_from_res_query(
     rrname: &str,
-    rrtype: ResolverRecordType,
+    _rrtype: ResolverRecordType,
     answer: &[u8],
     _herr: i32,
 ) -> Result<Vec<DnsRecord>, String> {

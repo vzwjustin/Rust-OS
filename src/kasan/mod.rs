@@ -72,7 +72,7 @@ pub fn is_enabled() -> bool {
 
 /// Instrumentation hook before a memory access.
 #[inline(always)]
-pub fn check_access(access: KasanAccessType, addr: u64, size: usize) {
+pub fn check_access(_access: KasanAccessType, _addr: u64, size: usize) {
     if !is_enabled() || size == 0 {
         return;
     }

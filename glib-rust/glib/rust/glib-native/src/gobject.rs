@@ -6,13 +6,13 @@
 //! - Signal connection and emission
 //! - Weak references
 
-use crate::gparamspec::{find_property, ParamFlags, ParamID, ParamSpec};
+use crate::gparamspec::{find_property, ParamID, ParamSpec};
 use crate::gsignal::{
-    signal_connect_by_name, signal_emit_by_name, signal_new, ConnectFlags, HandlerID,
-    SignalCallback, SignalFlags,
+    signal_connect_by_name, signal_emit_by_name, ConnectFlags, HandlerID,
+    SignalCallback,
 };
-use crate::gtype::{type_name, GType, G_TYPE_INT, G_TYPE_NONE, G_TYPE_OBJECT};
-use crate::gvalue::{value_new_int, value_new_string, GValue};
+use crate::gtype::{type_name, GType};
+use crate::gvalue::{value_new_string, GValue};
 // Re-export the most common helpers so `#[cfg(test)] mod tests { use super::*; }`
 // in this file can call them without spelling out the path.
 #[cfg(test)]

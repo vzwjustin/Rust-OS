@@ -69,7 +69,7 @@ pub fn run(args: &[&str]) -> i32 {
     }
     let conn = match open_session_bus() {
         Ok(c) => c,
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             return 1;
         }
@@ -93,7 +93,7 @@ pub fn run(args: &[&str]) -> i32 {
                     }
                     0
                 }
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }
@@ -105,7 +105,7 @@ pub fn run(args: &[&str]) -> i32 {
             }
             match emit_signal(&conn, args[1], args[2], args[3]) {
                 Ok(()) => 0,
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }
@@ -116,7 +116,7 @@ pub fn run(args: &[&str]) -> i32 {
             0
         }
         other if COMMANDS.contains(&other) => 1,
-        other => {
+        _other => {
             gwarn!("unknown command {other}");
             1
         }

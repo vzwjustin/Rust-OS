@@ -4,8 +4,8 @@
 //! into a single merged view. Supports copy-up on write and whiteouts on delete.
 
 use super::{
-    get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
-    FileSystemType, FileType, FsError, FsResult, InodeNumber, OpenFlags,
+    DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats, FileSystemType,
+    FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
 use alloc::{
     collections::BTreeMap,

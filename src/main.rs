@@ -98,6 +98,8 @@ mod ipc;
 mod kernel;
 // Include event notifier chains
 mod notifier;
+// Include usermodehelper (kernel-spawned userspace programs)
+mod usermodehelper;
 // Include process management
 mod process;
 // Include process manager (high-level process APIs)
@@ -529,6 +531,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         },
     }
 
+    // Early security init — seed the RNG so arch setup (ASLR, stack canaries)
+    // has access to random numbers.  Mirrors Linux's early_security_init().
+    security::early_init();
+
     // Initialize CPU architecture detection (CPUID vendor, brand, features).
     // Needs heap for String allocation. performance::init() depends on this.
     match arch::init() {
@@ -952,7 +958,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             Ok(()) => unsafe {
                 early_serial_write_str("RustOS: Network device subsystem initialized\r\n");
             },
-            Err(e) => unsafe {
+            Err(_e) => unsafe {
                 early_serial_write_str("RustOS: Network device init FAILED\r\n");
             },
         }
@@ -1040,6 +1046,22 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize the global testing framework for in-kernel test execution.
         testing_framework::init_testing_framework();
+
+        // Initialize the kernel VFS manager (crate::fs::vfs()).
+        // This mounts the root filesystem (ext4/fat32 from storage, or ramfs
+        // fallback), devfs at /dev, sysfs at /sys, and hugetlbfs at
+        // /dev/hugepages. The buffer cache for block I/O is also initialized.
+        // Must run after driver loading (which discovers storage devices) and
+        // before process/scheduler init (which need file loading via VFS_MANAGER).
+        match fs::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Kernel VFS manager initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Kernel VFS manager init FAILED\r\n");
+                let _ = e;
+            },
+        }
 
         // Initialize performance monitoring for benchmarks.
         match testing::benchmarking::init_performance_monitoring() {
@@ -1180,6 +1202,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         unsafe {
             early_serial_write_str("RustOS: Initializing scheduler...\r\n");
         }
+        // Early cgroup init — root cgroup must exist before the scheduler
+        // creates PID 1 so processes can be assigned to a cgroup.
+        // Mirrors Linux's cgroup_init_early() in start_kernel().
+        cgroup::init_early();
         match scheduler::init() {
             Ok(()) => unsafe {
                 early_serial_write_str("RustOS: Scheduler initialized\r\n");
@@ -1190,6 +1216,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 early_serial_write_str("\r\n");
             },
         }
+        // Transition to SCHEDULING — scheduler is now running.
+        // Mirrors Linux's rest_init() setting system_state = SYSTEM_SCHEDULING.
+        kernel::set_system_state(kernel::SystemState::Scheduling);
         unsafe {
             early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
         }
@@ -1248,6 +1277,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Linux compatibility layer initialized\r\n");
         }
 
+        // Set default hostname so GNOME processes and procfs see a proper name.
+        let _ = linux_compat::sysinfo_ops::set_kernel_hostname("rustos");
+        unsafe {
+            early_serial_write_str("RustOS: Default hostname set to 'rustos'\r\n");
+        }
+
         // Initialize SoftIRQ and workqueue subsystem
         softirq::init();
 
@@ -1294,6 +1329,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize cgroups
         cgroup::init();
 
+        // Initialize usermodehelper (kernel-spawned userspace programs).
+        // Mirrors Linux's usermodehelper_init() in do_basic_setup().
+        usermodehelper::init();
+
         // Initialize seccomp
         seccomp::init();
 
@@ -1330,6 +1369,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize keyring
         keyring::init();
 
+        // Load integrity keys from the root filesystem.
+        // Mirrors Linux's integrity_load_keys() in kernel_init_freeable().
+        // Runs after fs::init() mounted the root fs and after keyring::init().
+        keyring::load_keys_from_rootfs();
+
         // Initialize SysV IPC
         sysv_ipc::init();
 
@@ -1348,6 +1392,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kasan::init();
         kcsan::init();
         of::init();
+
+        // Initialize global notifier chains (panic, reboot, CPU).
+        // Must run before power::init() which uses PM notifier chains.
+        notifier::init();
+
         power::init();
         cpufreq::init();
         cpuidle::init();
@@ -1612,6 +1661,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("ms\r\n");
         }
         kernel::mark_boot_ready();
+        // Transition to RUNNING — all subsystems initialized, userspace
+        // init is about to be launched.  Mirrors Linux's kernel_init()
+        // setting system_state = SYSTEM_RUNNING.
+        kernel::set_system_state(kernel::SystemState::Running);
         if !display_driver_ready {
             boot_ui::boot_complete_summary();
             boot_display::show_boot_complete(boot_time);
@@ -2272,6 +2325,11 @@ fn userspace_session_loop() -> ! {
 
         // Service pending user processes (GNOME init, etc.)
         crate::user_sched::service_pending(userspace_idle_resume as *const () as u64);
+
+        // Process pending usermodehelper requests (firmware loading, etc.)
+        if update_counter % 1000 == 0 {
+            usermodehelper::process_pending();
+        }
 
         // Poll network devices for incoming packets
         if update_counter.is_multiple_of(1000) {

@@ -5,7 +5,6 @@
 //!
 //! Fully `no_std` compatible using `core` and `alloc`.
 
-use crate::prelude::*;
 use alloc::string::String;
 
 /// Dumps introspection data to a file (mirrors `gi_repository_dump`).

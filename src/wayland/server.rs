@@ -1237,7 +1237,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
 /// Forward queued kernel input events to connected Wayland clients.
 pub fn poll_kernel_input() {
     use crate::drivers::input_manager::{self, InputEvent};
-    use crate::keyboard::KeyEvent;
+
     use crate::process::ipc::get_ipc_manager;
 
     let Some(mut comp) = super::try_compositor_mut() else {

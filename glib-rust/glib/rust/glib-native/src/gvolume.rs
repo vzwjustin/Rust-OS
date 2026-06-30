@@ -11,8 +11,6 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::error::Error;
-use crate::gcancellable::GCancellable;
 use crate::prelude::*;
 use alloc::string::String;
 

@@ -242,13 +242,13 @@ pub fn get_dirs() -> Vec<String> {
 pub fn dump() {
     let dirs = MIME_DIRS.lock();
     gwarn!("xdgmime dump: {} search directories", dirs.len());
-    for dir in dirs.iter() {
+    for _dir in dirs.iter() {
         gwarn!("  dir: {}", dir);
     }
 
     let globs = GLOBS.lock();
     gwarn!("xdgmime dump: {} glob patterns", globs.len());
-    for entry in globs.iter() {
+    for _entry in globs.iter() {
         gwarn!(
             "  glob: {} -> {} (weight={}, cs={})",
             entry.pattern,
@@ -260,25 +260,25 @@ pub fn dump() {
 
     let aliases = ALIASES.lock();
     gwarn!("xdgmime dump: {} aliases", aliases.len());
-    for (alias, canonical) in aliases.iter() {
+    for (_alias, _canonical) in aliases.iter() {
         gwarn!("  alias: {} -> {}", alias, canonical);
     }
 
     let parents = PARENTS.lock();
     gwarn!("xdgmime dump: {} parent mappings", parents.len());
-    for (mime, parent_list) in parents.iter() {
+    for (_mime, _parent_list) in parents.iter() {
         gwarn!("  parent: {} -> {:?}", mime, parent_list);
     }
 
     let icons = ICONS.lock();
     gwarn!("xdgmime dump: {} icon mappings", icons.len());
-    for (mime, icon) in icons.iter() {
+    for (_mime, _icon) in icons.iter() {
         gwarn!("  icon: {} -> {}", mime, icon);
     }
 
     let generic_icons = GENERIC_ICONS.lock();
     gwarn!("xdgmime dump: {} generic icon mappings", generic_icons.len());
-    for (mime, icon) in generic_icons.iter() {
+    for (_mime, _icon) in generic_icons.iter() {
         gwarn!("  generic_icon: {} -> {}", mime, icon);
     }
 }

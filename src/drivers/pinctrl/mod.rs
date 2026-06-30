@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::{self, Vec};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 

@@ -10,7 +10,6 @@
 //! 5. fspick() creates a context from an existing mount for reconfiguration
 
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -200,7 +199,7 @@ pub fn fsopen(fs_type: *const u8, flags: u32) -> i32 {
 /// `aux` is auxiliary data (fd number for FSCONFIG_SET_FD).
 ///
 /// Returns 0 on success, negative errno on failure.
-pub fn fsconfig(fd: i32, cmd: u32, key: *const u8, value: *const u8, aux: i32) -> i32 {
+pub fn fsconfig(fd: i32, cmd: u32, key: *const u8, value: *const u8, _aux: i32) -> i32 {
     let id = match crate::linux_compat::special_fd::get_fs_context_id(fd) {
         Some(id) => id,
         None => return -9, // EBADF
@@ -276,7 +275,7 @@ pub fn fsconfig(fd: i32, cmd: u32, key: *const u8, value: *const u8, aux: i32) -
 /// `attr_flags` are mount attributes (MOUNT_ATTR_*).
 ///
 /// Returns a mount fd on success, negative errno on failure.
-pub fn fsmount(fd: i32, flags: u32, attr_flags: u32) -> i32 {
+pub fn fsmount(fd: i32, _flags: u32, attr_flags: u32) -> i32 {
     let id = match crate::linux_compat::special_fd::get_fs_context_id(fd) {
         Some(id) => id,
         None => return -9, // EBADF
@@ -362,10 +361,10 @@ pub fn fspick(path: *const u8, flags: u32) -> i32 {
 /// Returns 0 on success, negative errno on failure.
 pub fn move_mount(
     from_dfd: i32,
-    from_path: *const u8,
-    to_dfd: i32,
+    _from_path: *const u8,
+    _to_dfd: i32,
     to_path: *const u8,
-    flags: u32,
+    _flags: u32,
 ) -> i32 {
     if to_path.is_null() {
         return -14;
@@ -440,7 +439,7 @@ pub fn move_mount(
 /// `flags` controls behavior (OPEN_TREE_CLONE, OPEN_TREE_CLOEXEC).
 ///
 /// Returns a mount fd on success, negative errno on failure.
-pub fn open_tree(dfd: i32, path: *const u8, flags: u32) -> i32 {
+pub fn open_tree(_dfd: i32, path: *const u8, flags: u32) -> i32 {
     if path.is_null() {
         return -14;
     }
@@ -484,7 +483,7 @@ pub fn open_tree(dfd: i32, path: *const u8, flags: u32) -> i32 {
 /// `size` is the size of the attr struct.
 ///
 /// Returns 0 on success, negative errno on failure.
-pub fn mount_setattr(dfd: i32, path: *const u8, flags: u32, attr: u64, size: u64) -> i32 {
+pub fn mount_setattr(_dfd: i32, path: *const u8, _flags: u32, attr: u64, size: u64) -> i32 {
     if path.is_null() {
         return -14;
     }

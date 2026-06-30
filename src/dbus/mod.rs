@@ -1456,6 +1456,15 @@ pub fn register_session_pipe(pipe_id: u32) {
     UNCLAIMED_SESSION_PIPES.lock().push(pipe_id);
 }
 
+/// Pipes connected to the system bus before the client completes Hello.
+static UNCLAIMED_SYSTEM_PIPES: spin::Mutex<Vec<u32>> = spin::Mutex::new(Vec::new());
+static SYSTEM_BUS: RwLock<MessageBus> = RwLock::new(MessageBus::new());
+
+/// Register a newly connected system-bus socket pipe.
+pub fn register_system_pipe(pipe_id: u32) {
+    UNCLAIMED_SYSTEM_PIPES.lock().push(pipe_id);
+}
+
 fn claim_session_pipe(unique_name: &str) -> Option<u32> {
     let conn_id = connection_id_from_sender(unique_name);
     if conn_id == 0 {
@@ -2669,6 +2678,49 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
                 serial,
                 header.sender().unwrap_or(sender),
             );
+            Some(marshal_message(&reply))
+        }
+        _ => None,
+    }
+}
+
+/// Process a wire-format D-Bus request on the system bus.
+pub fn process_system_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<Vec<u8>> {
+    let mut unmarshaler = Unmarshaler::new(data).ok()?;
+    let header = unmarshaler.parse_header().ok()?;
+
+    if header.msg_type != MessageType::MethodCall {
+        return None;
+    }
+
+    let interface = header.interface()?;
+    let member = header.member()?;
+    let serial = header.serial;
+    let destination = header.destination().unwrap_or(BUS_NAME);
+
+    if destination != BUS_NAME {
+        return None;
+    }
+
+    match (interface, member) {
+        (BUS_NAME, "Hello") => {
+            let mut bus = SYSTEM_BUS.write();
+            let name = bus.connect().ok()?;
+            if let Some(pipe_id) = source_pipe_id {
+                let conn_id = connection_id_from_sender(&name);
+                bus.set_connection_pipe(conn_id, pipe_id);
+                let mut pending = UNCLAIMED_SYSTEM_PIPES.lock();
+                pending.retain(|&p| p != pipe_id);
+            }
+            let mut reply = Message::new_method_return(
+                bus.next_bus_serial(),
+                serial,
+                header.sender().unwrap_or(":1"),
+            );
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
+            reply.body = vec![Value::String(name)];
             Some(marshal_message(&reply))
         }
         _ => None,

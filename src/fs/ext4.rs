@@ -23,6 +23,7 @@ const EXT4_SUPER_MAGIC: u16 = 0xEF53;
 /// EXT4 block size constants
 const EXT4_MIN_BLOCK_SIZE: u32 = 1024;
 const EXT4_MAX_BLOCK_SIZE: u32 = 65536;
+const EXT4_DIRECT_BLOCKS: u64 = 12;
 
 /// EXT4 inode size
 const EXT4_GOOD_OLD_INODE_SIZE: u16 = 128;
@@ -319,6 +320,15 @@ impl Ext4FileSystem {
             .checked_shl(self.superblock.s_log_block_size)
             .ok_or(FsError::InvalidArgument)?;
         if self.block_size < EXT4_MIN_BLOCK_SIZE || self.block_size > EXT4_MAX_BLOCK_SIZE {
+            return Err(FsError::InvalidArgument);
+        }
+
+        // JBD2 replay is not part of this filesystem driver. Refuse volumes that
+        // need recovery or use a dedicated journal device instead of writing
+        // through stale metadata.
+        if self.superblock.s_feature_incompat & Ext4FeatureIncompat::RECOVER.bits() != 0
+            || self.superblock.s_feature_incompat & Ext4FeatureIncompat::JOURNAL_DEV.bits() != 0
+        {
             return Err(FsError::InvalidArgument);
         }
 
@@ -877,6 +887,205 @@ impl Ext4FileSystem {
         Err(FsError::NoSpaceLeft)
     }
 
+    fn indirect_ptrs_per_block(&self) -> u64 {
+        self.block_size as u64 / 4
+    }
+
+    fn max_classic_file_blocks(&self) -> u64 {
+        let ptrs = self.indirect_ptrs_per_block();
+        EXT4_DIRECT_BLOCKS
+            + ptrs
+            + ptrs.saturating_mul(ptrs)
+            + ptrs.saturating_mul(ptrs).saturating_mul(ptrs)
+    }
+
+    fn read_block_pointer(data: &[u8], index: u64) -> FsResult<u32> {
+        let offset = index.checked_mul(4).ok_or(FsError::InvalidArgument)? as usize;
+        if offset + 4 > data.len() {
+            return Err(FsError::InvalidArgument);
+        }
+
+        Ok(u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]))
+    }
+
+    fn write_block_pointer(data: &mut [u8], index: u64, block: u32) -> FsResult<()> {
+        let offset = index.checked_mul(4).ok_or(FsError::InvalidArgument)? as usize;
+        if offset + 4 > data.len() {
+            return Err(FsError::InvalidArgument);
+        }
+
+        data[offset..offset + 4].copy_from_slice(&block.to_le_bytes());
+        Ok(())
+    }
+
+    fn read_indirect_pointer(&self, indirect_block: u32, index: u64) -> FsResult<u32> {
+        if indirect_block == 0 {
+            return Ok(0);
+        }
+
+        let data = self.read_block(indirect_block as u64)?;
+        Self::read_block_pointer(&data, index)
+    }
+
+    fn write_indirect_pointer(&self, indirect_block: u32, index: u64, block: u32) -> FsResult<()> {
+        let mut data = self.read_block(indirect_block as u64)?;
+        Self::write_block_pointer(&mut data, index, block)?;
+        self.write_block(indirect_block as u64, &data)
+    }
+
+    fn logical_block_pointer(&self, i_block: &[u32; 15], logical_block: u64) -> FsResult<u32> {
+        let ptrs = self.indirect_ptrs_per_block();
+        if logical_block < EXT4_DIRECT_BLOCKS {
+            return Ok(i_block[logical_block as usize]);
+        }
+
+        let mut idx = logical_block - EXT4_DIRECT_BLOCKS;
+        if idx < ptrs {
+            return self.read_indirect_pointer(i_block[12], idx);
+        }
+
+        idx -= ptrs;
+        let double_span = ptrs.saturating_mul(ptrs);
+        if idx < double_span {
+            let first = idx / ptrs;
+            let second = idx % ptrs;
+            let child = self.read_indirect_pointer(i_block[13], first)?;
+            return self.read_indirect_pointer(child, second);
+        }
+
+        idx -= double_span;
+        let triple_span = double_span.saturating_mul(ptrs);
+        if idx < triple_span {
+            let first = idx / double_span;
+            let rem = idx % double_span;
+            let second = rem / ptrs;
+            let third = rem % ptrs;
+            let child = self.read_indirect_pointer(i_block[14], first)?;
+            let grandchild = self.read_indirect_pointer(child, second)?;
+            return self.read_indirect_pointer(grandchild, third);
+        }
+
+        Err(FsError::NoSpaceLeft)
+    }
+
+    fn ensure_indirect_root(root: &mut u32, fs: &Self) -> FsResult<u32> {
+        if *root == 0 {
+            *root = fs.alloc_block()? as u32;
+        }
+        Ok(*root)
+    }
+
+    fn ensure_logical_block_pointer(
+        &self,
+        i_block: &mut [u32; 15],
+        logical_block: u64,
+    ) -> FsResult<u32> {
+        let ptrs = self.indirect_ptrs_per_block();
+        if logical_block < EXT4_DIRECT_BLOCKS {
+            let slot = logical_block as usize;
+            if i_block[slot] == 0 {
+                i_block[slot] = self.alloc_block()? as u32;
+            }
+            return Ok(i_block[slot]);
+        }
+
+        let mut idx = logical_block - EXT4_DIRECT_BLOCKS;
+        if idx < ptrs {
+            let root = Self::ensure_indirect_root(&mut i_block[12], self)?;
+            let mut ptr = self.read_indirect_pointer(root, idx)?;
+            if ptr == 0 {
+                ptr = self.alloc_block()? as u32;
+                self.write_indirect_pointer(root, idx, ptr)?;
+            }
+            return Ok(ptr);
+        }
+
+        idx -= ptrs;
+        let double_span = ptrs.saturating_mul(ptrs);
+        if idx < double_span {
+            let first = idx / ptrs;
+            let second = idx % ptrs;
+            let root = Self::ensure_indirect_root(&mut i_block[13], self)?;
+            let mut child = self.read_indirect_pointer(root, first)?;
+            if child == 0 {
+                child = self.alloc_block()? as u32;
+                self.write_indirect_pointer(root, first, child)?;
+            }
+
+            let mut ptr = self.read_indirect_pointer(child, second)?;
+            if ptr == 0 {
+                ptr = self.alloc_block()? as u32;
+                self.write_indirect_pointer(child, second, ptr)?;
+            }
+            return Ok(ptr);
+        }
+
+        idx -= double_span;
+        let triple_span = double_span.saturating_mul(ptrs);
+        if idx < triple_span {
+            let first = idx / double_span;
+            let rem = idx % double_span;
+            let second = rem / ptrs;
+            let third = rem % ptrs;
+            let root = Self::ensure_indirect_root(&mut i_block[14], self)?;
+            let mut child = self.read_indirect_pointer(root, first)?;
+            if child == 0 {
+                child = self.alloc_block()? as u32;
+                self.write_indirect_pointer(root, first, child)?;
+            }
+
+            let mut grandchild = self.read_indirect_pointer(child, second)?;
+            if grandchild == 0 {
+                grandchild = self.alloc_block()? as u32;
+                self.write_indirect_pointer(child, second, grandchild)?;
+            }
+
+            let mut ptr = self.read_indirect_pointer(grandchild, third)?;
+            if ptr == 0 {
+                ptr = self.alloc_block()? as u32;
+                self.write_indirect_pointer(grandchild, third, ptr)?;
+            }
+            return Ok(ptr);
+        }
+
+        Err(FsError::NoSpaceLeft)
+    }
+
+    fn count_indirect_blocks(&self, block: u32, depth: u8) -> FsResult<u64> {
+        if block == 0 {
+            return Ok(0);
+        }
+
+        let data = self.read_block(block as u64)?;
+        let mut count = 1u64;
+        let ptrs = self.indirect_ptrs_per_block();
+        for idx in 0..ptrs {
+            let ptr = Self::read_block_pointer(&data, idx)?;
+            if ptr == 0 {
+                continue;
+            }
+            if depth == 1 {
+                count += 1;
+            } else {
+                count += self.count_indirect_blocks(ptr, depth - 1)?;
+            }
+        }
+        Ok(count)
+    }
+
+    fn count_allocated_file_blocks(&self, i_block: &[u32; 15]) -> FsResult<u64> {
+        let direct = i_block[0..12].iter().filter(|&&block| block != 0).count() as u64;
+        Ok(direct
+            + self.count_indirect_blocks(i_block[12], 1)?
+            + self.count_indirect_blocks(i_block[13], 2)?
+            + self.count_indirect_blocks(i_block[14], 3)?)
+    }
+
     /// Write an inode back to its on-disk inode table block and update the
     /// inode cache. Mirrors `read_inode`'s location math.
     fn write_inode(&self, inode_num: InodeNumber, inode: &Ext4Inode) -> FsResult<()> {
@@ -1323,8 +1532,7 @@ impl FileSystem for Ext4FileSystem {
         self.add_dir_entry(parent_inode_num, filename, new_inode_num, 1)?;
 
         // Flush all dirty metadata (bitmaps, superblock, GDT, inode table,
-        // directory block) to disk. Journaling is not implemented; this is a
-        // direct ordered write of metadata blocks.
+        // directory block) to disk using this driver's ordered direct-write path.
         self.flush_dirty_blocks()?;
 
         Ok(new_inode_num)
@@ -1349,32 +1557,34 @@ impl FileSystem for Ext4FileSystem {
         let bytes_to_read = core::cmp::min(buffer.len(), (metadata.size - offset) as usize);
         let mut bytes_read = 0;
 
-        // For simplicity, only handle direct blocks
         let block_size = self.block_size as u64;
         let start_block = offset / block_size;
         let start_offset = offset % block_size;
+        let i_block = unsafe { core::ptr::addr_of!(inode.i_block).read_unaligned() };
 
         for block_idx in start_block.. {
-            if bytes_read >= bytes_to_read || block_idx >= 12 {
+            if bytes_read >= bytes_to_read {
                 break;
             }
 
-            let block_ptr = inode.i_block[block_idx as usize];
-            if block_ptr == 0 {
-                break;
-            }
-
-            let block_data = self.read_block(block_ptr as u64)?;
             let copy_offset = if block_idx == start_block {
                 start_offset as usize
             } else {
                 0
             };
-            let copy_len =
-                core::cmp::min(block_data.len() - copy_offset, bytes_to_read - bytes_read);
+            let copy_len = core::cmp::min(
+                block_size as usize - copy_offset,
+                bytes_to_read - bytes_read,
+            );
 
-            buffer[bytes_read..bytes_read + copy_len]
-                .copy_from_slice(&block_data[copy_offset..copy_offset + copy_len]);
+            let block_ptr = self.logical_block_pointer(&i_block, block_idx)?;
+            if block_ptr == 0 {
+                buffer[bytes_read..bytes_read + copy_len].fill(0);
+            } else {
+                let block_data = self.read_block(block_ptr as u64)?;
+                buffer[bytes_read..bytes_read + copy_len]
+                    .copy_from_slice(&block_data[copy_offset..copy_offset + copy_len]);
+            }
 
             bytes_read += copy_len;
         }
@@ -1395,20 +1605,21 @@ impl FileSystem for Ext4FileSystem {
             return Err(FsError::IsADirectory);
         }
 
-        // The reader only consumes the first 12 direct block pointers, so the
-        // writer is constrained to the same 12 direct blocks. Indirect blocks
-        // and extent-tree-based mapping are not supported here.
         let block_size = self.block_size as u64;
-        let max_blocks = 12u64;
-        let max_offset = max_blocks * block_size;
+        let max_offset = core::cmp::min(
+            self.max_classic_file_blocks().saturating_mul(block_size),
+            u32::MAX as u64,
+        );
 
         if offset >= max_offset {
             return Err(FsError::NoSpaceLeft);
         }
 
-        // Clip the write to the end of the direct-block region so we never
+        // Clip the write to the end of the classic block-map region so we never
         // silently drop data beyond what the reader can later read back.
-        let end = offset + buffer.len() as u64;
+        let end = offset
+            .checked_add(buffer.len() as u64)
+            .ok_or(FsError::InvalidArgument)?;
         let writable_end = core::cmp::min(end, max_offset);
         let writable_len = (writable_end - offset) as usize;
         let writable = &buffer[..writable_len];
@@ -1419,17 +1630,7 @@ impl FileSystem for Ext4FileSystem {
         let mut i_block = unsafe { core::ptr::addr_of!(ino.i_block).read_unaligned() };
 
         while bytes_written < writable_len {
-            if block_idx >= max_blocks {
-                break;
-            }
-            let bidx = block_idx as usize;
-            let mut block_ptr = i_block[bidx];
-            if block_ptr == 0 {
-                // Allocate a new data block for this slot.
-                let new_block = self.alloc_block()?;
-                i_block[bidx] = new_block as u32;
-                block_ptr = new_block as u32;
-            }
+            let block_ptr = self.ensure_logical_block_pointer(&mut i_block, block_idx)?;
 
             // Read the existing block so partial writes preserve the rest of
             // the block's contents (alloc_block already zeroed fresh blocks,
@@ -1448,20 +1649,18 @@ impl FileSystem for Ext4FileSystem {
             block_off = 0;
         }
 
-        // Persist the (possibly updated) direct-block pointer array.
+        // Persist the (possibly updated) classic block pointer array.
         unsafe { core::ptr::addr_of_mut!(ino.i_block).write_unaligned(i_block) };
 
         // Update file size, block count, and timestamps.
         let new_size = core::cmp::max(meta.size, offset + bytes_written as u64);
-        // Only the low 32 bits of size are maintained; LARGE_FILE (>4GiB)
-        // support is not implemented, which matches the direct-block limit.
         ino.i_size_lo = new_size as u32;
+        ino.i_size_high = (new_size >> 32) as u32;
         ino.i_mtime = self.current_time();
         ino.i_atime = ino.i_mtime;
-        // i_blocks is in 512-byte units; recompute from the number of populated
-        // direct blocks (we only ever use direct blocks).
-        let used_blocks = i_block.iter().filter(|&&b| b != 0).count() as u32;
-        ino.i_blocks_lo = used_blocks * (self.block_size / 512);
+        // i_blocks is in 512-byte units; include data and indirect pointer blocks.
+        let used_blocks = self.count_allocated_file_blocks(&i_block)?;
+        ino.i_blocks_lo = used_blocks.saturating_mul((self.block_size / 512) as u64) as u32;
 
         self.write_inode(inode, &ino)?;
         self.flush_dirty_blocks()?;

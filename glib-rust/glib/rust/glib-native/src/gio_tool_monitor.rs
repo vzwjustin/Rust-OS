@@ -9,7 +9,6 @@ use crate::gfile::{File, FileType};
 use crate::gfilemonitor::{FileMonitor, FileMonitorEvent};
 use crate::gio_tool::{
     print_file_error, print_line, register_tool_file_platform, reset_tool_state, show_help,
-    take_stdout,
 };
 use crate::prelude::*;
 use alloc::vec::Vec;

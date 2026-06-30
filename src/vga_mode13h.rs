@@ -112,15 +112,6 @@ impl VgaMode13h {
         crate::serial_println!("VGA Mode 13h: Drawing test pattern...");
     }
 
-    /// Initialize Mode 13h with physical memory offset from bootloader
-    pub fn init_with_offset(&mut self, phys_mem_offset: u64) {
-        // Only store the offset if a non-zero value is provided
-        if phys_mem_offset != 0 {
-            PHYS_MEM_OFFSET.store(phys_mem_offset, Ordering::Relaxed);
-        }
-        self.init();
-    }
-
     /// Set VGA to Mode 13h by programming registers directly
     unsafe fn set_mode_13h(&self) {
         // Sequencer registers for Mode 13h
@@ -590,11 +581,6 @@ fn get_char_bitmap(ch: char) -> [u8; 8] {
 /// Initialize VGA Mode 13h (uses default/identity mapping)
 pub fn init() {
     VGA_MODE13H.lock().init();
-}
-
-/// Initialize VGA Mode 13h with specific physical memory offset
-pub fn init_with_phys_offset(phys_mem_offset: u64) {
-    VGA_MODE13H.lock().init_with_offset(phys_mem_offset);
 }
 
 /// Set the physical memory offset (call before init if needed)

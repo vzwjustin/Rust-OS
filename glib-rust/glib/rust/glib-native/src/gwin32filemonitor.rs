@@ -6,8 +6,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::gwin32fsmonitorutils::Win32FsMonitorPrivate;
-use crate::prelude::*;
-use alloc::string::String;
 use spin::Mutex;
 
 /// Win32 file monitor (mirrors `GWin32FileMonitor`).

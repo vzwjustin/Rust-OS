@@ -4,7 +4,6 @@
 //!
 //! Fully `no_std` compatible using `core` and `alloc`.
 
-use crate::prelude::*;
 use alloc::string::String;
 
 /// Registered type info (mirrors `GIRegisteredTypeInfo`).

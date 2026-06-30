@@ -1,7 +1,6 @@
 //! Minimal ext4 and vfat formatters (superblock-level mkfs).
 
 use crate::drivers::storage::{write_storage_sectors, StorageError};
-use alloc::vec;
 use alloc::vec::Vec;
 
 const SECTOR: usize = 512;
@@ -358,7 +357,7 @@ impl Ext4Volume {
                 .unwrap_or(10)
         };
         let mut dir_data = [0u8; 4096];
-        let mut offset = 512usize;
+        let offset = 512usize;
         write_dir_entry(&mut dir_data[offset..], name, child_inode, file_type);
         let _ = offset;
         write_partition_blocks(self.device_id, self.start_sector, dir_block_num, &dir_data)?;

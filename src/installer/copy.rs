@@ -2,7 +2,6 @@
 
 use crate::vfs::{InodeType, VfsError};
 use alloc::format;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 

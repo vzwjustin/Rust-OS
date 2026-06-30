@@ -5,8 +5,6 @@
 //!
 //! Fully `no_std` compatible using `core` and `alloc`.
 
-use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 /// Unicode character type (mirrors `xdg_unichar_t`).

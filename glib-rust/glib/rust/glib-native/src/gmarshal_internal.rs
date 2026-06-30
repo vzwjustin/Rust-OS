@@ -12,7 +12,6 @@
 
 use crate::gvalue::GValue;
 use crate::prelude::*;
-use alloc::vec::Vec;
 
 /// Signal marshaller trait.
 ///

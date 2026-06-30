@@ -106,6 +106,75 @@ fn main() {
         &["xz_decompress.o"],
         llvm_tools.as_ref(),
     );
+
+    build_acpica(llvm_tools.as_ref());
+}
+
+fn build_acpica(tools: Option<&(String, String)>) {
+    println!("cargo:rustc-check-cfg=cfg(rustos_acpica)");
+    println!("cargo:rerun-if-changed=c_libs/acpica/rustos_acpica_shim.c");
+    println!("cargo:rerun-if-changed=c_libs/acpica/include/rustos_acpica_shim.h");
+    println!("cargo:rerun-if-changed=c_libs/acpica/source/include/acpi.h");
+    println!("cargo:rerun-if-changed=c_libs/acpica/source/components");
+
+    let root = std::path::Path::new("c_libs/acpica");
+    let source = root.join("source");
+    let acpi_header = source.join("include/acpi.h");
+    let components = source.join("components");
+    let shim = root.join("rustos_acpica_shim.c");
+
+    if !acpi_header.exists() || !components.is_dir() {
+        println!("cargo:warning=ACPICA source tree not found; Rust AML scanner remains active");
+        return;
+    }
+
+    let mut sources = Vec::new();
+    collect_c_sources(&components, &mut sources);
+    if sources.is_empty() {
+        println!("cargo:warning=ACPICA components directory has no C sources; Rust AML scanner remains active");
+        return;
+    }
+    sources.push(shim);
+
+    let mut build = cc::Build::new();
+    configure_cc_tools(&mut build, tools);
+    build
+        .include(root.join("include"))
+        .include(source.join("include"))
+        .include(source.join("include/platform"))
+        .include(&components)
+        .define("ACPI_USE_SYSTEM_CLIBRARY", Some("0"))
+        .define("ACPI_USE_LOCAL_CACHE", Some("1"))
+        .flag("-ffreestanding")
+        .flag("-fno-stack-protector")
+        .flag("-fno-exceptions")
+        .flag("-Wno-unused-parameter")
+        .flag("-Wno-unused-variable")
+        .flag("-Wno-unused-function")
+        .flag("-Wno-sign-compare");
+
+    for source in sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+        build.file(source);
+    }
+
+    build.compile("acpica");
+    println!("cargo:rustc-cfg=rustos_acpica");
+}
+
+fn collect_c_sources(dir: &std::path::Path, sources: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_c_sources(&path, sources);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("c") {
+            sources.push(path);
+        }
+    }
 }
 
 fn configure_cc_tools(build: &mut cc::Build, tools: Option<&(String, String)>) {

@@ -3,8 +3,74 @@
 //! Coordinates initialization and management of all kernel subsystems
 
 use alloc::string::String;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
+
+/// Kernel system state — mirrors Linux's `system_state` enum in
+/// include/linux/kernel.h.  Tracks the high-level boot phase so
+/// subsystems can adjust behavior (e.g. accept certain syscalls only
+/// when SYSTEM_RUNNING).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SystemState {
+    /// Initial state during early boot (start_kernel phase).
+    Booting = 0,
+    /// Scheduler is running, SMP bringup in progress.
+    Scheduling = 1,
+    /// Freeing __init memory (between do_basic_setup and userspace).
+    FreeingInitmem = 2,
+    /// Fully operational — userspace init has been launched.
+    Running = 3,
+    /// Shutdown in progress.
+    Halting = 4,
+    /// Power off in progress.
+    PowerOff = 5,
+    /// Restart in progress.
+    Restart = 6,
+    /// Suspending to RAM.
+    Suspending = 7,
+}
+
+impl SystemState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SystemState::Booting => "BOOTING",
+            SystemState::Scheduling => "SCHEDULING",
+            SystemState::FreeingInitmem => "FREEING_INITMEM",
+            SystemState::Running => "RUNNING",
+            SystemState::Halting => "HALTING",
+            SystemState::PowerOff => "POWER_OFF",
+            SystemState::Restart => "RESTART",
+            SystemState::Suspending => "SUSPENDING",
+        }
+    }
+}
+
+/// Global system state (mirrors Linux's `system_state`).
+static SYSTEM_STATE: AtomicU8 = AtomicU8::new(SystemState::Booting as u8);
+
+/// Get the current system state.
+pub fn system_state() -> SystemState {
+    // SAFETY: SystemState is repr(u8) and all valid values are defined.
+    match SYSTEM_STATE.load(Ordering::Acquire) {
+        0 => SystemState::Booting,
+        1 => SystemState::Scheduling,
+        2 => SystemState::FreeingInitmem,
+        3 => SystemState::Running,
+        4 => SystemState::Halting,
+        5 => SystemState::PowerOff,
+        6 => SystemState::Restart,
+        7 => SystemState::Suspending,
+        _ => SystemState::Booting,
+    }
+}
+
+/// Set the system state.  Called at key boot milestones to mirror
+/// Linux's `system_state = SYSTEM_*` assignments.
+pub fn set_system_state(state: SystemState) {
+    SYSTEM_STATE.store(state as u8, Ordering::Release);
+    crate::serial_println!("[kernel] system_state = {}", state.as_str());
+}
 
 /// Kernel subsystem state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +103,6 @@ pub struct PanicInfo {
 /// Global kernel state
 static KERNEL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static KERNEL_READY: AtomicBool = AtomicBool::new(false);
-static INIT_STAGE: AtomicU32 = AtomicU32::new(0);
 
 /// Subsystem registry
 static SUBSYSTEMS: Mutex<alloc::vec::Vec<Subsystem>> = Mutex::new(alloc::vec::Vec::new());
@@ -48,8 +113,6 @@ pub fn init() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    INIT_STAGE.store(1, Ordering::Release);
-
     // Register core subsystems
     register_subsystem("memory", 1, &[]);
     register_subsystem("gdt", 2, &["memory"]);
@@ -57,6 +120,8 @@ pub fn init() -> Result<(), &'static str> {
     register_subsystem("time", 4, &["interrupts"]);
     register_subsystem("notifier", 5, &[]);
     register_subsystem("arch", 6, &[]);
+    register_subsystem("acpi", 62, &["arch"]);
+    register_subsystem("apic", 63, &["interrupts", "acpi"]);
     register_subsystem("smp", 7, &["arch", "interrupts"]);
     register_subsystem("scheduler", 8, &["smp", "time"]);
     register_subsystem("security", 9, &[]);
@@ -117,6 +182,18 @@ pub fn init() -> Result<(), &'static str> {
     register_subsystem("nvdimm", 59, &["acpi", "numa"]);
     register_subsystem("trace", 60, &["time", "smp"]);
     register_subsystem("kprobes", 61, &["trace", "ptrace"]);
+
+    // Subsystems initialized in the manual Linux-compat boot path but not
+    // previously tracked in the registry.
+    register_subsystem("graphics", 64, &["drivers"]);
+    register_subsystem("sound", 65, &["drivers"]);
+    register_subsystem("gpu", 66, &["drivers"]);
+    register_subsystem("process_manager", 67, &["process"]);
+    register_subsystem("vfs", 68, &["filesystem"]);
+    register_subsystem("initramfs", 69, &["vfs"]);
+    register_subsystem("dbus", 70, &["linux_integration"]);
+    register_subsystem("wayland", 71, &["dbus", "graphics"]);
+    register_subsystem("desktop", 72, &["wayland"]);
 
     crate::notifier::init();
     update_subsystem_state("notifier", SubsystemState::Ready)?;
@@ -200,246 +277,6 @@ pub fn check_dependencies(name: &'static str) -> bool {
     } else {
         false
     }
-}
-
-/// Initialize all kernel subsystems in order
-pub fn init_all_subsystems() -> Result<(), &'static str> {
-    // Get sorted list of subsystems by init_order
-    let mut systems = {
-        let systems_lock = SUBSYSTEMS.lock();
-        let mut sys_vec = (*systems_lock).clone();
-        sys_vec.sort_by_key(|s| s.init_order);
-        sys_vec
-    };
-
-    // Initialize each subsystem
-    for system in &mut systems {
-        // Check dependencies
-        if !check_dependencies(system.name) {
-            return Err("Dependency check failed");
-        }
-
-        // Update state
-        update_subsystem_state(system.name, SubsystemState::Initializing)?;
-
-        // Call subsystem-specific init
-        let result = match system.name {
-            "memory" => Ok(()), // Already initialized by bootloader
-            "gdt" => {
-                crate::gdt::init();
-                Ok(())
-            }
-            "interrupts" => Ok(()), // IDT initialization handled in main.rs
-            "time" => crate::time::init(),
-            "notifier" => {
-                crate::notifier::init();
-                Ok(())
-            }
-            "arch" => crate::arch::init(),
-            "smp" => crate::smp::init(),
-            "scheduler" => {
-                let _ = crate::scheduler::init();
-                Ok(())
-            }
-            "security" => crate::security::init(),
-            "crypto" => {
-                crate::crypto::init();
-                Ok(())
-            }
-            "process" => crate::process::init(),
-            "drivers" => crate::drivers::init_drivers(),
-            "filesystem" => crate::fs::init().map_err(|_| "Filesystem init failed"),
-            "network" => Ok(()), // Network init handled by drivers
-            "softirq" => {
-                crate::softirq::init();
-                Ok(())
-            }
-            "futex" => {
-                crate::futex::init();
-                Ok(())
-            }
-            "epoll" => {
-                crate::epoll::init();
-                Ok(())
-            }
-            "oom" => {
-                crate::oom::init();
-                Ok(())
-            }
-            "swap" => {
-                crate::swap::init();
-                Ok(())
-            }
-            "block_io" => {
-                crate::block_io::init();
-                Ok(())
-            }
-            "cgroup" => {
-                crate::cgroup::init();
-                Ok(())
-            }
-            "seccomp" => {
-                crate::seccomp::init();
-                Ok(())
-            }
-            "namespace" => {
-                crate::namespace::init();
-                Ok(())
-            }
-            "ptrace" => {
-                crate::ptrace::init();
-                Ok(())
-            }
-            "inotify" => {
-                crate::inotify::init();
-                Ok(())
-            }
-            "pidfd" => {
-                crate::pidfd::init();
-                Ok(())
-            }
-            "io_uring" => {
-                crate::io_uring::init();
-                Ok(())
-            }
-            "fanotify" => {
-                crate::fanotify::init();
-                Ok(())
-            }
-            "mount_api" => {
-                crate::mount_api::init();
-                Ok(())
-            }
-            "landlock" => {
-                crate::landlock::init();
-                Ok(())
-            }
-            "bpf" => {
-                crate::bpf::init();
-                Ok(())
-            }
-            "perf_event" => {
-                crate::perf_event::init();
-                Ok(())
-            }
-            "keyring" => {
-                crate::keyring::init();
-                Ok(())
-            }
-            "sysv_ipc" => {
-                crate::sysv_ipc::init();
-                Ok(())
-            }
-            "aio" => {
-                crate::aio::init();
-                Ok(())
-            }
-            "module_loader" => {
-                crate::module_loader::init();
-                Ok(())
-            }
-            "kexec" => {
-                crate::kexec::init();
-                Ok(())
-            }
-            "thp" => {
-                crate::thp::init();
-                Ok(())
-            }
-            "memory_hotplug" => {
-                crate::memory_hotplug::init();
-                Ok(())
-            }
-            "efi" => {
-                crate::efi::init();
-                Ok(())
-            }
-            "of" => {
-                crate::of::init();
-                Ok(())
-            }
-            "kasan" => {
-                crate::kasan::init();
-                Ok(())
-            }
-            "kcsan" => {
-                crate::kcsan::init();
-                Ok(())
-            }
-            "hugetlb" => {
-                crate::hugetlb::init();
-                Ok(())
-            }
-            "power" => {
-                crate::power::init();
-                Ok(())
-            }
-            "audit" => {
-                crate::audit::init();
-                Ok(())
-            }
-            "numa" => {
-                crate::numa::init();
-                Ok(())
-            }
-            "rcu" => {
-                crate::rcu::init();
-                Ok(())
-            }
-            "cpufreq" => {
-                crate::cpufreq::init();
-                Ok(())
-            }
-            "cpuidle" => {
-                crate::cpuidle::init();
-                Ok(())
-            }
-            "livepatch" => {
-                crate::livepatch::init();
-                Ok(())
-            }
-            "edac" => {
-                crate::edac::init();
-                Ok(())
-            }
-            "mfd" => {
-                crate::mfd::init();
-                Ok(())
-            }
-            "nvdimm" => {
-                crate::nvdimm::init();
-                Ok(())
-            }
-            "trace" => {
-                crate::trace::init();
-                Ok(())
-            }
-            "kprobes" => {
-                crate::kprobes::init();
-                Ok(())
-            }
-            _ => Ok(()),
-        };
-
-        match result {
-            Ok(()) => {
-                update_subsystem_state(system.name, SubsystemState::Ready)?;
-                INIT_STAGE.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(e) => {
-                update_subsystem_state(system.name, SubsystemState::Failed)?;
-                return Err(e);
-            }
-        }
-    }
-
-    KERNEL_READY.store(true, Ordering::Release);
-    Ok(())
-}
-
-/// Get current kernel initialization stage
-pub fn init_stage() -> u32 {
-    INIT_STAGE.load(Ordering::Acquire)
 }
 
 /// Check if kernel is fully initialized

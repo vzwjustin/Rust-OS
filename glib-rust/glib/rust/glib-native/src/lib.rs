@@ -8,7 +8,7 @@
 // links get a panic handler and global allocator.
 #![cfg_attr(all(not(test), not(feature = "c-abi")), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 
 #[macro_use]
 extern crate alloc;

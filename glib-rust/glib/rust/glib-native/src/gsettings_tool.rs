@@ -68,7 +68,7 @@ pub fn run(args: &[&str]) -> i32 {
             if args.len() < 3 {
                 return 1;
             }
-            let settings = Settings::new(args[1]);
+            let _settings = Settings::new(args[1]);
             gwarn!("{}", get_value(&settings, args[2]));
             0
         }
@@ -79,7 +79,7 @@ pub fn run(args: &[&str]) -> i32 {
             let settings = Settings::new(args[1]);
             match set_value(&settings, args[2], args[3]) {
                 Ok(()) => 0,
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }
@@ -92,12 +92,12 @@ pub fn run(args: &[&str]) -> i32 {
             let source = SettingsSchemaSource::new();
             match list_schema_keys(&source, args[1]) {
                 Ok(keys) => {
-                    for k in keys {
+                    for _k in keys {
                         gwarn!("{k}");
                     }
                     0
                 }
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }
@@ -105,7 +105,7 @@ pub fn run(args: &[&str]) -> i32 {
         }
         "list-schemas" => {
             let source = SettingsSchemaSource::new();
-            for id in source.list_schemas() {
+            for _id in source.list_schemas() {
                 gwarn!("{id}");
             }
             0

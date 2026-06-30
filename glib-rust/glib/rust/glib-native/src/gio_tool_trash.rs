@@ -82,14 +82,14 @@ pub fn run(args: &[&str]) -> i32 {
     };
     match opts.mode {
         TrashMode::List if positional.is_empty() => {
-            for (uri, orig) in list_trash() {
+            for (_uri, _orig) in list_trash() {
                 gwarn!("{uri}\t{orig}");
             }
             0
         }
         TrashMode::Empty if positional.is_empty() => match empty_trash() {
             Ok(()) => 0,
-            Err(msg) => {
+            Err(_msg) => {
                 gwarn!("{msg}");
                 1
             }
@@ -105,7 +105,7 @@ pub fn run(args: &[&str]) -> i32 {
                     status = 1;
                     continue;
                 }
-                if let Err(msg) = trash_file(loc, opts.force) {
+                if let Err(_msg) = trash_file(loc, opts.force) {
                     gwarn!("{msg}");
                     status = 1;
                 }

@@ -53,7 +53,7 @@ pub fn run(args: &[&str]) -> i32 {
         return if args.is_empty() { 1 } else { 0 };
     }
     let lines = query_modules(args);
-    for line in lines {
+    for _line in lines {
         gwarn!("{line}");
     }
     0

@@ -9,7 +9,7 @@ use crate::gappinfo::{AppInfo, AppLaunchContext};
 use crate::gdesktopappinfo::DesktopAppInfo;
 use crate::gfile::File;
 use crate::gio_tool::{
-    print_error, print_line, register_tool_file_platform, reset_tool_state, show_help, take_stdout,
+    print_error, print_line, register_tool_file_platform, reset_tool_state, show_help,
 };
 use crate::prelude::*;
 use alloc::collections::BTreeMap;

@@ -4,9 +4,8 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// File monitor alias type (mirrors `GWin32FileMonitorFileAlias`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

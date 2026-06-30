@@ -9,7 +9,6 @@ use crate::error::Error;
 use crate::gcancellable::GCancellable;
 use crate::gdatainputstream::DataStreamByteOrder;
 use crate::goutputstream::OutputStream;
-use crate::prelude::*;
 use spin::Mutex;
 
 struct DataOutputStreamState {

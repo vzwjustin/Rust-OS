@@ -116,11 +116,11 @@ pub fn strinfo_find_integer(strinfo: &[u32], value: u32) -> Option<usize> {
     for (i, &word) in strinfo.iter().enumerate() {
         if word == le_value {
             let bytes = word.to_le_bytes();
-            let prev_ok = i == 0 || {
+            let _prev_ok = i == 0 || {
                 let prev_bytes = strinfo[i - 1].to_le_bytes();
                 prev_bytes[3] == 0xff
             };
-            let next_ok = bytes[0] == 0 || {
+            let _next_ok = bytes[0] == 0 || {
                 // Check byte at offset 4 (start of next word)
                 if i + 1 < strinfo.len() {
                     let next_bytes = strinfo[i + 1].to_le_bytes();
@@ -133,7 +133,7 @@ pub fn strinfo_find_integer(strinfo: &[u32], value: u32) -> Option<usize> {
             // where charinfo = (const guchar*)&strinfo[i]
             // So charinfo[-1] is the last byte of the previous word
             // and charinfo[4] is the first byte of the next word
-            let charinfo = word.to_le_bytes();
+            let _charinfo = word.to_le_bytes();
             let prev_byte_ok = i == 0 || { strinfo[i - 1].to_le_bytes()[3] == 0xff };
             let next_byte_ok = i + 1 < strinfo.len() && { strinfo[i + 1].to_le_bytes()[0] == 0xff };
             if prev_byte_ok && next_byte_ok {
@@ -163,7 +163,7 @@ pub fn strinfo_enum_from_string(strinfo: &[u32], string: &str) -> Option<u32> {
 pub fn strinfo_string_from_enum(strinfo: &[u32], value: u32) -> Option<String> {
     let index = strinfo_find_integer(strinfo, value)?;
     // The string starts 1 byte past the start of the next word (index+1)
-    let word_bytes = strinfo[index + 1].to_le_bytes();
+    let _word_bytes = strinfo[index + 1].to_le_bytes();
     // The string starts at byte offset 1 within the word
     // We need to read the string starting from byte 1 of word at index+1
     let mut result = Vec::new();

@@ -10,7 +10,6 @@ use crate::error::Error;
 use crate::gcancellable::GCancellable;
 use crate::gioerror::{io_error_quark, IOErrorEnum};
 use crate::goutputstream::OutputStream;
-use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
 

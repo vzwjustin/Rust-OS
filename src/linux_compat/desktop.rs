@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -65,22 +65,17 @@ pub fn exec_program(
 /// Create VFS markers consumed by userspace `/init`.
 pub fn mark_session_boot(boot: SessionBoot) {
     let _ = crate::vfs::vfs_mkdir("/run/installer", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/rustos", 0o755);
     match boot {
         SessionBoot::Install => {
-            mark_vfs_file(
-                "/run/installer/active",
-                b"active
-",
-            );
+            mark_vfs_file("/run/installer/active", b"active\n");
         }
         SessionBoot::Live => {
-            mark_vfs_file(
-                "/run/rustos/live",
-                b"1
-",
-            );
+            mark_vfs_file("/run/rustos/live", b"1\n");
         }
-        SessionBoot::Desktop => {}
+        SessionBoot::Desktop => {
+            mark_vfs_file("/run/rustos/desktop", b"1\n");
+        }
     }
 }
 
@@ -96,7 +91,35 @@ fn mark_vfs_file(path: &str, contents: &[u8]) {
 
 /// Prepare kernel-side session resources before spawning userspace GNOME/installer.
 pub fn prepare_userspace_session() {
+    let _ = crate::vfs::vfs_mkdir("/run/user", 0o755);
+    let _ = crate::vfs::vfs_mkdir("/run/user/0", 0o700);
     crate::dbus::release_kernel_gnome_stubs();
+}
+
+/// Open `/dev/console` on the root filesystem and install it as fd 0, 1, 2
+/// on the given PID.  Mirrors Linux's `console_on_rootfs()` which does
+/// `sys_open("/dev/console", O_RDWR)` then `sys_dup(0)` twice.
+pub fn console_on_rootfs(pid: crate::process::Pid) {
+    let pm = crate::process::get_process_manager();
+    pm.with_process_mut(pid, |pcb| {
+        // Open /dev/console through the kernel VFS manager.
+        if let Ok(vfs_fd) =
+            crate::fs::vfs().open("/dev/console", crate::fs::OpenFlags::read_write())
+        {
+            let console_desc = crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0);
+            // Replace the default StandardInput/Output/Error with the real
+            // /dev/console VFS handle, matching Linux's fd 0/1/2 setup.
+            pcb.file_descriptors.insert(0, console_desc.clone());
+            pcb.file_descriptors.insert(1, console_desc.clone());
+            pcb.file_descriptors.insert(2, console_desc);
+            pcb.fd_table
+                .insert(0, crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0));
+            pcb.fd_table
+                .insert(1, crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0));
+            pcb.fd_table
+                .insert(2, crate::process::FileDescriptor::from_vfs_fd(vfs_fd, 0));
+        }
+    });
 }
 
 pub fn spawn_session_init(path: &str, boot: SessionBoot) -> LinuxResult<u32> {
@@ -111,6 +134,10 @@ pub fn spawn_session_init(path: &str, boot: SessionBoot) -> LinuxResult<u32> {
     use crate::process::Priority;
 
     let pid = create_process(Some(0), Priority::Normal, "init").map_err(|_| LinuxError::EAGAIN)?;
+
+    // Open /dev/console as fd 0/1/2 for the init process.
+    // Mirrors Linux's console_on_rootfs() in kernel_init_freeable().
+    console_on_rootfs(pid);
 
     let argv: Vec<String> = Vec::from([String::from(path)]);
     let extra: &[&str] = match boot {

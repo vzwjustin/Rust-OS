@@ -8,11 +8,8 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::prelude::*;
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// A Windows Security Identifier (SID).
 ///

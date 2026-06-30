@@ -12,14 +12,46 @@ use alloc::vec::Vec;
 
 use crate::ALLOCATOR;
 use core::alloc::{GlobalAlloc, Layout};
+use core::{cmp, mem, ptr};
+
+#[derive(Copy, Clone)]
+#[repr(C, align(8))]
+struct AllocationHeader {
+    magic: usize,
+    size: usize,
+}
+
+const ALLOCATION_MAGIC: usize = 0x5255_5354_4f53_4b41;
+const ALLOCATION_ALIGN: usize = mem::align_of::<AllocationHeader>();
+const ALLOCATION_HEADER_SIZE: usize = mem::size_of::<AllocationHeader>();
+
+fn allocation_layout(size: usize) -> Option<Layout> {
+    let total_size = ALLOCATION_HEADER_SIZE.checked_add(size.max(1))?;
+    Layout::from_size_align(total_size, ALLOCATION_ALIGN).ok()
+}
 
 #[no_mangle]
 pub extern "C" fn rustos_kalloc(size: usize) -> *mut u8 {
-    let layout = match Layout::from_size_align(size, 8) {
-        Ok(l) => l,
-        Err(_) => return core::ptr::null_mut(),
+    let layout = match allocation_layout(size) {
+        Some(layout) => layout,
+        None => return ptr::null_mut(),
     };
-    unsafe { ALLOCATOR.alloc(layout) }
+    unsafe {
+        let raw = ALLOCATOR.alloc(layout);
+        if raw.is_null() {
+            return ptr::null_mut();
+        }
+
+        let header = raw.cast::<AllocationHeader>();
+        ptr::write(
+            header,
+            AllocationHeader {
+                magic: ALLOCATION_MAGIC,
+                size,
+            },
+        );
+        raw.add(ALLOCATION_HEADER_SIZE)
+    }
 }
 
 #[no_mangle]
@@ -27,11 +59,18 @@ pub extern "C" fn rustos_kfree(ptr: *mut u8, _size: usize) {
     if ptr.is_null() {
         return;
     }
-    // We don't know the exact layout, but linked_list_allocator
-    // stores the size in its header. Use a default alignment of 8.
-    // The allocator's dealloc ignores the layout for freeing.
-    let layout = Layout::from_size_align(1, 8).unwrap_or(Layout::new::<u8>());
-    unsafe { ALLOCATOR.dealloc(ptr, layout) };
+    unsafe {
+        let raw = ptr.sub(ALLOCATION_HEADER_SIZE);
+        let header = raw.cast::<AllocationHeader>();
+        let allocation = ptr::read(header);
+        if allocation.magic != ALLOCATION_MAGIC {
+            return;
+        }
+
+        if let Some(layout) = allocation_layout(allocation.size) {
+            ALLOCATOR.dealloc(raw, layout);
+        }
+    }
 }
 
 #[no_mangle]
@@ -41,15 +80,26 @@ pub extern "C" fn rustos_krealloc(ptr: *mut u8, _old_size: usize, new_size: usiz
     }
     if new_size == 0 {
         rustos_kfree(ptr, 0);
-        return core::ptr::null_mut();
+        return ptr::null_mut();
     }
-    // Allocate new, copy, free old
+
+    let old_size = unsafe {
+        let raw = ptr.sub(ALLOCATION_HEADER_SIZE);
+        let header = raw.cast::<AllocationHeader>();
+        let allocation = ptr::read(header);
+        if allocation.magic != ALLOCATION_MAGIC {
+            return ptr::null_mut();
+        }
+        ptr::write(header, allocation);
+        allocation.size
+    };
+
     let new_ptr = rustos_kalloc(new_size);
     if new_ptr.is_null() {
-        return core::ptr::null_mut();
+        return ptr::null_mut();
     }
     unsafe {
-        core::ptr::copy_nonoverlapping(ptr, new_ptr, new_size);
+        ptr::copy_nonoverlapping(ptr, new_ptr, cmp::min(old_size, new_size));
     }
     rustos_kfree(ptr, 0);
     new_ptr

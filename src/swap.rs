@@ -15,7 +15,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec; // for vec! macro
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ pub fn swap_out(vaddr: u64, page_data: &[u8; PAGE_SIZE]) -> Result<u64, &'static
     let areas = SWAP_AREAS.read();
 
     // Find the first area with free slots (highest priority first)
-    for area in areas.iter() {
+    for _area in areas.iter() {
         // We need mutable access to alloc_slot, but we only have a read lock.
         // Use interior mutability via atomic + bitmap under a separate lock.
         // For simplicity, take a write lock.

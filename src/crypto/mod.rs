@@ -8,17 +8,10 @@ pub mod algapi;
 pub mod hash;
 pub mod sha256;
 
-pub use aes::{
-    aes128_cbc_decrypt, aes128_cbc_encrypt, aes256_cbc_decrypt, aes256_cbc_encrypt, cbc_decrypt,
-    cbc_encrypt, BLOCK_SIZE as AES_BLOCK_SIZE,
-};
 pub use algapi::{
-    crypto_alg_count, crypto_alg_list, crypto_lookup_alg, crypto_lookup_driver,
-    crypto_register_alg, crypto_unregister_alg, get_proc_crypto_info, AlgBase, AlgoType, CipherAlg,
+    crypto_alg_count, crypto_lookup_alg, crypto_register_alg, AlgBase, AlgoType, CipherAlg,
     CryptoAlg, CryptoError, HashAlg,
 };
-pub use hash::{alloc_hasher, hash, hash_by_name, HashDigest, HashType, Hasher, Sha256Hasher};
-pub use sha256::{sha256, sha256_vec, Sha256, BLOCK_SIZE as SHA256_BLOCK_SIZE, DIGEST_SIZE};
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

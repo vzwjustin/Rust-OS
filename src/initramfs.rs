@@ -401,7 +401,7 @@ pub unsafe fn try_exec_init() -> ! {
 /// last-resort fallback (bash is dynamically linked and may not work
 /// without the musl dynamic linker, but it's better than nothing).
 fn fixup_broken_symlinks() {
-    use crate::vfs::{vfs_stat, vfs_unlink, vfs_symlink, InodeType};
+    use crate::vfs::{vfs_stat, vfs_symlink, vfs_unlink, InodeType};
 
     // If /bin/busybox exists as a real file, all symlinks are fine.
     match vfs_stat("/bin/busybox") {

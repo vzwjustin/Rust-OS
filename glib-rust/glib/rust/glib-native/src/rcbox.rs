@@ -3,7 +3,6 @@
 //! Provides reference-counted heap allocations using `alloc::sync::Arc`.
 //! Fully `no_std` compatible using `alloc`.
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 /// A reference-counted box (`GRcBox`).

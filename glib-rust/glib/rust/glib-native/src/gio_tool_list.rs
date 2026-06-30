@@ -9,7 +9,7 @@ use crate::gfile::{File, FileInfo};
 use crate::gfileenumerator::FileEnumerator;
 use crate::gio_tool::{
     file_type_to_string, print_file_error, print_line, register_tool_file_platform,
-    reset_tool_state, show_help, take_stdout, with_tool_vfs,
+    reset_tool_state, show_help, with_tool_vfs,
 };
 use crate::prelude::*;
 

@@ -26,7 +26,7 @@ impl LocalFileIOStream {
         if *self.closed.lock() {
             return 0;
         }
-        let mut data = self.data.lock();
+        let data = self.data.lock();
         let mut pos = self.read_pos.lock();
         let available = data.len().saturating_sub(*pos);
         let count = buf.len().min(available);

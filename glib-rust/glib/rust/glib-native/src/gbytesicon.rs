@@ -12,7 +12,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::bytes::Bytes;
-use crate::prelude::*;
 use alloc::string::String;
 
 /// A bytes icon (`GBytesIcon`).

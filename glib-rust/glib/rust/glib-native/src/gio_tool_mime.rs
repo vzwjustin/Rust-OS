@@ -5,7 +5,7 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::gappinfo::SimpleAppInfo;
-use crate::gio_tool::{print_error, print_line, reset_tool_state, show_help, take_stdout};
+use crate::gio_tool::{print_error, print_line, reset_tool_state, show_help};
 use crate::prelude::*;
 use alloc::collections::BTreeMap;
 use spin::Mutex;

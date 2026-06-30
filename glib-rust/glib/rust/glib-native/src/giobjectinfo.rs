@@ -12,7 +12,6 @@ use crate::gipropertyinfo::PropertyInfo;
 use crate::gisignalinfo::SignalInfo;
 use crate::gistructinfo::StructInfo;
 use crate::givfuncinfo::VFuncInfo;
-use crate::prelude::*;
 use alloc::string::String;
 use alloc::vec::Vec;
 

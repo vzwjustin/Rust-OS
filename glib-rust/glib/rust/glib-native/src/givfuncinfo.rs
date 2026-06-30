@@ -8,7 +8,6 @@ use crate::gicallableinfo::CallableInfo;
 use crate::gifunctioninfo::FunctionInfo;
 use crate::gisignalinfo::SignalInfo;
 use crate::gitypes::{GIArgument, GIVFuncInfoFlags};
-use crate::prelude::*;
 use alloc::boxed::Box;
 
 /// VFunc info (mirrors `GIVFuncInfo`).

@@ -1198,7 +1198,13 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         crate::syscall::SyscallNumber::GetKernelSyms
         | crate::syscall::SyscallNumber::QueryModule
         | crate::syscall::SyscallNumber::RemapFilePages
-        | crate::syscall::SyscallNumber::Nfsservctl => Err(LinuxError::ENOSYS),
+        | crate::syscall::SyscallNumber::Nfsservctl
+        | crate::syscall::SyscallNumber::Uselib
+        | crate::syscall::SyscallNumber::Getpmsg
+        | crate::syscall::SyscallNumber::Putpmsg
+        | crate::syscall::SyscallNumber::AfsSyscall
+        | crate::syscall::SyscallNumber::Tuxcall
+        | crate::syscall::SyscallNumber::Security => Err(LinuxError::ENOSYS),
 
         crate::syscall::SyscallNumber::EpollCreateOld => {
             linux_compat::socket_ops::epoll_create(args[0] as i32).map(|v| v as u64)

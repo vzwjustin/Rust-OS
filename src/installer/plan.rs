@@ -2,7 +2,6 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 /// User-chosen installation parameters.
 #[derive(Debug, Clone)]

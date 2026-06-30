@@ -5,7 +5,6 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::girnode::Node;
-use crate::prelude::*;
 use alloc::string::String;
 
 /// Parser state (mirrors `GirParser` private struct).

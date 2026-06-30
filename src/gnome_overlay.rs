@@ -7,7 +7,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::linux_compat::socket_ops;
@@ -18,6 +17,9 @@ pub const RUNTIME_DIR: &str = "/run/user/0";
 
 /// D-Bus session bus socket path used by GNOME and GLib.
 pub const DBUS_SESSION_SOCKET: &str = "/run/user/0/bus";
+
+/// D-Bus system bus socket path.
+pub const DBUS_SYSTEM_SOCKET: &str = "/run/dbus/system_bus_socket";
 
 /// Wayland display socket for the first seat.
 pub const WAYLAND_SOCKET: &str = "/run/user/0/wayland-0";
@@ -39,16 +41,22 @@ pub fn install(root: Arc<dyn InodeOps>) -> VfsResult<()> {
     }
 
     let run = ensure_directory(&root, "run", 0o755)?;
-    let _dbus_dir = ensure_directory(&run, "dbus", 0o755)?;
+    let dbus_dir = ensure_directory(&run, "dbus", 0o755)?;
     let user = ensure_directory(&run, "user", 0o755)?;
     let runtime = ensure_directory(&user, "0", 0o700)?;
 
     install_socket(&runtime, "bus", DBUS_SESSION_SOCKET)?;
+    install_socket(&dbus_dir, "system_bus_socket", DBUS_SYSTEM_SOCKET)?;
     install_socket(&runtime, "wayland-0", WAYLAND_SOCKET)?;
 
     socket_ops::prebind_unix_socket(
         DBUS_SESSION_SOCKET,
         crate::net::unix::UnixSocketRole::DbusSession,
+    )
+    .map_err(|_| vfs::VfsError::IoError)?;
+    socket_ops::prebind_unix_socket(
+        DBUS_SYSTEM_SOCKET,
+        crate::net::unix::UnixSocketRole::DbusSystem,
     )
     .map_err(|_| vfs::VfsError::IoError)?;
     socket_ops::prebind_unix_socket(
@@ -72,7 +80,12 @@ pub fn smoke_check() -> Result<(), &'static str> {
         return Err("GNOME overlay not installed");
     }
 
-    for path in [RUNTIME_DIR, DBUS_SESSION_SOCKET, WAYLAND_SOCKET] {
+    for path in [
+        RUNTIME_DIR,
+        DBUS_SESSION_SOCKET,
+        DBUS_SYSTEM_SOCKET,
+        WAYLAND_SOCKET,
+    ] {
         let stat = vfs::vfs_stat(path).map_err(|_| "overlay path missing")?;
         if path == RUNTIME_DIR {
             if stat.inode_type != InodeType::Directory {
@@ -85,6 +98,9 @@ pub fn smoke_check() -> Result<(), &'static str> {
 
     if !socket_ops::is_prebound(DBUS_SESSION_SOCKET) {
         return Err("D-Bus session socket not pre-bound");
+    }
+    if !socket_ops::is_prebound(DBUS_SYSTEM_SOCKET) {
+        return Err("D-Bus system socket not pre-bound");
     }
     if !socket_ops::is_prebound(WAYLAND_SOCKET) {
         return Err("Wayland socket not pre-bound");

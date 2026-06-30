@@ -9,7 +9,6 @@
 //! Supports level-triggered and edge-triggered modes, EPOLLONESHOT,
 //! and nested epoll instances (up to EP_MAX_NESTS).
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -217,10 +216,10 @@ fn collect_ready_events(epoll_id: u32, maxevents: usize) -> Vec<EpollEvent> {
     let Some(ep_mutex) = instances.get(&epoll_id) else {
         return Vec::new();
     };
-    let mut ep = ep_mutex.lock();
+    let ep = ep_mutex.lock();
 
     // First, re-check readiness for all items (level-triggered polling)
-    let fds: Vec<i32> = ep.items.keys().copied().collect();
+    let _fds: Vec<i32> = ep.items.keys().copied().collect();
     let items_snapshot: Vec<(i32, u32, bool)> = ep
         .items
         .iter()
@@ -356,7 +355,7 @@ pub fn epoll_destroy(epoll_id: u32) {
 
 /// Check if adding `fd` (which may be another epoll) to `epoll_id` would
 /// create a cycle. Returns true if safe, false if a cycle is detected.
-pub fn epoll_check_cycle(epoll_id: u32, fd: i32) -> bool {
+pub fn epoll_check_cycle(_epoll_id: u32, _fd: i32) -> bool {
     // Check if fd is an epoll instance that contains epoll_id
     let instances = EPOLL_INSTANCES.read();
 

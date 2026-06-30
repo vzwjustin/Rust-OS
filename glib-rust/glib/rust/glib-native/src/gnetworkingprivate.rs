@@ -41,8 +41,8 @@ pub fn resolver_get_serial() -> u64 {
 /// In our no_std port, we return a synthetic file descriptor.
 pub fn g_socket(
     domain: AddressFamily,
-    socket_type: SocketKind,
-    protocol: i32,
+    _socket_type: SocketKind,
+    _protocol: i32,
 ) -> Result<i32, String> {
     if domain == AddressFamily::Unspec {
         return Err("address family must be specified".to_string());

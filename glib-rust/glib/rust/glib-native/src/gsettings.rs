@@ -12,8 +12,6 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::error::Error;
-use crate::gioerror::{io_error_quark, IOErrorEnum};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

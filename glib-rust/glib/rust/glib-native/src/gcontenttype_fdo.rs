@@ -10,7 +10,6 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::prelude::*;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

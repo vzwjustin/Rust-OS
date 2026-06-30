@@ -60,7 +60,7 @@ pub fn list_actions(_app: &DesktopAppInfo) -> Vec<String> {
 /// Entry point for `gapplication`.
 pub fn run(args: &[&str]) -> i32 {
     if args.is_empty() || args[0] == "help" || args.contains(&"--help") {
-        let cmd = args.get(1).copied();
+        let _cmd = args.get(1).copied();
         gwarn!("{}", help_text(cmd));
         return 0;
     }
@@ -80,7 +80,7 @@ pub fn run(args: &[&str]) -> i32 {
             let app = DesktopAppInfo::new(args[1], args[1], "/bin/true");
             match launch_app(&app, &args[2..]) {
                 Ok(()) => 0,
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }
@@ -92,7 +92,7 @@ pub fn run(args: &[&str]) -> i32 {
             }
             match invoke_action(args[1], args[2], args.get(3).copied()) {
                 Ok(()) => 0,
-                Err(msg) => {
+                Err(_msg) => {
                     gwarn!("{msg}");
                     1
                 }
@@ -103,12 +103,12 @@ pub fn run(args: &[&str]) -> i32 {
                 return 1;
             }
             let app = DesktopAppInfo::new(args[1], args[1], "");
-            for action in list_actions(&app) {
+            for _action in list_actions(&app) {
                 gwarn!("{action}");
             }
             0
         }
-        other => {
+        _other => {
             gwarn!("{}", help_text(Some(other)));
             1
         }

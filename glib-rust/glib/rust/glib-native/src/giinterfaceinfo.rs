@@ -10,7 +10,6 @@ use crate::gipropertyinfo::PropertyInfo;
 use crate::gisignalinfo::SignalInfo;
 use crate::gistructinfo::StructInfo;
 use crate::givfuncinfo::VFuncInfo;
-use crate::prelude::*;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -64,7 +63,7 @@ impl InterfaceInfo {
 
     /// Finds a method by name (mirrors `gi_interface_info_find_method`).
     pub fn find_method(&self, name: &str) -> Option<&CallableInfo> {
-        self.methods.iter().find(|m| {
+        self.methods.iter().find(|_m| {
             // CallableInfo doesn't have a name field; use index-based lookup
             let _ = name;
             false

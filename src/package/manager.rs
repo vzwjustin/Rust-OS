@@ -342,7 +342,7 @@ impl PackageManager {
     }
 }
 fn read_vfs_package_bytes(path: &str) -> PackageResult<alloc::vec::Vec<u8>> {
-    use crate::vfs::{InodeType, VfsError};
+    use crate::vfs::InodeType;
     let vfs = crate::vfs::get_vfs();
     let inode = vfs
         .lookup(path)

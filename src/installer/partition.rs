@@ -2,7 +2,6 @@
 
 use crate::drivers::storage::{write_storage_sectors, StorageError};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use super::plan::PartitionLayout;
 

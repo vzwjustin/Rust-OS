@@ -16,7 +16,6 @@
 
 use crate::gsimplepermission::SimplePermission;
 use crate::keyfile::{KeyFile, KeyFileFlags};
-use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use spin::Mutex;

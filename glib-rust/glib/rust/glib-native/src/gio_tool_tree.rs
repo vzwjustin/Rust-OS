@@ -155,11 +155,11 @@ pub fn run(args: &[&str]) -> i32 {
         let uri = file.get_uri();
         match enumerate_tree(&file, &opts) {
             Ok(entry) => {
-                for line in format_tree(&uri, &entry, &opts) {
+                for _line in format_tree(&uri, &entry, &opts) {
                     gwarn!("{line}");
                 }
             }
-            Err(msg) => gwarn!("{msg}"),
+            Err(_msg) => gwarn!("{msg}"),
         }
     }
     0

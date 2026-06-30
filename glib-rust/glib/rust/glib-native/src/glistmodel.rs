@@ -6,7 +6,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// Item type identifier for list model items.
 ///

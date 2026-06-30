@@ -5,7 +5,6 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::givfuncinfo::VFuncInfo;
-use crate::prelude::*;
 use alloc::boxed::Box;
 
 /// Signal flags (mirrors `GSignalFlags`).

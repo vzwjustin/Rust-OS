@@ -10,7 +10,6 @@ use crate::gcancellable::GCancellable;
 use crate::ginputstream::InputStream;
 use crate::gioerror::IOErrorEnum;
 use crate::goutputstream::OutputStream;
-use crate::prelude::*;
 use spin::Mutex;
 
 struct IOStreamState {

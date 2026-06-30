@@ -5,9 +5,8 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::inotify_kernel::{self, IkEvent};
+use crate::inotify_kernel::{self};
 use crate::inotify_sub::InotifySub;
-use crate::prelude::*;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;

@@ -5,7 +5,6 @@
 
 use crate::gtype::{
     type_from_name, type_register_static, GType, GTypeFlags, GTypeInfo, G_TYPE_ENUM, G_TYPE_FLAGS,
-    G_TYPE_INVALID,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;

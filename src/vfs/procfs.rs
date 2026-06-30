@@ -809,6 +809,54 @@ fn gnome_status_content() -> String {
         }
     ));
     out.push_str(&format!(
+        "glib_gio={}\n",
+        if readiness.glib_gio.is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "posix_spawn={}\n",
+        if readiness.posix_spawn.is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "filesystem={}\n",
+        if readiness.filesystem.is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "graphics={}\n",
+        if readiness.graphics.is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "input={}\n",
+        if readiness.input.is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "linux_abi={}\n",
+        if readiness.linux_abi.is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
         "dbus={}\n",
         if crate::dbus::is_ready() {
             "ready"
@@ -827,6 +875,14 @@ fn gnome_status_content() -> String {
     out.push_str(&format!(
         "mutter={}\n",
         if crate::mutter::is_ready() {
+            "ready"
+        } else {
+            "blocked"
+        }
+    ));
+    out.push_str(&format!(
+        "drm_kms={}\n",
+        if readiness.drm_kms.is_ready() {
             "ready"
         } else {
             "blocked"

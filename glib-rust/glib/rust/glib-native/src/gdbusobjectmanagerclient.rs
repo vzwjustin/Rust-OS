@@ -12,7 +12,6 @@ use crate::gdbusobjectmanagerserver::{
 };
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 

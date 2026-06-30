@@ -845,6 +845,13 @@ pub fn is_rng_initialized() -> bool {
     RNG_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// Early security initialization — seeds the RNG so that architecture
+/// setup code (ASLR, stack canaries) has access to random numbers.
+/// Mirrors Linux's `early_security_init()` in start_kernel().
+pub fn early_init() {
+    let _ = init_rng();
+}
+
 /// Initialize secure random number generator
 pub fn init_rng() -> Result<(), &'static str> {
     let mut state = RNG_STATE.write();

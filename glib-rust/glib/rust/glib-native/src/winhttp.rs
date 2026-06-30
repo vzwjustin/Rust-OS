@@ -7,7 +7,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 /// WinHTTP handle type (mirrors `HINTERNET`).
 pub type HInternet = usize;

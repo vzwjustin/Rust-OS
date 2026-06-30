@@ -9,9 +9,7 @@ use crate::gfile::File;
 use crate::ginputstream::InputStream;
 use crate::gio_tool::{
     append_stdout, print_file_error, register_tool_file_platform, reset_tool_state, show_help,
-    take_stdout,
 };
-use crate::prelude::*;
 
 const STREAM_BUFFER_SIZE: usize = 256 * 1024;
 

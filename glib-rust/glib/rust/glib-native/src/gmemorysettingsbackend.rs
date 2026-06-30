@@ -8,7 +8,6 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::gsettingsbackend::SettingsBackend;
 use crate::gsimplepermission::SimplePermission;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};

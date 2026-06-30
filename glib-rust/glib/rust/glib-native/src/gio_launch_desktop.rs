@@ -61,12 +61,12 @@ pub fn run(args: &[&str]) -> i32 {
     match prepare_launch(desktop_id, contents, &args[1..]) {
         Ok(req) => match launch_desktop(&req) {
             Ok(()) => 0,
-            Err(msg) => {
+            Err(_msg) => {
                 gwarn!("{msg}");
                 1
             }
         },
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             1
         }

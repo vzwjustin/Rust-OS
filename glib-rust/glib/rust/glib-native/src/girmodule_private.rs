@@ -5,8 +5,6 @@
 //! Fully `no_std` compatible using `core` and `alloc`.
 
 use crate::girmodule::Module;
-use crate::prelude::*;
-use alloc::string::String;
 
 /// Sets the shared library (internal).
 pub fn set_shared_library(module: &mut Module, lib: &str) {

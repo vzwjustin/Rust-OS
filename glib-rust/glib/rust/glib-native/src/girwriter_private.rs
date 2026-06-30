@@ -6,7 +6,6 @@
 
 use crate::girnode::Node;
 use crate::girwriter::write_to_string;
-use crate::prelude::*;
 use alloc::string::String;
 
 /// Writer state (mirrors `GirWriter` private struct).

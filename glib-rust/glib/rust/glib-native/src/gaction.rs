@@ -12,7 +12,6 @@ use crate::error::Error;
 use crate::variant::Variant;
 use crate::varianttype::VariantType;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 /// Trait for actions (`GAction`).
 pub trait Action {

@@ -17,7 +17,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 // ── Controller IDs ──────────────────────────────────────────────────────
 
@@ -244,8 +244,10 @@ static PID_TO_CGROUP: RwLock<BTreeMap<u32, u32>> = RwLock::new(BTreeMap::new());
 
 // ── Initialization ──────────────────────────────────────────────────────
 
-pub fn init() {
-    // Create the root cgroup
+/// Early cgroup initialization — creates the root cgroup so that the
+/// scheduler and process creation can assign PIDs to a cgroup from the
+/// very beginning.  Mirrors Linux's `cgroup_init_early()` in start_kernel().
+pub fn init_early() {
     let root = Cgroup {
         id: ROOT_CGROUP_ID,
         name: String::from("/"),
@@ -255,8 +257,14 @@ pub fn init() {
         controllers: CgroupControllers::default(),
         level: 0,
     };
-
     CGROUPS.write().insert(ROOT_CGROUP_ID, root);
+}
+
+pub fn init() {
+    // Create the root cgroup if early init didn't run
+    if CGROUPS.read().get(&ROOT_CGROUP_ID).is_none() {
+        init_early();
+    }
     crate::serial_println!("[cgroup] initialized (root cgroup id={})", ROOT_CGROUP_ID);
 }
 

@@ -60,7 +60,7 @@ impl FdoNotificationBackend {
         let default_action = notification.default_action().map(|s| s.to_string());
 
         // Check for existing notification with same id (for replacement)
-        let replace_id = {
+        let _replace_id = {
             let notifs = self.notifications.lock();
             notifs
                 .iter()

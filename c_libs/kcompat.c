@@ -28,29 +28,27 @@ void kfree(void *ptr) {
 void *krealloc(void *ptr, size_t size) {
     if (!ptr) return kmalloc(size);
     if (size == 0) { kfree(ptr); return (void *)0; }
-    /* linked_list_allocator doesn't support realloc directly, so we
-     * allocate a new block, copy, and free the old one.  We use a
-     * best-effort old_size of 0 — the Rust side will handle it. */
-    void *new_ptr = rustos_kalloc(size);
-    if (!new_ptr) return (void *)0;
-    /* Copy as much as we can — we don't know the old size, so we
-     * copy `size` bytes (may read past the old allocation, but in
-     * practice the allocator's header is right before the block so
-     * we'll hit valid memory).  This is safe because the kernel heap
-     * is always mapped. */
-    kmemcpy(new_ptr, ptr, size);
-    rustos_kfree(ptr, 0);
-    return new_ptr;
+    return rustos_krealloc(ptr, 0, size);
 }
 
 void *kcalloc(size_t nmemb, size_t size) {
-    size_t total = nmemb * size;
+    size_t total;
+    if (size != 0 && nmemb > ((size_t)-1) / size) {
+        return (void *)0;
+    }
+    total = nmemb * size;
     void *ptr = kmalloc(total);
     if (ptr) kmemset(ptr, 0, total);
     return ptr;
 }
 
 /* --- String / memory functions (freestanding) --- */
+size_t strlen(const char *s) {
+    size_t len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
 void *kmemset(void *dst, int c, size_t n) {
     unsigned char *d = (unsigned char *)dst;
     unsigned char val = (unsigned char)c;

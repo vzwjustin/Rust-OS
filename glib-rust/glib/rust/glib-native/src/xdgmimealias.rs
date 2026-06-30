@@ -7,7 +7,6 @@
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// XDG alias entry.
 #[derive(Debug, Clone)]

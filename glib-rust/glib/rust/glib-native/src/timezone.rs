@@ -224,7 +224,7 @@ fn is_au_dst(unix_sec: i64) -> bool {
     }
 }
 
-fn unix_to_ymd_hms(mut unix_sec: i64) -> (i32, u32, u32, u32, u32, u32, i64) {
+fn unix_to_ymd_hms(unix_sec: i64) -> (i32, u32, u32, u32, u32, u32, i64) {
     let mut days = unix_sec.div_euclid(86_400);
     let rem = unix_sec.rem_euclid(86_400);
     let hour = (rem / 3600) as u32;

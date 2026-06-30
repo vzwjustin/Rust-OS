@@ -17,6 +17,7 @@ use spin::{Mutex, RwLock};
 pub enum UnixSocketRole {
     Generic,
     DbusSession,
+    DbusSystem,
     WaylandDisplay,
 }
 
@@ -172,6 +173,8 @@ fn register_connector(
         let _ = crate::wayland::server::attach_connection(pipe_id);
     } else if role == UnixSocketRole::DbusSession {
         crate::dbus::register_session_pipe(pipe_id);
+    } else if role == UnixSocketRole::DbusSystem {
+        crate::dbus::register_system_pipe(pipe_id);
     }
 
     UNIX_SOCKET_FDS.write().insert(
@@ -335,6 +338,8 @@ pub fn send(fd: i32, data: &[u8], dest_path: Option<&str>) -> Result<usize, i32>
             ipc.pipe_write(end.pipe_id, data).map_err(|_| -32).map(|n| {
                 if end.role == UnixSocketRole::DbusSession {
                     maybe_dispatch_dbus(data, end.pipe_id);
+                } else if end.role == UnixSocketRole::DbusSystem {
+                    maybe_dispatch_dbus_system(data, end.pipe_id);
                 } else if end.role == UnixSocketRole::WaylandDisplay {
                     maybe_dispatch_wayland(data, end.pipe_id);
                 }
@@ -425,6 +430,13 @@ pub fn endpoint_role(sockfd: i32) -> Option<UnixSocketRole> {
 }
 
 fn maybe_dispatch_dbus(data: &[u8], pipe_id: u32) {
+    if let Some(reply) = crate::dbus::process_wire_request(data, Some(pipe_id)) {
+        let ipc = get_ipc_manager();
+        let _ = ipc.pipe_write(pipe_id, &reply);
+    }
+}
+
+fn maybe_dispatch_dbus_system(data: &[u8], pipe_id: u32) {
     if let Some(reply) = crate::dbus::process_wire_request(data, Some(pipe_id)) {
         let ipc = get_ipc_manager();
         let _ = ipc.pipe_write(pipe_id, &reply);

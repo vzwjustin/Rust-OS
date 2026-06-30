@@ -848,8 +848,8 @@ impl SyscallDispatcher {
     fn sys_mmap(
         &self,
         args: &[u64],
-        process_manager: &ProcessManager,
-        current_pid: Pid,
+        _process_manager: &ProcessManager,
+        _current_pid: Pid,
     ) -> SyscallResult {
         use crate::memory::{
             allocate_memory, deallocate_memory, MemoryProtection, MemoryRegionType,

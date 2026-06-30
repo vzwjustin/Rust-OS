@@ -233,7 +233,7 @@ pub fn register_slave(master_id: u32, rom: W1Rom) -> Result<u32, &'static str> {
 
 /// Read data from a slave device (family-specific).
 pub fn read_slave(slave_id: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-    let (family_id, read_fn) = {
+    let (_family_id, read_fn) = {
         let slaves = W1_SLAVES.read();
         let slave = slaves.get(&slave_id).ok_or("W1 slave not found")?;
         let fid = (slave.rom.0 & 0xFF) as u8;

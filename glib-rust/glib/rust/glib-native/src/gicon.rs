@@ -13,13 +13,11 @@
 //!
 //! Fully `no_std` compatible using `alloc`.
 
-use crate::bytes::Bytes;
 use crate::gbytesicon::BytesIcon;
 use crate::gemblem::Emblem;
 use crate::gemblemedicon::EmblemedIcon;
 use crate::gioerror::IOErrorEnum;
 use crate::gthemedicon::ThemedIcon;
-use crate::prelude::*;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;

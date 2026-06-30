@@ -6,7 +6,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::kqueue_helper::KqueueSub;
-use crate::prelude::*;
 use alloc::vec::Vec;
 use spin::Mutex;
 

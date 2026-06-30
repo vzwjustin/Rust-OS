@@ -127,18 +127,18 @@ pub fn run(args: &[&str]) -> i32 {
 
     let xml = match core::str::from_utf8(&xml_data) {
         Ok(s) => s,
-        Err(e) => {
+        Err(_e) => {
             gwarn!("Invalid UTF-8 in XML file: {}", e);
             return 1;
         }
     };
 
     match compile_resources(xml) {
-        Ok(source) => {
+        Ok(_source) => {
             gwarn!("{source}");
             0
         }
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             1
         }

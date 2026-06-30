@@ -6,7 +6,6 @@
 //! Fully `no_std` compatible using `alloc`.
 
 use crate::inotify_sub::InotifySub;
-use crate::prelude::*;
 use alloc::vec::Vec;
 use spin::Mutex;
 

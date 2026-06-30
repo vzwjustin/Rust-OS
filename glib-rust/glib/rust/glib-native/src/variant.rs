@@ -606,7 +606,7 @@ impl VariantBuilder {
     }
 
     /// Finish building (`g_variant_builder_end`).
-    pub fn end(mut self) -> Variant {
+    pub fn end(self) -> Variant {
         if self.type_string.starts_with('a') {
             let child_type = VariantType::new(&self.type_string[1..]).unwrap_or(VariantType::any());
             Variant::new_array(&child_type, self.children)

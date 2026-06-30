@@ -6,10 +6,8 @@
 
 use crate::gsubprocess::SubprocessFlags;
 use crate::gsubprocesslauncher::SubprocessLauncher;
-use crate::prelude::*;
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// Private launcher state (mirrors `struct _GSubprocessLauncher`).
 #[derive(Debug)]
@@ -54,7 +52,7 @@ impl Default for SubprocessLauncherPrivate {
 }
 
 /// Sets the launcher on a subprocess (mirrors `g_subprocess_set_launcher`).
-pub fn set_launcher(subprocess_launcher: &SubprocessLauncher, _launcher: &SubprocessLauncher) {
+pub fn set_launcher(_subprocess_launcher: &SubprocessLauncher, _launcher: &SubprocessLauncher) {
     // In the C code, this sets the launcher pointer on the subprocess.
     // In our no_std port, this is a no-op since we don't have actual subprocess spawning.
 }

@@ -60,7 +60,7 @@ pub fn run(args: &[&str]) -> i32 {
     let mut status = 0;
     for loc in positional {
         let file = File::new_for_commandline_arg(loc);
-        if let Err(msg) = remove_file(&file, opts.force) {
+        if let Err(_msg) = remove_file(&file, opts.force) {
             gwarn!("{msg}");
             status = 1;
         }

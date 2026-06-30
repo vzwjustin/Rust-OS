@@ -380,6 +380,54 @@ impl Vfs {
         let _ = root.create("home", InodeType::Directory, 0o755);
         let _ = root.create("etc", InodeType::Directory, 0o755);
         let _ = root.create("bin", InodeType::Directory, 0o755);
+        let _ = root.create("root", InodeType::Directory, 0o700);
+        let _ = root.create("opt", InodeType::Directory, 0o755);
+        let _ = root.create("srv", InodeType::Directory, 0o755);
+
+        // /usr hierarchy (GNOME data, libraries, and local installs)
+        let _ = root.create("usr", InodeType::Directory, 0o755);
+        let usr = root.lookup("usr").unwrap_or_else(|_| Arc::clone(&root));
+        let _ = usr.create("share", InodeType::Directory, 0o755);
+        let _ = usr.create("lib", InodeType::Directory, 0o755);
+        let _ = usr.create("bin", InodeType::Directory, 0o755);
+        let _ = usr.create("sbin", InodeType::Directory, 0o755);
+        let _ = usr.create("local", InodeType::Directory, 0o755);
+
+        // /var subdirectories expected by GNOME and system services
+        let var = root.lookup("var").unwrap_or_else(|_| Arc::clone(&root));
+        let _ = var.create("lib", InodeType::Directory, 0o755);
+        let _ = var.create("log", InodeType::Directory, 0o755);
+        let _ = var.create("tmp", InodeType::Directory, 0o1777);
+        let _ = var.create("cache", InodeType::Directory, 0o755);
+        let _ = var.create("run", InodeType::Directory, 0o755);
+
+        // /etc subdirectories for desktop configuration
+        let etc = root.lookup("etc").unwrap_or_else(|_| Arc::clone(&root));
+        let _ = etc.create("xdg", InodeType::Directory, 0o755);
+        let _ = etc.create("profile.d", InodeType::Directory, 0o755);
+
+        // /run/dbus for the D-Bus system bus socket
+        let run = root.lookup("run").unwrap_or_else(|_| Arc::clone(&root));
+        let _ = run.create("dbus", InodeType::Directory, 0o755);
+
+        // /root subdirectories for XDG user data
+        let root_home = root.lookup("root").unwrap_or_else(|_| Arc::clone(&root));
+        let _ = root_home.create(".config", InodeType::Directory, 0o700);
+        let _ = root_home.create(".cache", InodeType::Directory, 0o700);
+        let _ = root_home.create(".local", InodeType::Directory, 0o700);
+
+        // Write /etc/hostname with default hostname
+        if let Ok(hostname_fd) = crate::vfs::vfs_open(
+            "/etc/hostname",
+            crate::vfs::OpenFlags::WRONLY
+                | crate::vfs::OpenFlags::CREAT
+                | crate::vfs::OpenFlags::TRUNC,
+            0o644,
+        ) {
+            let _ = crate::vfs::vfs_write(hostname_fd, b"rustos\n");
+            let _ = crate::vfs::vfs_close(hostname_fd);
+        }
+
         let _ = procfs::install_proc(root.clone());
         let _ = crate::sysfs::install_sysfs(root.clone());
         let _ = devfs::install_dev(Arc::clone(&root));

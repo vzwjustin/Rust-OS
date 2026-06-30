@@ -178,7 +178,7 @@ pub fn run(args: &[&str]) -> i32 {
     let (opts, positional) = match parse_options(args) {
         Ok(v) => v,
         Err(e) if e == "help" => return 0,
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             return 1;
         }
@@ -198,7 +198,7 @@ pub fn run(args: &[&str]) -> i32 {
     } else {
         match parse_value(&positional[2..], opts.attr_type) {
             Ok(v) => Some(v),
-            Err(msg) => {
+            Err(_msg) => {
                 gwarn!("{msg}");
                 return 1;
             }
@@ -206,7 +206,7 @@ pub fn run(args: &[&str]) -> i32 {
     };
     match set_attribute(&file, attribute, value.as_ref(), &opts) {
         Ok(()) => 0,
-        Err(msg) => {
+        Err(_msg) => {
             gwarn!("{msg}");
             1
         }

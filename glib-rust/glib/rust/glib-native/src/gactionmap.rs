@@ -11,7 +11,6 @@ use crate::gsimpleaction::SimpleAction;
 use crate::variant::Variant;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 /// An action entry for batch registration (`GActionEntry`).
 ///
