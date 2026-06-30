@@ -118,7 +118,13 @@ fn deliver_signal_to_pid(target_pid: u32, sig: i32) -> LinuxResult<()> {
     }
 
     process_manager.with_process_mut(target_pid, |pcb| {
-        pcb.pending_signals.push(sig as u32);
+        // Coalesce standard signals (1..31): a second identical pending standard
+        // signal is dropped, matching Linux's single-bit semantics. Real-time
+        // signals (>= 32) queue each instance. Without this, repeated kill() of
+        // a blocked standard signal grows pending_signals without bound.
+        if sig >= 32 || !pcb.pending_signals.contains(&(sig as u32)) {
+            pcb.pending_signals.push(sig as u32);
+        }
     });
     wake_if_blocked(target_pid);
     Ok(())

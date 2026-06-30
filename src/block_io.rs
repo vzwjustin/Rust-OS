@@ -405,7 +405,9 @@ pub fn read_sectors(
     (dev.ops.submit_bio)(dev.ops.driver_data, &mut bio).map_err(|_| "read I/O error")?;
     drop(devices);
 
-    if bio.bi_status == BioStatus::Complete || bio.bi_status == BioStatus::Pending {
+    // Only a completed bio has valid data. Treating Pending as success returned
+    // zeroed/garbage data for a driver that left bi_status unset.
+    if bio.bi_status == BioStatus::Complete {
         let copy_len = size.min(bio.bi_data.len());
         buf[..copy_len].copy_from_slice(&bio.bi_data[..copy_len]);
         Ok(())

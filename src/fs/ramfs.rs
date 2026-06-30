@@ -331,13 +331,17 @@ impl FileSystem for RamFs {
             return Err(FsError::IsADirectory);
         }
 
-        let new_size = offset + buffer.len() as u64;
+        // Guard against offset+len wrapping (a huge pwrite offset would
+        // otherwise panic in debug or compute a tiny resize in release).
+        let new_size = offset
+            .checked_add(buffer.len() as u64)
+            .ok_or(FsError::InvalidArgument)?;
         if new_size > MAX_FILE_SIZE {
             return Err(FsError::NoSpaceLeft);
         }
 
         // Extend content if necessary
-        let required_len = (offset + buffer.len() as u64) as usize;
+        let required_len = new_size as usize;
         if file_inode.content.len() < required_len {
             file_inode.content.resize(required_len, 0);
         }
