@@ -18,6 +18,17 @@ use crate::process::{self, ProcessState};
 lazy_static! {
     static ref SIGNAL_MASKS: Mutex<BTreeMap<u32, AtomicU64>> = Mutex::new(BTreeMap::new());
     static ref SIGNAL_STACKS: Mutex<BTreeMap<u32, SignalStack>> = Mutex::new(BTreeMap::new());
+    /// Signal mask snapshot taken when a handler is dispatched, restored by
+    /// rt_sigreturn (RFC of POSIX sigaction semantics: the handler runs with
+    /// the signal + sa_mask blocked, and the prior mask is restored on return).
+    static ref SAVED_SIGNAL_MASKS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
+}
+
+/// Snapshot the current signal mask before invoking a handler, so rt_sigreturn
+/// can restore it. Called by the signal-delivery path when it sets up a frame.
+pub(crate) fn save_signal_mask_before_handler(pid: u32) {
+    let mask = signal_mask_for(pid);
+    SAVED_SIGNAL_MASKS.lock().insert(pid, mask);
 }
 
 /// Per-process alternate signal stack
@@ -676,10 +687,12 @@ pub fn rt_sigreturn() -> LinuxResult<i32> {
 
     let pid = process::current_pid();
 
-    // Restore the signal mask to what it was before the signal handler
-    // was invoked.  We clear all temporarily-blocked signals so the
-    // process returns to its pre-signal mask state.
-    update_signal_mask(pid, |_| 0);
+    // Restore the signal mask saved when the handler was dispatched. Zeroing
+    // it (the previous behavior) wrongly unblocked every signal the process had
+    // deliberately blocked. If no snapshot exists, leave the mask unchanged.
+    if let Some(saved) = SAVED_SIGNAL_MASKS.lock().remove(&pid) {
+        update_signal_mask(pid, |_| saved);
+    }
 
     // Restore the saved CPU context from the PCB.  When a signal is
     // delivered, the kernel saves the interrupted context into the

@@ -123,6 +123,18 @@ fn get_state(pid: u32) -> PtraceState {
     PTRACE_STATES.read().get(&pid).cloned().unwrap_or_default()
 }
 
+/// True if the 8-byte word at `addr` lies entirely within the user address
+/// range. PEEK/POKE must reject kernel addresses to avoid leaking or corrupting
+/// kernel memory through the ptrace interface.
+fn ptrace_addr_in_user_range(addr: u64) -> bool {
+    let start = crate::memory::USER_SPACE_START as u64;
+    let end = crate::memory::USER_SPACE_END as u64;
+    match addr.checked_add(8) {
+        Some(addr_end) => addr >= start && addr_end <= end,
+        None => false,
+    }
+}
+
 fn set_state(pid: u32, state: PtraceState) {
     PTRACE_STATES.write().insert(pid, state);
 }
@@ -234,6 +246,11 @@ pub fn ptrace(request: u32, pid: u32, addr: u64, data: u64) -> i64 {
                 return -3;
             }
 
+            // Only allow access to the user address range. Without this a
+            // tracer could read kernel memory (info leak) through PEEK.
+            if !ptrace_addr_in_user_range(addr) {
+                return -14; // EFAULT
+            }
             // Read a word from the tracee's memory at addr
             let val = unsafe { core::ptr::read_volatile(addr as *const u64) };
             val as i64
@@ -246,6 +263,11 @@ pub fn ptrace(request: u32, pid: u32, addr: u64, data: u64) -> i64 {
                 return -3;
             }
 
+            // Reject non-user addresses: a POKE to a kernel address would
+            // corrupt kernel memory.
+            if !ptrace_addr_in_user_range(addr) {
+                return -14; // EFAULT
+            }
             unsafe {
                 core::ptr::write_volatile(addr as *mut u64, data);
             }

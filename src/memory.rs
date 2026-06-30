@@ -491,6 +491,12 @@ impl PhysicalFrameAllocator {
                 address: PhysAddr::new(current),
                 order,
             });
+            // Mark the block free in the allocation bitmap so the coalescing
+            // check (is_buddy_free) and the double-free guard
+            // (is_block_allocated) agree with the free list. A range that was
+            // hot-removed while allocated and later re-added would otherwise
+            // keep a stale "allocated" bit and never coalesce / reject frees.
+            self.mark_free(zone_idx, PhysAddr::new(current), order);
             self.total_frames[zone_idx] += 1 << order;
             added += 1;
             current += block_size as u64;
