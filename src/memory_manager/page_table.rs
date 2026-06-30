@@ -240,7 +240,8 @@ impl PageTable {
         unsafe {
             let mut pt = self.offset_page_table();
             pt.map_to(page, frame, x64_flags, &mut *allocator)
-                .map_err(|_| VmError::InvalidOperation)?;
+                .map_err(|_| VmError::InvalidOperation)?
+                .flush();
         }
         Ok(())
     }
@@ -262,7 +263,8 @@ impl PageTable {
         unsafe {
             let mut pt = self.offset_page_table();
             pt.map_to(page, frame, x64_flags, &mut *allocator)
-                .map_err(|_| VmError::InvalidOperation)?;
+                .map_err(|_| VmError::InvalidOperation)?
+                .flush();
         }
         Ok(())
     }
@@ -275,7 +277,8 @@ impl PageTable {
 
         unsafe {
             let mut pt = self.offset_page_table();
-            pt.unmap(page).map_err(|_| VmError::InvalidOperation)?;
+            let (_frame, flush) = pt.unmap(page).map_err(|_| VmError::InvalidOperation)?;
+            flush.flush();
         }
         Ok(())
     }
@@ -288,7 +291,8 @@ impl PageTable {
 
         unsafe {
             let mut pt = self.offset_page_table();
-            pt.unmap(page).map_err(|_| VmError::InvalidOperation)?;
+            let (_frame, flush) = pt.unmap(page).map_err(|_| VmError::InvalidOperation)?;
+            flush.flush();
         }
         Ok(())
     }
@@ -314,7 +318,8 @@ impl PageTable {
             // SAFETY: updating flags on an existing mapping. The frame
             // remains the same; only the permission bits change.
             pt.update_flags(page, x64_flags)
-                .map_err(|_| VmError::InvalidOperation)?;
+                .map_err(|_| VmError::InvalidOperation)?
+                .flush();
         }
 
         // Suppress unused warning for X64F import when not needed directly
