@@ -6,6 +6,9 @@
 
 use alloc::{boxed::Box, vec::Vec};
 use crate::mutter_port::meta::types::*;
+// Use the rich window type (types::* only provides an opaque stub); this
+// matches what `meta::MetaWindow` re-exports.
+use crate::mutter_port::meta::window::MetaWindow;
 
 /// Main compositor object managing rendering pipeline
 pub struct MetaCompositor {
@@ -39,14 +42,23 @@ impl MetaCompositor {
         self.is_enabled
     }
 
-    /// Manage a new window for compositing
-    pub fn manage_window(&mut self, _window: &MetaWindow) {
-        // TODO: implement
+    /// Manage a new window for compositing (tracked by identity; deduplicated).
+    pub fn manage_window(&mut self, window: &MetaWindow) {
+        let ptr = window as *const MetaWindow as *mut MetaWindow;
+        if !self.managed_windows.contains(&ptr) {
+            self.managed_windows.push(ptr);
+        }
     }
 
-    /// Unmanage a window (remove from compositing)
-    pub fn unmanage_window(&mut self, _window: &MetaWindow) {
-        // TODO: implement
+    /// Unmanage a window (remove from compositing). No-op if not managed.
+    pub fn unmanage_window(&mut self, window: &MetaWindow) {
+        let ptr = window as *const MetaWindow as *mut MetaWindow;
+        self.managed_windows.retain(|&w| w != ptr);
+    }
+
+    /// Number of windows currently managed for compositing.
+    pub fn managed_window_count(&self) -> usize {
+        self.managed_windows.len()
     }
 
     /// Redraw/composite the screen
@@ -177,5 +189,33 @@ impl MetaShapedTexture {
 impl Default for MetaShapedTexture {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mutter_port::meta::enums::MetaWindowType;
+
+    #[test]
+    fn test_manage_and_unmanage_windows() {
+        let mut c = MetaCompositor::new();
+        let w1 = MetaWindow::new(MetaWindowType::Normal);
+        let w2 = MetaWindow::new(MetaWindowType::Dialog);
+        assert_eq!(c.managed_window_count(), 0);
+
+        c.manage_window(&w1);
+        c.manage_window(&w2);
+        assert_eq!(c.managed_window_count(), 2);
+
+        // Managing the same window again is deduplicated.
+        c.manage_window(&w1);
+        assert_eq!(c.managed_window_count(), 2);
+
+        c.unmanage_window(&w1);
+        assert_eq!(c.managed_window_count(), 1);
+        // Unmanaging a window that isn't managed is a no-op.
+        c.unmanage_window(&w1);
+        assert_eq!(c.managed_window_count(), 1);
     }
 }
