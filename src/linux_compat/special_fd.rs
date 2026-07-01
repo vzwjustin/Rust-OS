@@ -81,6 +81,9 @@ static TIMERFD_BY_ID: RwLock<BTreeMap<u32, TimerFdState>> = RwLock::new(BTreeMap
 static EPOLL_BY_ID: RwLock<BTreeMap<u32, EpollState>> = RwLock::new(BTreeMap::new());
 static SIGNALFD_BY_ID: RwLock<BTreeMap<u32, SignalFdState>> = RwLock::new(BTreeMap::new());
 
+const O_CLOEXEC: i32 = 0o2000000;
+const O_NONBLOCK: i32 = 0o4000;
+
 fn root_inode() -> alloc::sync::Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root")
 }
@@ -805,6 +808,10 @@ pub fn poll(fds: *mut PollFd, nfds: u64, timeout_ms: i32) -> LinuxResult<i32> {
 
 /// epoll_create1 - create epoll instance
 pub fn epoll_create1(flags: i32) -> LinuxResult<i32> {
+    if (flags & !0o2000000) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::SeqCst);
     EPOLL_BY_ID.write().insert(
         id,
@@ -949,15 +956,19 @@ pub fn pipe(pipefd: *mut [i32; 2]) -> LinuxResult<i32> {
 
 /// pipe2 - create pipe with flags
 pub fn pipe2(pipefd: *mut [i32; 2], flags: i32) -> LinuxResult<i32> {
+    if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     pipe(pipefd)?;
     // Apply O_CLOEXEC / O_NONBLOCK to both pipe ends.
     let pipefd_ref = unsafe { &*pipefd };
     let mut fd_flags: u32 = 0;
-    if (flags & 0o2000000) != 0 {
+    if (flags & O_CLOEXEC) != 0 {
         // O_CLOEXEC
         fd_flags |= vfs::OpenFlags::CLOEXEC;
     }
-    if (flags & 0o20000) != 0 {
+    if (flags & O_NONBLOCK) != 0 {
         // O_NONBLOCK
         fd_flags |= vfs::OpenFlags::NONBLOCK;
     }
@@ -970,6 +981,13 @@ pub fn pipe2(pipefd: *mut [i32; 2], flags: i32) -> LinuxResult<i32> {
 
 /// eventfd2 - create eventfd as VFS fd
 pub fn eventfd2(initval: u32, flags: i32) -> LinuxResult<i32> {
+    const EFD_SEMAPHORE: i32 = 1 << 0;
+    const EFD_FLAGS_SET: i32 = EFD_SEMAPHORE | O_CLOEXEC | O_NONBLOCK;
+
+    if flags & !EFD_FLAGS_SET != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let id = NEXT_EVENT_ID.fetch_add(1, Ordering::SeqCst);
     EVENTFD_BY_ID.write().insert(
         id,
@@ -979,11 +997,11 @@ pub fn eventfd2(initval: u32, flags: i32) -> LinuxResult<i32> {
         },
     );
     let mut fd_flags: u32 = OpenFlags::RDWR;
-    if (flags & 0o2000000) != 0 {
+    if (flags & O_CLOEXEC) != 0 {
         // EFD_CLOEXEC
         fd_flags |= vfs::OpenFlags::CLOEXEC;
     }
-    if (flags & 0o20000) != 0 {
+    if (flags & O_NONBLOCK) != 0 {
         // EFD_NONBLOCK
         fd_flags |= vfs::OpenFlags::NONBLOCK;
     }
@@ -993,6 +1011,12 @@ pub fn eventfd2(initval: u32, flags: i32) -> LinuxResult<i32> {
 /// timerfd_create - create timerfd as VFS fd
 pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
     use super::types::clock;
+    const TFD_CREATE_FLAGS: i32 = O_CLOEXEC | O_NONBLOCK;
+
+    if flags & !TFD_CREATE_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     if clockid != clock::CLOCK_REALTIME && clockid != clock::CLOCK_MONOTONIC {
         return Err(LinuxError::EINVAL);
     }
@@ -1007,11 +1031,11 @@ pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
         },
     );
     let mut fd_flags: u32 = vfs::OpenFlags::RDWR;
-    if (flags & 0o2000000) != 0 {
+    if (flags & O_CLOEXEC) != 0 {
         // TFD_CLOEXEC
         fd_flags |= vfs::OpenFlags::CLOEXEC;
     }
-    if (flags & 0o20000) != 0 {
+    if (flags & O_NONBLOCK) != 0 {
         // TFD_NONBLOCK
         fd_flags |= vfs::OpenFlags::NONBLOCK;
     }
@@ -1024,6 +1048,12 @@ pub fn timerfd_create(clockid: i32, flags: i32) -> LinuxResult<i32> {
 /// the mask of an existing signalfd if `fd` is valid (>= 0). The mask
 /// is a 64-bit signal set where bit N-1 corresponds to signal N.
 pub fn signalfd(fd: i32, mask: u64, flags: i32) -> LinuxResult<i32> {
+    const SFD_FLAGS_SET: i32 = O_CLOEXEC | O_NONBLOCK;
+
+    if flags & !SFD_FLAGS_SET != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     // If fd is valid, update the existing signalfd's mask
     if fd >= 0 {
         let kind = vfs::vfs_fd_kind(fd).map_err(|_| LinuxError::EBADF)?;
@@ -1050,11 +1080,11 @@ pub fn signalfd(fd: i32, mask: u64, flags: i32) -> LinuxResult<i32> {
         },
     );
     let mut fd_flags: u32 = OpenFlags::RDWR;
-    if (flags & 0o2000000) != 0 {
+    if (flags & O_CLOEXEC) != 0 {
         // SFD_CLOEXEC
         fd_flags |= vfs::OpenFlags::CLOEXEC;
     }
-    if (flags & 0o20000) != 0 {
+    if (flags & O_NONBLOCK) != 0 {
         // SFD_NONBLOCK
         fd_flags |= vfs::OpenFlags::NONBLOCK;
     }
@@ -1077,14 +1107,25 @@ pub fn timerfd_settime(
     new_value: *const u8,
     old_value: *mut u8,
 ) -> LinuxResult<i32> {
+    const TFD_TIMER_ABSTIME: i32 = 1 << 0;
+    const TFD_TIMER_CANCEL_ON_SET: i32 = 1 << 1;
+    const TFD_SETTIME_FLAGS: i32 = TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET;
+    const NSEC_PER_SEC: u64 = 1_000_000_000;
+
     if new_value.is_null() {
         return Err(LinuxError::EFAULT);
+    }
+    if flags & !TFD_SETTIME_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
     }
     let FdKind::TimerFd(id) = vfs::vfs_fd_kind(fd).map_err(|_| LinuxError::EBADF)? else {
         return Err(LinuxError::EBADF);
     };
 
     let spec = unsafe { *(new_value as *const ITimerSpec) };
+    if spec.it_interval_nsec >= NSEC_PER_SEC || spec.it_value_nsec >= NSEC_PER_SEC {
+        return Err(LinuxError::EINVAL);
+    }
     let mut table = TIMERFD_BY_ID.write();
     let timer = table.get_mut(&id).ok_or(LinuxError::EBADF)?;
 
@@ -1113,9 +1154,9 @@ pub fn timerfd_settime(
     if value_ns == 0 {
         timer.armed.store(0, Ordering::SeqCst);
     } else {
-        // TFD_TIMER_ABSTIME (1): value is an absolute time on the
+        // TFD_TIMER_ABSTIME: value is an absolute time on the
         // clock; otherwise it is relative to now.
-        let expires = if (flags & 1) != 0 {
+        let expires = if (flags & TFD_TIMER_ABSTIME) != 0 {
             value_ns
         } else {
             time::uptime_ns() + value_ns

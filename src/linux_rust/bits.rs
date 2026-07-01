@@ -66,9 +66,27 @@ macro_rules! impl_genmask_fn {
     };
 }
 
-impl_genmask_fn!(u64, genmask_checked_u64, genmask_u64, bit_u64, checked_bit_u64);
-impl_genmask_fn!(u32, genmask_checked_u32, genmask_u32, bit_u32, checked_bit_u32);
-impl_genmask_fn!(u16, genmask_checked_u16, genmask_u16, bit_u16, checked_bit_u16);
+impl_genmask_fn!(
+    u64,
+    genmask_checked_u64,
+    genmask_u64,
+    bit_u64,
+    checked_bit_u64
+);
+impl_genmask_fn!(
+    u32,
+    genmask_checked_u32,
+    genmask_u32,
+    bit_u32,
+    checked_bit_u32
+);
+impl_genmask_fn!(
+    u16,
+    genmask_checked_u16,
+    genmask_u16,
+    bit_u16,
+    checked_bit_u16
+);
 impl_genmask_fn!(u8, genmask_checked_u8, genmask_u8, bit_u8, checked_bit_u8);
 
 #[cfg(test)]

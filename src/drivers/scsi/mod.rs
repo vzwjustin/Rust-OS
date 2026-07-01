@@ -263,8 +263,10 @@ pub fn queue_command(
         SCSI_OPCODE_READ10 => {
             if cmd.data_dir_in {
                 let bytes = validate_rw(dev, cmd, buffer)?;
-                with_storage_manager(|mgr| mgr.read_sectors(storage_id, cmd.lba, &mut buffer[..bytes]))
-                    .ok_or(StorageError::DeviceNotFound)?
+                with_storage_manager(|mgr| {
+                    mgr.read_sectors(storage_id, cmd.lba, &mut buffer[..bytes])
+                })
+                .ok_or(StorageError::DeviceNotFound)?
             } else {
                 Err(StorageError::HardwareError)
             }

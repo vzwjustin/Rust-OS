@@ -928,8 +928,10 @@ impl NvmeDriver {
             (block_count as usize) * (self.capabilities.sector_size as usize)
         };
         let mut _dma_buffer = if buffer_size > 0 {
-            Some(DmaBuffer::allocate(buffer_size, DMA_ALIGNMENT)
-                .map_err(|_| StorageError::HardwareError)?)
+            Some(
+                DmaBuffer::allocate(buffer_size, DMA_ALIGNMENT)
+                    .map_err(|_| StorageError::HardwareError)?,
+            )
         } else {
             None
         };
@@ -965,7 +967,11 @@ impl NvmeDriver {
                 dptr: [buffer_phys, 0],
                 cdw10: lba as u32,
                 cdw11: (lba >> 32) as u32,
-                cdw12: if matches!(opcode, NvmeIoOpcode::Flush) { 0 } else { (block_count - 1) as u32 },
+                cdw12: if matches!(opcode, NvmeIoOpcode::Flush) {
+                    0
+                } else {
+                    (block_count - 1) as u32
+                },
                 cdw13: 0,
                 cdw14: 0,
                 cdw15: 0,

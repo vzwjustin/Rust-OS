@@ -1116,7 +1116,11 @@ impl AhciDriver {
         let sector_size = if logical_words_valid {
             let words = (le_word(&identify, 117) as u32) | ((le_word(&identify, 118) as u32) << 16);
             let bytes = words.saturating_mul(2);
-            if bytes >= 512 && bytes.is_power_of_two() { bytes } else { 512 }
+            if bytes >= 512 && bytes.is_power_of_two() {
+                bytes
+            } else {
+                512
+            }
         } else {
             512
         };

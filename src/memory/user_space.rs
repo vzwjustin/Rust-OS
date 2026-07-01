@@ -432,9 +432,19 @@ impl UserSpaceMemory {
     }
 
     /// Convert physical address to kernel virtual address
+    ///
+    /// Must use the bootloader-provided `physical_memory_offset`, not a
+    /// hardcoded constant: the bootloader picks this offset at boot time and
+    /// it need not be `0xFFFF_8000_0000_0000`. Using the wrong offset here
+    /// computes a virtual address that isn't actually mapped, causing a
+    /// kernel-mode page fault the moment this manual page-table walk runs
+    /// (observed as a #PF immediately on Ring-3 entry, when permission
+    /// validation first exercises this path).
     fn phys_to_virt_kernel(phys_addr: PhysAddr) -> u64 {
-        // Standard kernel direct mapping offset
-        phys_addr.as_u64() + 0xFFFF_8000_0000_0000
+        let offset = get_memory_manager()
+            .map(|mm| mm.physical_memory_offset().as_u64())
+            .unwrap_or(0xFFFF_8000_0000_0000);
+        phys_addr.as_u64() + offset
     }
 
     /// Validate additional security attributes of a page

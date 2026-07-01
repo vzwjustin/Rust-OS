@@ -7,7 +7,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::page::{PAGE_SIZE, phys_to_virt};
+use crate::page::{phys_to_virt, PAGE_SIZE};
 
 // ---------------------------------------------------------------------------
 // DMA direction
@@ -130,7 +130,11 @@ impl SgTable {
         if let Some(last) = sgl.last_mut() {
             last.mark_end();
         }
-        Ok(SgTable { sgl, nents: 0, orig_nents: nents })
+        Ok(SgTable {
+            sgl,
+            nents: 0,
+            orig_nents: nents,
+        })
     }
 
     /// Free the table (drops the inner Vec).

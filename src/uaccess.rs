@@ -169,18 +169,30 @@ impl UserSlice {
 
     /// Turn into a reader.
     pub fn reader(self) -> UserSliceReader {
-        UserSliceReader { ptr: self.ptr, remaining: self.len }
+        UserSliceReader {
+            ptr: self.ptr,
+            remaining: self.len,
+        }
     }
 
     /// Turn into a writer.
     pub fn writer(self) -> UserSliceWriter {
-        UserSliceWriter { ptr: self.ptr, remaining: self.len }
+        UserSliceWriter {
+            ptr: self.ptr,
+            remaining: self.len,
+        }
     }
 
     /// Split into a reader and a writer sharing the same region.
     pub fn reader_writer(self) -> (UserSliceReader, UserSliceWriter) {
-        let r = UserSliceReader { ptr: self.ptr, remaining: self.len };
-        let w = UserSliceWriter { ptr: self.ptr, remaining: self.len };
+        let r = UserSliceReader {
+            ptr: self.ptr,
+            remaining: self.len,
+        };
+        let w = UserSliceWriter {
+            ptr: self.ptr,
+            remaining: self.len,
+        };
         (r, w)
     }
 
@@ -244,9 +256,7 @@ impl UserSliceReader {
         }
         let mut val = core::mem::MaybeUninit::<T>::uninit();
         // SAFETY: size matches T; caller ensures validity
-        let not_copied = unsafe {
-            copy_from_user(val.as_mut_ptr() as *mut u8, self.ptr, size)
-        };
+        let not_copied = unsafe { copy_from_user(val.as_mut_ptr() as *mut u8, self.ptr, size) };
         if not_copied != 0 {
             return Err(EFAULT);
         }
@@ -310,9 +320,7 @@ impl UserSliceWriter {
         if size > self.remaining {
             return Err(EFAULT);
         }
-        let not_copied = unsafe {
-            copy_to_user(self.ptr, val as *const T as *const u8, size)
-        };
+        let not_copied = unsafe { copy_to_user(self.ptr, val as *const T as *const u8, size) };
         if not_copied != 0 {
             return Err(EFAULT);
         }

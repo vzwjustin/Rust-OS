@@ -916,14 +916,13 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         crate::softirq::run_workqueue();
     }
 
-    unsafe {
-        // Send EOI directly to PIC port 0x20
-        core::arch::asm!(
-            "mov al, 0x20",
-            "out 0x20, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    // Must use notify_irq_eoi (LAPIC EOI register when APIC is active), not a
+    // raw PIC port-0x20 write: once init_apic_system() switches the timer to
+    // the local APIC, a PIC-only EOI never clears the LAPIC's in-service bit
+    // for this vector, so no further timer interrupt is ever delivered and
+    // the scheduler permanently stops preempting (matches keyboard/mouse
+    // handlers below, which already use notify_irq_eoi).
+    notify_irq_eoi(InterruptIndex::Timer);
 
     // After EOI, give the scheduler a chance to preempt the current process.
     // Only attempt this if the process subsystem has been initialized — calling

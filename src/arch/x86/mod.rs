@@ -11,12 +11,12 @@
 //! - `mman`: x86-specific mmap flags from `uapi/asm/mman.h`
 //! - `hwcap`: HWCAP2 constants from `uapi/asm/hwcap2.h`
 
-pub mod msr;
-pub mod processor_flags;
-pub mod signal;
-pub mod ptrace;
 pub mod auxvec;
-pub mod ldt;
-pub mod prctl;
-pub mod mman;
 pub mod hwcap;
+pub mod ldt;
+pub mod mman;
+pub mod msr;
+pub mod prctl;
+pub mod processor_flags;
+pub mod ptrace;
+pub mod signal;

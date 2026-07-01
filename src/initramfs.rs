@@ -444,11 +444,19 @@ pub fn install_native_init() -> Option<&'static str> {
     for &path in &["/init", "/sbin/init"] {
         match write_native_init_to(path) {
             Ok(n) => {
-                crate::serial_println!("init: installed native Rust init at {} ({} bytes)", path, n);
+                crate::serial_println!(
+                    "init: installed native Rust init at {} ({} bytes)",
+                    path,
+                    n
+                );
                 return Some(path);
             }
             Err(reason) => {
-                crate::serial_println!("init: could not install native init at {}: {}", path, reason);
+                crate::serial_println!(
+                    "init: could not install native init at {}: {}",
+                    path,
+                    reason
+                );
             }
         }
     }

@@ -109,7 +109,7 @@ impl Page {
     /// - The page must be mapped and writable.
     pub unsafe fn copy_from_user_slice(&self, offset: usize, src: &[u8]) -> Result<(), i32> {
         if offset + src.len() > PAGE_SIZE {
-            return Err(crate::EINVAL);
+            return Err(EINVAL);
         }
         unsafe {
             ptr::copy_nonoverlapping(src.as_ptr(), self.virt_addr().add(offset), src.len());
@@ -121,7 +121,7 @@ impl Page {
     pub unsafe fn read_raw(&self, dst: &mut [u8], offset: usize) -> Result<(), i32> {
         let len = dst.len();
         if offset + len > PAGE_SIZE {
-            return Err(crate::EINVAL);
+            return Err(EINVAL);
         }
         unsafe {
             ptr::copy_nonoverlapping(self.virt_addr().add(offset), dst.as_mut_ptr(), len);
@@ -146,15 +146,27 @@ impl PageRange {
     /// `order` is the power-of-two order (Linux buddy allocator convention).
     /// Returns `None` if allocation fails.
     pub fn alloc(count: usize, order: u32) -> Option<Self> {
-        // Delegate to the global frame allocator in memory.rs when available.
-        // For now, provide a stub that fails gracefully.
-        let _ = order;
-        None
+        let mm = crate::memory::get_memory_manager()?;
+        // Allocate from the Normal zone for general-purpose pages.
+        let zone = crate::memory::MemoryZone::Normal;
+        let frame = mm.allocate_frame_in_zone(zone)?;
+        let start = frame.start_address().as_u64();
+        Some(Self { start, count })
     }
 
     /// Free the page range.
     pub fn free(self) {
-        // Stub: return frames to global allocator.
+        if let Some(mm) = crate::memory::get_memory_manager() {
+            let zone = crate::memory::MemoryZone::Normal;
+            // Reconstruct the PhysFrame from the start address.
+            // SAFETY: the start address came from a valid frame allocation.
+            let frame = unsafe {
+                x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
+                    self.start,
+                ))
+            };
+            mm.deallocate_frame(frame, zone);
+        }
     }
 
     /// Return the physical address of the first page.
@@ -177,7 +189,10 @@ impl PageRange {
 
     /// Iterate over pages in the range.
     pub fn iter(&self) -> PageRangeIter<'_> {
-        PageRangeIter { range: self, idx: 0 }
+        PageRangeIter {
+            range: self,
+            idx: 0,
+        }
     }
 }
 

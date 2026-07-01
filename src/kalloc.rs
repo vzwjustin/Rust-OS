@@ -220,10 +220,9 @@ pub unsafe fn vfree(ptr: *mut u8, size: usize) {
 /// Allocate and zero-initialise a value of type `T`.
 /// Returns `None` on allocation failure.
 pub fn kzalloc_typed<T>(_flags: AllocFlags) -> Option<alloc_crate::boxed::Box<T>> {
-    // This cannot be implemented as a raw alloc without zeroing tricks;
-    // just use Box::try_new_zeroed via the global allocator.
-    // For now stub out: allocate via Box which uses the global allocator.
-    // Box::try_new_zeroed is nightly-only in no_std; fall back to unsafe.
+    // Allocate via the global allocator with zero-initialisation.
+    // Box::try_new_zeroed is nightly-only in no_std, so we use alloc_zeroed
+    // directly and wrap the result in a Box.
     let size = core::mem::size_of::<T>();
     if size == 0 {
         // ZST
@@ -241,7 +240,7 @@ pub fn kzalloc_typed<T>(_flags: AllocFlags) -> Option<alloc_crate::boxed::Box<T>
 }
 
 // ---------------------------------------------------------------------------
-// NumaNode stub (mirrors Linux NumaNode without bindings)
+// NumaNode (mirrors Linux NumaNode type)
 // ---------------------------------------------------------------------------
 
 /// NUMA node identifier.

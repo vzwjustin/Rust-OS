@@ -172,7 +172,12 @@ pub fn watchdog_tick() {
             panic!("WATCHDOG TIMER EXPIRED: System lockup detected!");
         }
         if WATCHDOG_REMAINING
-            .compare_exchange(remaining, remaining - 1, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                remaining,
+                remaining - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_ok()
         {
             if remaining == 1 {
@@ -253,10 +258,9 @@ pub fn try_enable() -> Result<(), WatchdogError> {
     if WATCHDOG_OPEN.swap(true, Ordering::AcqRel) {
         return Err(WatchdogError::AlreadyOpen);
     }
-    let timeout = WATCHDOG_TIMEOUT.load(Ordering::Acquire).clamp(
-        reg.min_timeout_secs,
-        reg.max_timeout_secs,
-    );
+    let timeout = WATCHDOG_TIMEOUT
+        .load(Ordering::Acquire)
+        .clamp(reg.min_timeout_secs, reg.max_timeout_secs);
     WATCHDOG_TIMEOUT.store(timeout, Ordering::Release);
     WATCHDOG_REMAINING.store(timeout, Ordering::Release);
     WATCHDOG_LAST_PING_TICK.store(WATCHDOG_TICKS.load(Ordering::Acquire), Ordering::Release);

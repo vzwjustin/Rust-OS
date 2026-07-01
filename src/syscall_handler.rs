@@ -4,6 +4,7 @@
 //! This module provides the INT 0x80 syscall handler that bridges
 //! user-space Linux syscalls to kernel implementations.
 
+use crate::memory::user_space::UserSpaceMemory;
 use crate::syscall::SyscallNumber;
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -36,7 +37,9 @@ pub fn dispatch_syscall(
     // Seccomp check — filter syscalls before dispatching
     let args = [arg1, arg2, arg3, arg4, arg5, arg6];
     crate::audit::audit_syscall_entry(syscall_num as i32, &args);
-    if let Err(errno) = crate::seccomp::check_syscall(syscall_num as i32, &args) {
+    if let Err(errno) =
+        crate::seccomp::check_syscall(crate::process::current_pid(), syscall_num as i32, &args)
+    {
         if crate::audit::is_enabled() {
             crate::audit::audit_log_syscall(syscall_num as i32, &args, errno as i64);
         }
@@ -523,16 +526,27 @@ fn syscall_setresuid(_ruid: u32, euid: u32, _suid: u32) -> i64 {
         Err(e) => -(e as i64),
     }
 }
+
+fn copy_u32_to_user(dst: *mut u32, value: u32) -> Result<(), i64> {
+    let bytes = value.to_ne_bytes();
+    UserSpaceMemory::copy_to_user(dst as u64, &bytes)
+        .map_err(|_| -(crate::linux_compat::LinuxError::EFAULT as i64))
+}
+
 fn syscall_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> i64 {
-    unsafe {
-        if !ruid.is_null() {
-            *ruid = crate::linux_compat::process_ops::getuid();
+    if !ruid.is_null() {
+        if let Err(err) = copy_u32_to_user(ruid, crate::linux_compat::process_ops::getuid()) {
+            return err;
         }
-        if !euid.is_null() {
-            *euid = crate::linux_compat::process_ops::geteuid();
+    }
+    if !euid.is_null() {
+        if let Err(err) = copy_u32_to_user(euid, crate::linux_compat::process_ops::geteuid()) {
+            return err;
         }
-        if !suid.is_null() {
-            *suid = crate::linux_compat::process_ops::geteuid();
+    }
+    if !suid.is_null() {
+        if let Err(err) = copy_u32_to_user(suid, crate::linux_compat::process_ops::geteuid()) {
+            return err;
         }
     }
     0
@@ -544,38 +558,64 @@ fn syscall_setresgid(_rgid: u32, egid: u32, _sgid: u32) -> i64 {
     }
 }
 fn syscall_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> i64 {
-    unsafe {
-        if !rgid.is_null() {
-            *rgid = crate::linux_compat::process_ops::getgid();
+    if !rgid.is_null() {
+        if let Err(err) = copy_u32_to_user(rgid, crate::linux_compat::process_ops::getgid()) {
+            return err;
         }
-        if !egid.is_null() {
-            *egid = crate::linux_compat::process_ops::getegid();
+    }
+    if !egid.is_null() {
+        if let Err(err) = copy_u32_to_user(egid, crate::linux_compat::process_ops::getegid()) {
+            return err;
         }
-        if !sgid.is_null() {
-            *sgid = crate::linux_compat::process_ops::getegid();
+    }
+    if !sgid.is_null() {
+        if let Err(err) = copy_u32_to_user(sgid, crate::linux_compat::process_ops::getegid()) {
+            return err;
         }
     }
     0
 }
 fn syscall_getgroups(size: i32, list: *mut u32) -> i64 {
+    let pm = crate::process::get_process_manager();
+    let pid = pm.current_process();
+    let groups = match pm.get_supplementary_groups(pid) {
+        Ok(g) => g,
+        Err(_) => return -(crate::linux_compat::LinuxError::ESRCH as i64),
+    };
+    let count = groups.len() as i32;
+
     if size == 0 {
-        return 1;
+        return count as i64;
     }
-    if size < 1 {
+    if size < count {
         return -(crate::linux_compat::LinuxError::EINVAL as i64);
     }
     unsafe {
-        if !list.is_null() {
-            *list = 0;
+        for (i, &gid) in groups.iter().enumerate() {
+            core::ptr::write(list.add(i), gid);
         }
     }
-    1
+    count as i64
 }
-fn syscall_setgroups(size: i32, _list: *const u32) -> i64 {
+fn syscall_setgroups(size: i32, list: *const u32) -> i64 {
     if size < 0 {
         return -(crate::linux_compat::LinuxError::EINVAL as i64);
     }
-    0
+    if size > 32 {
+        return -(crate::linux_compat::LinuxError::EINVAL as i64);
+    }
+    let mut groups = alloc::vec::Vec::with_capacity(size as usize);
+    for i in 0..size as usize {
+        unsafe {
+            groups.push(core::ptr::read(list.add(i)));
+        }
+    }
+    let pm = crate::process::get_process_manager();
+    let pid = pm.current_process();
+    match pm.set_supplementary_groups(pid, groups) {
+        Ok(_) => 0,
+        Err(_) => -(crate::linux_compat::LinuxError::ESRCH as i64),
+    }
 }
 fn syscall_setpgid(pid: i32, pgid: i32) -> i64 {
     match crate::linux_compat::process_ops::setpgid(pid, pgid) {

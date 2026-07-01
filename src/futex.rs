@@ -663,8 +663,10 @@ fn futex_pi_register_waiter(pi_key: usize, owner_pid: u32, our_pid: u32) {
     state.waiters.retain(|(p, _)| *p != our_pid);
     state.waiters.push_back((our_pid, our_prio));
     // Boost owner to at least our priority (priority inheritance).
-    let _ =
-        crate::process::scheduler::set_process_priority(state.owner_pid, crate::process::Priority::High);
+    let _ = crate::process::scheduler::set_process_priority(
+        state.owner_pid,
+        crate::process::Priority::High,
+    );
 }
 
 /// FUTEX_LOCK_PI / FUTEX_LOCK_PI2 — acquire the PI-futex at `uaddr`, blocking

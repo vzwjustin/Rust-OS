@@ -325,7 +325,13 @@ pub fn write_time(time: &RtcTime) -> Result<(), &'static str> {
     cmos_write(RTC_SECONDS, encode_field(time.sec as u8, binary_mode));
     cmos_write(RTC_MINUTES, encode_field(time.min as u8, binary_mode));
     cmos_write(RTC_HOURS, encode_hour(time.hour as u8, status_b));
-    cmos_write(RTC_WEEKDAY, encode_field((calculate_wday(full_year, time.mon, time.mday) + 1) as u8, binary_mode));
+    cmos_write(
+        RTC_WEEKDAY,
+        encode_field(
+            (calculate_wday(full_year, time.mon, time.mday) + 1) as u8,
+            binary_mode,
+        ),
+    );
     cmos_write(RTC_DAY_OF_MONTH, encode_field(time.mday as u8, binary_mode));
     cmos_write(RTC_MONTH, encode_field((time.mon + 1) as u8, binary_mode));
     cmos_write(RTC_YEAR, encode_field(year_short, binary_mode));

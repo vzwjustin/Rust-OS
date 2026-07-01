@@ -150,9 +150,7 @@ impl QSpinLock {
         // empty; if a queue already exists we must join it to preserve
         // (rough) FIFO-ish fairness, matching upstream's `node.tail`
         // check before taking the pending slot.
-        if self.tail.load(Ordering::Relaxed) == 0
-            && !self.pending.swap(true, Ordering::Acquire)
-        {
+        if self.tail.load(Ordering::Relaxed) == 0 && !self.pending.swap(true, Ordering::Acquire) {
             // We now own the single pending slot. Spin directly on the
             // lock byte (no queueing overhead) until it is free.
             while self.locked.load(Ordering::Acquire) != 0 {
@@ -216,7 +214,9 @@ impl QSpinLock {
             }
         }
         if next != 0 {
-            NODES[(next - 1) as usize].locked.store(true, Ordering::Release);
+            NODES[(next - 1) as usize]
+                .locked
+                .store(true, Ordering::Release);
         }
     }
 }

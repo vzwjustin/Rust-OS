@@ -111,6 +111,7 @@ pub fn open_by_handle_at(_mount_fd: Fd, handle: *mut u8, flags: i32) -> LinuxRes
     if handle.is_null() {
         return Err(LinuxError::EFAULT);
     }
+    file_ops::validate_regular_open_flags(flags)?;
     if !current_is_privileged() {
         return Err(LinuxError::EPERM);
     }

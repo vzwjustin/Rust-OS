@@ -374,6 +374,14 @@ pub unsafe extern "C" fn context_switch_asm(
         pop rax
         mov [rdi + 0x88], rax
 
+        // Save current FS_BASE (TLS pointer) via RDMSR.
+        // MSR_FS_BASE = 0xC0000100
+        mov ecx, 0xC0000100
+        rdmsr
+        shl rdx, 32
+        or rax, rdx
+        mov [rdi + 0xA0], rax
+
         mov rax, [rsi + 0x00]
         mov rbx, [rsi + 0x08]
         mov rcx, [rsi + 0x10]
@@ -391,6 +399,17 @@ pub unsafe extern "C" fn context_switch_asm(
 
         push qword ptr [rsi + 0x88]
         popf
+
+        // Restore FS_BASE (TLS pointer) via WRMSR if non-zero.
+        // MSR_FS_BASE = 0xC0000100
+        mov rax, [rsi + 0xA0]
+        test rax, rax
+        jz 2f
+        mov rdx, rax
+        shr rdx, 32
+        mov ecx, 0xC0000100
+        wrmsr
+    2:
 
         push qword ptr [rsi + 0x80]
 

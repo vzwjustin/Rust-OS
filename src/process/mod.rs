@@ -119,6 +119,9 @@ pub struct CpuContext {
     pub fs: u16,
     pub gs: u16,
     pub ss: u16,
+
+    // TLS base address (FS_BASE MSR on x86_64)
+    pub fs_base: u64,
 }
 
 impl Default for CpuContext {
@@ -148,6 +151,7 @@ impl Default for CpuContext {
             fs: 0x10,
             gs: 0x10,
             ss: 0x10,
+            fs_base: 0,
         }
     }
 }
@@ -236,6 +240,8 @@ pub struct ProcessControlBlock {
     pub dumpable: bool,
     /// Signal sent on parent death (0 = none)
     pub parent_death_signal: u32,
+    /// Linux no_new_privs bit (prctl PR_SET_NO_NEW_PRIVS/PR_GET_NO_NEW_PRIVS).
+    pub no_new_privs: bool,
     /// Permitted capability mask
     pub cap_permitted: u64,
     /// Effective capability mask
@@ -321,6 +327,8 @@ pub struct ProcessControlBlock {
     pub alarm_interval: u64,
     /// Saved syscall info for restart_syscall (syscall number + args)
     pub restart_info: Option<(u64, [u64; 6])>,
+    /// Address to clear and futex-wake on thread exit (set by CLONE_CHILD_CLEARTID)
+    pub clear_child_tid: u64,
 }
 
 /// File descriptor information
@@ -598,6 +606,7 @@ impl ProcessControlBlock {
             major_faults: 0,
             dumpable: true,
             parent_death_signal: 0,
+            no_new_privs: false,
             cap_permitted: u64::MAX,
             cap_effective: u64::MAX,
             cap_inheritable: 0,
@@ -650,6 +659,7 @@ impl ProcessControlBlock {
             alarm_deadline: 0,
             alarm_interval: 0,
             restart_info: None,
+            clear_child_tid: 0,
         };
 
         // Set process name
@@ -789,7 +799,14 @@ impl ProcessManager {
         // and the insert are a single atomic step (no TOCTOU where two callers
         // both pass the check and overshoot MAX_PROCESSES). The PID is only
         // allocated after the limit passes, so a rejected create never burns a PID.
-        let pid = {
+        //
+        // `processes`, `scheduler`, and the cgroup locks below are also taken
+        // from the timer ISR (scheduler tick, cgroup CPU charging). If a timer
+        // tick lands here while one of these is held, the ISR's own attempt to
+        // re-acquire the same lock self-deadlocks the CPU (IF=0 inside the ISR
+        // means the original holder can never resume to release it). Run the
+        // whole critical section with interrupts disabled to prevent that.
+        let pid = crate::interrupts::without_interrupts(|| -> Result<Pid, &'static str> {
             let mut processes = self.processes.write();
 
             if self.process_count.load(Ordering::SeqCst) >= MAX_PROCESSES {
@@ -816,6 +833,7 @@ impl ProcessManager {
                     pcb.supplementary_groups = parent_pcb.supplementary_groups.clone();
                     pcb.dumpable = parent_pcb.dumpable;
                     pcb.parent_death_signal = parent_pcb.parent_death_signal;
+                    pcb.no_new_privs = parent_pcb.no_new_privs;
                     pcb.cap_permitted = parent_pcb.cap_permitted;
                     pcb.cap_effective = parent_pcb.cap_effective;
                     pcb.cap_inheritable = parent_pcb.cap_inheritable;
@@ -832,11 +850,11 @@ impl ProcessManager {
                     return Err("cgroup pids controller charge failed");
                 }
             }
-            pid
-        };
+            Ok(pid)
+        })?;
 
         // Add to scheduler
-        {
+        crate::interrupts::without_interrupts(|| -> Result<(), &'static str> {
             let mut scheduler = self.scheduler.lock();
             if let Err(e) = scheduler.add_process(pid, priority) {
                 if parent_pid.is_some() {
@@ -847,7 +865,8 @@ impl ProcessManager {
                 self.process_count.fetch_sub(1, Ordering::SeqCst);
                 return Err(e);
             }
-        }
+            Ok(())
+        })?;
 
         // Create a security context for the new process (inherits from parent if provided).
         let _ = crate::security::create_context(pid, parent_pid);
@@ -979,9 +998,18 @@ impl ProcessManager {
     }
 
     /// Get process information
+    ///
+    /// Wrapped in `without_interrupts`: the timer ISR's scheduler-tick path
+    /// also takes `self.processes.read()`. Without this, a non-ISR caller
+    /// holding the lock (e.g. exec's `with_process_mut` below) can be
+    /// preempted by the timer, whose ISR then spins forever trying to
+    /// re-acquire the same lock (CPU is single-core here, so the lock
+    /// holder never gets to run again to release it) -- a self-deadlock.
     pub fn get_process(&self, pid: Pid) -> Option<ProcessControlBlock> {
-        let processes = self.processes.read();
-        processes.get(&pid).cloned()
+        crate::interrupts::without_interrupts(|| {
+            let processes = self.processes.read();
+            processes.get(&pid).cloned()
+        })
     }
 
     /// Mutate a process in place under the processes lock.
@@ -1001,8 +1029,13 @@ impl ProcessManager {
     where
         F: FnOnce(&mut ProcessControlBlock) -> R,
     {
-        let mut processes = self.processes.write();
-        processes.get_mut(&pid).map(f)
+        // See get_process() above: must disable interrupts while holding
+        // processes.write(), since the timer ISR's scheduler-tick path
+        // takes processes.read() and this is a single-core deadlock risk.
+        crate::interrupts::without_interrupts(|| {
+            let mut processes = self.processes.write();
+            processes.get_mut(&pid).map(f)
+        })
     }
 
     /// Get current running process ID
@@ -1038,6 +1071,63 @@ impl ProcessManager {
         let mut processes = self.processes.write();
         if let Some(pcb) = processes.get_mut(&pid) {
             pcb.sched_info.cpu_affinity = mask;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Set the FS_BASE (TLS pointer) for a process.
+    pub fn set_fs_base(&self, pid: Pid, base: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.context.fs_base = base;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Set supplementary group IDs for a process.
+    pub fn set_supplementary_groups(
+        &self,
+        pid: Pid,
+        groups: alloc::vec::Vec<u32>,
+    ) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.supplementary_groups = groups;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Get supplementary group IDs for a process.
+    pub fn get_supplementary_groups(&self, pid: Pid) -> Result<alloc::vec::Vec<u32>, &'static str> {
+        let processes = self.processes.read();
+        processes
+            .get(&pid)
+            .map(|pcb| pcb.supplementary_groups.clone())
+            .ok_or("Process not found")
+    }
+
+    /// Set the clear_child_tid address for a process (CLONE_CHILD_CLEARTID).
+    pub fn set_clear_child_tid(&self, pid: Pid, addr: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.clear_child_tid = addr;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Override the child's stack pointer (clone with new stack).
+    pub fn set_child_stack(&self, pid: Pid, sp: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.context.rsp = sp;
             Ok(())
         } else {
             Err("Process not found")

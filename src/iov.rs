@@ -62,7 +62,12 @@ impl<'a> IovIter<'a> {
         // Cap count at total iov capacity.
         let total: usize = iov.iter().map(|v| v.iov_len).sum();
         let remaining = count.min(total);
-        IovIter { iov, iov_idx: 0, iov_off: 0, remaining }
+        IovIter {
+            iov,
+            iov_idx: 0,
+            iov_off: 0,
+            remaining,
+        }
     }
 
     /// How many bytes remain in the iterator.

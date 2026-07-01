@@ -6,8 +6,8 @@
 
 use core::ptr;
 
-pub use crate::scatterlist::DmaDirection;
 use crate::io::{mb, rmb, wmb};
+pub use crate::scatterlist::DmaDirection;
 
 // ---------------------------------------------------------------------------
 // DMA constants
@@ -59,8 +59,7 @@ impl DmaCoherent {
 
         // Use the global kernel allocator (which must be initialised by the
         // time DMA allocations happen).
-        let layout = core::alloc::Layout::from_size_align(aligned, 4096)
-            .map_err(|_| EINVAL)?;
+        let layout = core::alloc::Layout::from_size_align(aligned, 4096).map_err(|_| EINVAL)?;
 
         // SAFETY: layout is non-zero and properly aligned.
         let virt = unsafe { alloc::alloc::alloc_zeroed(layout) };
@@ -71,7 +70,11 @@ impl DmaCoherent {
         // On identity-mapped RustOS, physical address == virtual address.
         let phys = virt as u64;
 
-        Ok(DmaCoherent { phys, virt, size: aligned })
+        Ok(DmaCoherent {
+            phys,
+            virt,
+            size: aligned,
+        })
     }
 
     /// Physical (bus) address of the allocation.
@@ -193,7 +196,11 @@ impl DmaPool {
     pub fn new(count: usize, chunk_size: usize) -> Result<Self, i32> {
         let total = count.checked_mul(chunk_size).ok_or(EINVAL)?;
         let backing = DmaCoherent::alloc(total)?;
-        Ok(DmaPool { backing, offset: 0, chunk_size })
+        Ok(DmaPool {
+            backing,
+            offset: 0,
+            chunk_size,
+        })
     }
 
     /// Allocate one chunk, returning `(virt_ptr, phys_addr)`.

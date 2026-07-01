@@ -27,10 +27,6 @@ pub mod udp;
 pub mod unix;
 
 // Linux-mirror network subsystems
-pub mod sixlowpan;
-pub mod eight02;
-pub mod eight021q;
-pub mod ninep;
 pub mod atm;
 pub mod batman_adv;
 pub mod bluetooth;
@@ -43,6 +39,8 @@ pub mod dcb;
 pub mod devlink;
 pub mod dns_resolver;
 pub mod dsa;
+pub mod eight02;
+pub mod eight021q;
 pub mod ethtool;
 pub mod handshake;
 pub mod hsr;
@@ -66,6 +64,7 @@ pub mod ncsi;
 pub mod netlabel;
 pub mod netlink;
 pub mod nfc;
+pub mod ninep;
 pub mod nsh;
 pub mod openvswitch;
 pub mod packet;
@@ -79,6 +78,7 @@ pub mod rxrpc;
 pub mod sched;
 pub mod sctp;
 pub mod shaper;
+pub mod sixlowpan;
 pub mod smc;
 pub mod strparser;
 pub mod sunrpc;
@@ -91,13 +91,13 @@ pub mod x25;
 pub mod xdp;
 pub mod xfrm;
 
+use ::core::fmt;
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
-use ::core::fmt;
 use lazy_static::lazy_static;
 use spin::{Mutex, RwLock};
 

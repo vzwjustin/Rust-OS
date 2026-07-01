@@ -37,7 +37,8 @@ pub const X86_CR0_NW: u64 = 1 << 29;
 pub const X86_CR0_CD: u64 = 1 << 30;
 pub const X86_CR0_PG: u64 = 1 << 31;
 
-pub const CR0_STATE: u64 = X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_WP | X86_CR0_AM | X86_CR0_PG;
+pub const CR0_STATE: u64 =
+    X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_WP | X86_CR0_AM | X86_CR0_PG;
 
 // ── CR3 ─────────────────────────────────────────────────────────────────
 

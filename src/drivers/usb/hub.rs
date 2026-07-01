@@ -117,7 +117,9 @@ pub fn enumerate_port(
 
     // 5. Read the configuration descriptor header, then the whole blob.
     let mut cfg_hdr = [0u8; ConfigurationDescriptor::SIZE];
-    if get_descriptor(hc, slot, DESC_CONFIGURATION, 0, &mut cfg_hdr)? != ConfigurationDescriptor::SIZE {
+    if get_descriptor(hc, slot, DESC_CONFIGURATION, 0, &mut cfg_hdr)?
+        != ConfigurationDescriptor::SIZE
+    {
         return Err("usb: short configuration descriptor header");
     }
     let cfg = ConfigurationDescriptor::parse(&cfg_hdr)?;

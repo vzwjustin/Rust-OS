@@ -713,9 +713,7 @@ impl NetworkDriver for RealtekDriver {
             Some(RealtekSeries::Rtl8139) => {
                 decode_rtl8139_link_status(self.read_reg8(RTL8139_MSR)).link_up
             }
-            _ => {
-                decode_rtl8169_link_status(self.read_reg8(RTL8169_PHYSTATUS)).link_up
-            }
+            _ => decode_rtl8169_link_status(self.read_reg8(RTL8169_PHYSTATUS)).link_up,
         }
     }
 
@@ -732,9 +730,7 @@ impl NetworkDriver for RealtekDriver {
             Some(RealtekSeries::Rtl8139) => {
                 decode_rtl8139_link_status(self.read_reg8(RTL8139_MSR)).as_tuple()
             }
-            _ => {
-                decode_rtl8169_link_status(self.read_reg8(RTL8169_PHYSTATUS)).as_tuple()
-            }
+            _ => decode_rtl8169_link_status(self.read_reg8(RTL8169_PHYSTATUS)).as_tuple(),
         }
     }
 

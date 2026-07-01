@@ -28,10 +28,8 @@ const IORING_SETUP_CQSIZE: u32 = 1 << 3;
 const IORING_SETUP_CLAMP: u32 = 1 << 4;
 const IORING_SETUP_R_DISABLED: u32 = 1 << 6;
 
-const SUPPORTED_SETUP_FLAGS: u32 = IORING_SETUP_CQSIZE
-    | IORING_SETUP_CLAMP
-    | IORING_SETUP_R_DISABLED
-    | IORING_SETUP_SQPOLL;
+const SUPPORTED_SETUP_FLAGS: u32 =
+    IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | IORING_SETUP_R_DISABLED | IORING_SETUP_SQPOLL;
 
 const IORING_OFF_SQ_RING: u64 = 0;
 const IORING_OFF_CQ_RING: u64 = 0x0800_0000;
@@ -1317,7 +1315,10 @@ fn flush_cq_overflow(ring_id: u32, cq_ring: usize, entries: u32) -> LinuxResult<
         }
         let cqe = {
             let mut rings = RINGS.write();
-            match rings.get_mut(&ring_id).and_then(|r| r.cq_overflow.pop_front()) {
+            match rings
+                .get_mut(&ring_id)
+                .and_then(|r| r.cq_overflow.pop_front())
+            {
                 Some(cqe) => cqe,
                 None => return Ok(()),
             }

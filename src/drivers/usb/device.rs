@@ -15,9 +15,7 @@ use super::hcd::{
     SetupPacket, TransferDirection, TransferResult, UsbSpeed, DESC_CONFIGURATION, DESC_DEVICE,
     REQ_GET_DESCRIPTOR, REQ_SET_ADDRESS, REQ_SET_CONFIGURATION,
 };
-use crate::drivers::storage::usb_mass_storage::{
-    CommandStatusWrapper, ScsiInquiryResponse,
-};
+use crate::drivers::storage::usb_mass_storage::{CommandStatusWrapper, ScsiInquiryResponse};
 use crate::drivers::storage::StorageError;
 
 /// A device the controller can dispatch transfers to.
@@ -128,9 +126,7 @@ impl VirtualHidKeyboard {
             50,
         ]);
         // Interface descriptor: HID, boot subclass, keyboard protocol.
-        b.extend_from_slice(&[
-            9, 0x04, 0, 0, 1, class::HID, 0x01, 0x01, 0,
-        ]);
+        b.extend_from_slice(&[9, 0x04, 0, 0, 1, class::HID, 0x01, 0x01, 0]);
         // HID class descriptor (9 bytes, opaque to our parser).
         b.extend_from_slice(&[9, 0x21, 0x11, 0x01, 0x00, 1, 0x22, 63, 0]);
         // Endpoint descriptor: interrupt IN.
@@ -183,11 +179,7 @@ impl VirtualDevice for VirtualHidKeyboard {
                 TransferResult::ok(0)
             }
             HID_REQ_GET_REPORT => {
-                let report = self
-                    .reports
-                    .get(self.cursor)
-                    .copied()
-                    .unwrap_or([0u8; 8]);
+                let report = self.reports.get(self.cursor).copied().unwrap_or([0u8; 8]);
                 if let Some(buf) = data {
                     let n = core::cmp::min(buf.len(), report.len());
                     buf[..n].copy_from_slice(&report[..n]);
@@ -236,10 +228,10 @@ pub struct VirtualHidMouse {
 impl VirtualHidMouse {
     pub fn new(interrupt_in_ep: u8) -> Self {
         let reports = vec![
-            [0, 8, 0, 0],  // move right
-            [1, 0, 0, 0],  // left button down
-            [0, 0, 0, 0],  // release
-            [0, 0, 0, 1],  // wheel up
+            [0, 8, 0, 0], // move right
+            [1, 0, 0, 0], // left button down
+            [0, 0, 0, 0], // release
+            [0, 0, 0, 1], // wheel up
         ];
         Self {
             address: 0,
@@ -286,20 +278,10 @@ impl VirtualHidMouse {
             50,
         ]);
         // Interface descriptor: HID, boot subclass, mouse protocol.
-        b.extend_from_slice(&[
-            9, 0x04, 0, 0, 1, class::HID, 0x01, 0x02, 0,
-        ]);
+        b.extend_from_slice(&[9, 0x04, 0, 0, 1, class::HID, 0x01, 0x02, 0]);
         // HID class descriptor with a compact boot-mouse report descriptor.
         b.extend_from_slice(&[9, 0x21, 0x11, 0x01, 0x00, 1, 0x22, 52, 0]);
-        b.extend_from_slice(&[
-            7,
-            0x05,
-            self.interrupt_in_ep,
-            0x03,
-            4,
-            0,
-            10,
-        ]);
+        b.extend_from_slice(&[7, 0x05, self.interrupt_in_ep, 0x03, 4, 0, 10]);
         b
     }
 }
@@ -322,8 +304,12 @@ impl VirtualDevice for VirtualHidMouse {
             REQ_GET_DESCRIPTOR => {
                 let desc_type = (setup.value >> 8) as u8;
                 match desc_type {
-                    DESC_DEVICE => respond_descriptor(&self.device_descriptor().to_bytes(), setup, data),
-                    DESC_CONFIGURATION => respond_descriptor(&self.configuration_blob(), setup, data),
+                    DESC_DEVICE => {
+                        respond_descriptor(&self.device_descriptor().to_bytes(), setup, data)
+                    }
+                    DESC_CONFIGURATION => {
+                        respond_descriptor(&self.configuration_blob(), setup, data)
+                    }
                     _ => TransferResult::stall(),
                 }
             }
@@ -336,11 +322,7 @@ impl VirtualDevice for VirtualHidMouse {
                 TransferResult::ok(0)
             }
             HID_REQ_GET_REPORT => {
-                let report = self
-                    .reports
-                    .get(self.cursor)
-                    .copied()
-                    .unwrap_or([0u8; 4]);
+                let report = self.reports.get(self.cursor).copied().unwrap_or([0u8; 4]);
                 if let Some(buf) = data {
                     let n = core::cmp::min(buf.len(), report.len());
                     buf[..n].copy_from_slice(&report[..n]);
@@ -407,8 +389,8 @@ impl SoftDisk {
                 return Err(StorageError::HardwareError);
             }
             let lba = u64::from_be_bytes([
-                command[2], command[3], command[4], command[5], command[6], command[7],
-                command[8], command[9],
+                command[2], command[3], command[4], command[5], command[6], command[7], command[8],
+                command[9],
             ]);
             let count = u32::from_be_bytes([command[10], command[11], command[12], command[13]]);
             Ok((lba, count))
@@ -426,7 +408,10 @@ impl SoftDisk {
         buffer: Option<&mut [u8]>,
         tag: u32,
     ) -> Result<CommandStatusWrapper, StorageError> {
-        let opcode = command.first().copied().ok_or(StorageError::HardwareError)?;
+        let opcode = command
+            .first()
+            .copied()
+            .ok_or(StorageError::HardwareError)?;
         let status = match opcode {
             0x00 => 0, // TEST UNIT READY
             0x12 if direction_in => {
@@ -596,17 +581,7 @@ impl VirtualBotDisk {
             100,
         ]);
         // Interface: Mass Storage, SCSI transparent (0x06), Bulk-Only (0x50).
-        b.extend_from_slice(&[
-            9,
-            0x04,
-            0,
-            0,
-            2,
-            class::MASS_STORAGE,
-            0x06,
-            0x50,
-            0,
-        ]);
+        b.extend_from_slice(&[9, 0x04, 0, 0, 2, class::MASS_STORAGE, 0x06, 0x50, 0]);
         // Bulk IN endpoint.
         b.extend_from_slice(&[7, 0x05, self.bulk_in_ep, 0x02, 0x00, 0x02, 0]);
         // Bulk OUT endpoint.
@@ -771,7 +746,10 @@ impl VirtualDevice for VirtualBotDisk {
             TransferDirection::In if endpoint == self.bulk_in_ep => {
                 let phase = core::mem::replace(&mut self.phase, BotPhase::Command);
                 match phase {
-                    BotPhase::DataIn { payload, mut offset } => {
+                    BotPhase::DataIn {
+                        payload,
+                        mut offset,
+                    } => {
                         let n = core::cmp::min(buf.len(), payload.len() - offset);
                         buf[..n].copy_from_slice(&payload[offset..offset + n]);
                         offset += n;

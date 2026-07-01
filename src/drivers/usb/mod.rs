@@ -198,10 +198,7 @@ fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
     // Port 2: boot mouse (interrupt-IN endpoint 0x83).
     let _ = controller.attach(2, Box::new(device::VirtualHidMouse::new(0x83)));
     // Port 3: BOT flash disk (bulk-IN 0x82, bulk-OUT 0x02), 8 MiB.
-    let _ = controller.attach(
-        3,
-        Box::new(device::VirtualBotDisk::new(8, 0x82, 0x02)),
-    );
+    let _ = controller.attach(3, Box::new(device::VirtualBotDisk::new(8, 0x82, 0x02)));
 
     let enumerated = hub::enumerate_all(&mut controller);
 
