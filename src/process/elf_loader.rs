@@ -484,7 +484,18 @@ impl ElfLoader {
                 continue;
             }
 
-            let region = self.load_segment(phdr, binary_data, base_address, None)?;
+            // Map each PT_LOAD at its program-header virtual address so absolute
+            // references resolve correctly. ET_DYN (PIE) is offset by load_base;
+            // ET_EXEC is mapped at its fixed p_vaddr. (Single-segment static
+            // ET_EXEC is the supported case for native userspace; multi-segment
+            // images whose page-aligned spans overlap are not yet handled here.)
+            let target = if elf_header.e_type == elf_constants::ET_DYN {
+                VirtAddr::new(base_address.as_u64().wrapping_add(phdr.p_vaddr))
+            } else {
+                VirtAddr::new(phdr.p_vaddr)
+            };
+
+            let region = self.load_segment(phdr, binary_data, base_address, Some(target))?;
 
             if region.protection.executable {
                 code_regions.push(region);
@@ -511,8 +522,10 @@ impl ElfLoader {
         )
         .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
 
-        // Allocate stack with guard pages (8MB)
-        let stack_size = 8 * 1024 * 1024;
+        // Commit a small initial stack. Linux reserves a grow-down stack VMA and
+        // faults pages in lazily; this VM layer maps eagerly, so committing the
+        // full 8 MiB stack here can exhaust early boot memory before PID 1 runs.
+        let stack_size = 64 * 1024;
         let stack_bottom = allocate_memory_with_guards(
             stack_size,
             MemoryRegionType::UserStack,
@@ -522,25 +535,13 @@ impl ElfLoader {
 
         let stack_top = VirtAddr::new(stack_bottom.as_u64() + stack_size as u64);
 
-        // Translate the ELF entry address into the actual allocated code
-        // region. load_segment() allocates fresh VM ranges instead of mapping at
-        // p_vaddr, so base + e_entry is not a valid runtime address here.
-        let entry_point = program_headers
-            .iter()
-            .filter(|phdr| phdr.p_type == elf_constants::PT_LOAD)
-            .zip(code_regions.iter().chain(data_regions.iter()))
-            .find_map(|(phdr, region)| {
-                let start = phdr.p_vaddr;
-                let end = start.checked_add(phdr.p_memsz)?;
-                if elf_header.e_entry >= start && elf_header.e_entry < end {
-                    Some(VirtAddr::new(
-                        region.start.as_u64() + (elf_header.e_entry - start),
-                    ))
-                } else {
-                    None
-                }
-            })
-            .ok_or(ElfLoaderError::InvalidEntryPoint)?;
+        // Segments are mapped at their p_vaddr (ET_DYN offset by load_base), so
+        // the runtime entry point is e_entry directly (offset by load_base for PIE).
+        let entry_point = if elf_header.e_type == elf_constants::ET_DYN {
+            VirtAddr::new(base_address.as_u64().wrapping_add(elf_header.e_entry))
+        } else {
+            VirtAddr::new(elf_header.e_entry)
+        };
 
         if !code_regions.iter().any(|r| r.contains(entry_point)) {
             return Err(ElfLoaderError::InvalidEntryPoint);

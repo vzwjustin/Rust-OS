@@ -112,7 +112,16 @@ mod tests {
     #[test]
     fn varint_roundtrip() {
         // The four boundary values from RFC 9000 §A.1 plus edges.
-        for &v in &[0u64, 63, 64, 16383, 16384, 1_073_741_823, 1_073_741_824, VARINT_MAX] {
+        for &v in &[
+            0u64,
+            63,
+            64,
+            16383,
+            16384,
+            1_073_741_823,
+            1_073_741_824,
+            VARINT_MAX,
+        ] {
             let mut buf = [0u8; 8];
             let n = encode_varint(v, &mut buf).unwrap();
             assert_eq!(n, varint_len(v));

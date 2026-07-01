@@ -177,12 +177,7 @@ pub fn read_file(mount_point: &str, fh: &NfsFh, offset: u64, buf: &mut [u8]) -> 
 ///
 /// Validates the mount is writable, then applies the write to the local data
 /// cache.  The dirty data can be flushed to the server via `sync_file`.
-pub fn write_file(
-    mount_point: &str,
-    fh: &NfsFh,
-    offset: u64,
-    data: &[u8],
-) -> FsResult<usize> {
+pub fn write_file(mount_point: &str, fh: &NfsFh, offset: u64, data: &[u8]) -> FsResult<usize> {
     let mut state = NFS_CLIENT.write();
     let mount = state.mounts.get(mount_point).ok_or(FsError::NotFound)?;
     if mount.read_only {
@@ -227,12 +222,7 @@ pub fn write_file(
 /// Inserts a path cache entry with a synthetic file handle derived from the
 /// parent handle and the filename.  On the next `sync`, this would be
 /// sent as an NFSv3 CREATE RPC call.
-pub fn create_file(
-    mount_point: &str,
-    parent_fh: &NfsFh,
-    name: &str,
-    mode: u32,
-) -> FsResult<NfsFh> {
+pub fn create_file(mount_point: &str, parent_fh: &NfsFh, name: &str, mode: u32) -> FsResult<NfsFh> {
     if name.is_empty() || name.len() > 255 {
         return Err(FsError::InvalidArgument);
     }
@@ -251,8 +241,15 @@ pub fn create_file(
     let new_fh = NfsFh { data: fh_data };
 
     let now = crate::time::uptime_ns();
-    let attr = NfsAttr { size: 0, mode, mtime: now };
-    let file = NfsFile { fh: new_fh.clone(), attr: attr.clone() };
+    let attr = NfsAttr {
+        size: 0,
+        mode,
+        mtime: now,
+    };
+    let file = NfsFile {
+        fh: new_fh.clone(),
+        attr: attr.clone(),
+    };
 
     let key = format_nfs_key(mount_point, name);
     let mut state = NFS_CLIENT.write();
@@ -264,12 +261,7 @@ pub fn create_file(
 }
 
 /// Create a directory in an NFS export (in-memory overlay).
-pub fn mkdir(
-    mount_point: &str,
-    parent_fh: &NfsFh,
-    name: &str,
-    mode: u32,
-) -> FsResult<NfsFh> {
+pub fn mkdir(mount_point: &str, parent_fh: &NfsFh, name: &str, mode: u32) -> FsResult<NfsFh> {
     // For the in-memory overlay, mkdir == create_file with dir mode bits.
     create_file(mount_point, parent_fh, name, mode | 0o040000)
 }
@@ -295,11 +287,7 @@ pub fn remove_file(mount_point: &str, name: &str) -> FsResult<()> {
 }
 
 /// Rename a file in the in-memory cache (would map to NFSv3 RENAME RPC).
-pub fn rename_file(
-    mount_point: &str,
-    old_name: &str,
-    new_name: &str,
-) -> FsResult<()> {
+pub fn rename_file(mount_point: &str, old_name: &str, new_name: &str) -> FsResult<()> {
     {
         let state = NFS_CLIENT.read();
         let mount = state.mounts.get(mount_point).ok_or(FsError::NotFound)?;

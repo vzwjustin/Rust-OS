@@ -20,9 +20,10 @@ const FRAME_SCRATCH: usize = 64;
 
 /// Assemble the 1-RTT payload (serialized frames) the connection owes, up to
 /// `budget` bytes: an ACK first (if pending), then queued STREAM data. Returns
-/// `(payload, ack_eliciting)` — ack-eliciting iff it contains a non-ACK frame.
-pub fn build_app_payload(conn: &mut Connection, budget: usize) -> (Vec<u8>, bool) {
+/// `(payload, retransmittable, ack_eliciting)` — ack-eliciting iff it contains a non-ACK frame.
+pub fn build_app_payload(conn: &mut Connection, budget: usize) -> (Vec<u8>, Vec<u8>, bool) {
     let mut payload = Vec::new();
+    let mut retransmittable = Vec::new();
     let mut ack_eliciting = false;
     let mut scratch = [0u8; FRAME_SCRATCH];
 
@@ -62,6 +63,7 @@ pub fn build_app_payload(conn: &mut Connection, budget: usize) -> (Vec<u8>, bool
         if let Some(n) = encode_stream(id, stream_off, false, &data, &mut frame) {
             if payload.len() + n <= budget {
                 payload.extend_from_slice(&frame[..n]);
+                retransmittable.extend_from_slice(&frame[..n]);
                 ack_eliciting = true;
             } else {
                 // Did not fit after all — put the bytes back at the front.
@@ -72,7 +74,7 @@ pub fn build_app_payload(conn: &mut Connection, budget: usize) -> (Vec<u8>, bool
         }
     }
 
-    (payload, ack_eliciting)
+    (payload, retransmittable, ack_eliciting)
 }
 
 /// Produce the next protected 1-RTT datagram, or `None` if nothing is pending,
@@ -98,7 +100,23 @@ pub fn poll_send(conn: &mut Connection, now: u64) -> Option<Vec<u8>> {
     }
     let budget = core::cmp::min(MAX_DATAGRAM, cwnd_room);
 
-    let (payload, ack_eliciting) = build_app_payload(conn, budget);
+    let (payload, retransmittable, ack_eliciting) = {
+        let mut retransmit_payload = None;
+        for i in 0..conn.retransmit_queue.len() {
+            if conn.retransmit_queue[i].0 == EncryptionLevel::OneRtt {
+                if conn.retransmit_queue[i].1.len() <= budget {
+                    let (_, frames) = conn.retransmit_queue.remove(i);
+                    retransmit_payload = Some(frames);
+                    break;
+                }
+            }
+        }
+        if let Some(frames) = retransmit_payload {
+            (frames.clone(), frames, true)
+        } else {
+            build_app_payload(conn, budget)
+        }
+    };
     if payload.is_empty() {
         return None;
     }
@@ -113,7 +131,17 @@ pub fn poll_send(conn: &mut Connection, now: u64) -> Option<Vec<u8>> {
     if ack_eliciting {
         conn.cong.on_packet_sent(pkt.len() as u64);
     }
-    super::recovery::on_packet_sent(&mut conn.pn_app, pn, now, ack_eliciting, pkt.len() as u64);
+    if ack_eliciting {
+        super::recovery::on_packet_sent(
+            &mut conn.pn_app,
+            pn,
+            now,
+            true,
+            pkt.len() as u64,
+            EncryptionLevel::OneRtt,
+            retransmittable,
+        );
+    }
     Some(pkt)
 }
 
@@ -134,16 +162,29 @@ pub fn poll_handshake(conn: &mut Connection, now: u64) -> Option<Vec<u8>> {
             hp: km.hp.clone(),
         };
 
-        // Reserve room for the long header and the CRYPTO frame header + tag.
-        let budget = MAX_DATAGRAM.saturating_sub(FRAME_SCRATCH);
-        let (offset, data) = match conn.crypto.tx_crypto(level).and_then(|s| s.take(budget)) {
-            Some(v) => v,
-            None => continue,
-        };
+        let mut retransmit_payload = None;
+        for i in 0..conn.retransmit_queue.len() {
+            if conn.retransmit_queue[i].0 == level {
+                let (_, frames) = conn.retransmit_queue.remove(i);
+                retransmit_payload = Some(frames);
+                break;
+            }
+        }
 
-        let mut frame = [0u8; MAX_DATAGRAM];
-        let n = encode_crypto(offset, &data, &mut frame)?;
-        let payload = frame[..n].to_vec();
+        let payload = if let Some(frames) = retransmit_payload {
+            frames
+        } else {
+            // Reserve room for the long header and the CRYPTO frame header + tag.
+            let budget = MAX_DATAGRAM.saturating_sub(FRAME_SCRATCH);
+            let (offset, data) = match conn.crypto.tx_crypto(level).and_then(|s| s.take(budget)) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            let mut frame = [0u8; MAX_DATAGRAM];
+            let n = encode_crypto(offset, &data, &mut frame)?;
+            frame[..n].to_vec()
+        };
 
         let typ = match level {
             EncryptionLevel::Initial => LongPacketType::Initial,
@@ -174,7 +215,15 @@ pub fn poll_handshake(conn: &mut Connection, now: u64) -> Option<Vec<u8>> {
         .ok()?;
 
         conn.cong.on_packet_sent(pkt.len() as u64);
-        super::recovery::on_packet_sent(conn.pn_space(level), pn, now, true, pkt.len() as u64);
+        super::recovery::on_packet_sent(
+            conn.pn_space(level),
+            pn,
+            now,
+            true,
+            pkt.len() as u64,
+            level,
+            payload,
+        );
         return Some(pkt);
     }
     None
@@ -235,7 +284,9 @@ mod tests {
                     assert_eq!(largest, 5);
                     saw_ack = true;
                 }
-                Frame::Stream { stream_id, data, .. } => {
+                Frame::Stream {
+                    stream_id, data, ..
+                } => {
                     assert_eq!(stream_id, 0);
                     assert_eq!(data, b"hello world over quic");
                     saw_stream = true;

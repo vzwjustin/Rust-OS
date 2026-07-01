@@ -57,7 +57,12 @@ fn remove_mount(target: &str) {
 
 /// `/proc/mounts` content for userspace mount checks.
 pub fn mounts_proc_content() -> String {
-    let mut out = String::from("rootfs / rootfs rw 0 0\n");
+    let mut out = String::from(
+        "rootfs / rootfs rw 0 0\n\
+         proc /proc proc rw 0 0\n\
+         sysfs /sys sysfs rw 0 0\n\
+         devtmpfs /dev devtmpfs rw 0 0\n",
+    );
     for entry in MOUNT_TABLE.lock().iter() {
         let ro = if entry.flags & mount_flags::MS_RDONLY != 0 {
             "ro"
@@ -437,6 +442,13 @@ fn should_preserve_kernel_runtime_mount(target: &str) -> bool {
         && kernel_overlay_socket_ready(crate::gnome_overlay::WAYLAND_SOCKET)
 }
 
+fn should_preserve_virtual_runtime_mount(fstype: &str, target: &str) -> bool {
+    matches!(
+        (fstype, target),
+        ("proc", "/proc") | ("sysfs", "/sys") | ("devtmpfs", "/dev")
+    )
+}
+
 fn root_inode() -> Arc<dyn vfs::InodeOps> {
     vfs::get_vfs().lookup("/").expect("root mount")
 }
@@ -594,19 +606,30 @@ pub mod fstype {
     pub const ISOFS_SUPER_MAGIC: i64 = 0x9660;
 }
 
-fn fill_statfs(buf: *mut StatFs, vfs_stat: vfs::StatFs) {
-    unsafe {
-        *buf = StatFs::zero();
-        (*buf).f_type = vfs_stat.fs_type as i64;
-        (*buf).f_bsize = vfs_stat.block_size as i64;
-        (*buf).f_blocks = vfs_stat.total_blocks;
-        (*buf).f_bfree = vfs_stat.free_blocks;
-        (*buf).f_bavail = vfs_stat.avail_blocks;
-        (*buf).f_files = vfs_stat.total_inodes;
-        (*buf).f_ffree = vfs_stat.free_inodes;
-        (*buf).f_namelen = vfs_stat.max_name_len as i64;
-        (*buf).f_frsize = vfs_stat.block_size as i64;
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
     }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn fill_statfs(buf: *mut StatFs, vfs_stat: vfs::StatFs) -> LinuxResult<()> {
+    let mut stat = StatFs::zero();
+    stat.f_type = vfs_stat.fs_type as i64;
+    stat.f_bsize = vfs_stat.block_size as i64;
+    stat.f_blocks = vfs_stat.total_blocks;
+    stat.f_bfree = vfs_stat.free_blocks;
+    stat.f_bavail = vfs_stat.avail_blocks;
+    stat.f_files = vfs_stat.total_inodes;
+    stat.f_ffree = vfs_stat.free_inodes;
+    stat.f_namelen = vfs_stat.max_name_len as i64;
+    stat.f_frsize = vfs_stat.block_size as i64;
+
+    copy_struct_to_user(buf, &stat)
 }
 
 // ============================================================================
@@ -719,6 +742,18 @@ pub fn mount(
             Ok(0)
         }
         "proc" | "sysfs" | "devtmpfs" | "devpts" => {
+            if should_preserve_virtual_runtime_mount(&fstype, &target_str)
+                && vfs::vfs_stat(&target_str).is_ok()
+            {
+                let src = if source.is_null() {
+                    fstype.clone()
+                } else {
+                    c_str_to_string(source)?
+                };
+                record_mount(&src, &target_str, &fstype, mountflags);
+                return Ok(0);
+            }
+
             // Mount a real in-memory filesystem at the target. This is a
             // best-effort virtual filesystem implementation; userspace can read
             // and write entries in the mounted tree.
@@ -822,12 +857,14 @@ pub fn umount(target: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EBUSY);
     }
 
-    remove_mount(&target_str);
     match vfs::vfs_umount(&target_str) {
-        Ok(()) => Ok(0),
-        Err(VfsError::NotFound) => Ok(0),
+        Ok(()) => {
+            remove_mount(&target_str);
+            Ok(0)
+        }
+        Err(VfsError::NotFound) => Err(LinuxError::ENOENT),
         Err(VfsError::InvalidArgument) => Err(LinuxError::EBUSY),
-        Err(_) => Ok(0),
+        Err(_) => Err(LinuxError::EINVAL),
     }
 }
 
@@ -897,7 +934,7 @@ pub fn statfs(path: *const u8, buf: *mut StatFs) -> LinuxResult<i32> {
         _ => LinuxError::ENOSYS,
     })?;
 
-    fill_statfs(buf, vfs_stat);
+    fill_statfs(buf, vfs_stat)?;
     Ok(0)
 }
 
@@ -918,7 +955,7 @@ pub fn fstatfs(fd: Fd, buf: *mut StatFs) -> LinuxResult<i32> {
         Err(_) => String::from("/"),
     };
     let vfs_stat = vfs::vfs_statfs(&path).map_err(|_| LinuxError::ENOSYS)?;
-    fill_statfs(buf, vfs_stat);
+    fill_statfs(buf, vfs_stat)?;
     Ok(0)
 }
 
@@ -1008,8 +1045,15 @@ pub fn unshare(flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    crate::namespace::unshare(flags as u32);
-    Ok(0)
+    if flags & (CLONE_FILES | CLONE_FS) != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+
+    let ret = crate::namespace::unshare(flags as u32);
+    if ret < 0 {
+        return Err(LinuxError::from_errno(-ret));
+    }
+    Ok(ret)
 }
 
 /// setns - reassociate thread with a namespace

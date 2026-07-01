@@ -10,16 +10,40 @@
 pub mod btrfs;
 pub mod buffer;
 pub mod cifs;
+pub mod configfs;
+pub mod cramfs;
+pub mod debugfs;
 pub mod devfs;
+pub mod devpts;
+pub mod efivarfs;
+pub mod exfat;
+pub mod exportfs;
+pub mod ext2;
 pub mod ext4;
 pub mod f2fs;
 pub mod fat32;
+pub mod fuse;
+pub mod gfs2;
+pub mod hugetlbfs;
+pub mod iomap;
 pub mod isofs;
+pub mod jbd2;
+pub mod jfs;
+pub mod kernfs;
 pub mod nfs_client;
 pub mod nfsd;
+pub mod nls;
+pub mod ntfs3;
+pub mod ocfs2;
 pub mod overlayfs;
+pub mod proc;
 pub mod ramfs;
+pub mod romfs;
+pub mod smb;
+pub mod squashfs;
 pub mod sysfs;
+pub mod udf;
+pub mod unicode;
 pub mod vfs;
 pub mod xfs;
 
@@ -71,6 +95,18 @@ pub enum FileSystemType {
     Cifs,
     /// hugetlbfs (2 MiB page pool)
     HugetlbFs,
+    /// SquashFS read-only filesystem
+    SquashFs,
+    /// NTFS3 filesystem
+    Ntfs3,
+    /// exFAT filesystem
+    ExFat,
+    /// SMB network filesystem
+    Smb,
+    /// UDF optical media filesystem
+    Udf,
+    /// ROMFS read-only filesystem
+    RomFs,
 }
 
 impl fmt::Display for FileSystemType {
@@ -89,6 +125,12 @@ impl fmt::Display for FileSystemType {
             FileSystemType::Xfs => write!(f, "xfs"),
             FileSystemType::Cifs => write!(f, "cifs"),
             FileSystemType::HugetlbFs => write!(f, "hugetlbfs"),
+            FileSystemType::SquashFs => write!(f, "squashfs"),
+            FileSystemType::Ntfs3 => write!(f, "ntfs3"),
+            FileSystemType::ExFat => write!(f, "exfat"),
+            FileSystemType::Smb => write!(f, "smb"),
+            FileSystemType::Udf => write!(f, "udf"),
+            FileSystemType::RomFs => write!(f, "romfs"),
         }
     }
 }
@@ -1269,6 +1311,15 @@ pub fn init() -> FsResult<()> {
         VFS_MANAGER.mount("/", root_fs, MountFlags::default())?;
     }
 
+    ensure_dir("/dev", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/tmp", FilePermissions::from_octal(0o1777))?;
+    ensure_dir("/proc", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/sys", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/home", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/usr", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/var", FilePermissions::from_octal(0o755))?;
+    ensure_dir("/run", FilePermissions::from_octal(0o755))?;
+
     // Mount devfs at /dev — leak the box to get a stable instance for
     // dynamic device registration, then mount a thin wrapper around it.
     let dev_fs = Box::new(devfs::DevFs::new());
@@ -1288,17 +1339,14 @@ pub fn init() -> FsResult<()> {
     let huge_fs = Box::new(crate::hugetlb::HugetlbFs::new());
     VFS_MANAGER.mount("/dev/hugepages", huge_fs, MountFlags::default())?;
 
-    // Create standard directories (only if using RAM filesystem)
-    if !root_mounted {
-        VFS_MANAGER.mkdir("/tmp", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/proc", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/sys", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/home", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/usr", FilePermissions::from_octal(0o755))?;
-        VFS_MANAGER.mkdir("/var", FilePermissions::from_octal(0o755))?;
-    }
-
     Ok(())
+}
+
+fn ensure_dir(path: &str, permissions: FilePermissions) -> FsResult<()> {
+    match VFS_MANAGER.mkdir(path, permissions) {
+        Ok(()) | Err(FsError::AlreadyExists) => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Mount a filesystem from a storage device

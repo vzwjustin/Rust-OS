@@ -75,6 +75,18 @@ pub fn register_controller(
     ops: SpmiCtrlOps,
     num_devices: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("SPMI controller name is empty");
+    }
+    if num_devices == 0 {
+        return Err("SPMI controller has no device slots");
+    }
+
+    let mut ctrls = SPMI_CONTROLLERS.write();
+    if ctrls.values().any(|ctrl| ctrl.name == name) {
+        return Err("SPMI controller already registered");
+    }
+
     let id = CTRL_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let ctrl = SpmiController {
         id,
@@ -83,7 +95,7 @@ pub fn register_controller(
         num_devices,
         device_ids: Vec::new(),
     };
-    SPMI_CONTROLLERS.write().insert(id, ctrl);
+    ctrls.insert(id, ctrl);
     Ok(id)
 }
 
@@ -94,6 +106,26 @@ pub fn register_device(
     sid: u8,
     dev_type: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("SPMI device name is empty");
+    }
+    {
+        let ctrls = SPMI_CONTROLLERS.read();
+        let ctrl = ctrls.get(&bus_id).ok_or("SPMI controller not found")?;
+        if sid as u32 >= ctrl.num_devices || sid > 0x0f {
+            return Err("SPMI slave id out of range");
+        }
+    }
+    {
+        let devices = SPMI_DEVICES.read();
+        if devices
+            .values()
+            .any(|dev| dev.bus_id == bus_id && (dev.sid == sid || dev.name == name))
+        {
+            return Err("SPMI device already registered");
+        }
+    }
+
     let dev_id = DEVICE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = SpmiDevice {
         id: dev_id,
@@ -109,30 +141,63 @@ pub fn register_device(
     let mut ctrls = SPMI_CONTROLLERS.write();
     if let Some(ctrl) = ctrls.get_mut(&bus_id) {
         ctrl.device_ids.push(dev_id);
+    } else {
+        SPMI_DEVICES.write().remove(&dev_id);
+        return Err("SPMI controller not found");
     }
 
     // Try to match with existing drivers
-    try_match_driver(dev_id)?;
+    if let Err(err) = try_match_driver(dev_id) {
+        SPMI_DEVICES.write().remove(&dev_id);
+        let mut ctrls = SPMI_CONTROLLERS.write();
+        if let Some(ctrl) = ctrls.get_mut(&bus_id) {
+            ctrl.device_ids.retain(|id| *id != dev_id);
+        }
+        return Err(err);
+    }
     Ok(dev_id)
 }
 
 /// Register an SPMI driver.
 pub fn register_driver(driver: SpmiDriver) -> Result<u32, &'static str> {
+    if driver.name.is_empty() {
+        return Err("SPMI driver name is empty");
+    }
+    if driver.id_table.is_empty() {
+        return Err("SPMI driver id table is empty");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let drv_name = driver.name.clone();
-    SPMI_DRIVERS.write().insert(id, driver);
+    {
+        let mut drivers = SPMI_DRIVERS.write();
+        if drivers.values().any(|drv| drv.name == drv_name) {
+            return Err("SPMI driver already registered");
+        }
+        drivers.insert(id, driver);
+    }
 
     // Try to match with existing devices
     let device_ids: Vec<u32> = {
         let devices = SPMI_DEVICES.read();
         devices
             .iter()
-            .filter(|(_, d)| !d.bound && d.name.contains(&drv_name))
+            .filter(|(_, d)| !d.bound)
             .map(|(id, _)| *id)
             .collect()
     };
     for dev_id in device_ids {
-        try_match_driver(dev_id)?;
+        if let Err(err) = try_match_driver(dev_id) {
+            SPMI_DRIVERS.write().remove(&id);
+            let mut devices = SPMI_DEVICES.write();
+            for dev in devices.values_mut() {
+                if dev.driver_name.as_deref() == Some(drv_name.as_str()) {
+                    dev.bound = false;
+                    dev.driver_name = None;
+                }
+            }
+            return Err(err);
+        }
     }
     Ok(id)
 }
@@ -177,6 +242,16 @@ fn try_match_driver(device_id: u32) -> Result<(), &'static str> {
 
 /// Read registers from an SPMI device.
 pub fn register_read(device_id: u32, addr: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    if buf.is_empty() {
+        return Err("SPMI read buffer is empty");
+    }
+    if buf.len() > 16 {
+        return Err("SPMI read length too large");
+    }
+    if addr > 0xffff {
+        return Err("SPMI register address out of range");
+    }
+
     let (ctrl_id, sid, read_fn) = {
         let devices = SPMI_DEVICES.read();
         let dev = devices.get(&device_id).ok_or("SPMI device not found")?;
@@ -189,6 +264,16 @@ pub fn register_read(device_id: u32, addr: u32, buf: &mut [u8]) -> Result<usize,
 
 /// Write registers to an SPMI device.
 pub fn register_write(device_id: u32, addr: u32, data: &[u8]) -> Result<usize, &'static str> {
+    if data.is_empty() {
+        return Err("SPMI write data is empty");
+    }
+    if data.len() > 16 {
+        return Err("SPMI write length too large");
+    }
+    if addr > 0xffff {
+        return Err("SPMI register address out of range");
+    }
+
     let (ctrl_id, sid, write_fn) = {
         let devices = SPMI_DEVICES.read();
         let dev = devices.get(&device_id).ok_or("SPMI device not found")?;
@@ -259,6 +344,13 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("spmi: subsystem ready");
+    if !SPMI_CONTROLLERS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_spmi_ops();
+    let ctrl_id = register_controller("sw-spmi", ops, 4)?;
+    register_device(ctrl_id, "sw-pmic", 0, 0)?;
+    crate::serial_println!("spmi: controller {} registered with PMIC device", ctrl_id);
     Ok(())
 }

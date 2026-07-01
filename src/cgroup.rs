@@ -119,11 +119,11 @@ impl MemoryController {
 
 #[derive(Debug, Clone)]
 pub struct CpuController {
-    pub cpu_time_ns: u64,      // Total CPU time used (all time)
-    pub cpu_quota_us: i64,     // -1 = unlimited, else max CPU time per period
-    pub cpu_period_us: u64,    // Period for quota (default 100000 = 100ms)
-    pub cpu_shares: u64,       // Weight for proportional scheduling (default 1024)
-    pub nr_throttled: u64,     // Times throttled
+    pub cpu_time_ns: u64,   // Total CPU time used (all time)
+    pub cpu_quota_us: i64,  // -1 = unlimited, else max CPU time per period
+    pub cpu_period_us: u64, // Period for quota (default 100000 = 100ms)
+    pub cpu_shares: u64,    // Weight for proportional scheduling (default 1024)
+    pub nr_throttled: u64,  // Times throttled
     pub throttled_time_ns: u64,
     /// Monotonic ns timestamp when the current period started (0 = unset)
     pub period_start_ns: u64,

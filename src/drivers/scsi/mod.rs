@@ -16,9 +16,11 @@ use super::storage::{with_storage_manager, StorageDeviceState, StorageError};
 
 pub const SCSI_OPCODE_INQUIRY: u8 = 0x12;
 pub const SCSI_OPCODE_READ_CAPACITY10: u8 = 0x25;
+pub const SCSI_OPCODE_SYNCHRONIZE_CACHE10: u8 = 0x35;
 pub const SCSI_OPCODE_READ10: u8 = 0x28;
 pub const SCSI_OPCODE_WRITE10: u8 = 0x2A;
 pub const SCSI_OPCODE_TEST_UNIT_READY: u8 = 0x00;
+pub const SCSI_OPCODE_REQUEST_SENSE: u8 = 0x03;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScsiHostType {
@@ -61,6 +63,29 @@ pub struct ScsiCommand {
     pub lba: u64,
     pub transfer_blocks: u32,
     pub data_dir_in: bool,
+}
+
+fn validate_rw(dev: &ScsiDevice, cmd: ScsiCommand, buffer: &[u8]) -> Result<usize, StorageError> {
+    if cmd.transfer_blocks == 0 {
+        return Ok(0);
+    }
+    if dev.block_size == 0 {
+        return Err(StorageError::HardwareError);
+    }
+    let bytes = (cmd.transfer_blocks as u64)
+        .checked_mul(dev.block_size as u64)
+        .ok_or(StorageError::TransferTooLarge)?;
+    if bytes > usize::MAX as u64 || buffer.len() < bytes as usize {
+        return Err(StorageError::BufferTooSmall);
+    }
+    let end = cmd
+        .lba
+        .checked_add(cmd.transfer_blocks as u64)
+        .ok_or(StorageError::InvalidSector)?;
+    if end > dev.sector_count {
+        return Err(StorageError::InvalidSector);
+    }
+    Ok(bytes as usize)
 }
 
 static NEXT_HOST_ID: AtomicU32 = AtomicU32::new(1);
@@ -179,24 +204,69 @@ pub fn queue_command(
     let storage_id = host.storage_device_id;
 
     match cmd.opcode {
-        SCSI_OPCODE_TEST_UNIT_READY | SCSI_OPCODE_INQUIRY => Ok(0),
+        SCSI_OPCODE_TEST_UNIT_READY => Ok(0),
+        SCSI_OPCODE_REQUEST_SENSE => {
+            if !cmd.data_dir_in || buffer.len() < 18 {
+                return Err(StorageError::BufferTooSmall);
+            }
+            buffer[..18].fill(0);
+            buffer[0] = 0x70; // current fixed sense data
+            buffer[7] = 10; // additional sense length
+            Ok(18)
+        }
+        SCSI_OPCODE_INQUIRY => {
+            if !cmd.data_dir_in || buffer.len() < 36 {
+                return Err(StorageError::BufferTooSmall);
+            }
+            buffer[..36].fill(0);
+            buffer[0] = match dev.device_type {
+                ScsiDeviceType::Disk => 0x00,
+                ScsiDeviceType::Optical => 0x05,
+                ScsiDeviceType::Unknown => 0x1f,
+            };
+            buffer[2] = 0x06; // SPC-4 compatible response
+            buffer[3] = 0x02;
+            buffer[4] = 31;
+            let vendor = dev.vendor.as_bytes();
+            let model = dev.model.as_bytes();
+            let vlen = core::cmp::min(vendor.len(), 8);
+            let mlen = core::cmp::min(model.len(), 16);
+            buffer[8..16].fill(b' ');
+            buffer[16..32].fill(b' ');
+            buffer[8..8 + vlen].copy_from_slice(&vendor[..vlen]);
+            buffer[16..16 + mlen].copy_from_slice(&model[..mlen]);
+            Ok(36)
+        }
         SCSI_OPCODE_READ_CAPACITY10 => {
             if !cmd.data_dir_in || buffer.len() < 8 {
                 return Err(StorageError::BufferTooSmall);
             }
-            let last_lba = dev.sector_count.saturating_sub(1) as u32;
+            let last_lba = if dev.sector_count.saturating_sub(1) > u32::MAX as u64 {
+                u32::MAX
+            } else {
+                dev.sector_count.saturating_sub(1) as u32
+            };
             buffer[0..4].copy_from_slice(&last_lba.to_be_bytes());
             buffer[4..8].copy_from_slice(&dev.block_size.to_be_bytes());
             Ok(8)
         }
+        SCSI_OPCODE_SYNCHRONIZE_CACHE10 => {
+            with_storage_manager(|mgr| {
+                let dev = mgr
+                    .get_device_mut(storage_id)
+                    .ok_or(StorageError::DeviceNotFound)?;
+                dev.driver.flush()
+            })
+            .ok_or(StorageError::DeviceNotFound)??;
+            Ok(0)
+        }
         SCSI_OPCODE_READ10 => {
             if cmd.data_dir_in {
-                let bytes = (cmd.transfer_blocks as u64) * (dev.block_size as u64);
-                if buffer.len() < bytes as usize {
-                    return Err(StorageError::BufferTooSmall);
-                }
-                with_storage_manager(|mgr| mgr.read_sectors(storage_id, cmd.lba, buffer))
-                    .ok_or(StorageError::DeviceNotFound)?
+                let bytes = validate_rw(dev, cmd, buffer)?;
+                with_storage_manager(|mgr| {
+                    mgr.read_sectors(storage_id, cmd.lba, &mut buffer[..bytes])
+                })
+                .ok_or(StorageError::DeviceNotFound)?
             } else {
                 Err(StorageError::HardwareError)
             }
@@ -205,7 +275,8 @@ pub fn queue_command(
             if cmd.data_dir_in {
                 return Err(StorageError::HardwareError);
             }
-            with_storage_manager(|mgr| mgr.write_sectors(storage_id, cmd.lba, buffer))
+            let bytes = validate_rw(dev, cmd, buffer)?;
+            with_storage_manager(|mgr| mgr.write_sectors(storage_id, cmd.lba, &buffer[..bytes]))
                 .ok_or(StorageError::DeviceNotFound)?
         }
         _ => Err(StorageError::NotSupported),
@@ -213,7 +284,21 @@ pub fn queue_command(
 }
 
 pub fn init() -> ScsiScanResult {
-    scan_hosts()
+    let result = scan_hosts();
+    result
+}
+
+/// Register a representative SCSI device into the unified `base` device model
+/// (additive; tolerant of a missing bus and never fatal to SCSI init).
+fn publish_to_base() {
+    use crate::drivers::base;
+    if base::device_exists("scsi-disk0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("scsi", "scsi-disk0", "scsi,disk") {
+        let _ = base::set_property(id, "vendor", "RustOS");
+        let _ = base::set_property(id, "type", "disk");
+    }
 }
 
 #[derive(Debug, Clone, Default)]

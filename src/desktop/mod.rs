@@ -4,7 +4,24 @@
 //! window management, graphics rendering, and user interface components.
 
 pub mod app_grid;
+pub mod background;
+pub mod bg_crossfade;
+pub mod bg_slide_show;
+pub mod datetime_source;
+pub mod gettext_portable;
+pub mod idle_monitor;
+pub mod languages;
+pub mod placement;
+pub mod pnp_ids;
+pub mod qr;
+pub mod qr_widget;
+pub mod systemd;
+pub mod thumbnail;
+pub mod version;
+pub mod wall_clock;
+pub mod widgets;
 pub mod window_manager;
+pub mod xkb_info;
 
 use crate::graphics::framebuffer::{self, Color, FramebufferInfo, Rect};
 use alloc::boxed::Box;
@@ -12,6 +29,26 @@ use heapless::Vec;
 
 // Re-export commonly used types
 pub use window_manager::{ButtonId, DesktopEvent, MouseButton, WindowId, WindowManager};
+
+// Re-export GNOME desktop port types
+pub use background::{Background, BgPlacement, BgShading};
+pub use bg_crossfade::BgCrossfade;
+pub use bg_slide_show::{BgSlideShow, CurrentSlide, Slide};
+pub use datetime_source::{detect_clock_change, DateTimeSource};
+pub use gettext_portable::{dgettext, dpgettext, set_locale, LocaleHandle, DEFAULT_LOCALE};
+pub use idle_monitor::{get_idletime, notify_user_input, IdleMonitor};
+pub use languages::{
+    get_all_locales, get_country_from_code, get_country_from_locale, get_input_source_from_locale,
+    get_language_from_code, get_language_from_locale, normalize_locale, parse_locale, LocaleParts,
+};
+pub use pnp_ids::{get_pnp_id, get_pnp_id_or_unknown};
+pub use qr::{generate_qr_code, QrCode, QrColor, QrEccLevel, QrPixelFormat};
+pub use qr_widget::QrWidget;
+pub use systemd::{start_systemd_scope, start_systemd_scope_finish, SystemdScope};
+pub use thumbnail::{Thumbnail, ThumbnailFactory, ThumbnailSize};
+pub use version::{gnome_get_platform_version, GNOME_DESKTOP_PLATFORM_VERSION};
+pub use wall_clock::{ClockFormat, WallClock, WallClockConfig};
+pub use xkb_info::{Layout, OptionGroup, XkbInfo};
 
 /// Simplified desktop environment configuration
 #[derive(Debug, Clone, Copy)]
@@ -52,7 +89,13 @@ pub enum DesktopStatus {
 pub struct Desktop {
     status: DesktopStatus,
     config: DesktopConfig,
-    frame_counter: usize,
+    /// Per-frame state, routed through `mutter_port::clutter::frame::Frame`.
+    /// Tracks the frame count and (optionally) the expected presentation
+    /// time, frame deadline, and dispatch result. The frame count
+    /// replaces the old `frame_counter: usize` field; the presentation
+    /// time and deadline fields are available for future frame-clock
+    /// integration.
+    frame: crate::mutter_port::clutter::frame::Frame,
     event_queue: Vec<DesktopEvent, 32>,
     framebuffer_info: Option<FramebufferInfo>,
     video_mode: Option<u16>,
@@ -65,7 +108,7 @@ impl Desktop {
         Self {
             status: DesktopStatus::Uninitialized,
             config,
-            frame_counter: 0,
+            frame: crate::mutter_port::clutter::frame::Frame::new(),
             event_queue: Vec::new(),
             framebuffer_info: None,
             video_mode: None,
@@ -212,7 +255,11 @@ impl Desktop {
 
     /// Update desktop state
     pub fn update(&mut self) {
-        self.frame_counter = self.frame_counter.wrapping_add(1);
+        // Increment the frame count through the ported Mutter `Frame`
+        // struct. The old `frame_counter = frame_counter.wrapping_add(1)`
+        // is replaced by `frame.frame_count` increment, routed through
+        // the `Frame` type from `mutter_port::clutter::frame`.
+        self.frame.frame_count = self.frame.frame_count.wrapping_add(1);
 
         if let Some(ref mut wm) = self.window_manager {
             wm.tick();
@@ -230,6 +277,11 @@ impl Desktop {
     /// Get desktop configuration
     pub fn config(&self) -> &DesktopConfig {
         &self.config
+    }
+
+    /// Get the current frame count (routed through `mutter_port::clutter::frame::Frame`).
+    pub fn frame_count(&self) -> i64 {
+        self.frame.count()
     }
 
     /// Get mutable window manager reference
@@ -600,6 +652,83 @@ pub fn gnome_show_osd(text: &str) -> bool {
     false
 }
 
+/// Push a desktop notification (GNOME-style).
+pub fn push_notification(app: &str, summary: &str, body: &str) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.notifications.push(app, summary, body);
+            return true;
+        }
+    }
+    false
+}
+
+/// Open the power dialog (shutdown / restart / logoff).
+pub fn open_power_dialog() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.power_dialog.open();
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Toggle the calendar / notification center dropdown.
+pub fn toggle_calendar_dropdown() -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.calendar_open = !wm.calendar_open;
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Set battery state for the battery indicator.
+pub fn set_battery_state(percent: u8, charging: bool) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.battery = widgets::BatteryState::new(percent, charging);
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Set brightness level (0-100).
+pub fn set_brightness(level: u8) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.brightness = level.min(100);
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Set volume level (0-100).
+pub fn set_volume(level: u8) -> bool {
+    let mut global = GLOBAL_DESKTOP.lock();
+    if let Some(ref mut desktop) = *global {
+        if let Some(ref mut wm) = desktop.window_manager_mut() {
+            wm.volume = level.min(100);
+            wm.needs_redraw = true;
+            return true;
+        }
+    }
+    false
+}
+
 /// Show GNOME-style monitor labels.
 pub fn gnome_show_monitor_labels() -> bool {
     let mut global = GLOBAL_DESKTOP.lock();
@@ -698,6 +827,43 @@ pub fn invalidate_desktop() {
 // =============================================================================
 // Wrapper functions for legacy API compatibility
 // =============================================================================
+
+/// Get the current wall clock formatted string (full date/time).
+/// Copies into the provided buffer and returns the length written.
+pub fn wall_clock_string(buf: &mut [u8]) -> usize {
+    let global = GLOBAL_DESKTOP.lock();
+    if let Some(ref desktop) = *global {
+        if let Some(wm) = desktop.window_manager() {
+            let s = wm.wall_clock_string();
+            let bytes = s.as_bytes();
+            let len = bytes.len().min(buf.len());
+            buf[..len].copy_from_slice(&bytes[..len]);
+            return len;
+        }
+    }
+    0
+}
+
+/// Get the current idle time in milliseconds.
+pub fn idle_time_ms() -> u64 {
+    let global = GLOBAL_DESKTOP.lock();
+    if let Some(ref desktop) = *global {
+        if let Some(wm) = desktop.window_manager() {
+            return wm.idle_time_ms();
+        }
+    }
+    0
+}
+
+/// Get the GNOME platform version.
+pub fn gnome_platform_version() -> i32 {
+    version::gnome_get_platform_version()
+}
+
+/// Look up a PNP vendor ID.
+pub fn lookup_pnp_id(id: &str) -> Option<&'static str> {
+    pnp_ids::get_pnp_id(id)
+}
 
 /// Handle scroll event.
 pub fn handle_scroll(x: i32, y: i32, delta: i32) {

@@ -5,6 +5,7 @@
 //! Uses a simple completion model: submitted requests are processed synchronously
 //! and completion events are queued for retrieval.
 
+use crate::memory::user_space::UserSpaceMemory;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -100,8 +101,16 @@ pub fn io_setup(max_events: u32, ctx_idp: *mut AioContext) -> i32 {
     };
     AIO_CONTEXTS.write().insert(id, Mutex::new(ctx));
 
-    unsafe {
-        *ctx_idp = handle_from_ctx_id(id);
+    let handle = handle_from_ctx_id(id);
+    let handle_bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&handle as *const AioContext).cast::<u8>(),
+            core::mem::size_of::<AioContext>(),
+        )
+    };
+    if UserSpaceMemory::copy_to_user(ctx_idp as u64, handle_bytes).is_err() {
+        AIO_CONTEXTS.write().remove(&id);
+        return -14;
     }
     0
 }
@@ -137,11 +146,26 @@ pub fn io_submit(ctx: AioContext, nr: i64, iocbpp: *const *const IoCb) -> i32 {
 
     let mut submitted = 0i32;
     for i in 0..nr as usize {
-        let iocb_ptr = unsafe { *iocbpp.add(i) };
+        let mut ptr_bytes = [0u8; core::mem::size_of::<u64>()];
+        let ptr_addr =
+            (iocbpp as u64).saturating_add((i * core::mem::size_of::<*const IoCb>()) as u64);
+        if UserSpaceMemory::copy_from_user(ptr_addr, &mut ptr_bytes).is_err() {
+            return -14;
+        }
+        let iocb_ptr = u64::from_ne_bytes(ptr_bytes) as *const IoCb;
         if iocb_ptr.is_null() {
             continue;
         }
-        let iocb = unsafe { *iocb_ptr };
+        let mut iocb = IoCb::default();
+        let iocb_bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                (&mut iocb as *mut IoCb).cast::<u8>(),
+                core::mem::size_of::<IoCb>(),
+            )
+        };
+        if UserSpaceMemory::copy_from_user(iocb_ptr as u64, iocb_bytes).is_err() {
+            return -14;
+        }
 
         // Process the request synchronously
         let res = process_iocb(&iocb);
@@ -197,8 +221,16 @@ pub fn io_getevents(
     let count = core::cmp::min(nr as usize, ctx.events.len());
     for i in 0..count {
         let event = ctx.events.remove(0);
-        unsafe {
-            *events.add(i) = event;
+        let event_bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&event as *const IoEvent).cast::<u8>(),
+                core::mem::size_of::<IoEvent>(),
+            )
+        };
+        let event_addr =
+            (events as u64).saturating_add((i * core::mem::size_of::<IoEvent>()) as u64);
+        if UserSpaceMemory::copy_to_user(event_addr, event_bytes).is_err() {
+            return -14;
         }
     }
 
@@ -223,8 +255,14 @@ pub fn io_cancel(ctx: AioContext, iocb: *const IoCb, result: *mut IoEvent) -> i3
         if let Some(pos) = ctx.events.iter().position(|e| e.obj == target) {
             let event = ctx.events.remove(pos);
             if !result.is_null() {
-                unsafe {
-                    *result = event;
+                let event_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        (&event as *const IoEvent).cast::<u8>(),
+                        core::mem::size_of::<IoEvent>(),
+                    )
+                };
+                if UserSpaceMemory::copy_to_user(result as u64, event_bytes).is_err() {
+                    return -14;
                 }
             }
             return 0;
@@ -242,11 +280,17 @@ fn process_iocb(iocb: &IoCb) -> i64 {
             if iocb.aio_buf == 0 || iocb.aio_nbytes == 0 {
                 return -22;
             }
-            let buf = unsafe {
-                core::slice::from_raw_parts_mut(iocb.aio_buf as *mut u8, iocb.aio_nbytes as usize)
-            };
-            match vfs.pread(iocb.aio_fildes as i32, buf, iocb.aio_offset as u64) {
-                Ok(n) => n as i64,
+            let len = iocb.aio_nbytes as usize;
+            let mut buf = Vec::new();
+            buf.resize(len, 0);
+            match vfs.pread(iocb.aio_fildes as i32, &mut buf, iocb.aio_offset as u64) {
+                Ok(n) => {
+                    if UserSpaceMemory::copy_to_user(iocb.aio_buf, &buf[..n]).is_err() {
+                        -14
+                    } else {
+                        n as i64
+                    }
+                }
                 Err(_) => -5, // EIO
             }
         }
@@ -254,10 +298,13 @@ fn process_iocb(iocb: &IoCb) -> i64 {
             if iocb.aio_buf == 0 || iocb.aio_nbytes == 0 {
                 return -22;
             }
-            let buf = unsafe {
-                core::slice::from_raw_parts(iocb.aio_buf as *const u8, iocb.aio_nbytes as usize)
-            };
-            match vfs.pwrite(iocb.aio_fildes as i32, buf, iocb.aio_offset as u64) {
+            let len = iocb.aio_nbytes as usize;
+            let mut buf = Vec::new();
+            buf.resize(len, 0);
+            if UserSpaceMemory::copy_from_user(iocb.aio_buf, &mut buf).is_err() {
+                return -14;
+            }
+            match vfs.pwrite(iocb.aio_fildes as i32, &buf, iocb.aio_offset as u64) {
                 Ok(n) => n as i64,
                 Err(_) => -5,
             }

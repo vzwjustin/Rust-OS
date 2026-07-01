@@ -5,22 +5,25 @@
 //! stable scheduler subsystem API that delegates to the process manager, so
 //! there is exactly one process table and one scheduler in the kernel.
 //!
-//! The per-CPU scheduler state and advanced scheduling algorithms that used to
-//! live in this module are currently unused; they can be reintroduced later as
-//! an evolution of the process manager's scheduler without changing the public
-//! API.
+//! The per-CPU scheduler state in this module is maintained as a live facade
+//! over the process manager's scheduler, so callers can inspect CPU-local queue
+//! and load state without introducing a second process table.
 
+pub mod cfs;
 pub mod completion;
+pub mod load_balance;
+pub mod rt;
+pub mod sched_class;
 pub mod wait;
 
-use crate::process::{self, Pid, Priority, ProcessState};
-use alloc::{collections::VecDeque, vec::Vec};
+pub use sched_class::SchedPolicy;
+
+use crate::process;
+pub use crate::process::{Pid, Priority, ProcessState};
+use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
-
-/// Process ID type
-pub type Pid = u32;
 
 /// Thread ID type
 pub type Tid = u64;
@@ -166,7 +169,7 @@ pub struct CpuScheduler {
 }
 
 impl CpuScheduler {
-    /// Create a new CPU scheduler stub
+    /// Create a new CPU scheduler state
     pub const fn new(cpu_id: CpuId) -> Self {
         Self {
             cpu_id,
@@ -185,14 +188,61 @@ impl CpuScheduler {
         }
     }
 
-    /// Get the number of ready processes (always 0; scheduling is delegated).
-    pub fn ready_process_count(&self) -> usize {
-        0
+    /// Rebuild this CPU's scheduler snapshot from the canonical process table.
+    pub fn sync_from_process_manager(&mut self) {
+        for queue in self.ready_queues.iter_mut() {
+            queue.clear();
+        }
+
+        let pm = process::get_process_manager();
+        let cpu_mask = if self.cpu_id < u64::BITS {
+            1u64 << self.cpu_id
+        } else {
+            0
+        };
+        let processes =
+            pm.find_processes(|pcb| cpu_mask == 0 || (pcb.sched_info.cpu_affinity & cpu_mask) != 0);
+
+        let current_pid = pm.current_process();
+        self.current_process = (current_pid != 0).then_some(current_pid);
+
+        let mut runnable = 0usize;
+        let mut total_on_cpu = 0usize;
+        for pcb in &processes {
+            total_on_cpu += 1;
+            match pcb.state {
+                ProcessState::Ready => {
+                    if let Some(queue) = self.ready_queues.get_mut(pcb.priority as usize) {
+                        queue.push_back(pcb.pid);
+                        runnable += 1;
+                    }
+                }
+                ProcessState::Running => {
+                    runnable += 1;
+                }
+                _ => {}
+            }
+        }
+
+        self.utilization = if total_on_cpu == 0 {
+            0
+        } else {
+            ((runnable * 100) / total_on_cpu).min(100) as u8
+        };
+
+        if self.current_process.is_none() {
+            self.time_slice_remaining = 0;
+        }
     }
 
-    /// Get the total number of processes tracked by the system.
+    /// Get the number of ready processes queued for this CPU.
+    pub fn ready_process_count(&self) -> usize {
+        self.ready_queues.iter().map(VecDeque::len).sum()
+    }
+
+    /// Get the total number of runnable processes tracked by this CPU facade.
     pub fn process_count(&self) -> usize {
-        process::get_process_manager().process_count()
+        self.ready_process_count() + usize::from(self.current_process.is_some())
     }
 }
 
@@ -219,6 +269,7 @@ impl GlobalScheduler {
         process::init()?;
         let pm = process::get_process_manager();
         pm.create_process("init", None, Priority::High)?;
+        sync_current_cpu_scheduler(get_current_cpu_id());
         Ok(())
     }
 
@@ -229,32 +280,75 @@ impl GlobalScheduler {
         priority: Priority,
         name: &str,
     ) -> Result<Pid, &'static str> {
-        process::get_process_manager().create_process(name, parent_pid, priority)
+        let result = process::get_process_manager().create_process(name, parent_pid, priority);
+        if result.is_ok() {
+            sync_current_cpu_scheduler(get_current_cpu_id());
+        }
+        result
     }
 
     /// Terminate a process via the canonical process manager.
     pub fn terminate_process(&self, pid: Pid) -> Result<(), &'static str> {
-        process::get_process_manager().terminate_process(pid, 0)
+        let result = process::get_process_manager().terminate_process(pid, 0);
+        if result.is_ok() {
+            sync_current_cpu_scheduler(get_current_cpu_id());
+        }
+        result
     }
 
     /// Block a process via the canonical process manager.
     pub fn block_process(&self, pid: Pid) -> Result<(), &'static str> {
-        process::get_process_manager().block_process(pid)
+        let result = process::get_process_manager().block_process(pid);
+        if result.is_ok() {
+            sync_current_cpu_scheduler(get_current_cpu_id());
+        }
+        result
     }
 
     /// Unblock a process via the canonical process manager.
     pub fn unblock_process(&self, pid: Pid) -> Result<(), &'static str> {
-        process::get_process_manager().unblock_process(pid)
+        let result = process::get_process_manager().unblock_process(pid);
+        if result.is_ok() {
+            sync_current_cpu_scheduler(get_current_cpu_id());
+        }
+        result
     }
 
     /// Schedule the next process on the given CPU.
-    pub fn schedule(&self, _cpu_id: CpuId) -> Option<Pid> {
-        process::get_process_manager().schedule().ok().flatten()
+    pub fn schedule(&self, cpu_id: CpuId) -> Option<Pid> {
+        let pm = process::get_process_manager();
+        let next_pid = pm.schedule().ok().flatten();
+
+        with_cpu_scheduler(cpu_id, |cpu_scheduler| {
+            cpu_scheduler.sync_from_process_manager();
+            cpu_scheduler.current_process = next_pid;
+            if let Some(pid) = next_pid {
+                cpu_scheduler.total_scheduled = cpu_scheduler.total_scheduled.saturating_add(1);
+                cpu_scheduler.time_slice_remaining = pm
+                    .get_process(pid)
+                    .map(|pcb| pcb.priority.time_slice_ms() * 1_000)
+                    .unwrap_or(0);
+            } else {
+                cpu_scheduler.time_slice_remaining = 0;
+            }
+        });
+
+        next_pid
     }
 
     /// Handle timer tick for scheduling accounting.
-    pub fn timer_tick(&self, _cpu_id: CpuId, elapsed_us: u64) {
+    pub fn timer_tick(&self, cpu_id: CpuId, elapsed_us: u64) {
         process::get_process_manager().tick_cpu_time(elapsed_us);
+        with_cpu_scheduler(cpu_id, |cpu_scheduler| {
+            cpu_scheduler.sync_from_process_manager();
+            if cpu_scheduler.current_process.is_some() {
+                cpu_scheduler.time_slice_remaining = cpu_scheduler
+                    .time_slice_remaining
+                    .saturating_sub(elapsed_us);
+            } else {
+                cpu_scheduler.idle_time = cpu_scheduler.idle_time.saturating_add(elapsed_us);
+            }
+        });
     }
 
     /// Get scheduler statistics from the canonical process manager.
@@ -318,9 +412,22 @@ pub struct SchedulerStats {
 }
 
 static GLOBAL_SCHEDULER: GlobalScheduler = GlobalScheduler::new();
+static LOAD_BALANCING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
     static ref CURRENT_CPU_SCHEDULER: Mutex<CpuScheduler> = Mutex::new(CpuScheduler::new(0));
+}
+
+fn with_cpu_scheduler<R>(cpu_id: CpuId, f: impl FnOnce(&mut CpuScheduler) -> R) -> R {
+    let mut scheduler = CURRENT_CPU_SCHEDULER.lock();
+    if scheduler.cpu_id != cpu_id {
+        *scheduler = CpuScheduler::new(cpu_id);
+    }
+    f(&mut scheduler)
+}
+
+fn sync_current_cpu_scheduler(cpu_id: CpuId) {
+    with_cpu_scheduler(cpu_id, |scheduler| scheduler.sync_from_process_manager());
 }
 
 /// Initialize the scheduler subsystem
@@ -556,21 +663,31 @@ pub fn get_process_affinity(pid: Pid) -> Option<u64> {
         .map(|pcb| pcb.sched_info.cpu_affinity)
 }
 
-/// Force a process to migrate to a specific CPU (affinity is advisory; no-op here)
-pub fn migrate_process_to_cpu(_pid: Pid, _target_cpu: CpuId) -> Result<(), &'static str> {
+/// Force a process to migrate to a specific CPU by constraining its affinity.
+pub fn migrate_process_to_cpu(pid: Pid, target_cpu: CpuId) -> Result<(), &'static str> {
+    if target_cpu >= u64::BITS {
+        return Err("target CPU is outside the affinity mask range");
+    }
+
+    set_process_affinity(pid, 1u64 << target_cpu)?;
+    sync_current_cpu_scheduler(get_current_cpu_id());
     Ok(())
 }
 
 /// Get current CPU load information
 pub fn get_cpu_loads() -> Vec<(CpuId, usize, u8)> {
-    let mut loads = Vec::new();
-    let pm = process::get_process_manager();
-    loads.push((0, pm.process_count(), 0));
-    loads
+    let cpu_id = get_current_cpu_id();
+    let (ready, utilization) = with_cpu_scheduler(cpu_id, |scheduler| {
+        scheduler.sync_from_process_manager();
+        (scheduler.ready_process_count(), scheduler.utilization)
+    });
+    vec![(cpu_id, ready, utilization)]
 }
 
-/// Enable or disable load balancing (no-op; kept for API compatibility)
-pub fn set_load_balancing(_enabled: bool) {}
+/// Enable or disable load balancing policy state.
+pub fn set_load_balancing(enabled: bool) {
+    LOAD_BALANCING_ENABLED.store(enabled, Ordering::SeqCst);
+}
 
 /// Yield CPU time to allow other processes to run
 pub fn yield_cpu() {

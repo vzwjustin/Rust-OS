@@ -80,6 +80,8 @@ pub mod colors {
     pub const WINDOW_SHADOW: Color = Color::rgb(8, 4, 12);
     pub const TITLE_BAR_ACTIVE: Color = Color::rgb(119, 41, 83);
     pub const TITLE_BAR_INACTIVE: Color = Color::rgb(90, 90, 90);
+    pub const TITLE_INACTIVE_TOP: Color = Color::rgb(100, 100, 100);
+    pub const TITLE_INACTIVE_BOTTOM: Color = Color::rgb(70, 70, 70);
     pub const BORDER_ACTIVE: Color = Color::rgb(233, 84, 32);
     pub const BORDER_INACTIVE: Color = Color::rgb(120, 120, 120);
     pub const TEXT_COLOR: Color = Color::rgb(28, 28, 28);
@@ -140,6 +142,7 @@ pub enum MenuAction {
     MaximizeWindow,
     RestoreWindow,
     BringToFront,
+    LowerWindow,
     Refresh,
     OpenShell,
     OpenFileManager,
@@ -220,8 +223,44 @@ pub enum DesktopEvent {
 }
 
 /// Unique identifier for windows
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WindowId(pub usize);
+
+/// Keyboard focus tracker for the window manager, implementing
+/// `mutter_port::clutter::focus::Focus<WindowId>`.
+///
+/// This routes the "which window has keyboard focus" state through the
+/// ported Mutter `ClutterFocus` abstraction. The `Focus` trait manages
+/// the focused-id tracking; `WindowManager::focus_window` delegates to
+/// `focus::set_current_actor` on this struct, then applies the visual
+/// updates (border/title-bar colors) based on whether the focus moved.
+///
+/// Mirrors Mutter's `ClutterKeyFocus` — the simplest focus policy:
+/// exactly one actor (or none) is focused, and `set_current_actor`
+/// returns `true` iff the focus actually changed.
+#[derive(Debug, Default)]
+pub struct WindowFocus {
+    current: Option<WindowId>,
+}
+
+impl crate::mutter_port::clutter::focus::Focus<WindowId> for WindowFocus {
+    fn set_current_actor(
+        &mut self,
+        actor: Option<WindowId>,
+        _source_device: Option<crate::mutter_port::clutter::event::DeviceId>,
+        _time_ms: u32,
+    ) -> bool {
+        if self.current == actor {
+            return false;
+        }
+        self.current = actor;
+        true
+    }
+
+    fn current_actor(&self) -> Option<WindowId> {
+        self.current
+    }
+}
 
 /// Unique identifier for buttons
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -247,6 +286,7 @@ pub struct Window {
     pub z_order: usize,
     pub content_lines: Vec<&'static str, MAX_CONTENT_LINES>,
     pub scroll_offset: usize,
+    pub workspace: u8,
 }
 
 /// Button structure
@@ -316,6 +356,7 @@ impl Window {
             z_order: 0,
             content_lines: Vec::new(),
             scroll_offset: 0,
+            workspace: 0,
         }
     }
 }
@@ -366,7 +407,7 @@ pub struct WindowManager {
     next_button_id: usize,
     focused_window: Option<WindowId>,
     desktop_rect: Rect,
-    needs_redraw: bool,
+    pub(super) needs_redraw: bool,
     cursor: Cursor,
     dragging_window: Option<WindowId>,
     drag_offset: (usize, usize),
@@ -417,6 +458,49 @@ pub struct WindowManager {
     gnome_osd_until: u64,
     /// Uptime second when monitor labels should disappear.
     gnome_monitor_labels_until: u64,
+    /// Notification system state
+    pub(super) notifications: super::widgets::NotificationSystem,
+    /// Alt-tab switcher state
+    pub(super) alt_tab: super::widgets::AltTabSwitcher,
+    /// Power dialog state
+    pub(super) power_dialog: super::widgets::PowerDialog,
+    /// Calendar / notification center dropdown open?
+    pub(super) calendar_open: bool,
+    /// Quick-settings toggle grid
+    pub(super) quick_toggles: heapless::Vec<super::widgets::QuickToggle, 6>,
+    /// Battery state
+    pub(super) battery: super::widgets::BatteryState,
+    /// Brightness level (0-100)
+    pub(super) brightness: u8,
+    /// Volume level (0-100)
+    pub(super) volume: u8,
+    /// GNOME-style wall clock for formatted time display
+    pub(super) wall_clock: super::wall_clock::WallClock,
+    /// Idle monitor for tracking user inactivity
+    pub(super) idle_monitor: super::idle_monitor::IdleMonitor,
+    /// Desktop background manager
+    pub(super) background: super::background::Background,
+    /// Optional background slide show for animated wallpapers
+    pub(super) slide_show: Option<super::bg_slide_show::BgSlideShow>,
+    /// Active background crossfade (set when the slide show advances to
+    /// a new fixed slide; `tick()` advances it each frame until
+    /// `is_finished()`, then clears it).
+    pub(super) bg_crossfade: Option<super::bg_crossfade::BgCrossfade>,
+    /// Index of the last slide applied to the background, so we only
+    /// crossfade when the slide actually changes (not every tick).
+    last_slide_index: Option<usize>,
+    /// Keyboard focus state, routed through `mutter_port::clutter::focus::Focus`.
+    /// Tracks which window currently has keyboard focus; `focus_window`
+    /// delegates to this, and the visual updates (border/title-bar
+    /// colors) are applied based on the result.
+    focus: WindowFocus,
+    /// Input grab stack, routed through `mutter_port::clutter::grab::GrabStack`.
+    /// Tracks the active drag/resize grab. When the user clicks a title
+    /// bar, a move grab is activated; when the user clicks the resize
+    /// handle, a resize grab is activated. Mouse-up dismisses the grab.
+    /// The `dragging_window`/`resizing_window` fields are projections of
+    /// the topmost grab's kind + actor.
+    grab_stack: crate::mutter_port::clutter::grab::GrabStack<WindowId>,
 }
 
 impl WindowManager {
@@ -477,7 +561,35 @@ impl WindowManager {
             gnome_osd_text: HString::new(),
             gnome_osd_until: 0,
             gnome_monitor_labels_until: 0,
+            notifications: super::widgets::NotificationSystem::new(),
+            alt_tab: super::widgets::AltTabSwitcher::new(),
+            power_dialog: super::widgets::PowerDialog::new(),
+            calendar_open: false,
+            quick_toggles: super::widgets::default_toggles(true, false, true, false),
+            battery: super::widgets::BatteryState::none(),
+            brightness: 80,
+            volume: 60,
+            wall_clock: super::wall_clock::WallClock::new(),
+            idle_monitor: super::idle_monitor::IdleMonitor::new(),
+            background: super::background::Background::new(),
+            slide_show: None,
+            bg_crossfade: None,
+            last_slide_index: None,
+            focus: WindowFocus::default(),
+            grab_stack: crate::mutter_port::clutter::grab::GrabStack::new(),
         }
+    }
+
+    fn work_area_rect(&self) -> Rect {
+        let x = self.dock_rect.x.saturating_add(self.dock_rect.width);
+        let y = self
+            .menu_bar_rect
+            .y
+            .saturating_add(self.menu_bar_rect.height);
+        let right = self.desktop_rect.x.saturating_add(self.desktop_rect.width);
+        let bottom = self.desktop_rect.y.saturating_add(self.desktop_rect.height);
+
+        Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
     }
 
     /// Create a new window
@@ -492,7 +604,22 @@ impl WindowManager {
         let window_id = WindowId(self.next_window_id);
         self.next_window_id += 1;
 
-        let mut window = Window::new(window_id, title, x, y, width, height);
+        let requested_rect = Rect::new(x, y, width, height);
+        let placed_rect = super::placement::cascade_window_rect(
+            requested_rect,
+            self.work_area_rect(),
+            &self.windows,
+            self.current_workspace,
+            TITLE_BAR_HEIGHT,
+        );
+        let mut window = Window::new(
+            window_id,
+            title,
+            placed_rect.x,
+            placed_rect.y,
+            placed_rect.width,
+            placed_rect.height,
+        );
         window.focused = true;
         window.z_order = self.window_count;
         window.border_color = colors::BORDER_ACTIVE;
@@ -507,6 +634,7 @@ impl WindowManager {
 
         let _ = self.windows.push(window);
         self.window_count += 1;
+        self.normalize_stack_order();
         self.focused_window = Some(window_id);
         self.needs_redraw = true;
         window_id
@@ -571,6 +699,16 @@ impl WindowManager {
             return;
         }
         self.last_tick_second = second;
+
+        // Update wall clock from RTC-backed system time
+        self.wall_clock.update_if_needed();
+
+        // Poll idle monitor for triggered watches
+        self.idle_monitor.tick();
+
+        // Update animated background from slide show if active
+        self.update_background_from_slideshow();
+
         self.refresh_system_monitor();
         if self.file_manager_window.is_some() {
             self.refresh_file_manager();
@@ -584,6 +722,10 @@ impl WindowManager {
         }
         if self.gnome_monitor_labels_until != 0 && second >= self.gnome_monitor_labels_until {
             self.gnome_monitor_labels_until = 0;
+        }
+        self.notifications.tick();
+        if self.notifications.banner_id.is_some() {
+            self.needs_redraw = true;
         }
         self.needs_redraw = true;
     }
@@ -642,7 +784,12 @@ impl WindowManager {
         self.monitor_lines.clear();
 
         let uptime_s = crate::time::uptime_ms() / 1000;
-        let clock = Self::format_clock();
+        let clock: HString<64> = {
+            let s = self.wall_clock_string();
+            let mut h = HString::new();
+            let _ = h.push_str(s);
+            h
+        };
 
         let _ = self.push_monitor_line(&format!("RustOS x86_64 kernel"));
         let _ = self.push_monitor_line("");
@@ -713,6 +860,88 @@ impl WindowManager {
         let mut out = HString::new();
         let _ = write!(out, "{:02}:{:02}", hours, minutes);
         out
+    }
+
+    /// Get the current wall clock formatted string (full date/weekday support).
+    pub fn wall_clock_string(&self) -> &str {
+        self.wall_clock.get_clock()
+    }
+
+    /// Get the current idle time in milliseconds.
+    pub fn idle_time_ms(&self) -> u64 {
+        self.idle_monitor.get_idletime()
+    }
+
+    /// Set a background slide show for animated wallpapers.
+    pub fn set_slide_show(&mut self, show: super::bg_slide_show::BgSlideShow) {
+        self.slide_show = Some(show);
+    }
+
+    /// Get the current slide show, if any.
+    pub fn slide_show(&self) -> Option<&super::bg_slide_show::BgSlideShow> {
+        self.slide_show.as_ref()
+    }
+
+    /// Update the background from the current slide show slide, if active.
+    /// Called from tick() to animate the background.
+    ///
+    /// When the slide show advances to a new fixed slide, a
+    /// `BgCrossfade` is started to smoothly transition from the old
+    /// color to the new one using the `EaseInOutCubic` easing curve
+    /// (via `mutter_port::clutter::easing`). The crossfade is ticked
+    /// each frame until it completes, then the background's solid color
+    /// is committed. For gradient (transitioning) slides, the color is
+    /// set directly each tick (the gradient itself is the animation).
+    fn update_background_from_slideshow(&mut self) {
+        // First, advance any active crossfade.
+        if let Some(ref mut fade) = self.bg_crossfade {
+            if !fade.tick() {
+                // Crossfade finished — commit the end color and clear.
+                self.bg_crossfade = None;
+            }
+            // While a crossfade is running, don't override the
+            // background from the slide; let the fade complete.
+            return;
+        }
+
+        let Some(ref show) = self.slide_show else {
+            return;
+        };
+        let Some(slide) = show.get_current_slide() else {
+            return;
+        };
+
+        if slide.is_fixed {
+            // Only crossfade when the slide index changes — not every
+            // tick (the slide show returns the same slide for many
+            // ticks until the duration elapses).
+            if self.last_slide_index != Some(slide.slide_index) {
+                let old_color = self.background.primary_color();
+                // Start a crossfade from the current color to the new
+                // slide's color. The crossfade uses EaseInOutCubic by
+                // default (set in BgCrossfade::new).
+                let mut fade = self.background.crossfade_to(
+                    slide.color1,
+                    self.desktop_rect.width,
+                    self.desktop_rect.height,
+                );
+                // If this is the first slide (no previous), skip the
+                // fade and just set the color directly.
+                if self.last_slide_index.is_none() {
+                    self.background.set_solid(slide.color1);
+                } else {
+                    fade.start();
+                    self.bg_crossfade = Some(fade);
+                }
+                self.last_slide_index = Some(slide.slide_index);
+            }
+        } else {
+            // For transitions, use gradient from color1 to color2.
+            // The gradient itself animates, so no crossfade needed.
+            self.background
+                .set_gradient_vertical(slide.color1, slide.color2);
+            self.last_slide_index = Some(slide.slide_index);
+        }
     }
 
     fn network_tray_label() -> HString<16> {
@@ -846,7 +1075,7 @@ impl WindowManager {
                 self.push_shell_line(&line);
             }
             "date" => {
-                let line = format!("time: {}", Self::format_clock());
+                let line = format!("time: {}", self.wall_clock_string());
                 self.push_shell_line(&line);
             }
             "mem" => {
@@ -1059,6 +1288,11 @@ impl WindowManager {
                     self.bring_to_front(id);
                 }
             }
+            MenuAction::LowerWindow => {
+                if let Some(id) = target {
+                    self.lower_window(id);
+                }
+            }
             MenuAction::Refresh => {
                 self.refresh_file_manager();
                 self.refresh_system_monitor();
@@ -1210,6 +1444,18 @@ impl WindowManager {
         let _ = items.push(ContextMenuItem {
             label: "Restore",
             action: MenuAction::RestoreWindow,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Bring to Front",
+            action: MenuAction::BringToFront,
+            enabled: true,
+            separator: false,
+        });
+        let _ = items.push(ContextMenuItem {
+            label: "Send to Back",
+            action: MenuAction::LowerWindow,
             enabled: true,
             separator: false,
         });
@@ -1435,10 +1681,11 @@ impl WindowManager {
 
     /// Snap a window to a screen edge.
     pub fn snap_window(&mut self, window_id: WindowId, side: SnapSide) -> bool {
-        let avail_x = DOCK_HEIGHT;
-        let avail_y = MENU_BAR_HEIGHT;
-        let avail_w = self.desktop_rect.width.saturating_sub(DOCK_HEIGHT);
-        let avail_h = self.desktop_rect.height.saturating_sub(MENU_BAR_HEIGHT);
+        let work_area = self.work_area_rect();
+        let avail_x = work_area.x;
+        let avail_y = work_area.y;
+        let avail_w = work_area.width;
+        let avail_h = work_area.height;
 
         let (x, y, w, h) = match side {
             SnapSide::Left => (avail_x, avail_y, avail_w / 2, avail_h),
@@ -1470,23 +1717,32 @@ impl WindowManager {
         if self.dragging_window.is_none() {
             return;
         }
-        let avail_x = DOCK_HEIGHT;
-        let avail_y = MENU_BAR_HEIGHT;
+        let work_area = self.work_area_rect();
+        let avail_x = work_area.x;
+        let avail_y = work_area.y;
 
         if x <= avail_x + SNAP_ZONE {
             if let Some(id) = self.dragging_window {
                 self.snap_window(id, SnapSide::Left);
                 self.dragging_window = None;
+                let _ = self.grab_stack.dismiss_topmost();
             }
-        } else if x >= self.desktop_rect.width.saturating_sub(SNAP_ZONE) {
+        } else if x
+            >= work_area
+                .x
+                .saturating_add(work_area.width)
+                .saturating_sub(SNAP_ZONE)
+        {
             if let Some(id) = self.dragging_window {
                 self.snap_window(id, SnapSide::Right);
                 self.dragging_window = None;
+                let _ = self.grab_stack.dismiss_topmost();
             }
         } else if y <= avail_y + SNAP_ZONE {
             if let Some(id) = self.dragging_window {
                 self.maximize_window(id);
                 self.dragging_window = None;
+                let _ = self.grab_stack.dismiss_topmost();
             }
         }
     }
@@ -1501,6 +1757,31 @@ impl WindowManager {
             return;
         }
         self.current_workspace = workspace % WORKSPACE_COUNT as u8;
+        for window in &mut self.windows {
+            if window.state != WindowState::Closed {
+                window.visible = window.workspace == self.current_workspace;
+            }
+        }
+        let focused_visible = match self.focused_window.and_then(|id| self.get_window(id)) {
+            Some(window) => window.visible && window.state != WindowState::Closed,
+            None => false,
+        };
+        if !focused_visible {
+            if let Some(window_id) = self.top_stack_window() {
+                self.focus_window(window_id);
+            } else {
+                // Clear focus through the Focus trait abstraction.
+                use crate::mutter_port::clutter::focus as mfocus;
+                let _ =
+                    mfocus::set_current_actor(&mut self.focus, None, None, mfocus::CURRENT_TIME);
+                self.focused_window = None;
+                for window in &mut self.windows {
+                    window.focused = false;
+                    window.border_color = colors::BORDER_INACTIVE;
+                    window.title_bar_color = colors::TITLE_BAR_INACTIVE;
+                }
+            }
+        }
         self.needs_redraw = true;
     }
 
@@ -1534,26 +1815,96 @@ impl WindowManager {
         self.windows.iter_mut().find(|w| w.id == window_id)
     }
 
+    /// Keep stack positions dense after add/remove/raise operations.
+    ///
+    /// Mutter's `MetaStack` keeps a compact stack position list and marks it
+    /// changed after mutations. RustOS renders by `z_order`, so compacting here
+    /// prevents stale gaps and closed windows from affecting later raises.
+    fn normalize_stack_order(&mut self) {
+        let len = self.windows.len();
+        let mut assigned = [false; MAX_WINDOWS];
+        let mut next_z = 0usize;
+
+        for _ in 0..len {
+            let mut next_index: Option<usize> = None;
+
+            for index in 0..len {
+                if assigned[index] || self.windows[index].state == WindowState::Closed {
+                    continue;
+                }
+
+                if let Some(current) = next_index {
+                    let candidate = &self.windows[index];
+                    let selected = &self.windows[current];
+                    if candidate.z_order < selected.z_order
+                        || (candidate.z_order == selected.z_order && index < current)
+                    {
+                        next_index = Some(index);
+                    }
+                } else {
+                    next_index = Some(index);
+                }
+            }
+
+            if let Some(index) = next_index {
+                assigned[index] = true;
+                self.windows[index].z_order = next_z;
+                next_z = next_z.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn top_stack_window(&self) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .filter(|window| window.visible && window.state != WindowState::Closed)
+            .max_by_key(|window| window.z_order)
+            .map(|window| window.id)
+    }
+
     /// Focus a window
     pub fn focus_window(&mut self, window_id: WindowId) -> bool {
-        let mut found = false;
+        // Route through the ported Mutter `ClutterFocus` abstraction:
+        // `focus::set_current_actor` tracks the focused-id and returns
+        // `true` iff the focus actually moved. The visual updates
+        // (border/title-bar colors) are applied to all windows based
+        // on which one is focused.
+        use crate::mutter_port::clutter::focus as mfocus;
+
+        // Check the window exists first (the Focus trait doesn't know
+        // about the window list).
+        let exists = self.windows.iter().any(|w| w.id == window_id);
+        if !exists {
+            return false;
+        }
+
+        // Delegate the focused-id tracking to the Focus trait impl.
+        let moved =
+            mfocus::set_current_actor(&mut self.focus, Some(window_id), None, mfocus::CURRENT_TIME);
+        if !moved {
+            // Focus didn't move, but the window is still the focused
+            // one — no visual change needed.
+            return true;
+        }
+
+        // Apply visual updates: the focused window gets active colors,
+        // all others get inactive colors.
         for window in &mut self.windows {
             if window.id == window_id {
                 window.focused = true;
                 window.border_color = colors::BORDER_ACTIVE;
                 window.title_bar_color = colors::TITLE_BAR_ACTIVE;
-                found = true;
             } else {
                 window.focused = false;
                 window.border_color = colors::BORDER_INACTIVE;
                 window.title_bar_color = colors::TITLE_BAR_INACTIVE;
             }
         }
-        if found {
-            self.focused_window = Some(window_id);
-            self.needs_redraw = true;
-        }
-        found
+        self.focused_window = Some(window_id);
+        self.needs_redraw = true;
+        true
     }
 
     /// Bring a window to the front and focus it.
@@ -1575,7 +1926,55 @@ impl WindowManager {
             window.visible = true;
         }
 
+        self.normalize_stack_order();
         self.focus_window(window_id)
+    }
+
+    /// Lower a window behind other windows on its workspace.
+    ///
+    /// This mirrors Mutter's `meta_stack_lower()`: find the lowest stack position
+    /// among windows on the same workspace and move the selected window there.
+    pub fn lower_window(&mut self, window_id: WindowId) -> bool {
+        let Some((target_workspace, target_z)) = self
+            .get_window(window_id)
+            .map(|window| (window.workspace, window.z_order))
+        else {
+            return false;
+        };
+
+        let bottom_z = self
+            .windows
+            .iter()
+            .filter(|window| {
+                window.id != window_id
+                    && window.workspace == target_workspace
+                    && window.state != WindowState::Closed
+            })
+            .map(|window| window.z_order)
+            .min();
+
+        let Some(bottom_z) = bottom_z else {
+            return true;
+        };
+
+        if target_z == bottom_z {
+            return true;
+        }
+
+        for window in &mut self.windows {
+            if window.id == window_id {
+                window.z_order = 0;
+            } else if window.workspace == target_workspace && window.state != WindowState::Closed {
+                window.z_order = window.z_order.saturating_add(1);
+            }
+        }
+
+        self.normalize_stack_order();
+        if self.focused_window == Some(window_id) {
+            self.focused_window = self.top_stack_window();
+        }
+        self.needs_redraw = true;
+        true
     }
 
     /// Get window at point
@@ -1786,10 +2185,10 @@ impl WindowManager {
             self.windows.swap_remove(pos);
             self.window_count = self.window_count.saturating_sub(1);
 
+            self.normalize_stack_order();
             if self.focused_window == Some(window_id) {
-                self.focused_window = self.windows.last().map(|w| w.id);
+                self.focused_window = self.top_stack_window();
             }
-
             self.needs_redraw = true;
             true
         } else {
@@ -1828,12 +2227,13 @@ impl WindowManager {
         }
     }
 
-    /// Center a window on the desktop.
+    /// Center a window in the usable work area.
     pub fn center_window(&mut self, window_id: WindowId) -> bool {
+        let work_area = self.work_area_rect();
         let (x, y) = if let Some(window) = self.get_window(window_id) {
             (
-                self.desktop_rect.width.saturating_sub(window.rect.width) / 2,
-                self.desktop_rect.height.saturating_sub(window.rect.height) / 2,
+                work_area.x + work_area.width.saturating_sub(window.rect.width) / 2,
+                work_area.y + work_area.height.saturating_sub(window.rect.height) / 2,
             )
         } else {
             return false;
@@ -1849,6 +2249,10 @@ impl WindowManager {
             if visible && window.state == WindowState::Minimized {
                 window.state = WindowState::Normal;
             } else if !visible && self.focused_window == Some(window_id) {
+                // Clear focus through the Focus trait abstraction.
+                use crate::mutter_port::clutter::focus as mfocus;
+                let _ =
+                    mfocus::set_current_actor(&mut self.focus, None, None, mfocus::CURRENT_TIME);
                 self.focused_window = None;
             }
             self.needs_redraw = true;
@@ -1864,7 +2268,7 @@ impl WindowManager {
             window.state = WindowState::Minimized;
             window.visible = false;
             if self.focused_window == Some(window_id) {
-                self.focused_window = None;
+                self.focused_window = self.top_stack_window();
             }
             self.needs_redraw = true;
             true
@@ -1887,18 +2291,19 @@ impl WindowManager {
 
     /// Maximize a window to the usable desktop area.
     pub fn maximize_window(&mut self, window_id: WindowId) -> bool {
-        let width = self.desktop_rect.width.saturating_sub(DOCK_HEIGHT);
-        let height = self.desktop_rect.height.saturating_sub(MENU_BAR_HEIGHT);
+        let work_area = self.work_area_rect();
+        let width = work_area.width;
+        let height = work_area.height;
 
         if let Some(window) = self.get_window_mut(window_id) {
             window.state = WindowState::Maximized;
             window.visible = true;
-            window.rect.x = DOCK_HEIGHT;
-            window.rect.y = MENU_BAR_HEIGHT;
+            window.rect.x = work_area.x;
+            window.rect.y = work_area.y;
             window.rect.width = max(width, MIN_WINDOW_WIDTH);
             window.rect.height = max(height, MIN_WINDOW_HEIGHT);
-            window.client_area.x = DOCK_HEIGHT + BORDER_WIDTH;
-            window.client_area.y = MENU_BAR_HEIGHT + TITLE_BAR_HEIGHT + BORDER_WIDTH;
+            window.client_area.x = work_area.x + BORDER_WIDTH;
+            window.client_area.y = work_area.y + TITLE_BAR_HEIGHT + BORDER_WIDTH;
             window.client_area.width = window.rect.width.saturating_sub(2 * BORDER_WIDTH);
             window.client_area.height = window
                 .rect
@@ -1988,6 +2393,7 @@ impl WindowManager {
 
     /// Handle desktop keyboard shortcuts.
     pub fn handle_key_down(&mut self, key: u8) -> bool {
+        super::idle_monitor::notify_user_input();
         // Close context menu on any key
         if self.context_menu.visible {
             self.hide_context_menu();
@@ -2014,7 +2420,19 @@ impl WindowManager {
 
         match key {
             27 => {
-                if self.activities_open || self.quick_settings_open {
+                if self.alt_tab.open {
+                    self.alt_tab.close();
+                    self.needs_redraw = true;
+                    true
+                } else if self.power_dialog.open {
+                    self.power_dialog.close();
+                    self.needs_redraw = true;
+                    true
+                } else if self.calendar_open {
+                    self.calendar_open = false;
+                    self.needs_redraw = true;
+                    true
+                } else if self.activities_open || self.quick_settings_open {
                     self.activities_open = false;
                     self.quick_settings_open = false;
                     self.needs_redraw = true;
@@ -2024,25 +2442,53 @@ impl WindowManager {
                 }
             }
             b'\t' => {
-                let window_count = self.windows.len();
-                if window_count == 0 {
-                    return false;
+                if self.alt_tab.open {
+                    self.alt_tab.next();
+                    self.needs_redraw = true;
+                    return true;
                 }
 
-                let start = self
-                    .focused_window
-                    .and_then(|id| self.windows.iter().position(|window| window.id == id))
-                    .unwrap_or(window_count);
-
-                for offset in 1..=window_count {
-                    let index = (start + window_count - offset) % window_count;
-                    let window = &self.windows[index];
-                    if window.visible && window.state != WindowState::Closed {
-                        return self.bring_to_front(window.id);
+                let mut open_wins: Vec<WindowId, 64> = Vec::new();
+                for w in &self.windows {
+                    if w.visible && w.state != WindowState::Closed {
+                        let _ = open_wins.push(w.id);
                     }
                 }
-
+                if open_wins.is_empty() {
+                    return false;
+                }
+                self.alt_tab.open(&open_wins);
+                self.needs_redraw = true;
+                true
+            }
+            13 => {
+                if self.alt_tab.open {
+                    if let Some(wid) = self.alt_tab.current() {
+                        self.alt_tab.close();
+                        self.needs_redraw = true;
+                        return self.bring_to_front(wid);
+                    }
+                    self.alt_tab.close();
+                    self.needs_redraw = true;
+                    return true;
+                }
                 false
+            }
+            b'p' | b'P' => {
+                if !self.power_dialog.open {
+                    self.power_dialog.open();
+                    self.needs_redraw = true;
+                }
+                true
+            }
+            b'n' | b'N' => {
+                self.notifications.push(
+                    "System",
+                    "Welcome to RustOS",
+                    "Desktop environment is ready.",
+                );
+                self.needs_redraw = true;
+                true
             }
             b'a' | b'A' => {
                 self.activities_open = !self.activities_open;
@@ -2085,6 +2531,7 @@ impl WindowManager {
 
     /// Scroll text content in the window under the cursor.
     pub fn handle_scroll(&mut self, x: usize, y: usize, delta: i32) -> bool {
+        super::idle_monitor::notify_user_input();
         let Some(window_id) = self.window_at_point(x, y) else {
             return false;
         };
@@ -2117,18 +2564,24 @@ impl WindowManager {
 
     /// Handle mouse move
     pub fn handle_mouse_move(&mut self, x: usize, y: usize) {
+        super::idle_monitor::notify_user_input();
         self.cursor.x = x;
         self.cursor.y = y;
+        let work_area = self.work_area_rect();
 
         if let Some(window_id) = self.dragging_window {
             let drag_offset = self.drag_offset;
             if let Some(window) = self.get_window_mut(window_id) {
                 let new_x = x.saturating_sub(drag_offset.0);
                 let new_y = y.saturating_sub(drag_offset.1);
-                window.rect.x = new_x;
-                window.rect.y = new_y;
-                window.client_area.x = new_x + BORDER_WIDTH;
-                window.client_area.y = new_y + TITLE_BAR_HEIGHT + BORDER_WIDTH;
+                let constrained = super::placement::constrain_titlebar_visible(
+                    Rect::new(new_x, new_y, window.rect.width, window.rect.height),
+                    work_area,
+                    TITLE_BAR_HEIGHT,
+                );
+                window.rect = constrained;
+                window.client_area.x = constrained.x + BORDER_WIDTH;
+                window.client_area.y = constrained.y + TITLE_BAR_HEIGHT + BORDER_WIDTH;
             }
             self.needs_redraw = true;
         }
@@ -2146,11 +2599,20 @@ impl WindowManager {
                         .saturating_sub(drag_offset.1),
                     MIN_WINDOW_HEIGHT,
                 );
-                window.rect.width = new_w;
-                window.rect.height = new_h;
-                window.client_area.width = new_w.saturating_sub(2 * BORDER_WIDTH);
-                window.client_area.height =
-                    new_h.saturating_sub(TITLE_BAR_HEIGHT + 2 * BORDER_WIDTH);
+                let constrained = super::placement::constrain_resize_rect(
+                    Rect::new(window.rect.x, window.rect.y, new_w, new_h),
+                    work_area,
+                    MIN_WINDOW_WIDTH,
+                    MIN_WINDOW_HEIGHT,
+                    TITLE_BAR_HEIGHT,
+                );
+                window.rect = constrained;
+                window.client_area.x = constrained.x + BORDER_WIDTH;
+                window.client_area.y = constrained.y + TITLE_BAR_HEIGHT + BORDER_WIDTH;
+                window.client_area.width = constrained.width.saturating_sub(2 * BORDER_WIDTH);
+                window.client_area.height = constrained
+                    .height
+                    .saturating_sub(TITLE_BAR_HEIGHT + 2 * BORDER_WIDTH);
             }
             self.needs_redraw = true;
         }
@@ -2163,6 +2625,18 @@ impl WindowManager {
 
     /// Handle mouse down
     pub fn handle_mouse_down(&mut self, x: usize, y: usize, button: MouseButton) -> bool {
+        super::idle_monitor::notify_user_input();
+        // Close alt-tab on any click
+        if self.alt_tab.open {
+            if let Some(wid) = self.alt_tab.current() {
+                self.alt_tab.close();
+                self.bring_to_front(wid);
+            } else {
+                self.alt_tab.close();
+            }
+            self.needs_redraw = true;
+        }
+
         // Handle context menu clicks first
         if self.handle_context_menu_click(x, y) {
             return true;
@@ -2171,6 +2645,109 @@ impl WindowManager {
         // App grid is modal: it absorbs all clicks while open.
         if self.app_grid_open {
             self.handle_app_grid_click(x, y);
+            return true;
+        }
+
+        // Power dialog is modal
+        if self.power_dialog.open {
+            if let Some(action) = super::widgets::power_dialog_action_at(
+                &self.power_dialog,
+                self.desktop_rect.width,
+                self.desktop_rect.height,
+                x,
+                y,
+            ) {
+                self.power_dialog.close();
+                match action {
+                    super::widgets::PowerAction::Shutdown => {
+                        crate::serial_println!("Power: shutdown requested");
+                    }
+                    super::widgets::PowerAction::Restart => {
+                        crate::serial_println!("Power: restart requested");
+                    }
+                    super::widgets::PowerAction::Logoff => {
+                        crate::serial_println!("Power: logoff requested");
+                    }
+                    super::widgets::PowerAction::Cancel => {}
+                }
+                self.needs_redraw = true;
+            }
+            return true;
+        }
+
+        // Calendar dropdown is modal
+        if self.calendar_open {
+            let pw = 360;
+            let px = self.desktop_rect.width.saturating_sub(pw + 8);
+            let py = MENU_BAR_HEIGHT + 4;
+            let panel = Rect::new(px, py, pw, 420);
+            if panel.contains(x, y) {
+                // Check clear button
+                let clear_x = px + pw - 60;
+                if Rect::new(clear_x, py + 40, 44, 18).contains(x, y) {
+                    self.notifications.clear_all();
+                    self.needs_redraw = true;
+                }
+            } else {
+                self.calendar_open = false;
+                self.needs_redraw = true;
+            }
+            return true;
+        }
+
+        // Quick settings toggle clicks
+        if self.quick_settings_open {
+            let panel_w = 280;
+            let panel_x = self.desktop_rect.width.saturating_sub(panel_w + 8);
+            let panel_y = self.menu_bar_rect.height + 8;
+            if let Some(tid) = super::widgets::toggle_at_point(
+                &self.quick_toggles,
+                panel_x,
+                panel_y,
+                panel_w,
+                x,
+                y,
+            ) {
+                for tog in &mut self.quick_toggles {
+                    if tog.id == tid {
+                        tog.active = !tog.active;
+                        match tid {
+                            super::widgets::ToggleId::DoNotDisturb => {
+                                self.notifications.do_not_disturb = tog.active;
+                            }
+                            _ => {}
+                        }
+                        break;
+                    }
+                }
+                self.needs_redraw = true;
+                return true;
+            }
+            // Power button in quick settings
+            let pw_btn = Rect::new(panel_x + panel_w - 44, panel_y + 340, 32, 32);
+            if pw_btn.contains(x, y) {
+                self.power_dialog.open();
+                self.quick_settings_open = false;
+                self.needs_redraw = true;
+                return true;
+            }
+        }
+
+        // Clock click → calendar dropdown
+        let font = crate::graphics::get_default_font();
+        let clock = self.wall_clock_string();
+        let clock_w = clock.len() * font.char_width;
+        let clock_rect = Rect::new(
+            self.menu_bar_rect.x + self.menu_bar_rect.width.saturating_sub(clock_w + 12),
+            self.menu_bar_rect.y + 5,
+            clock_w + 8,
+            20,
+        );
+        if clock_rect.contains(x, y) {
+            self.calendar_open = !self.calendar_open;
+            self.quick_settings_open = false;
+            self.activities_open = false;
+            self.needs_redraw = true;
             return true;
         }
 
@@ -2255,7 +2832,7 @@ impl WindowManager {
         }
 
         if let Some(window_id) = self.window_at_point(x, y) {
-            self.focus_window(window_id);
+            self.bring_to_front(window_id);
 
             let window_info = if let Some(window) = self.get_window(window_id) {
                 Some((
@@ -2314,6 +2891,13 @@ impl WindowManager {
                     let handle_x = win_x + win_width.saturating_sub(RESIZE_HANDLE_SIZE);
                     let handle_y = win_y + win_height.saturating_sub(RESIZE_HANDLE_SIZE);
                     if x >= handle_x && y >= handle_y {
+                        // Route through the ported Mutter grab stack.
+                        let grab = crate::mutter_port::clutter::grab::Grab::with_kind(
+                            window_id,
+                            false,
+                            crate::mutter_port::clutter::grab::GrabKind::Resize,
+                        );
+                        self.grab_stack.activate(grab);
                         self.resizing_window = Some(window_id);
                         self.drag_offset = (
                             x.saturating_sub(win_x + win_width),
@@ -2326,6 +2910,13 @@ impl WindowManager {
                 // Check title bar for dragging
                 let title_rect = Rect::new(win_x, win_y, win_width, TITLE_BAR_HEIGHT);
                 if title_rect.contains(x, y) {
+                    // Route through the ported Mutter grab stack.
+                    let grab = crate::mutter_port::clutter::grab::Grab::with_kind(
+                        window_id,
+                        false,
+                        crate::mutter_port::clutter::grab::GrabKind::Move,
+                    );
+                    self.grab_stack.activate(grab);
                     self.dragging_window = Some(window_id);
                     self.drag_offset = (x.saturating_sub(win_x), y.saturating_sub(win_y));
                     return true;
@@ -2355,8 +2946,19 @@ impl WindowManager {
 
     /// Handle mouse up
     pub fn handle_mouse_up(&mut self, x: usize, y: usize, _button: MouseButton) {
+        super::idle_monitor::notify_user_input();
         // Check if window should snap to edge
         self.check_snap_drag(x, y);
+        // Dismiss the active grab via the ported Mutter grab stack.
+        // This clears the topmost grab (the drag or resize grab).
+        if let Some(outcome) = self.grab_stack.dismiss_topmost() {
+            // If the grab owned its actor, destroy it (not used by the
+            // window manager's drag/resize grabs, which set owns_actor
+            // = false, but handled for completeness).
+            if let Some(actor_id) = outcome.actor_to_destroy {
+                self.close_window(actor_id);
+            }
+        }
         self.dragging_window = None;
         self.resizing_window = None;
 
@@ -2426,6 +3028,40 @@ impl WindowManager {
 
         if self.gnome_osd_until != 0 {
             self.render_gnome_osd();
+        }
+
+        // Widget overlays
+        super::widgets::render_banner(&self.notifications, self.desktop_rect.width);
+
+        if self.calendar_open {
+            super::widgets::render_calendar_dropdown(
+                &self.notifications,
+                self.desktop_rect.width,
+                self.calendar_open,
+            );
+        }
+
+        if self.alt_tab.open {
+            let mut titles: Vec<(WindowId, &str), 64> = Vec::new();
+            for w in &self.windows {
+                if w.visible && w.state != WindowState::Closed {
+                    let _ = titles.push((w.id, w.title));
+                }
+            }
+            super::widgets::render_alt_tab(
+                &self.alt_tab,
+                &titles,
+                self.desktop_rect.width,
+                self.desktop_rect.height,
+            );
+        }
+
+        if self.power_dialog.open {
+            super::widgets::render_power_dialog(
+                &self.power_dialog,
+                self.desktop_rect.width,
+                self.desktop_rect.height,
+            );
         }
 
         // Render context menu on top
@@ -3155,6 +3791,80 @@ impl WindowManager {
             colors::TEXT_COLOR_WHITE,
             font,
         );
+
+        // Workspace thumbnails strip (GNOME-style, right side)
+        let ws_thumb_w = 120;
+        let ws_thumb_h = 68;
+        let ws_strip_x = overlay.x + overlay.width.saturating_sub(ws_thumb_w + 18);
+        let ws_strip_y = overlay.y + 42;
+        crate::graphics::draw_text(
+            "Workspaces",
+            ws_strip_x,
+            ws_strip_y,
+            colors::MENU_BAR_ICON,
+            font,
+        );
+        for i in 0..WORKSPACE_COUNT {
+            let ty = ws_strip_y + 20 + i * (ws_thumb_h + 8);
+            if ty + ws_thumb_h > overlay.y + overlay.height {
+                break;
+            }
+            let thumb = Rect::new(ws_strip_x, ty, ws_thumb_w, ws_thumb_h);
+            let is_current = i == self.current_workspace as usize;
+            let bg = if is_current {
+                Color::rgb(50, 50, 60)
+            } else {
+                Color::rgb(36, 36, 42)
+            };
+            crate::graphics::framebuffer::fill_rect(thumb, bg);
+            let border = if is_current {
+                colors::DOCK_ICON_ACCENT
+            } else {
+                Color::rgb(60, 60, 68)
+            };
+            crate::graphics::framebuffer::draw_rect(thumb, border, if is_current { 2 } else { 1 });
+
+            // Mini window indicators inside thumbnail
+            let win_count = self
+                .windows
+                .iter()
+                .filter(|w| w.state != WindowState::Closed && w.workspace == i as u8)
+                .count();
+            if win_count > 0 {
+                let mini_w = 20;
+                let mini_h = 12;
+                let mini_x = thumb.x + 6;
+                let mini_y = thumb.y + 6;
+                for j in 0..win_count.min(4) {
+                    let mx = mini_x + j * (mini_w + 2);
+                    crate::graphics::framebuffer::fill_rect(
+                        Rect::new(mx, mini_y, mini_w, mini_h),
+                        Color::rgb(80, 80, 100),
+                    );
+                    crate::graphics::framebuffer::draw_rect(
+                        Rect::new(mx, mini_y, mini_w, mini_h),
+                        Color::rgb(100, 100, 120),
+                        1,
+                    );
+                }
+            }
+
+            let label = format!("WS {}", i + 1);
+            crate::graphics::draw_text(
+                &label,
+                thumb.x + 6,
+                thumb.y + ws_thumb_h.saturating_sub(font.char_height + 4),
+                if is_current {
+                    colors::TEXT_COLOR_WHITE
+                } else {
+                    colors::MENU_BAR_ICON
+                },
+                font,
+            );
+        }
+
+        // Window previews (left area, with mini title bars)
+        let win_area_w = overlay.width.saturating_sub(ws_thumb_w + 48);
         crate::graphics::draw_text(
             "Windows",
             overlay.x + 18,
@@ -3182,16 +3892,49 @@ impl WindowManager {
                 Self::shade_color(tile_color, -20),
             );
             crate::graphics::framebuffer::draw_rect(tile, colors::BORDER_INACTIVE, 1);
+
+            // Mini title bar inside preview
+            let mini_title = Rect::new(tile.x, tile.y, tile.width, 16);
+            self.fill_vertical_gradient(
+                mini_title,
+                if window.focused {
+                    colors::TITLE_ACTIVE_TOP
+                } else {
+                    colors::TITLE_INACTIVE_TOP
+                },
+                if window.focused {
+                    colors::TITLE_ACTIVE_BOTTOM
+                } else {
+                    colors::TITLE_INACTIVE_BOTTOM
+                },
+            );
             crate::graphics::draw_text(
                 window.title,
-                tile.x + 10,
-                tile.y + 10,
+                tile.x + 6,
+                tile.y + 3,
                 colors::TEXT_COLOR_WHITE,
                 font,
             );
 
+            // Mini window content placeholder
+            let content = Rect::new(tile.x + 2, tile.y + 18, tile.width - 4, tile.height - 20);
+            crate::graphics::framebuffer::fill_rect(content, Color::rgb(50, 50, 56));
+
+            // Draw a few lines to simulate content
+            for line_i in 0..3 {
+                let line_y = content.y + 6 + line_i * 14;
+                if line_y + 8 > content.y + content.height {
+                    break;
+                }
+                let line_w = (content.width - 12) * (3 - line_i) / 3;
+                crate::graphics::framebuffer::fill_rect(
+                    Rect::new(content.x + 6, line_y, line_w, 6),
+                    Color::rgb(80, 80, 90),
+                );
+            }
+
             x += 196;
-            if x + 180 > overlay.x + overlay.width {
+            if x + 180 > overlay.x + win_area_w {
                 x = overlay.x + 18;
                 y += 112;
             }
@@ -3206,7 +3949,12 @@ impl WindowManager {
             .iter()
             .filter(|window| window.state != WindowState::Closed)
             .count();
-        let apps_line = format!("{} open windows", open_count);
+        let apps_line = format!(
+            "{} open windows  |  WS {} of {}",
+            open_count,
+            self.current_workspace + 1,
+            WORKSPACE_COUNT
+        );
         crate::graphics::draw_text(
             &apps_line,
             overlay.x + 18,
@@ -3445,82 +4193,103 @@ impl WindowManager {
 
     fn render_quick_settings(&self) {
         let font = crate::graphics::get_default_font();
-        let panel = Rect::new(
-            self.desktop_rect.width.saturating_sub(260),
-            self.menu_bar_rect.height + 8,
-            244,
-            150,
-        );
-        let uptime = format!("Uptime: {}s", crate::time::uptime_ms() / 1000);
-        let windows = format!(
-            "Open windows: {}",
-            self.windows
-                .iter()
-                .filter(|window| window.state != WindowState::Closed)
-                .count()
-        );
-        let focused = self
-            .focused_window
-            .and_then(|id| self.get_window(id))
-            .map_or("none", |window| window.title);
-        let focused_line = format!("Focused: {}", focused);
-        let network_line = format!(
-            "Network interfaces: {}",
-            crate::net::network_stack().interface_count()
+        let panel_w = 280;
+        let panel_x = self.desktop_rect.width.saturating_sub(panel_w + 8);
+        let panel_y = self.menu_bar_rect.height + 8;
+        let panel = Rect::new(panel_x, panel_y, panel_w, 380);
+
+        // Shadow
+        crate::graphics::framebuffer::fill_rect(
+            Rect::new(panel_x + 4, panel_y + 4, panel_w, 380),
+            Color::new(0, 0, 0, 100),
         );
 
-        self.fill_vertical_gradient(panel, colors::DOCK_GLASS, colors::MENU_BAR_BACKGROUND);
-        crate::graphics::framebuffer::draw_rect(panel, colors::DOCK_ICON_ACCENT, 2);
-        crate::graphics::draw_text(
-            "System",
-            panel.x + 14,
-            panel.y + 12,
-            colors::TEXT_COLOR_WHITE,
-            font,
+        // Background
+        self.fill_vertical_gradient(panel, Color::rgb(36, 36, 40), Color::rgb(28, 28, 32));
+        crate::graphics::framebuffer::draw_rect(panel, Color::rgb(55, 55, 62), 1);
+
+        // Toggle grid (GNOME 43+ style)
+        let toggles_h =
+            super::widgets::render_quick_toggles(&self.quick_toggles, panel_x, panel_y, panel_w);
+
+        // Sliders section
+        let slider_y = panel_y + toggles_h + 16;
+        super::widgets::render_slider(
+            panel_x + 16,
+            slider_y,
+            panel_w - 32,
+            "Brightness",
+            self.brightness,
+            100,
         );
-        crate::graphics::draw_text(
-            &uptime,
-            panel.x + 14,
-            panel.y + 36,
-            colors::MENU_BAR_ICON,
-            font,
+        super::widgets::render_slider(
+            panel_x + 16,
+            slider_y + 36,
+            panel_w - 32,
+            "Volume",
+            self.volume,
+            100,
+        );
+
+        // Battery indicator
+        let bat_y = slider_y + 80;
+        super::widgets::render_battery_indicator(&self.battery, panel_x + 16, bat_y);
+
+        // System stats section
+        let stats_y = bat_y + 28;
+        let uptime = format!("Uptime: {}s", crate::time::uptime_ms() / 1000);
+        crate::graphics::draw_text(&uptime, panel_x + 16, stats_y, colors::MENU_BAR_ICON, font);
+        let windows = format!(
+            "Windows: {}",
+            self.windows
+                .iter()
+                .filter(|w| w.state != WindowState::Closed)
+                .count()
         );
         crate::graphics::draw_text(
             &windows,
-            panel.x + 14,
-            panel.y + 54,
+            panel_x + 16,
+            stats_y + 18,
             colors::MENU_BAR_ICON,
             font,
+        );
+        let net_line = format!(
+            "Net: {} ifaces",
+            crate::net::network_stack().interface_count()
         );
         crate::graphics::draw_text(
-            &focused_line,
-            panel.x + 14,
-            panel.y + 72,
+            &net_line,
+            panel_x + 16,
+            stats_y + 36,
             colors::MENU_BAR_ICON,
             font,
         );
-        crate::graphics::draw_text(
-            &network_line,
-            panel.x + 14,
-            panel.y + 98,
-            colors::MENU_BAR_ICON,
-            font,
-        );
-
         if let Some(stats) = crate::memory::get_memory_stats() {
             let mem_line = format!(
-                "Memory: {} / {} MiB",
+                "Mem: {}/{} MiB",
                 stats.allocated_memory_mb(),
                 stats.total_memory_mb()
             );
             crate::graphics::draw_text(
                 &mem_line,
-                panel.x + 14,
-                panel.y + 116,
+                panel_x + 16,
+                stats_y + 54,
                 colors::MENU_BAR_ICON,
                 font,
             );
         }
+
+        // Power button at bottom
+        let pw_btn = Rect::new(panel_x + panel_w - 44, panel_y + 340, 32, 32);
+        self.draw_circle(pw_btn.x + 16, pw_btn.y + 16, 14, Color::rgb(60, 60, 68));
+        self.draw_circle(pw_btn.x + 16, pw_btn.y + 16, 12, Color::rgb(200, 60, 50));
+        crate::graphics::draw_text(
+            "P",
+            pw_btn.x + 10,
+            pw_btn.y + 9,
+            colors::TEXT_COLOR_WHITE,
+            font,
+        );
     }
 
     fn render_menu_bar(&self) {
@@ -3590,8 +4359,26 @@ impl WindowManager {
         self.render_workspace_switcher();
         self.render_system_tray(text_y);
 
-        let clock = Self::format_clock();
-        let right_text = format!("{}", clock.as_str());
+        // Notification badge (between system tray and clock)
+        let unread = self.notifications.unread_count();
+        if unread > 0 {
+            let badge_str = if unread < 10 {
+                format!("({})", unread)
+            } else {
+                format!("(9+)")
+            };
+            let badge_w = badge_str.len() * font.char_width;
+            let clock_w = self.wall_clock_string().len() * font.char_width;
+            let badge_x = self.menu_bar_rect.x
+                + self
+                    .menu_bar_rect
+                    .width
+                    .saturating_sub(clock_w + badge_w + 20);
+            crate::graphics::draw_text(&badge_str, badge_x, text_y, colors::DOCK_ICON_ACCENT, font);
+        }
+
+        let clock = self.wall_clock_string();
+        let right_text = format!("{}", clock);
         let right_width = right_text.len() * font.char_width;
         let right_x =
             self.menu_bar_rect.x + self.menu_bar_rect.width.saturating_sub(right_width + 12);

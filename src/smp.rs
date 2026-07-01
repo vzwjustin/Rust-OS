@@ -759,4 +759,18 @@ impl<T> PerCpu<T> {
         let mut data = self.data.lock();
         data.get_mut(&cpu).map(f)
     }
+
+    /// Visit every CPU's currently-set value.
+    ///
+    /// Added for consumers (e.g. `locking::percpu_rwsem`) that need to
+    /// fold over all per-CPU slots, such as summing reader counts during
+    /// a writer drain. Note this still locks the single backing map for
+    /// the duration of the callback, since this container is
+    /// `Mutex<BTreeMap<..>>`-backed rather than a true per-CPU array.
+    pub fn for_each<F: FnMut(u32, &T)>(&self, mut f: F) {
+        let data = self.data.lock();
+        for (cpu, val) in data.iter() {
+            f(*cpu, val);
+        }
+    }
 }

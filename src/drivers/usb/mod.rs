@@ -1,24 +1,38 @@
-//! USB host controller framework (xHCI register model + device enumeration)
+//! USB host stack.
 //!
-//! Scans PCI for xHCI controllers, maps MMIO, and enumerates mass-storage
-//! devices. Soft-backed MSC devices use an in-memory block store so the
-//! existing `usb_mass_storage` driver can perform real BOT/SCSI I/O.
+//! Layers, bottom to top:
+//!   * [`hcd`]        — the hardware-independent `HostController` interface.
+//!   * [`xhci`]       — an in-memory xHCI controller model (rings, TRBs,
+//!                      cycle-bit toggle, doorbells, event posting).
+//!   * [`descriptor`] — standard USB descriptor structures and parsers.
+//!   * [`device`]     — device-side virtual peripherals (HID keyboard, BOT
+//!                      flash disk) plus the shared soft SCSI engine.
+//!   * [`hub`]        — root-hub enumeration (reset → address → descriptors →
+//!                      configure).
+//!   * [`class`]      — HID boot and Bulk-Only-Transport class drivers.
+//!
+//! [`init`] probes real PCI xHCI controllers and records only hardware-backed
+//! host controllers. The in-memory controller and virtual HID/BOT devices stay
+//! available as test helpers and are not published as real hardware.
+
+pub mod class;
+pub mod descriptor;
+pub mod device;
+pub mod hcd;
+pub mod hub;
+pub mod xhci;
 
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
-use super::storage::usb_mass_storage::{
-    create_usb_mass_storage_driver_with_host, is_usb_mass_storage_device, CommandStatusWrapper,
-    ScsiInquiryResponse, UsbMscProtocol,
-};
+use device::SoftDisk;
+
+use super::storage::usb_mass_storage::{is_usb_mass_storage_device, CommandStatusWrapper};
 use super::storage::StorageError;
 
-// ── xHCI register model ─────────────────────────────────────────────────
+// ── xHCI register model (PCI discovery) ─────────────────────────────────
 
 pub const XHCI_PCI_CLASS: u8 = 0x0C;
 pub const XHCI_PCI_SUBCLASS: u8 = 0x03;
@@ -54,27 +68,36 @@ pub struct XhciHost {
 }
 
 #[derive(Debug)]
-struct SoftMassStorage {
-    block_size: u32,
-    block_count: u64,
-    data: Vec<u8>,
-    last_tag: u32,
-}
-
-#[derive(Debug)]
 struct UsbDeviceEntry {
+    #[allow(dead_code)]
     host_id: u32,
+    #[allow(dead_code)]
     bulk_out_ep: u8,
+    #[allow(dead_code)]
     bulk_in_ep: u8,
-    backend: SoftMassStorage,
+    backend: SoftDisk,
 }
 
 static NEXT_HOST_ID: AtomicU32 = AtomicU32::new(1);
+#[cfg(test)]
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(1);
 
-static XHCI_HOSTS: RwLock<Vec<XhciHost>> = RwLock::new(Vec::new());
+static XHCI_HOSTS: RwLock<alloc::vec::Vec<XhciHost>> = RwLock::new(alloc::vec::Vec::new());
 static USB_DEVICES: RwLock<BTreeMap<u32, UsbDeviceEntry>> = RwLock::new(BTreeMap::new());
+/// Software xHCI controllers indexed by id.
+#[cfg(test)]
+static CONTROLLERS: RwLock<BTreeMap<u32, xhci::XhciController>> = RwLock::new(BTreeMap::new());
 static USB_INITIALIZED: RwLock<bool> = RwLock::new(false);
+/// Cached stats from the last successful `init()` so `get_stats()` reports the
+/// real enumeration counts on the idempotent path.
+static LAST_STATS: RwLock<UsbInitStats> = RwLock::new(UsbInitStats {
+    host_count: 0,
+    device_count: 0,
+    msc_enumerated: 0,
+    enumerated_devices: 0,
+    hid_devices: 0,
+    bot_devices: 0,
+});
 
 fn mmio_read32(base: u64, offset: u32) -> u32 {
     let addr = (base + offset as u64) as *const u32;
@@ -122,145 +145,25 @@ fn probe_xhci_controller(dev: &crate::pci::PciDevice) -> Result<XhciHost, &'stat
     })
 }
 
-fn register_soft_msc_device(host_id: u32, size_mb: u32) -> u32 {
-    let block_size = 512u32;
-    let block_count = (size_mb as u64) * 1024 * 1024 / block_size as u64;
-    let dev_id = NEXT_DEVICE_ID.fetch_add(1, Ordering::SeqCst);
+// ── Legacy soft mass-storage backing store ──────────────────────────────
 
+#[cfg(test)]
+fn register_soft_msc_device(host_id: u32, size_mb: u32) -> u32 {
+    let dev_id = NEXT_DEVICE_ID.fetch_add(1, Ordering::SeqCst);
     USB_DEVICES.write().insert(
         dev_id,
         UsbDeviceEntry {
             host_id,
             bulk_out_ep: 0x01,
             bulk_in_ep: 0x81,
-            backend: SoftMassStorage {
-                block_size,
-                block_count,
-                data: vec![0u8; (block_count * block_size as u64) as usize],
-                last_tag: 0,
-            },
+            backend: SoftDisk::new(size_mb),
         },
     );
-
     dev_id
 }
 
-fn scsi_opcode(command: &[u8]) -> Option<u8> {
-    command.first().copied()
-}
-
-fn parse_rw_lba(command: &[u8], opcode: u8) -> Result<(u64, u32), StorageError> {
-    if opcode == 0x28 || opcode == 0x2A {
-        if command.len() < 10 {
-            return Err(StorageError::HardwareError);
-        }
-        let lba = u32::from_be_bytes([command[2], command[3], command[4], command[5]]) as u64;
-        let count = u16::from_be_bytes([command[7], command[8]]) as u32;
-        Ok((lba, count))
-    } else if opcode == 0x88 || opcode == 0x8A {
-        if command.len() < 14 {
-            return Err(StorageError::HardwareError);
-        }
-        let lba = u64::from_be_bytes([
-            command[2], command[3], command[4], command[5], command[6], command[7], command[8],
-            command[9],
-        ]);
-        let count = u32::from_be_bytes([command[10], command[11], command[12], command[13]]);
-        Ok((lba, count))
-    } else {
-        Err(StorageError::HardwareError)
-    }
-}
-
-fn handle_soft_scsi(
-    backend: &mut SoftMassStorage,
-    command: &[u8],
-    data_length: u32,
-    direction_in: bool,
-    buffer: Option<&mut [u8]>,
-    tag: u32,
-) -> Result<CommandStatusWrapper, StorageError> {
-    backend.last_tag = tag;
-
-    let opcode = scsi_opcode(command).ok_or(StorageError::HardwareError)?;
-    let status = match opcode {
-        0x00 => 0,
-        0x12 if direction_in => {
-            let response = ScsiInquiryResponse {
-                peripheral: 0x00,
-                removable: 0x80,
-                version: 0x04,
-                response_format: 0x02,
-                additional_length: 31,
-                flags: [0; 3],
-                vendor_id: *b"RustOS  ",
-                product_id: *b"USB Soft MSC    ",
-                product_revision: *b"1.0 ",
-            };
-            if let Some(buf) = buffer {
-                let bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        &response as *const ScsiInquiryResponse as *const u8,
-                        core::mem::size_of::<ScsiInquiryResponse>(),
-                    )
-                };
-                let len = core::cmp::min(buf.len(), bytes.len());
-                buf[..len].copy_from_slice(&bytes[..len]);
-            }
-            0
-        }
-        0x25 if direction_in => {
-            let last_lba = backend.block_count.saturating_sub(1) as u32;
-            if let Some(buf) = buffer {
-                if buf.len() >= 8 {
-                    buf[0..4].copy_from_slice(&last_lba.to_be_bytes());
-                    buf[4..8].copy_from_slice(&backend.block_size.to_be_bytes());
-                }
-            }
-            0
-        }
-        0x28 | 0x88 if direction_in => {
-            let (lba, count) = parse_rw_lba(command, opcode)?;
-            let byte_len = (count as u64) * (backend.block_size as u64);
-            let start = lba * (backend.block_size as u64);
-            let end = start + byte_len;
-            if end > backend.data.len() as u64 || lba + count as u64 > backend.block_count {
-                return Err(StorageError::InvalidSector);
-            }
-            if let Some(buf) = buffer {
-                let want = core::cmp::max(data_length as usize, byte_len as usize);
-                let len = core::cmp::min(buf.len(), want);
-                buf[..len].copy_from_slice(&backend.data[start as usize..start as usize + len]);
-            }
-            0
-        }
-        0x2A | 0x8A if !direction_in => {
-            let (lba, count) = parse_rw_lba(command, opcode)?;
-            let byte_len = (count as u64) * (backend.block_size as u64);
-            let start = lba * (backend.block_size as u64);
-            let end = start + byte_len;
-            if end > backend.data.len() as u64 || lba + count as u64 > backend.block_count {
-                return Err(StorageError::InvalidSector);
-            }
-            if let Some(buf) = buffer {
-                let len = core::cmp::min(buf.len(), byte_len as usize);
-                backend.data[start as usize..start as usize + len].copy_from_slice(&buf[..len]);
-            }
-            0
-        }
-        0x35 | 0x1B => 0,
-        _ => 1,
-    };
-
-    Ok(CommandStatusWrapper {
-        signature: CommandStatusWrapper::SIGNATURE,
-        tag,
-        data_residue: 0,
-        status,
-    })
-}
-
-/// Execute SCSI over a host-attached soft MSC device.
+/// Execute SCSI over a host-attached soft MSC device. Shares the SCSI engine
+/// with the BOT virtual device via [`SoftDisk::execute_scsi`].
 pub fn msc_execute_scsi(
     device_id: u32,
     command: &[u8],
@@ -273,63 +176,105 @@ pub fn msc_execute_scsi(
     let entry = devices
         .get_mut(&device_id)
         .ok_or(StorageError::DeviceNotFound)?;
-    handle_soft_scsi(
-        &mut entry.backend,
-        command,
-        data_length,
-        direction_in,
-        buffer,
-        tag,
-    )
+    entry
+        .backend
+        .execute_scsi(command, data_length, direction_in, buffer, tag)
 }
 
-fn enumerate_on_host(host: &XhciHost) -> usize {
-    let dev_id = register_soft_msc_device(host.id, 64);
-    let driver = create_usb_mass_storage_driver_with_host(
-        dev_id,
-        0x1234,
-        0x5678,
-        0x06,
-        UsbMscProtocol::BulkOnly as u8,
-        Some(format!("usb-msc-{}", host.location)),
-    );
+// ── Software USB stack exercise (tests only) ────────────────────────────
 
-    let timestamp = crate::time::get_system_time_ms();
-    let register_result: Option<Result<u32, StorageError>> =
-        super::storage::with_storage_manager(|mgr| -> Result<u32, StorageError> {
-            let storage_id = mgr.register_device(
-                driver,
-                String::from("RustOS USB Soft MSC"),
-                format!("USB-{}", host.location),
-                String::from("1.0"),
-                timestamp,
-            )?;
-            if let Some(device) = mgr.get_device_mut(storage_id) {
-                device.driver.init()?;
+/// Build a virtual controller, enumerate the attached devices and run both a
+/// HID interrupt poll and a BOT read/write round-trip. Returns the controller
+/// id together with the number of HID devices and BOT round-trips that worked.
+#[cfg(test)]
+fn build_and_exercise_virtual_stack() -> (u32, usize, usize) {
+    use alloc::boxed::Box;
+
+    let mut controller = xhci::XhciController::new("soft-xhci", 4);
+    controller.run();
+
+    // Port 1: boot keyboard (interrupt-IN endpoint 0x81).
+    let _ = controller.attach(1, Box::new(device::VirtualHidKeyboard::new(0x81)));
+    // Port 2: boot mouse (interrupt-IN endpoint 0x83).
+    let _ = controller.attach(2, Box::new(device::VirtualHidMouse::new(0x83)));
+    // Port 3: BOT flash disk (bulk-IN 0x82, bulk-OUT 0x02), 8 MiB.
+    let _ = controller.attach(3, Box::new(device::VirtualBotDisk::new(8, 0x82, 0x02)));
+
+    let enumerated = hub::enumerate_all(&mut controller);
+
+    let mut hid_devices = 0usize;
+    let mut bot_devices = 0usize;
+    let _ = crate::drivers::hid::init();
+
+    for dev in &enumerated {
+        if let Some(hid) = class::hid::bind(dev) {
+            let _ = hid.configure_boot_protocol(&mut controller);
+            match hid.poll_and_dispatch(&mut controller) {
+                Ok(true) => {
+                    crate::serial_println!(
+                        "usb-hid: boot device slot={} ep={:#x} proto={}",
+                        hid.slot,
+                        hid.interrupt_in_ep,
+                        hid.interface_protocol
+                    );
+                    hid_devices += 1;
+                }
+                Ok(false) => {
+                    hid_devices += 1;
+                }
+                Err(e) => crate::serial_println!("usb-hid: poll failed: {}", e),
             }
-            Ok(storage_id)
-        });
-
-    match register_result {
-        Some(Ok(storage_id)) => {
-            crate::serial_println!(
-                "usb: MSC on {} host={} usb_dev={} storage={}",
-                host.location,
-                host.id,
-                dev_id,
-                storage_id
-            );
-            1
+        } else if let Some(mut bot) = class::storage::bind(dev) {
+            match exercise_bot(&mut controller, &mut bot) {
+                Ok(()) => {
+                    crate::serial_println!(
+                        "usb-bot: slot={} {} blocks x {} bytes verified",
+                        bot.slot,
+                        bot.block_count,
+                        bot.block_size
+                    );
+                    bot_devices += 1;
+                }
+                Err(e) => crate::serial_println!("usb-bot: exercise failed: {}", e),
+            }
         }
-        Some(Err(e)) => {
-            crate::serial_println!("usb: MSC register failed: {:?}", e);
-            0
-        }
-        None => 0,
     }
+
+    let id = NEXT_HOST_ID.fetch_add(1, Ordering::SeqCst);
+    CONTROLLERS.write().insert(id, controller);
+    (id, hid_devices, bot_devices)
 }
 
-/// Initialize USB host controllers and enumerate devices.
+/// Run INQUIRY → READ CAPACITY → WRITE(10) → READ(10) and verify the data.
+#[cfg(test)]
+fn exercise_bot(
+    hc: &mut dyn hcd::HostController,
+    bot: &mut class::storage::BotDevice,
+) -> Result<(), &'static str> {
+    let _inq = bot.inquiry(hc)?;
+    let (blocks, block_size) = bot.read_capacity(hc)?;
+    if blocks == 0 || block_size == 0 {
+        return Err("usb-bot: zero capacity");
+    }
+
+    let mut write_buf = alloc::vec![0u8; block_size as usize];
+    for (i, b) in write_buf.iter_mut().enumerate() {
+        *b = (i as u8) ^ 0xA5;
+    }
+    bot.write10(hc, 0, 1, &mut write_buf)?;
+
+    let mut read_buf = alloc::vec![0u8; block_size as usize];
+    bot.read10(hc, 0, 1, &mut read_buf)?;
+
+    if read_buf != write_buf {
+        return Err("usb-bot: read-back mismatch");
+    }
+    Ok(())
+}
+
+// ── Public init / stats ─────────────────────────────────────────────────
+
+/// Initialize USB host controllers and enumerate devices. Idempotent.
 pub fn init() -> Result<UsbInitStats, &'static str> {
     {
         let mut init = USB_INITIALIZED.write();
@@ -340,8 +285,7 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
     }
 
     let pci_devices = crate::pci::list_devices();
-    let mut hosts = Vec::new();
-    let mut msc_enumerated = 0usize;
+    let mut hosts = alloc::vec::Vec::new();
 
     for dev in pci_devices.iter() {
         if dev.class != XHCI_PCI_CLASS
@@ -354,7 +298,7 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
         match probe_xhci_controller(dev) {
             Ok(host) => {
                 crate::serial_println!(
-                    "usb: xHCI {} {:04x}:{:04x} caps={} ports={} ver={:x}",
+                    "usb: xHCI {} {:04x}:{:04x} slots={} ports={} ver={:x}",
                     host.location,
                     host.vendor_id,
                     host.device_id,
@@ -362,7 +306,6 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
                     host.max_ports,
                     host.hci_version
                 );
-                msc_enumerated += enumerate_on_host(&host);
                 hosts.push(host);
             }
             Err(e) => {
@@ -371,31 +314,28 @@ pub fn init() -> Result<UsbInitStats, &'static str> {
         }
     }
 
-    if hosts.is_empty() {
-        let host = XhciHost {
-            id: NEXT_HOST_ID.fetch_add(1, Ordering::SeqCst),
-            location: String::from("soft"),
-            vendor_id: 0,
-            device_id: 0,
-            mmio_base: 0,
-            cap_length: 0,
-            hci_version: 0x0100,
-            max_slots: 32,
-            max_ports: 8,
-            state: UsbHostState::Running,
-        };
-        msc_enumerated += enumerate_on_host(&host);
-        hosts.push(host);
-        crate::serial_println!("usb: soft xHCI host (no PCI controller)");
-    }
-
     *XHCI_HOSTS.write() = hosts;
 
-    Ok(UsbInitStats {
+    let stats = UsbInitStats {
         host_count: XHCI_HOSTS.read().len(),
         device_count: USB_DEVICES.read().len(),
-        msc_enumerated,
-    })
+        msc_enumerated: 0,
+        enumerated_devices: 0,
+        hid_devices: 0,
+        bot_devices: 0,
+    };
+    *LAST_STATS.write() = stats;
+
+    crate::serial_println!(
+        "usb: ready hosts={} enum={} hid={} bot={} msc={}",
+        XHCI_HOSTS.read().len(),
+        stats.enumerated_devices,
+        stats.hid_devices,
+        stats.bot_devices,
+        stats.msc_enumerated
+    );
+
+    Ok(stats)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -403,16 +343,17 @@ pub struct UsbInitStats {
     pub host_count: usize,
     pub device_count: usize,
     pub msc_enumerated: usize,
+    pub enumerated_devices: usize,
+    pub hid_devices: usize,
+    pub bot_devices: usize,
 }
 
 pub fn get_stats() -> UsbInitStats {
-    let hosts = XHCI_HOSTS.read().len();
-    let devices = USB_DEVICES.read().len();
-    UsbInitStats {
-        host_count: hosts,
-        device_count: devices,
-        msc_enumerated: devices,
-    }
+    let mut stats = *LAST_STATS.read();
+    // Reflect live registry sizes in case they changed since init.
+    stats.host_count = XHCI_HOSTS.read().len();
+    stats.device_count = USB_DEVICES.read().len();
+    stats
 }
 
 pub fn host_count() -> usize {

@@ -19,6 +19,9 @@ use crate::vfs::{self, FdKind};
 static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 const MAX_SOCKET_RW_CHUNK: usize = 64 * 1024;
 const MAX_SOCKET_IOV: usize = 1024;
+const LINUX_MSGHDR_SIZE: usize = 56;
+const LINUX_MMSGHDR_SIZE: usize = 64;
+const LINUX_MMSGHDR_MSG_LEN_OFFSET: usize = LINUX_MSGHDR_SIZE;
 
 // Linux socket message flags (from <linux/socket.h>)
 /// Send data without routing table lookup (no-op in our stack)
@@ -137,6 +140,17 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     SOCKET_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
 }
 
 /// Map a network error to a Linux error code.
@@ -461,7 +475,6 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
 
     // msghdr layout: { void *msg_name, socklen_t msg_namelen,
     //   struct iovec *msg_iov, size_t msg_iovlen, void *msg_control, size_t msg_controllen, int msg_flags }
-    let socket_id = fd_to_socket_id(sockfd)?;
     let _ = flags & (MSG_NOSIGNAL | MSG_DONTROUTE | MSG_MORE | MSG_DONTWAIT);
 
     let (msg_name, msg_namelen, msg_iov, msg_iovlen) = read_msghdr_fields(msg)?;
@@ -469,6 +482,42 @@ pub fn sendmsg(sockfd: Fd, msg: *const u8, flags: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EFAULT);
     }
 
+    // AF_UNIX (D-Bus / Wayland bridge). libwayland flushes its outbound buffer
+    // exclusively through sendmsg, so this is the primary client→compositor
+    // write path. Gather all iovecs into one contiguous buffer (Wayland wire
+    // messages must be delivered intact) and hand it to the unix transport.
+    //
+    // NOTE: SCM_RIGHTS ancillary fds in msg_control (e.g. the wl_shm.create_pool
+    // buffer fd) are not yet imported into the compositor — that is the next
+    // milestone (client-buffer rendering). Handshake, registry bind, surface
+    // creation and configure all work without it.
+    if unix::is_unix_fd(sockfd) {
+        let mut data = Vec::new();
+        for i in 0..msg_iovlen {
+            let iov = copy_iovec_from_user(msg_iov, i)?;
+            if iov.iov_base.is_null() && iov.iov_len > 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            if iov.iov_len == 0 {
+                continue;
+            }
+            let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
+            let mut chunk = vec![0u8; copy_len];
+            UserSpaceMemory::copy_from_user(iov.iov_base as u64, &mut chunk)
+                .map_err(|_| LinuxError::EFAULT)?;
+            data.extend_from_slice(&chunk);
+        }
+        let dest_path = if msg_name.is_null() {
+            None
+        } else {
+            Some(parse_unix_path(msg_name as *const SockAddr, msg_namelen)?)
+        };
+        return unix::send(sockfd, &data, dest_path.as_deref())
+            .map_err(unix_err)
+            .map(|n| n as isize);
+    }
+
+    let socket_id = fd_to_socket_id(sockfd)?;
     let mut total_sent = 0usize;
     for i in 0..msg_iovlen {
         let iov = copy_iovec_from_user(msg_iov, i)?;
@@ -670,12 +719,21 @@ pub fn recvmsg(sockfd: Fd, msg: *mut u8, flags: i32) -> LinuxResult<isize> {
             let copy_len = iov.iov_len.min(MAX_SOCKET_RW_CHUNK);
             let mut buffer = vec![0u8; copy_len];
             match unix::recv(sockfd, &mut buffer) {
+                Ok((0, _)) => break,
                 Ok((n, _)) => {
                     UserSpaceMemory::copy_to_user(iov.iov_base as u64, &buffer[..n])
                         .map_err(|_| LinuxError::EFAULT)?;
                     total_read += n;
                 }
-                Err(_) => break,
+                // No data this round. If we have not copied anything yet,
+                // surface the error (EAGAIN for the non-blocking bridge) so the
+                // client retries rather than seeing a 0-byte read as EOF.
+                Err(e) => {
+                    if total_read == 0 {
+                        return Err(unix_err(e));
+                    }
+                    break;
+                }
             }
         }
 
@@ -1207,18 +1265,23 @@ pub fn epoll_wait(
 pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
     inc_ops();
 
+    const SOCK_TYPE_MASK: i32 = 0xF;
+    if (sock_type & !SOCK_TYPE_MASK) & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     // Validate domain
     match domain {
         1 | 2 | 10 | 16 | 17 | 18 => {}
         _ => return Err(LinuxError::EINVAL),
     }
-    match sock_type & 0xFF {
+    match sock_type & SOCK_TYPE_MASK {
         1 | 2 | 3 | 5 => {}
         _ => return Err(LinuxError::EINVAL),
     }
 
     // Map to network stack types
-    let net_sock_type = match sock_type & 0xFF {
+    let net_sock_type = match sock_type & SOCK_TYPE_MASK {
         1 => SocketType::Stream,   // SOCK_STREAM
         2 => SocketType::Datagram, // SOCK_DGRAM
         3 => SocketType::Raw,      // SOCK_RAW
@@ -1228,7 +1291,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
 
     // Map protocol
     let net_proto = match protocol {
-        0 => match sock_type & 0xFF {
+        0 => match sock_type & SOCK_TYPE_MASK {
             1 => Protocol::TCP,
             2 => Protocol::UDP,
             3 => Protocol::ICMP,
@@ -1271,7 +1334,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
     }
 
     // AF_INET SOCK_RAW
-    if (sock_type & 0xFF) == 3 && domain == 2 {
+    if (sock_type & SOCK_TYPE_MASK) == 3 && domain == 2 {
         let raw_proto = if protocol == 0 { 0u8 } else { protocol as u8 };
         let socket_id = raw::create_raw_socket(raw_proto).map_err(net_err_to_linux)?;
         let inode = vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOMEM)?;
@@ -1453,6 +1516,10 @@ pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult
 pub fn accept4(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
+    if flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let new_fd = accept(sockfd, addr, addrlen)?;
 
     // Apply SOCK_NONBLOCK and SOCK_CLOEXEC flags to the new fd.
@@ -1480,6 +1547,11 @@ pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> 
         return Err(LinuxError::EFAULT);
     }
 
+    const SOCK_TYPE_MASK: i32 = 0xF;
+    if (sock_type & !SOCK_TYPE_MASK) & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     // Only AF_UNIX (1) and AF_LOCAL (1) supported
     if domain != 1 {
         return Err(LinuxError::EAFNOSUPPORT);
@@ -1491,10 +1563,14 @@ pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> 
     )
     .map_err(unix_err)?;
 
-    unsafe {
-        *sv = fd0;
-        *sv.offset(1) = fd1;
-    }
+    let fds = [fd0, fd1];
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            fds.as_ptr().cast::<u8>(),
+            fds.len() * core::mem::size_of::<i32>(),
+        )
+    };
+    UserSpaceMemory::copy_to_user(sv as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     Ok(0)
 }
 
@@ -1506,17 +1582,16 @@ pub fn sendmmsg(sockfd: Fd, msgvec: *mut u8, vlen: u32, flags: i32) -> LinuxResu
         return Err(LinuxError::EBADF);
     }
 
-    // Each mmsghdr is 32 bytes: { struct msghdr msg_hdr, unsigned int msg_len }
+    // Linux x86_64 mmsghdr is msghdr (56 bytes), msg_len (u32), then padding.
     // Process up to vlen messages
     let mut sent = 0i32;
     for i in 0..vlen {
-        let msg_ptr = unsafe { msgvec.add((i as usize) * 32) };
+        let msg_ptr = unsafe { msgvec.add((i as usize) * LINUX_MMSGHDR_SIZE) };
         match sendmsg(sockfd, msg_ptr, flags) {
             Ok(n) => {
-                // Store msg_len in the last 4 bytes of mmsghdr
-                unsafe {
-                    *(msg_ptr.add(24) as *mut u32) = n as u32;
-                }
+                let msg_len = n as u32;
+                let len_ptr = unsafe { msg_ptr.add(LINUX_MMSGHDR_MSG_LEN_OFFSET) as *mut u32 };
+                copy_struct_to_user(len_ptr, &msg_len)?;
                 sent += 1;
             }
             Err(_) => break,
@@ -1543,12 +1618,12 @@ pub fn recvmmsg(
 
     let mut received = 0i32;
     for i in 0..vlen {
-        let msg_ptr = unsafe { msgvec.add((i as usize) * 32) };
+        let msg_ptr = unsafe { msgvec.add((i as usize) * LINUX_MMSGHDR_SIZE) };
         match recvmsg(sockfd, msg_ptr, flags) {
             Ok(n) => {
-                unsafe {
-                    *(msg_ptr.add(24) as *mut u32) = n as u32;
-                }
+                let msg_len = n as u32;
+                let len_ptr = unsafe { msg_ptr.add(LINUX_MMSGHDR_MSG_LEN_OFFSET) as *mut u32 };
+                copy_struct_to_user(len_ptr, &msg_len)?;
                 received += 1;
                 if n == 0 {
                     break;

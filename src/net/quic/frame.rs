@@ -466,7 +466,12 @@ mod tests {
         let (f, consumed) = parse_frame(&buf[..n]).unwrap();
         assert_eq!(consumed, n);
         match f {
-            Frame::Stream { stream_id, offset, fin, data } => {
+            Frame::Stream {
+                stream_id,
+                offset,
+                fin,
+                data,
+            } => {
                 assert_eq!(stream_id, 4);
                 assert_eq!(offset, 8);
                 assert!(fin);

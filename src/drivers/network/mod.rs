@@ -281,6 +281,265 @@ pub enum NetworkDriverType {
     GenericWifi,
 }
 
+/// PCI vendor families handled by the common Ethernet driver ports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NicVendor {
+    Intel,
+    Realtek,
+    Broadcom,
+    Virtio,
+}
+
+/// Common PCI NIC IDs intentionally supported by RustOS driver ports.
+///
+/// This table mirrors the Linux drivers' widely deployed/QEMU-facing IDs and
+/// deliberately excludes niche boards, OEM aliases, and non-Ethernet devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommonNicId {
+    pub vendor: NicVendor,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub driver_type: NetworkDriverType,
+    pub name: &'static str,
+    pub max_speed_mbps: u32,
+}
+
+pub const COMMON_NIC_IDS: &[CommonNicId] = &[
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x100E,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel 82540EM Gigabit Ethernet",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x100F,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel 82545EM Gigabit Ethernet",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x10D3,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel 82574L Gigabit Network Connection",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x1502,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel 82579LM Gigabit Network Connection",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x1503,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel 82579V Gigabit Network Connection",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x1521,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel I350 Gigabit Network Connection",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x1533,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel I210 Gigabit Network Connection",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Intel,
+        vendor_id: 0x8086,
+        device_id: 0x1539,
+        driver_type: NetworkDriverType::IntelGigabit,
+        name: "Intel I211 Gigabit Network Connection",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Realtek,
+        vendor_id: 0x10EC,
+        device_id: 0x8139,
+        driver_type: NetworkDriverType::RealtekEthernet,
+        name: "Realtek RTL8139 Fast Ethernet",
+        max_speed_mbps: 100,
+    },
+    CommonNicId {
+        vendor: NicVendor::Realtek,
+        vendor_id: 0x10EC,
+        device_id: 0x8136,
+        driver_type: NetworkDriverType::RealtekEthernet,
+        name: "Realtek RTL810xE Fast Ethernet",
+        max_speed_mbps: 100,
+    },
+    CommonNicId {
+        vendor: NicVendor::Realtek,
+        vendor_id: 0x10EC,
+        device_id: 0x8168,
+        driver_type: NetworkDriverType::RealtekEthernet,
+        name: "Realtek RTL8111/8168/8411 PCIe Gigabit Ethernet",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Realtek,
+        vendor_id: 0x10EC,
+        device_id: 0x8169,
+        driver_type: NetworkDriverType::RealtekEthernet,
+        name: "Realtek RTL8169 Gigabit Ethernet",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Realtek,
+        vendor_id: 0x10EC,
+        device_id: 0x8125,
+        driver_type: NetworkDriverType::RealtekEthernet,
+        name: "Realtek RTL8125 2.5GbE",
+        max_speed_mbps: 2500,
+    },
+    CommonNicId {
+        vendor: NicVendor::Broadcom,
+        vendor_id: 0x14E4,
+        device_id: 0x1644,
+        driver_type: NetworkDriverType::BroadcomNetXtreme,
+        name: "Broadcom NetXtreme BCM5700",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Broadcom,
+        vendor_id: 0x14E4,
+        device_id: 0x1645,
+        driver_type: NetworkDriverType::BroadcomNetXtreme,
+        name: "Broadcom NetXtreme BCM5701",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Broadcom,
+        vendor_id: 0x14E4,
+        device_id: 0x1647,
+        driver_type: NetworkDriverType::BroadcomNetXtreme,
+        name: "Broadcom NetXtreme BCM5703",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Broadcom,
+        vendor_id: 0x14E4,
+        device_id: 0x1653,
+        driver_type: NetworkDriverType::BroadcomNetXtreme,
+        name: "Broadcom NetXtreme BCM5705",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Broadcom,
+        vendor_id: 0x14E4,
+        device_id: 0x1657,
+        driver_type: NetworkDriverType::BroadcomNetXtreme,
+        name: "Broadcom NetXtreme BCM5719",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Broadcom,
+        vendor_id: 0x14E4,
+        device_id: 0x165F,
+        driver_type: NetworkDriverType::BroadcomNetXtreme,
+        name: "Broadcom NetXtreme BCM5720",
+        max_speed_mbps: 1000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Virtio,
+        vendor_id: 0x1AF4,
+        device_id: 0x1000,
+        driver_type: NetworkDriverType::GenericEthernet,
+        name: "VirtIO legacy network",
+        max_speed_mbps: 10000,
+    },
+    CommonNicId {
+        vendor: NicVendor::Virtio,
+        vendor_id: 0x1AF4,
+        device_id: 0x1041,
+        driver_type: NetworkDriverType::GenericEthernet,
+        name: "VirtIO modern network",
+        max_speed_mbps: 10000,
+    },
+];
+
+pub fn classify_common_nic(vendor_id: u16, device_id: u16) -> Option<&'static CommonNicId> {
+    COMMON_NIC_IDS
+        .iter()
+        .find(|id| id.vendor_id == vendor_id && id.device_id == device_id)
+}
+
+/// Normalized link status used by the hardware-specific status decoders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkStatus {
+    pub link_up: bool,
+    pub speed_mbps: u32,
+    pub full_duplex: bool,
+}
+
+impl LinkStatus {
+    pub const DOWN: Self = Self {
+        link_up: false,
+        speed_mbps: 0,
+        full_duplex: false,
+    };
+
+    pub const fn up(speed_mbps: u32, full_duplex: bool) -> Self {
+        Self {
+            link_up: true,
+            speed_mbps,
+            full_duplex,
+        }
+    }
+
+    pub const fn as_tuple(self) -> (bool, u32, bool) {
+        (self.link_up, self.speed_mbps, self.full_duplex)
+    }
+}
+
+/// Normalized interrupt/error classes shared by NIC drivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NicEvent {
+    RxOk,
+    TxOk,
+    LinkChange,
+    RxError,
+    TxError,
+    RxOverflow,
+    DeviceResetRequired,
+}
+
+pub fn record_nic_event(stats: &mut EnhancedNetworkStats, event: NicEvent) {
+    match event {
+        NicEvent::RxOk => stats.rx_packets += 1,
+        NicEvent::TxOk => stats.tx_packets += 1,
+        NicEvent::LinkChange => stats.link_changes += 1,
+        NicEvent::RxError => stats.rx_errors += 1,
+        NicEvent::TxError => stats.tx_errors += 1,
+        NicEvent::RxOverflow => {
+            stats.rx_errors += 1;
+            stats.rx_fifo_errors += 1;
+            stats.rx_dropped += 1;
+        }
+        NicEvent::DeviceResetRequired => {
+            stats.rx_errors += 1;
+            stats.tx_errors += 1;
+        }
+    }
+}
+
 /// Network device capabilities extended
 #[derive(Debug, Clone)]
 pub struct ExtendedNetworkCapabilities {
@@ -611,9 +870,32 @@ pub fn init_network_drivers() -> Result<NetworkDriverManager, NetworkError> {
 
     if manager.list_drivers().is_empty() {
         crate::serial_println!("net: no NIC drivers loaded");
+    } else {
+        // Publish only when PCI scanning loaded a real/common NIC driver.  Do
+        // not create dummy representative network devices on systems with no
+        // supported NIC hardware.
+        publish_to_base(&manager);
     }
 
     Ok(manager)
+}
+
+/// Register a representative real NIC into the unified `base` device model.
+fn publish_to_base(manager: &NetworkDriverManager) {
+    use crate::drivers::base;
+    let drivers = manager.list_drivers();
+    if drivers.is_empty() {
+        return;
+    }
+    if base::device_exists("net0") {
+        return;
+    }
+    if let Ok(id) = base::register_device_simple("net", "net0", "net,ethernet") {
+        let _ = base::set_property(id, "driver_count", &format!("{}", drivers.len()));
+        if let Some((_, name, _)) = drivers.first() {
+            let _ = base::set_property(id, "primary_driver", name);
+        }
+    }
 }
 
 /// Network driver utilities

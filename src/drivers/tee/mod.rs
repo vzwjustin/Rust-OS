@@ -307,6 +307,18 @@ pub fn software_tee_ops() -> TeeOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("tee: subsystem ready");
+    if !TEE_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let desc = TeeDesc {
+        name: String::from("software-tee"),
+        subsys: String::from("optee"),
+        dev_type: 0,
+        flags: 0,
+    };
+    let ops = software_tee_ops();
+    let dev_id = register_device("software-tee", desc, ops)?;
+    crate::serial_println!("tee: software TEE registered (id={})", dev_id);
     Ok(())
 }

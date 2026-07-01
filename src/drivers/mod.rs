@@ -4,24 +4,37 @@
 //! including graphics, input, network, and storage drivers with hot-plug support.
 
 pub mod acpi;
+// Linux-mirror subsystems (driver core + additional buses)
+pub mod accel;
 pub mod agp;
 pub mod amba;
+pub mod android;
 pub mod apm;
+pub mod ata;
+pub mod atm;
 pub mod auxdisplay;
 pub mod auxiliary;
 pub mod backlight;
+pub mod base;
+pub mod bcma;
 pub mod block;
 pub mod bt;
+pub mod bus;
+pub mod cache;
 pub mod cdrom;
 pub mod cdx;
 pub mod cec;
 pub mod char;
 pub mod clk;
+pub mod clocksource;
+pub mod comedi;
+pub mod connector;
 pub mod coresight;
 pub mod counter;
 pub mod crypto;
 pub mod cxl;
 pub mod dax;
+pub mod dca;
 pub mod devfreq;
 pub mod display;
 pub mod dma;
@@ -35,19 +48,26 @@ pub mod ffa;
 pub mod firewire;
 pub mod firmware;
 pub mod fpga;
+pub mod fsi;
+pub mod fwctl;
 pub mod gnss;
+pub mod gpib;
 pub mod gpio;
 pub mod gpu;
+pub mod greybus;
 pub mod hid;
 pub mod hidraw;
 pub mod hotplug;
 pub mod hsi;
 pub mod hte;
+pub mod hv;
 pub mod hwmon;
 pub mod hwrng;
 pub mod hwspinlock;
+pub mod hwtracing;
 pub mod i2c;
 pub mod i3c;
+pub mod idle;
 pub mod iio;
 pub mod infiniband;
 pub mod input;
@@ -56,16 +76,24 @@ pub mod interconnect;
 pub mod iommu;
 pub mod iommufd;
 pub mod ipack;
+pub mod irqchip;
 pub mod isapnp;
 pub mod isdbt;
 pub mod isdn;
 pub mod ishtp;
 pub mod leds;
+pub mod linux_mirror;
 pub mod mailbox;
+pub mod mcb;
+pub mod media;
 pub mod mei;
+pub mod memory;
+pub mod memstick;
+pub mod message;
 pub mod mfd;
 pub mod misc;
 pub mod mmc;
+pub mod most;
 pub mod moxtet;
 pub mod mtd;
 pub mod mux;
@@ -83,24 +111,32 @@ pub mod parport;
 pub mod pci;
 pub mod pcmcia;
 pub mod peci;
+pub mod perf;
 pub mod phy;
 pub mod pinctrl;
 pub mod platform;
 pub mod pmdomain;
+pub mod pnp;
+pub mod power;
 pub mod power_supply;
 pub mod powercap;
+pub mod pps;
 pub mod ps2_controller;
 pub mod ps2_mouse;
 pub mod ptp;
 pub mod pwm;
+pub mod rapidio;
 pub mod ras;
 pub mod regmap;
 pub mod regulator;
+pub mod remoteproc;
+pub mod resctrl;
 pub mod reset;
 pub mod rpmsg;
 pub mod rtc;
 pub mod scsi;
 pub mod serio;
+pub mod siox;
 pub mod slimbus;
 pub mod slimproc;
 pub mod soc;
@@ -108,19 +144,25 @@ pub mod sound;
 pub mod soundwire;
 pub mod spi;
 pub mod spmi;
+pub mod ssb;
 pub mod storage;
+pub mod target;
 pub mod tee;
 pub mod thermal;
 pub mod thunderbolt;
 pub mod tty;
 pub mod udmabuf;
 pub mod ufs;
+pub mod uio;
 pub mod usb;
 pub mod v4l2;
 pub mod vbe;
 pub mod vbe_io;
+pub mod vdpa;
 pub mod vfio;
 pub mod vhost;
+pub mod video;
+pub mod virt;
 pub mod virtio;
 pub mod virtio_pci;
 pub mod w1;
@@ -609,8 +651,30 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("backlight: init failed: {}", e);
     }
 
-    if let Err(e) = input::init() {
-        crate::serial_println!("input: init failed: {}", e);
+    let input_hardware_ready = ps2_controller::get_device_info()
+        .map(
+            |(port1_available, port1_device, port2_available, port2_device)| {
+                (port1_available && port1_device == ps2_controller::Ps2DeviceType::Keyboard)
+                    || (port2_available
+                        && matches!(
+                            port2_device,
+                            ps2_controller::Ps2DeviceType::StandardMouse
+                                | ps2_controller::Ps2DeviceType::MouseWithScrollWheel
+                                | ps2_controller::Ps2DeviceType::Mouse5Button
+                        ))
+            },
+        )
+        .unwrap_or(false);
+
+    if input_hardware_ready {
+        if let Err(e) = input::init() {
+            crate::serial_println!("input: init failed: {}", e);
+        }
+        input::evdev::init_evdev_devices();
+    } else {
+        crate::serial_println!(
+            "input: no initialized hardware; skipping generic device registration"
+        );
     }
 
     if let Err(e) = char::init() {
@@ -677,9 +741,9 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("nfc: init failed: {}", e);
     }
 
-    if let Err(e) = sound::init() {
-        crate::serial_println!("sound: init failed: {}", e);
-    }
+    // sound::init() is called from boot_ui::driver_loading_progress() which
+    // also marks the subsystem.  Calling it here would create a duplicate
+    // sound card (NEXT_CARD is monotonic, not idempotent).
 
     if let Err(e) = nvdimm::init() {
         crate::serial_println!("nvdimm: init failed: {}", e);
@@ -959,16 +1023,190 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("ufs: init failed: {}", e);
     }
 
+    unsafe {
+        crate::early_serial_write_str("DRV:usb-call\n");
+    }
     if let Err(e) = usb::init() {
         crate::serial_println!("usb: init failed: {}", e);
     }
+    unsafe {
+        crate::early_serial_write_str("DRV:usb-ret\n");
+    }
 
+    crate::serial_println!("drivers: post-usb vhost");
     if let Err(e) = vhost::init() {
         crate::serial_println!("vhost: init failed: {}", e);
     }
 
+    crate::serial_println!("drivers: post-usb w1");
     if let Err(e) = w1::init() {
         crate::serial_println!("w1: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb vdpa");
+    if let Err(e) = vdpa::init() {
+        crate::serial_println!("vdpa: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb uio");
+    if let Err(e) = uio::init() {
+        crate::serial_println!("uio: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb remoteproc");
+    if let Err(e) = remoteproc::init() {
+        crate::serial_println!("remoteproc: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb perf");
+    if let Err(e) = perf::init() {
+        crate::serial_println!("perf: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb pnp");
+    if let Err(e) = pnp::init() {
+        crate::serial_println!("pnp: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb ata");
+    if let Err(e) = ata::init() {
+        crate::serial_println!("ata: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb bus");
+    if let Err(e) = bus::init() {
+        crate::serial_println!("bus: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb cache");
+    if let Err(e) = cache::init() {
+        crate::serial_println!("cache: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb clocksource");
+    if let Err(e) = clocksource::init() {
+        crate::serial_println!("clocksource: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb irqchip");
+    if let Err(e) = irqchip::init() {
+        crate::serial_println!("irqchip: init failed: {}", e);
+    }
+
+    crate::serial_println!("drivers: post-usb media");
+    if let Err(e) = media::init() {
+        crate::serial_println!("media: init failed: {}", e);
+    }
+
+    if let Err(e) = memory::init() {
+        crate::serial_println!("memory: init failed: {}", e);
+    }
+
+    if let Err(e) = power::init() {
+        crate::serial_println!("power: init failed: {}", e);
+    }
+
+    if let Err(e) = pps::init() {
+        crate::serial_println!("pps: init failed: {}", e);
+    }
+
+    if let Err(e) = hwtracing::init() {
+        crate::serial_println!("hwtracing: init failed: {}", e);
+    }
+
+    if let Err(e) = resctrl::init() {
+        crate::serial_println!("resctrl: init failed: {}", e);
+    }
+
+    if let Err(e) = target::init() {
+        crate::serial_println!("target: init failed: {}", e);
+    }
+
+    if let Err(e) = video::init() {
+        crate::serial_println!("video: init failed: {}", e);
+    }
+
+    if let Err(e) = virt::init() {
+        crate::serial_println!("virt: init failed: {}", e);
+    }
+
+    if let Err(e) = connector::init() {
+        crate::serial_println!("connector: init failed: {}", e);
+    }
+
+    if let Err(e) = dca::init() {
+        crate::serial_println!("dca: init failed: {}", e);
+    }
+
+    if let Err(e) = memstick::init() {
+        crate::serial_println!("memstick: init failed: {}", e);
+    }
+
+    if let Err(e) = rapidio::init() {
+        crate::serial_println!("rapidio: init failed: {}", e);
+    }
+
+    if let Err(e) = linux_mirror::init() {
+        crate::serial_println!("linux_mirror: init failed: {}", e);
+    }
+
+    if let Err(e) = bcma::init() {
+        crate::serial_println!("bcma: init failed: {}", e);
+    }
+
+    if let Err(e) = ssb::init() {
+        crate::serial_println!("ssb: init failed: {}", e);
+    }
+
+    if let Err(e) = fwctl::init() {
+        crate::serial_println!("fwctl: init failed: {}", e);
+    }
+
+    if let Err(e) = hv::init() {
+        crate::serial_println!("hv: init failed: {}", e);
+    }
+
+    if let Err(e) = idle::init() {
+        crate::serial_println!("idle: init failed: {}", e);
+    }
+
+    // Driver-core device model (must come before subsystems that may register
+    // into it) plus the remaining Linux-mirror subsystems.
+    if let Err(e) = base::init() {
+        crate::serial_println!("base: init failed: {}", e);
+    }
+    if let Err(e) = accel::init() {
+        crate::serial_println!("accel: init failed: {}", e);
+    }
+    if let Err(e) = android::init() {
+        crate::serial_println!("android: init failed: {}", e);
+    }
+    if let Err(e) = atm::init() {
+        crate::serial_println!("atm: init failed: {}", e);
+    }
+    if let Err(e) = comedi::init() {
+        crate::serial_println!("comedi: init failed: {}", e);
+    }
+    if let Err(e) = fsi::init() {
+        crate::serial_println!("fsi: init failed: {}", e);
+    }
+    if let Err(e) = gpib::init() {
+        crate::serial_println!("gpib: init failed: {}", e);
+    }
+    if let Err(e) = greybus::init() {
+        crate::serial_println!("greybus: init failed: {}", e);
+    }
+    if let Err(e) = mcb::init() {
+        crate::serial_println!("mcb: init failed: {}", e);
+    }
+    if let Err(e) = message::init() {
+        crate::serial_println!("message: init failed: {}", e);
+    }
+    if let Err(e) = most::init() {
+        crate::serial_println!("most: init failed: {}", e);
+    }
+    if let Err(e) = siox::init() {
+        crate::serial_println!("siox: init failed: {}", e);
     }
 
     unsafe {

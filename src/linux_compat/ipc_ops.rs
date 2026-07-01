@@ -11,6 +11,7 @@ use spin::RwLock;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process::current_pid;
 use crate::process::ipc::{get_ipc_manager, IpcId, SharedMemoryPermissions};
 
@@ -73,19 +74,31 @@ pub fn get_operation_count() -> u64 {
 }
 
 fn read_c_string(ptr: *const u8, max_len: usize) -> LinuxResult<String> {
-    if ptr.is_null() {
+    UserSpaceMemory::copy_string_from_user(ptr as u64, max_len).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let mut bytes = Vec::new();
-    for offset in 0..max_len {
-        let byte = unsafe { *ptr.add(offset) };
-        if byte == 0 {
-            return String::from_utf8(bytes).map_err(|_| LinuxError::EINVAL);
-        }
-        bytes.push(byte);
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
+    if src.is_null() {
+        return Err(LinuxError::EFAULT);
     }
-    Err(LinuxError::EINVAL)
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(unsafe { value.assume_init() })
 }
 
 fn normalize_mq_name(name: *const u8) -> LinuxResult<String> {
@@ -359,9 +372,14 @@ pub fn msgsnd(msqid: MsqId, msgp: *const u8, msgsz: usize, _msgflg: i32) -> Linu
         return Err(LinuxError::EINVAL);
     }
 
-    // Read message type (first 4 bytes) and data
-    let msg_type = unsafe { *(msgp as *const u32) };
-    let data_ptr = unsafe { msgp.add(4) };
+    // SysV msgbuf starts with long mtype. This kernel target is 64-bit.
+    // Use read_unaligned in case userspace provides a misaligned pointer.
+    let msg_type_long = unsafe { (msgp as *const i64).read_unaligned() };
+    if msg_type_long <= 0 || msg_type_long > u32::MAX as i64 {
+        return Err(LinuxError::EINVAL);
+    }
+    let msg_type = msg_type_long as u32;
+    let data_ptr = unsafe { msgp.add(core::mem::size_of::<i64>()) };
 
     // Copy message data
     let mut data = Vec::with_capacity(msgsz);
@@ -393,24 +411,23 @@ pub fn msgrcv(
     }
 
     let ipc_manager = get_ipc_manager();
+    if msgtyp < 0 || msgtyp > u32::MAX as i64 {
+        return Err(LinuxError::EINVAL);
+    }
     let msg_type = msgtyp as u32;
 
     match ipc_manager.receive_message(msqid as IpcId, msg_type) {
         Ok(Some(message)) => {
             let copy_size = core::cmp::min(message.data.len(), msgsz);
 
-            // Write message type
-            unsafe {
-                *(msgp as *mut u32) = message.msg_type;
-            }
+            // Write message type as SysV long mtype. This kernel target is 64-bit.
+            let msg_type = message.msg_type as i64;
+            copy_struct_to_user(msgp as *mut i64, &msg_type)?;
 
             // Write message data
-            let data_ptr = unsafe { msgp.add(4) };
-            for i in 0..copy_size {
-                unsafe {
-                    *data_ptr.add(i) = message.data[i];
-                }
-            }
+            let data_ptr = unsafe { msgp.add(core::mem::size_of::<i64>()) };
+            UserSpaceMemory::copy_to_user(data_ptr as u64, &message.data[..copy_size])
+                .map_err(|_| LinuxError::EFAULT)?;
 
             Ok(copy_size as isize)
         }
@@ -453,9 +470,7 @@ pub fn msgctl(msqid: MsqId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
                 msg_qbytes: MSG_MAX_SIZE as u64,
                 ..MsqidDs::default()
             };
-            unsafe {
-                *(buf as *mut MsqidDs) = ds;
-            }
+            copy_struct_to_user(buf as *mut MsqidDs, &ds)?;
             Ok(0)
         }
         IPC_SET => {
@@ -634,7 +649,10 @@ pub fn semop(semid: SemId, sops: *mut u8, nsops: usize) -> LinuxResult<i32> {
 
     // Parse semaphore operations
     let sembuf_ptr = sops as *const SemBuf;
-    let operations: Vec<SemBuf> = (0..nsops).map(|i| unsafe { *sembuf_ptr.add(i) }).collect();
+    let mut operations: Vec<SemBuf> = Vec::with_capacity(nsops);
+    for i in 0..nsops {
+        operations.push(copy_struct_from_user(unsafe { sembuf_ptr.add(i) })?);
+    }
 
     // Check for IPC_NOWAIT on any operation
     let nowait = operations.iter().any(|op| op.sem_flg & SEM_IPC_NOWAIT != 0);
@@ -724,9 +742,7 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
                 sem_nsems: sem_set.semaphores.len() as u64,
                 ..SemidDs::default()
             };
-            unsafe {
-                *(buf as *mut SemidDs) = ds;
-            }
+            copy_struct_to_user(buf as *mut SemidDs, &ds)?;
             Ok(0)
         }
         IPC_SET => {
@@ -786,17 +802,81 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
 
 /// semtimedop - semaphore operations with timeout
 ///
-/// The timeout is not yet fully implemented — the operation will block
-/// indefinitely until it can complete. A future enhancement should use the
-/// timeout to wake the process with ETIMEDOUT.
+/// Uses the same SEMAPHORE_TABLE as semget/semop to keep the namespace
+/// consistent. The timeout is currently best-effort (checked between retries).
 pub fn semtimedop(
     semid: SemId,
     sops: *mut u8,
     nsops: usize,
-    _timeout: *const u8,
+    timeout: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
-    semop(semid, sops, nsops)
+
+    if sops.is_null() || nsops == 0 {
+        return Err(LinuxError::EFAULT);
+    }
+
+    // Parse the timeout if provided (TimeSpec: seconds + nanoseconds)
+    let deadline_ns = if !timeout.is_null() {
+        let ts = unsafe { &*(timeout as *const crate::linux_compat::types::TimeSpec) };
+        let now_ns = crate::time::uptime_ns();
+        Some(now_ns + (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64))
+    } else {
+        None
+    };
+
+    // Parse semaphore operations
+    let sembuf_ptr = sops as *const SemBuf;
+    let mut operations: Vec<SemBuf> = Vec::with_capacity(nsops);
+    for i in 0..nsops {
+        operations.push(copy_struct_from_user(unsafe { sembuf_ptr.add(i) })?);
+    }
+
+    let nowait = operations.iter().any(|op| op.sem_flg & SEM_IPC_NOWAIT != 0);
+    let pid = crate::process::current_pid();
+
+    loop {
+        // Check timeout
+        if let Some(deadline) = deadline_ns {
+            if crate::time::uptime_ns() >= deadline {
+                return Err(LinuxError::ETIMEDOUT);
+            }
+        }
+
+        let mut sem_table = SEMAPHORE_TABLE.write();
+        let sem_set = sem_table
+            .get_mut(&(semid as IpcId))
+            .ok_or(LinuxError::EINVAL)?;
+
+        match try_semops(sem_set, &operations) {
+            Ok(()) => {
+                apply_semops(sem_set, &operations);
+                drop(sem_table);
+                return Ok(0);
+            }
+            Err(usize::MAX) => {
+                return Err(LinuxError::EFBIG);
+            }
+            Err(block_idx) => {
+                if nowait {
+                    return Err(LinuxError::EAGAIN);
+                }
+
+                let block_op = operations[block_idx];
+                sem_set.waiters.push(SemWaitEntry {
+                    pid: pid as u32,
+                    sem_num: block_op.sem_num,
+                    sem_op: block_op.sem_op,
+                });
+                drop(sem_table);
+
+                let pm = crate::process::get_process_manager();
+                let _ = pm.block_process(pid);
+                crate::process::scheduler::yield_cpu();
+                continue;
+            }
+        }
+    }
 }
 
 /// shmget - get shared memory segment identifier
@@ -931,9 +1011,7 @@ pub fn shmctl(shmid: ShmId, cmd: i32, buf: *mut u8) -> LinuxResult<i32> {
                 shm_nattch: nattch,
                 ..ShmidDs::default()
             };
-            unsafe {
-                *(buf as *mut ShmidDs) = ds;
-            }
+            copy_struct_to_user(buf as *mut ShmidDs, &ds)?;
             Ok(0)
         }
         IPC_SET => {

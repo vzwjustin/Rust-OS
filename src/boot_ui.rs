@@ -771,10 +771,12 @@ pub fn acpi_init_progress(rsdp_addr: Option<u64>, physical_offset: u64) -> AcpiI
     if result.rsdp_found {
         match crate::acpi::init(result.rsdp_address.into(), Some(physical_offset.into())) {
             Ok(()) => {
+                crate::kernel::mark_subsystem_ready("acpi");
                 report_success("RSDT/XSDT parsed successfully");
                 result.tables_parsed = true;
             }
             Err(e) => {
+                crate::kernel::mark_subsystem_failed("acpi");
                 report_error("RSDT/XSDT", e);
             }
         }
@@ -1124,10 +1126,12 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     update_substage(7, "Loading timer driver...");
     match crate::time::init() {
         Ok(()) => {
+            crate::kernel::mark_subsystem_ready("time");
             report_success("Timer system initialized");
             result.timer_loaded = true;
         }
         Err(e) => {
+            crate::kernel::mark_subsystem_failed("time");
             report_warning("Timer", e);
         }
     }
@@ -1149,29 +1153,24 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     }
 
     update_substage(8, "Initializing USB host...");
-    match crate::drivers::usb::init() {
-        Ok(stats) if stats.msc_enumerated > 0 => {
-            report_success(&format!(
-                "USB: {} hosts, {} MSC devices",
-                stats.host_count, stats.msc_enumerated
-            ));
-        }
-        Ok(stats) => {
-            report_success(&format!("USB: {} host controllers", stats.host_count));
-        }
-        Err(e) => report_warning("USB", e),
+    if let Err(e) = crate::drivers::usb::init() {
+        report_warning("USB", e);
+    }
+    unsafe {
+        crate::early_serial_write_str("BOOTUI:usb-done\n");
     }
 
     update_substage(8, "Initializing SCSI mid-layer...");
     let scsi = crate::drivers::scsi::init();
-    if scsi.hosts_registered > 0 {
-        report_success(&format!(
-            "SCSI: {} hosts, {} devices",
-            scsi.hosts_registered, scsi.devices_registered
-        ));
+    if !scsi.errors.is_empty() {
+        report_warning("SCSI", "one or more devices failed to register");
+    } else {
+        let _ = scsi;
+    }
+    unsafe {
+        crate::early_serial_write_str("BOOTUI:scsi-done\n");
     }
 
-    update_substage(8, "Scanning md arrays...");
     let md = crate::md::init();
     if md.arrays_registered > 0 {
         report_success(&format!("md: {} arrays registered", md.arrays_registered));
@@ -1180,13 +1179,20 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     update_substage(8, "Initializing sound subsystem...");
     match crate::sound::init() {
         Ok(stats) if stats.dev_nodes > 0 => {
+            crate::kernel::mark_subsystem_ready("sound");
             report_success(&format!(
                 "Sound: {} PCM nodes under /dev/snd",
                 stats.dev_nodes
             ));
         }
-        Ok(_) => report_warning("Sound", "No PCM devices registered"),
-        Err(e) => report_warning("Sound", e),
+        Ok(_) => {
+            crate::kernel::mark_subsystem_ready("sound");
+            report_warning("Sound", "No PCM devices registered");
+        }
+        Err(e) => {
+            crate::kernel::mark_subsystem_failed("sound");
+            report_warning("Sound", e);
+        }
     }
 
     // Network drivers
@@ -1287,11 +1293,13 @@ pub fn filesystem_mount_progress() -> FilesystemMountResult {
     match crate::initramfs::init_initramfs() {
         Ok(_) => {
             crate::serial_println!("filesystem_mount: initramfs OK, calling report_success");
+            crate::kernel::mark_subsystem_ready("initramfs");
             report_success("Initramfs loaded");
             result.initramfs_loaded = true;
         }
         Err(_) => {
             crate::serial_println!("filesystem_mount: initramfs failed, calling report_warning");
+            crate::kernel::mark_subsystem_failed("initramfs");
             report_warning("Initramfs", "Using minimal filesystem");
         }
     }

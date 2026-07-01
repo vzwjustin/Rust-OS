@@ -1145,12 +1145,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 .map(|v| v as u64)
         }
         crate::syscall::SyscallNumber::Unshare => {
-            let ret = crate::namespace::unshare(args[0] as u32);
-            if ret < 0 {
-                Err(LinuxError::EINVAL)
-            } else {
-                Ok(ret as u64)
-            }
+            linux_compat::fs_ops::unshare(args[0] as i32).map(|ret| ret as u64)
         }
         crate::syscall::SyscallNumber::Utimensat => linux_compat::file_ops::utimensat(
             args[0] as i32,
@@ -1708,7 +1703,8 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             }
         }
         crate::syscall::SyscallNumber::Seccomp => {
-            let ret = crate::seccomp::seccomp_set_mode(
+            let ret = crate::seccomp::sys_seccomp(
+                crate::process::current_pid(),
                 args[0] as u32,
                 args[1] as u32,
                 args[2] as *const u8,
@@ -2234,7 +2230,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         crate::syscall::SyscallNumber::PidfdOpen => {
             let ret = crate::pidfd::pidfd_open(args[0] as i32, args[1] as u32);
             if ret < 0 {
-                Err(LinuxError::EINVAL)
+                Err(LinuxError::from_errno(-ret))
             } else {
                 Ok(ret as u64)
             }
@@ -2247,7 +2243,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 args[3] as u32,
             );
             if ret < 0 {
-                Err(LinuxError::EINVAL)
+                Err(LinuxError::from_errno(-ret))
             } else {
                 Ok(ret as u64)
             }
@@ -2255,7 +2251,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         crate::syscall::SyscallNumber::PidfdGetfd => {
             let ret = crate::pidfd::pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32);
             if ret < 0 {
-                Err(LinuxError::EPERM)
+                Err(LinuxError::from_errno(-ret))
             } else {
                 Ok(ret as u64)
             }

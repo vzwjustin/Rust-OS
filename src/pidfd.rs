@@ -17,8 +17,13 @@ use spin::RwLock;
 
 // ── PID fd flags ────────────────────────────────────────────────────────
 
-pub const PIDFD_NONBLOCK: u32 = 0o20000; // O_NONBLOCK
-pub const PIDFD_THREAD: u32 = 0o20000000;
+pub const PIDFD_NONBLOCK: u32 = 0o4000; // O_NONBLOCK
+pub const PIDFD_THREAD: u32 = 0o200; // O_EXCL
+const PIDFD_SIGNAL_THREAD: u32 = 1 << 0;
+const PIDFD_SIGNAL_THREAD_GROUP: u32 = 1 << 1;
+const PIDFD_SIGNAL_PROCESS_GROUP: u32 = 1 << 2;
+const PIDFD_SEND_SIGNAL_FLAGS: u32 =
+    PIDFD_SIGNAL_THREAD | PIDFD_SIGNAL_THREAD_GROUP | PIDFD_SIGNAL_PROCESS_GROUP;
 
 // ── Global state: pidfd → PID mapping ───────────────────────────────────
 
@@ -29,6 +34,10 @@ static NEXT_PIDFD_ID: AtomicU32 = AtomicU32::new(1);
 ///
 /// Returns a non-negative fd on success, negative errno on failure.
 pub fn pidfd_open(pid: i32, flags: u32) -> i32 {
+    if flags & !(PIDFD_NONBLOCK | PIDFD_THREAD) != 0 {
+        return -22; // EINVAL
+    }
+
     if pid <= 0 {
         return -22; // EINVAL
     }
@@ -61,9 +70,21 @@ pub fn pidfd_open(pid: i32, flags: u32) -> i32 {
 /// pidfd_send_signal — send a signal to the process referenced by a pidfd.
 ///
 /// Returns 0 on success, negative errno on failure.
-pub fn pidfd_send_signal(pidfd: i32, sig: i32, _info: u64, _flags: u32) -> i32 {
+pub fn pidfd_send_signal(pidfd: i32, sig: i32, _info: u64, flags: u32) -> i32 {
     if sig < 0 || sig > 64 {
         return -22; // EINVAL
+    }
+
+    if flags & !PIDFD_SEND_SIGNAL_FLAGS != 0 {
+        return -22; // EINVAL
+    }
+
+    if (flags & PIDFD_SEND_SIGNAL_FLAGS).count_ones() > 1 {
+        return -22; // EINVAL
+    }
+
+    if flags != 0 {
+        return -95; // ENOTSUP
     }
 
     // Look up the pidfd
@@ -117,8 +138,11 @@ pub fn pidfd_send_signal(pidfd: i32, sig: i32, _info: u64, _flags: u32) -> i32 {
 ///
 /// Returns a new fd in the caller's fd table that refers to the same
 /// file description as the target process's fd.
-pub fn pidfd_getfd(pidfd: i32, target_fd: i32, _flags: u32) -> i32 {
+pub fn pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> i32 {
     if target_fd < 0 {
+        return -22; // EINVAL
+    }
+    if flags != 0 {
         return -22; // EINVAL
     }
 

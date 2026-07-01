@@ -3,11 +3,12 @@
 //! This module provides comprehensive storage device detection,
 //! initialization, and management for the RustOS kernel.
 
-use super::ahci::{AhciDriver, AHCI_DEVICE_IDS};
+use super::ahci::{AhciDriver, AhciPortDevice, AHCI_DEVICE_IDS};
 use super::ide::create_ide_drivers;
 use super::nvme::NvmeDriver;
 use super::pci_scan::{scan_pci_devices, PciDevice};
 use super::{StorageDeviceType, StorageDriver, StorageDriverManager, StorageError};
+use alloc::sync::Arc;
 use alloc::{
     boxed::Box,
     format,
@@ -147,8 +148,7 @@ impl StorageDetector {
             return Err(StorageError::NotSupported);
         }
 
-        // BAR5 is a 32-bit memory BAR; low 4 bits are type flags, not address.
-        let base_addr = (device.bar5 & !0xF) as u64;
+        let base_addr = pci_mem_bar_addr32(device.bar5)?;
         if base_addr == 0 {
             return Err(StorageError::HardwareError);
         }
@@ -158,36 +158,56 @@ impl StorageDetector {
         crate::memory::map_mmio_region(base_addr as usize, 0x2000)
             .map_err(|_| StorageError::HardwareError)?;
 
-        let mut driver = AhciDriver::new(
+        let mut controller = AhciDriver::new(
             format!("ahci-{:04x}:{:04x}", device.vendor_id, device.device_id),
             device.vendor_id,
             device.device_id,
             base_addr,
         );
-        driver.init()?;
+        controller.init_controller()?;
 
-        let model = format!(
-            "AHCI Controller {:04x}:{:04x}",
-            device.vendor_id, device.device_id
-        );
-        let serial = format!("AHCI-{:04x}-{:04x}", device.vendor_id, device.device_id);
-        self.manager.register_device(
-            Box::new(driver),
-            model,
-            serial,
-            "1.0".to_string(),
-            get_current_time(),
-        )?;
+        let controller_shared = Arc::new(spin::Mutex::new(controller));
+
+        // Scan all ports and register devices for active ports
+        let mut devices_found = 0;
+        for port in 0..32 {
+            let is_active = {
+                let ctrl = controller_shared.lock();
+                ctrl.is_port_active(port)
+            };
+
+            if is_active {
+                let name = format!("ahci-{}-port{}", pci_bdf(device), port);
+                let port_device = AhciPortDevice::new(controller_shared.clone(), port, name);
+
+                let model = format!("SATA Disk on Port {}", port);
+                let serial = format!("SATA-{}-P{}", pci_bdf(device), port);
+
+                if !self.register_unique_device(
+                    Box::new(port_device),
+                    model,
+                    serial,
+                    "1.0".to_string(),
+                    get_current_time(),
+                )? {
+                    continue;
+                }
+                devices_found += 1;
+            }
+        }
+
+        if devices_found == 0 {
+            crate::serial_println!("AHCI Controller detected but no active SATA devices found.");
+        }
 
         self.detection_results.ahci_controllers += 1;
-        self.detection_results.total_devices += 1;
+        self.detection_results.total_devices += devices_found;
         Ok(())
     }
 
     /// Detect NVMe controller
     fn detect_nvme_controller(&mut self, device: &PciDevice) -> Result<(), StorageError> {
-        // NVMe BAR0 is a 64-bit memory BAR: low 4 bits are flags, high half is bar1.
-        let base_addr = ((device.bar1 as u64) << 32) | ((device.bar0 & !0xF) as u64);
+        let base_addr = pci_bar0_mem_addr(device)?;
         if base_addr == 0 {
             return Err(StorageError::HardwareError);
         }
@@ -207,14 +227,16 @@ impl StorageDetector {
             "NVMe Controller {:04x}:{:04x}",
             device.vendor_id, device.device_id
         );
-        let serial = format!("NVME-{:04x}-{:04x}", device.vendor_id, device.device_id);
-        self.manager.register_device(
+        let serial = format!("NVME-{}", pci_bdf(device));
+        if !self.register_unique_device(
             Box::new(driver),
             model,
             serial,
             "1.0".to_string(),
             get_current_time(),
-        )?;
+        )? {
+            return Ok(());
+        }
 
         self.detection_results.nvme_controllers += 1;
         self.detection_results.total_devices += 1;
@@ -240,24 +262,23 @@ impl StorageDetector {
                 };
 
                 let serial = if let Some(serial) = driver.get_serial() {
-                    serial
+                    format!("PCI-IDE-{}-{}", pci_bdf(device), serial)
                 } else {
-                    format!(
-                        "IDE-{:04x}-{:04x}-{}",
-                        device.vendor_id, device.device_id, devices_found
-                    )
+                    format!("PCI-IDE-{}-{}", pci_bdf(device), devices_found)
                 };
 
                 let firmware = "1.0".to_string();
 
                 // Register the device
-                let _device_id = self.manager.register_device(
+                if !self.register_unique_device(
                     driver,
                     model,
                     serial,
                     firmware,
                     get_current_time(),
-                )?;
+                )? {
+                    continue;
+                }
 
                 devices_found += 1;
             }
@@ -285,15 +306,12 @@ impl StorageDetector {
             Box::new(VirtioBlkStorageAdapter::new(capacity_sectors));
 
         let model = format!("VirtIO Block Disk");
-        let serial = format!(
-            "virtio-blk-{:04x}-{:04x}",
-            device.vendor_id, device.device_id
-        );
+        let serial = format!("virtio-blk-{}", pci_bdf(device));
         let firmware = "1.0".to_string();
 
-        let _device_id =
-            self.manager
-                .register_device(driver, model, serial, firmware, get_current_time())?;
+        if !self.register_unique_device(driver, model, serial, firmware, get_current_time())? {
+            return Ok(());
+        }
 
         self.detection_results.total_devices += 1;
         crate::serial_println!(
@@ -327,13 +345,15 @@ impl StorageDetector {
                 let firmware = "1.0".to_string();
 
                 // Register the device
-                let _device_id = self.manager.register_device(
+                if !self.register_unique_device(
                     driver,
                     model,
                     serial,
                     firmware,
                     get_current_time(),
-                )?;
+                )? {
+                    continue;
+                }
 
                 devices_found += 1;
             }
@@ -362,6 +382,29 @@ impl StorageDetector {
     pub fn get_results(&self) -> &DetectionResults {
         &self.detection_results
     }
+
+    fn register_unique_device(
+        &mut self,
+        driver: Box<dyn StorageDriver>,
+        model: String,
+        serial: String,
+        firmware: String,
+        timestamp: u64,
+    ) -> Result<bool, StorageError> {
+        if serial.trim().is_empty() || self.serial_registered(&serial) {
+            return Ok(false);
+        }
+        self.manager
+            .register_device(driver, model, serial, firmware, timestamp)?;
+        Ok(true)
+    }
+
+    fn serial_registered(&self, serial: &str) -> bool {
+        self.manager
+            .get_all_device_info()
+            .iter()
+            .any(|info| info.serial == serial)
+    }
 }
 
 /// Global storage detection and initialization
@@ -382,6 +425,42 @@ pub fn detect_and_initialize_storage() -> Result<DetectionResults, StorageError>
 fn get_current_time() -> u64 {
     // Use system time for storage detection timestamps
     crate::time::get_system_time_ms()
+}
+
+fn pci_bdf(device: &PciDevice) -> String {
+    format!(
+        "{:02x}:{:02x}.{}",
+        device.bus, device.device, device.function
+    )
+}
+
+fn pci_mem_bar_addr32(bar: u32) -> Result<u64, StorageError> {
+    if bar & 0x1 != 0 {
+        return Err(StorageError::HardwareError);
+    }
+    let addr = (bar & !0xF) as u64;
+    if addr == 0 {
+        return Err(StorageError::HardwareError);
+    }
+    Ok(addr)
+}
+
+fn pci_bar0_mem_addr(device: &PciDevice) -> Result<u64, StorageError> {
+    if device.bar0 & 0x1 != 0 {
+        return Err(StorageError::HardwareError);
+    }
+
+    let low = (device.bar0 & !0xF) as u64;
+    let addr = if (device.bar0 & 0x6) == 0x4 {
+        ((device.bar1 as u64) << 32) | low
+    } else {
+        low
+    };
+
+    if addr == 0 {
+        return Err(StorageError::HardwareError);
+    }
+    Ok(addr)
 }
 
 impl Clone for DetectionResults {

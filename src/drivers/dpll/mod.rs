@@ -120,6 +120,15 @@ static DPLL_PINS: RwLock<BTreeMap<u32, DpllPin>> = RwLock::new(BTreeMap::new());
 
 /// Register a DPLL device.
 pub fn register_device(name: &str, ops: DpllOps, type_: DpllType) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("DPLL device name is empty");
+    }
+
+    let mut devs = DPLL_DEVS.write();
+    if devs.values().any(|dev| dev.name == name) {
+        return Err("DPLL device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = DpllDevice {
         id,
@@ -132,7 +141,7 @@ pub fn register_device(name: &str, ops: DpllOps, type_: DpllType) -> Result<u32,
         source_pins: Vec::new(),
         output_pins: Vec::new(),
     };
-    DPLL_DEVS.write().insert(id, dev);
+    devs.insert(id, dev);
     Ok(id)
 }
 
@@ -144,6 +153,27 @@ pub fn register_pin(
     frequency: u64,
     parent_dpll: u32,
 ) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("DPLL pin name is empty");
+    }
+
+    {
+        let devs = DPLL_DEVS.read();
+        if !devs.contains_key(&parent_dpll) {
+            return Err("DPLL parent device not found");
+        }
+    }
+
+    {
+        let pins = DPLL_PINS.read();
+        if pins
+            .values()
+            .any(|pin| pin.parent_dpll == parent_dpll && pin.name == name)
+        {
+            return Err("DPLL pin already registered");
+        }
+    }
+
     let id = PIN_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pin = DpllPin {
         id,
@@ -164,6 +194,9 @@ pub fn register_pin(
         } else {
             dev.output_pins.push(id);
         }
+    } else {
+        DPLL_PINS.write().remove(&id);
+        return Err("DPLL parent device not found");
     }
     Ok(id)
 }
@@ -222,6 +255,17 @@ pub fn set_mode(dev_id: u32, mode: DpllMode) -> Result<(), &'static str> {
 
 /// Select source pin (Linux `dpll_source_pin_select`).
 pub fn select_source_pin(dev_id: u32, pin_id: u32) -> Result<(), &'static str> {
+    {
+        let pins = DPLL_PINS.read();
+        let pin = pins.get(&pin_id).ok_or("DPLL pin not found")?;
+        if pin.parent_dpll != dev_id {
+            return Err("DPLL pin does not belong to device");
+        }
+        if pin.direction != DpllPinDirection::Input {
+            return Err("DPLL pin is not an input");
+        }
+    }
+
     let select_fn = {
         let devs = DPLL_DEVS.read();
         let dev = devs.get(&dev_id).ok_or("DPLL device not found")?;
@@ -238,6 +282,17 @@ pub fn select_source_pin(dev_id: u32, pin_id: u32) -> Result<(), &'static str> {
 
 /// Select output pin (Linux `dpll_output_pin_select`).
 pub fn select_output_pin(dev_id: u32, pin_id: u32) -> Result<(), &'static str> {
+    {
+        let pins = DPLL_PINS.read();
+        let pin = pins.get(&pin_id).ok_or("DPLL pin not found")?;
+        if pin.parent_dpll != dev_id {
+            return Err("DPLL pin does not belong to device");
+        }
+        if pin.direction != DpllPinDirection::Output {
+            return Err("DPLL pin is not an output");
+        }
+    }
+
     let select_fn = {
         let devs = DPLL_DEVS.read();
         let dev = devs.get(&dev_id).ok_or("DPLL device not found")?;
@@ -348,6 +403,28 @@ pub fn software_dpll_ops() -> DpllOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("dpll: subsystem ready");
+    if !DPLL_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_dpll_ops();
+    let dev_id = register_device("sw-dpll", ops, DpllType::Eec)?;
+
+    register_pin(
+        "sw-dpll-src",
+        DpllPinType::Ext,
+        DpllPinDirection::Input,
+        25_000_000,
+        dev_id,
+    )?;
+    register_pin(
+        "sw-dpll-out",
+        DpllPinType::Gpio,
+        DpllPinDirection::Output,
+        10_000_000,
+        dev_id,
+    )?;
+
+    crate::serial_println!("dpll: software DPLL registered (id={})", dev_id);
     Ok(())
 }

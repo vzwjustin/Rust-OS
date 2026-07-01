@@ -536,6 +536,12 @@ pub fn software_cdrom_ops() -> CdromOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("cdrom: subsystem ready");
+    if !CDROM_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_cdrom_ops();
+    let dev_id = register_device("sw-cdrom", 48, ops)?;
+    crate::serial_println!("cdrom: software device registered (id={}, 48x)", dev_id);
     Ok(())
 }

@@ -42,6 +42,16 @@ static CURRENT_RNG: RwLock<Option<u32>> = RwLock::new(None);
 
 /// Register an HWRNG device (Linux `hwrng_register`).
 pub fn register_device(name: &str, quality: u32, ops: HwrngOps) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("HWRNG device name is empty");
+    }
+    if quality > 1024 {
+        return Err("HWRNG quality out of range");
+    }
+    if HWRNG_DEVS.read().values().any(|dev| dev.name == name) {
+        return Err("HWRNG device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = HwrngDevice {
         id,
@@ -53,12 +63,6 @@ pub fn register_device(name: &str, quality: u32, ops: HwrngOps) -> Result<u32, &
         seed_present: false,
     };
     HWRNG_DEVS.write().insert(id, dev);
-
-    // Auto-select if no current RNG
-    let mut current = CURRENT_RNG.write();
-    if current.is_none() {
-        *current = Some(id);
-    }
     Ok(id)
 }
 
@@ -76,6 +80,12 @@ pub fn init_device(dev_id: u32) -> Result<(), &'static str> {
         dev.active = true;
         dev.seed_present = true;
     }
+    drop(devs);
+
+    let mut current = CURRENT_RNG.write();
+    if current.is_none() {
+        *current = Some(dev_id);
+    }
     Ok(())
 }
 
@@ -83,8 +93,9 @@ pub fn init_device(dev_id: u32) -> Result<(), &'static str> {
 pub fn select_rng(dev_id: u32) -> Result<(), &'static str> {
     {
         let devs = HWRNG_DEVS.read();
-        if !devs.contains_key(&dev_id) {
-            return Err("HWRNG device not found");
+        let dev = devs.get(&dev_id).ok_or("HWRNG device not found")?;
+        if !dev.active {
+            return Err("HWRNG device not active");
         }
     }
     *CURRENT_RNG.write() = Some(dev_id);
@@ -93,6 +104,9 @@ pub fn select_rng(dev_id: u32) -> Result<(), &'static str> {
 
 /// Read random data from the current RNG (Linux `hwrng_data_read`).
 pub fn read_random(buf: &mut [u8]) -> Result<usize, &'static str> {
+    if buf.is_empty() {
+        return Err("HWRNG read buffer is empty");
+    }
     let dev_id = CURRENT_RNG.read().ok_or("No HWRNG selected")?;
     let (read_fn, data_present_fn) = {
         let devs = HWRNG_DEVS.read();
@@ -113,13 +127,19 @@ pub fn read_random(buf: &mut [u8]) -> Result<usize, &'static str> {
 
     let mut devs = HWRNG_DEVS.write();
     if let Some(dev) = devs.get_mut(&dev_id) {
-        dev.bytes_read += n as u64;
+        dev.bytes_read = dev
+            .bytes_read
+            .checked_add(n as u64)
+            .ok_or("HWRNG byte counter overflow")?;
     }
     Ok(n)
 }
 
 /// Read a specific number of random bytes (Linux `rng_get_data`).
 pub fn read_bytes(count: usize) -> Result<Vec<u8>, &'static str> {
+    if count == 0 {
+        return Err("HWRNG read length is zero");
+    }
     let mut buf = Vec::new();
     buf.resize(count, 0);
     let mut total = 0;
@@ -241,6 +261,19 @@ fn virtio_rng_ops() -> HwrngOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("hwrng: subsystem ready");
+    if !HWRNG_DEVS.read().is_empty() {
+        return Ok(());
+    }
+
+    let sw_id = register_device("software-rng", 512, software_hwrng_ops())?;
+    init_device(sw_id)?;
+    crate::serial_println!("hwrng: software RNG registered (id={}, quality=512)", sw_id);
+
+    if crate::drivers::virtio::rng::is_available() {
+        let v_id = register_device("virtio-rng", 1000, virtio_rng_ops())?;
+        init_device(v_id)?;
+        select_rng(v_id)?;
+        crate::serial_println!("hwrng: virtio-rng registered and selected (id={})", v_id);
+    }
     Ok(())
 }
