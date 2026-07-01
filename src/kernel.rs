@@ -136,6 +136,7 @@ pub fn init() -> Result<(), &'static str> {
         15,
         &["linux_compat", "filesystem", "network", "process"],
     );
+    register_subsystem("syscall", 16, &["gdt", "interrupts"]);
     register_subsystem("softirq", 16, &["interrupts"]);
     register_subsystem("futex", 17, &["process"]);
     register_subsystem("epoll", 18, &["linux_compat"]);
