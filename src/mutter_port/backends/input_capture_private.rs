@@ -1,10 +1,22 @@
-//! Input Capture Private ported from GNOME Mutter's src/backends/
+//! Input Capture Private — ported from GNOME Mutter
 //!
-//! TODO: Add detailed description and porting notes.
+//! Private activation/deactivation interface for input capture sessions.
+//! Used by screencast and remote access protocols to grab input.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-input-capture-private.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-input-capture-private.h
 
-// TODO: port public API from upstream
-// pub fn TODO() {
-//     // TODO: implement
-// }
+/// Opaque input capture type.
+pub struct InputCapture;
+
+/// Opaque input capture session type.
+pub struct InputCaptureSession;
+
+/// Activate an input capture session.
+pub fn meta_input_capture_activate(_input_capture: &InputCapture, _session: &InputCaptureSession) {
+    // TODO: implementation
+}
+
+/// Deactivate an input capture session.
+pub fn meta_input_capture_deactivate(_input_capture: &InputCapture, _session: &InputCaptureSession) {
+    // TODO: implementation
+}

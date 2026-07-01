@@ -1,10 +1,23 @@
-//! Drm Buffer Dumb ported from GNOME Mutter's src/backends/
+//! DRM Buffer Dumb ported from GNOME Mutter's src/backends/
 //!
-//! TODO: Add detailed description and porting notes.
+//! Provides support for simple dumb framebuffer creation via DRM IOCTL.
+//! DRM hardware operations are left as TODO stubs for backend implementers.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-drm-buffer-dumb.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-drm-buffer-dumb.h
+//! Upstream header not found; minimal stub.
 
-// TODO: port public API from upstream
-// pub fn TODO() {
-//     // TODO: implement
-// }
+/// Placeholder for dumb DRM buffer.
+pub struct DrmBufferDumb;
+
+impl DrmBufferDumb {
+    /// Create a new dumb DRM buffer.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DrmBufferDumb {
+    fn default() -> Self {
+        Self::new()
+    }
+}

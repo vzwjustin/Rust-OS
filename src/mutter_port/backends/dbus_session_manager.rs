@@ -1,10 +1,31 @@
-//! Dbus Session Manager ported from GNOME Mutter's src/backends/
+//! Dbus Session Manager ported from GNOME Mutter
 //!
-//! TODO: Add detailed description and porting notes.
+//! MetaDbusSessionManager is a GObject base class for managing D-Bus sessions.
+//! It creates and manages screen cast sessions and coordinates with session watchers.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-dbus-session-manager.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-dbus-session-manager.h
 
-// TODO: port public API from upstream
-// pub fn TODO() {
-//     // TODO: implement
-// }
+pub struct MetaDbusSession {
+    // TODO: port from meta-dbus-session.h
+}
+
+pub struct GDBusMethodInvocation {
+    // Opaque GIO type
+}
+
+/// MetaDbusSessionManager: Base class for managing D-Bus sessions.
+pub struct MetaDbusSessionManager {
+    // TODO: port remaining fields from upstream meta-dbus-session-manager.c
+}
+
+impl MetaDbusSessionManager {
+    pub fn new() -> Self {
+        MetaDbusSessionManager {}
+    }
+}
+
+impl Default for MetaDbusSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
