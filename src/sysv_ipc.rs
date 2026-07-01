@@ -44,7 +44,7 @@ pub const SHM_INFO: i32 = 14;
 // ── Data structures ─────────────────────────────────────────────────────
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct SemBuf {
     pub sem_num: u16,
     pub sem_op: i16,
@@ -99,20 +99,23 @@ pub struct SemaphoreSet {
     /// PID of the last process to perform a semop on this set (GETPID).
     pub last_pid: u32,
     /// PIDs waiting for semaphore values to change.
-    /// Each entry records which sem_num and sem_op the waiter needs,
-    /// plus an optional deadline in nanoseconds since boot (0 = no timeout).
+    /// Each entry records the full operation batch the waiter needs to
+    /// apply atomically, plus an optional deadline in nanoseconds since
+    /// boot (0 = no timeout).
     pub waiters: Vec<SemWaiter>,
 }
 
 /// A pending semaphore waiter.
-#[derive(Debug, Clone, Copy)]
+///
+/// The waiter stores the entire operation batch (a snapshot of the caller's
+/// `sops`), not just the single blocking op.  This is required for correct
+/// wake decisions: a batch like `[+1, -2]` on a semaphore that reaches value
+/// 1 can proceed as a whole even though the `-2` op alone would still block.
+#[derive(Debug, Clone)]
 pub struct SemWaiter {
     pub pid: u32,
-    pub sem_num: u16,
-    /// The sem_op value from the blocking operation:
-    /// negative means waiting for semval + sem_op >= 0,
-    /// zero means waiting for semval == 0.
-    pub sem_op: i16,
+    /// The full operation batch this waiter submitted (kernel-owned snapshot).
+    pub ops: Vec<SemBuf>,
     /// Deadline in nanoseconds since boot (0 = no timeout).
     pub deadline_ns: u64,
 }
@@ -258,28 +261,58 @@ fn parse_timeout(timeout: *const u8) -> u64 {
         return 0;
     }
     // struct timespec { tv_sec: i64, tv_nsec: i64 }
-    let secs = unsafe { *(timeout as *const i64) };
-    let nsecs = unsafe { *((timeout as *const i64).add(1)) };
+    // `timeout` may be unaligned for i64, so use unaligned reads to avoid UB.
+    let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
+    let nsecs = unsafe { core::ptr::read_unaligned((timeout as *const i64).add(1)) };
     if secs < 0 || nsecs < 0 || nsecs >= 1_000_000_000 {
         return 0; // Invalid — treat as no timeout
     }
-    crate::time::uptime_ns() + (secs as u64 * 1_000_000_000) + (nsecs as u64)
+    // Overflow-safe seconds→nanoseconds conversion and deadline addition,
+    // saturating to u64::MAX (an effectively-never deadline) on overflow.
+    let secs_ns = (secs as u64).checked_mul(1_000_000_000).unwrap_or(u64::MAX);
+    let rel_ns = secs_ns.checked_add(nsecs as u64).unwrap_or(u64::MAX);
+    crate::time::uptime_ns()
+        .checked_add(rel_ns)
+        .unwrap_or(u64::MAX)
 }
 
-/// Check whether a waiter's blocking condition is satisfied.
-fn waiter_can_proceed(sems: &[i16], waiter: &SemWaiter) -> bool {
-    let sem_num = waiter.sem_num as usize;
-    if sem_num >= sems.len() {
-        return true; // Semaphore was removed — let caller retry and get ERANGE
+/// Evaluate whether an entire operation batch can be applied atomically
+/// against the current semaphore values.
+///
+/// This is the single all-or-nothing predicate shared by the main apply
+/// path (`semtimedop`) and the wake path (`wake_sem_waiters` /
+/// `check_sem_timeouts`).  It mirrors the atomic-apply logic exactly:
+/// increments always succeed, a decrement blocks if it would drive the
+/// value negative, and a zero-wait blocks unless the value is already zero.
+/// The ops are evaluated cumulatively against a scratch copy so that
+/// intra-batch dependencies (e.g. `[+1, -2]`) are honoured.
+///
+/// If any op references an out-of-range `sem_num`, the batch is reported as
+/// able to proceed so the caller can retry and surface ERANGE (matching the
+/// removed-semaphore behaviour).
+fn batch_can_proceed(sems: &[i16], ops: &[SemBuf]) -> bool {
+    let mut temp: Vec<i32> = sems.iter().map(|&v| v as i32).collect();
+    for op in ops {
+        let sem_num = op.sem_num as usize;
+        if sem_num >= temp.len() {
+            return true; // Out of range — let caller retry and get ERANGE
+        }
+        if op.sem_op > 0 {
+            temp[sem_num] += op.sem_op as i32;
+        } else if op.sem_op < 0 {
+            let new_val = temp[sem_num] + op.sem_op as i32;
+            if new_val < 0 {
+                return false;
+            }
+            temp[sem_num] = new_val;
+        } else {
+            // sem_op == 0: requires the value to be zero at this point.
+            if temp[sem_num] != 0 {
+                return false;
+            }
+        }
     }
-    let current = sems[sem_num] as i32;
-    if waiter.sem_op < 0 {
-        current + waiter.sem_op as i32 >= 0
-    } else if waiter.sem_op == 0 {
-        current == 0
-    } else {
-        true
-    }
+    true
 }
 
 /// Wake waiters that can now proceed after semaphore values changed.
@@ -287,7 +320,7 @@ fn waiter_can_proceed(sems: &[i16], waiter: &SemWaiter) -> bool {
 fn wake_sem_waiters(set: &mut SemaphoreSet) {
     let mut to_wake: Vec<u32> = Vec::new();
     set.waiters.retain(|entry| {
-        if waiter_can_proceed(&set.sems, entry) {
+        if batch_can_proceed(&set.sems, &entry.ops) {
             to_wake.push(entry.pid);
             false
         } else {
@@ -303,9 +336,19 @@ fn wake_sem_waiters(set: &mut SemaphoreSet) {
 /// wake waiters whose deadline has passed with ETIMEDOUT.
 pub fn check_sem_timeouts() {
     let now = crate::time::uptime_ns();
-    let sets = SEM_SETS.read();
+    // This runs from the timer interrupt. Process-context paths
+    // (semtimedop/semctl/semget) hold these same locks with interrupts
+    // enabled, so blocking here would deadlock the CPU. Use non-blocking
+    // acquisitions and simply skip this tick if any lock is contended.
+    let sets = match SEM_SETS.try_read() {
+        Some(sets) => sets,
+        None => return,
+    };
     for (_id, set_mutex) in sets.iter() {
-        let mut set = set_mutex.lock();
+        let mut set = match set_mutex.try_lock() {
+            Some(set) => set,
+            None => continue,
+        };
         let mut expired: Vec<u32> = Vec::new();
         set.waiters.retain(|entry| {
             if entry.deadline_ns != 0 && now >= entry.deadline_ns {
@@ -339,6 +382,17 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
 
     let pid = crate::process::current_pid();
 
+    // Snapshot the operation batch from user space EXACTLY ONCE.  A second
+    // thread sharing this user memory could otherwise mutate `sops` while we
+    // sleep, which would break SysV atomicity when we wake and re-apply.  We
+    // use this kernel-owned copy for every retry, for the waiter record, and
+    // for the final apply — never re-reading the user pointer.
+    let ops: Vec<SemBuf> = (0..nsops)
+        .map(|i| unsafe { *sops.add(i as usize) })
+        .collect();
+
+    let nowait = ops.iter().any(|op| (op.sem_flg as i32) & IPC_NOWAIT != 0);
+
     loop {
         let sets = SEM_SETS.read();
         let set_mutex = match sets.get(&(semid as u32)) {
@@ -347,70 +401,51 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
         };
         let mut set = set_mutex.lock();
 
-        // Read operations
-        let ops: Vec<SemBuf> = (0..nsops)
-            .map(|i| unsafe { *sops.add(i as usize) })
-            .collect();
-
-        let nowait = ops.iter().any(|op| (op.sem_flg as i32) & IPC_NOWAIT != 0);
-
-        // Validate sem_num range
+        // Validate sem_num range against the (possibly changed) set.
         for op in &ops {
             if op.sem_num as usize >= set.sems.len() {
                 return -34; // ERANGE
             }
         }
 
-        // Try to apply all operations atomically
-        let mut would_block_idx: Option<usize> = None;
-        {
-            let mut temp: Vec<i32> = set.sems.iter().map(|&v| v as i32).collect();
-            for (i, op) in ops.iter().enumerate() {
-                let sem_num = op.sem_num as usize;
-                if op.sem_op > 0 {
-                    temp[sem_num] += op.sem_op as i32;
-                } else if op.sem_op < 0 {
-                    let new_val = temp[sem_num] + op.sem_op as i32;
-                    if new_val < 0 {
-                        would_block_idx = Some(i);
-                        break;
-                    }
-                    temp[sem_num] = new_val;
-                } else {
-                    // sem_op == 0: wait for zero
-                    if temp[sem_num] != 0 {
-                        would_block_idx = Some(i);
-                        break;
-                    }
-                }
-            }
-        }
+        // Evaluate the whole batch atomically using the shared predicate.
+        let can_proceed = batch_can_proceed(&set.sems, &ops);
 
-        if let Some(block_idx) = would_block_idx {
+        if !can_proceed {
             if nowait {
                 return -11; // EAGAIN
             }
 
-            // Register as a waiter on the blocking semaphore
-            let block_op = ops[block_idx];
+            // Register as a waiter, storing the FULL operation batch so the
+            // wake path can re-evaluate the entire atomic condition.
             set.waiters.retain(|waiter| waiter.pid != pid);
             set.waiters.push(SemWaiter {
                 pid,
-                sem_num: block_op.sem_num,
-                sem_op: block_op.sem_op,
+                ops: ops.clone(),
                 deadline_ns: deadline,
             });
-            drop(set);
-            drop(sets);
 
-            // Block the current process and yield CPU
+            // Close the lost-wakeup window: mark this task Blocked while we
+            // STILL HOLD the lock guarding the waiter list.  `block_process`
+            // is non-yielding (it only sets Blocked + removes from the run
+            // queues; the reschedule happens later in `yield_cpu`), so it is
+            // safe to call under the lock.  Because the wake path
+            // (`wake_sem_waiters`, `check_sem_timeouts`, IPC_RMID) must take
+            // this same lock, it cannot run — and therefore cannot call
+            // `unblock_process` on us — between "waiter enqueued" and "task
+            // marked Blocked".
             let pm = crate::process::get_process_manager();
             let _ = pm.block_process(pid);
+
+            // Only now release the locks, then yield.  No path yields while
+            // holding the lock.
+            drop(set);
+            drop(sets);
             crate::process::scheduler::yield_cpu();
 
-            // When we get rescheduled, check for timeout
+            // When we get rescheduled, check for timeout.
             if deadline != 0 && crate::time::uptime_ns() >= deadline {
-                // Remove ourselves from waiters if still present
+                // Remove ourselves from waiters if still present.
                 let sets = SEM_SETS.read();
                 if let Some(set_mutex) = sets.get(&(semid as u32)) {
                     let mut set = set_mutex.lock();
@@ -419,11 +454,11 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
                 return -110; // ETIMEDOUT
             }
 
-            // Retry the operations
+            // Retry using the same snapshot — never re-read user memory.
             continue;
         }
 
-        // Apply operations
+        // Apply operations from the snapshot.
         for op in &ops {
             set.sems[op.sem_num as usize] =
                 (set.sems[op.sem_num as usize] as i32 + op.sem_op as i32) as i16;
@@ -431,7 +466,7 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
         set.otime = crate::time::uptime_ns() / 1_000_000_000;
         set.last_pid = crate::process::current_pid();
 
-        // Wake any waiters that can now proceed
+        // Wake any waiters that can now proceed.
         wake_sem_waiters(&mut set);
 
         return 0;
@@ -499,20 +534,30 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
             if semnum < 0 || semnum as usize >= set.sems.len() {
                 return -34;
             }
+            // Count waiters whose batch blocks on a decrement of this sem.
             return set
                 .waiters
                 .iter()
-                .filter(|w| w.sem_num == semnum as u16 && w.sem_op < 0)
+                .filter(|w| {
+                    w.ops
+                        .iter()
+                        .any(|op| op.sem_num == semnum as u16 && op.sem_op < 0)
+                })
                 .count() as i32;
         }
         GETZCNT => {
             if semnum < 0 || semnum as usize >= set.sems.len() {
                 return -34;
             }
+            // Count waiters whose batch blocks on a zero-wait of this sem.
             return set
                 .waiters
                 .iter()
-                .filter(|w| w.sem_num == semnum as u16 && w.sem_op == 0)
+                .filter(|w| {
+                    w.ops
+                        .iter()
+                        .any(|op| op.sem_num == semnum as u16 && op.sem_op == 0)
+                })
                 .count() as i32;
         }
         GETALL => {

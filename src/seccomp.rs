@@ -226,7 +226,16 @@ pub fn sys_seccomp(pid: u32, op: u32, flags: u32, filter_data: *const u8) -> i32
                 return -14;
             }
 
-            let action = unsafe { *(filter_data as *const u32) };
+            let mut action_bytes = [0u8; 4];
+            if crate::memory::user_space::UserSpaceMemory::copy_from_user(
+                filter_data as u64,
+                &mut action_bytes,
+            )
+            .is_err()
+            {
+                return -14;
+            }
+            let action = u32::from_ne_bytes(action_bytes);
             match action {
                 SECCOMP_RET_KILL_PROCESS
                 | SECCOMP_RET_KILL_THREAD
@@ -245,11 +254,17 @@ pub fn sys_seccomp(pid: u32, op: u32, flags: u32, filter_data: *const u8) -> i32
                 return -14;
             }
 
-            unsafe {
-                let ptr = filter_data as *mut u16;
-                *ptr = 80;
-                *ptr.add(1) = 24;
-                *ptr.add(2) = 64;
+            let sizes: [u16; 3] = [80, 24, 64];
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    sizes.as_ptr() as *const u8,
+                    core::mem::size_of::<[u16; 3]>(),
+                )
+            };
+            if crate::memory::user_space::UserSpaceMemory::copy_to_user(filter_data as u64, bytes)
+                .is_err()
+            {
+                return -14;
             }
             0
         }

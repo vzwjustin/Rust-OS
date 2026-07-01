@@ -159,28 +159,49 @@ pub fn devres_destroy(device: &Arc<Device>, key: usize) -> bool {
 /// Remove one matching resource and run its cleanup.
 pub fn devres_release(device: &Arc<Device>, key: usize) -> bool {
     let owner = device_ptr(device);
-    let mut table = DEVRES_TABLE.lock();
-    if let Some(idx) = find_entry_index(&table, owner, key) {
-        let mut entry = table.remove(idx);
-        entry.cleanup.release();
-        true
-    } else {
-        false
+
+    // Remove the entry while holding the lock, but run its cleanup only after the
+    // lock is dropped. Cleanup callbacks may re-enter the devres API (or take
+    // other locks), so holding DEVRES_TABLE across release() risks a deadlock.
+    let entry = {
+        let mut table = DEVRES_TABLE.lock();
+        match find_entry_index(&table, owner, key) {
+            Some(idx) => Some(table.remove(idx)),
+            None => None,
+        }
+    };
+
+    match entry {
+        Some(mut entry) => {
+            entry.cleanup.release();
+            true
+        }
+        None => false,
     }
 }
 
 /// Release all registered resources for `device` in reverse registration order.
 pub fn release_devres(device: &Arc<Device>) {
     let owner = device_ptr(device);
-    let mut table = DEVRES_TABLE.lock();
 
-    let mut idx = table.len();
-    while idx > 0 {
-        idx -= 1;
-        if table[idx].device_ptr == owner {
-            let mut entry = table.remove(idx);
-            entry.cleanup.release();
+    // Collect all matching entries while holding the lock, then drop the lock
+    // before running any cleanup. Running release() under the lock risks a
+    // deadlock if a callback re-enters the devres API or takes other locks.
+    let mut entries: Vec<DevresEntry> = Vec::new();
+    {
+        let mut table = DEVRES_TABLE.lock();
+        let mut idx = table.len();
+        while idx > 0 {
+            idx -= 1;
+            if table[idx].device_ptr == owner {
+                entries.push(table.remove(idx));
+            }
         }
+    }
+
+    // Entries were collected in reverse registration order already.
+    for mut entry in entries {
+        entry.cleanup.release();
     }
 }
 
