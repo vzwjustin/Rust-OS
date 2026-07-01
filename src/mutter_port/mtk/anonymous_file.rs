@@ -148,7 +148,7 @@ fn sys_mmap(addr: *mut u8, length: usize, prot: i32, flags: i32, fd: i32, offset
     {
         // SAFETY: addr may be NULL; fd must be valid; offset page-aligned.
         let raw = unsafe { syscall6(SYS_MMAP, addr as i64, length as i64, prot as i64, flags as i64, fd as i64, offset) };
-        if raw == MAP_FAILED { Err(AnonymousFileError::MmapFailed(0)) } else { Ok(raw as *mut u8) }
+        if raw == MAP_FAILED as i64 { Err(AnonymousFileError::MmapFailed(0)) } else { Ok(raw as *mut u8) }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

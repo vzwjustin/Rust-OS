@@ -22,7 +22,9 @@ use alloc::vec::Vec;
 type DisposeEntry = Box<dyn FnOnce()>;
 
 /// Port of `MtkDisposeBin`: a collection of deferred-destruction callbacks.
-#[derive(Debug, Default)]
+///
+/// No `Debug` derive: the entries are `Box<dyn FnOnce()>`, which is not `Debug`.
+#[derive(Default)]
 pub struct DisposeBin {
     entries: Vec<DisposeEntry>,
 }
