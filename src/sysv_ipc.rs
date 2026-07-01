@@ -258,12 +258,19 @@ fn parse_timeout(timeout: *const u8) -> u64 {
         return 0;
     }
     // struct timespec { tv_sec: i64, tv_nsec: i64 }
-    let secs = unsafe { *(timeout as *const i64) };
-    let nsecs = unsafe { *((timeout as *const i64).add(1)) };
+    // `timeout` may be unaligned for i64, so use unaligned reads to avoid UB.
+    let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
+    let nsecs = unsafe { core::ptr::read_unaligned((timeout as *const i64).add(1)) };
     if secs < 0 || nsecs < 0 || nsecs >= 1_000_000_000 {
         return 0; // Invalid — treat as no timeout
     }
-    crate::time::uptime_ns() + (secs as u64 * 1_000_000_000) + (nsecs as u64)
+    // Overflow-safe seconds→nanoseconds conversion and deadline addition,
+    // saturating to u64::MAX (an effectively-never deadline) on overflow.
+    let secs_ns = (secs as u64).checked_mul(1_000_000_000).unwrap_or(u64::MAX);
+    let rel_ns = secs_ns.checked_add(nsecs as u64).unwrap_or(u64::MAX);
+    crate::time::uptime_ns()
+        .checked_add(rel_ns)
+        .unwrap_or(u64::MAX)
 }
 
 /// Check whether a waiter's blocking condition is satisfied.
@@ -303,9 +310,19 @@ fn wake_sem_waiters(set: &mut SemaphoreSet) {
 /// wake waiters whose deadline has passed with ETIMEDOUT.
 pub fn check_sem_timeouts() {
     let now = crate::time::uptime_ns();
-    let sets = SEM_SETS.read();
+    // This runs from the timer interrupt. Process-context paths
+    // (semtimedop/semctl/semget) hold these same locks with interrupts
+    // enabled, so blocking here would deadlock the CPU. Use non-blocking
+    // acquisitions and simply skip this tick if any lock is contended.
+    let sets = match SEM_SETS.try_read() {
+        Some(sets) => sets,
+        None => return,
+    };
     for (_id, set_mutex) in sets.iter() {
-        let mut set = set_mutex.lock();
+        let mut set = match set_mutex.try_lock() {
+            Some(set) => set,
+            None => continue,
+        };
         let mut expired: Vec<u32> = Vec::new();
         set.waiters.retain(|entry| {
             if entry.deadline_ns != 0 && now >= entry.deadline_ns {
