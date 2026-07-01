@@ -582,13 +582,31 @@ pub fn mount_setattr(_dfd: i32, path: *const u8, flags: u32, attr: u64, size: u6
 
     // struct mount_attr { u64 attr_set; u64 attr_clr; u64 propagation; }
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct MountAttr {
         attr_set: u64,
         attr_clr: u64,
         propagation: u64,
     }
 
-    let mount_attr = unsafe { &*(attr as *const MountAttr) };
+    // Copy the mount_attr structure out of user space rather than dereferencing
+    // the raw user pointer directly. Return EFAULT (-14) on failure.
+    let mut mount_attr = MountAttr {
+        attr_set: 0,
+        attr_clr: 0,
+        propagation: 0,
+    };
+    {
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                (&mut mount_attr as *mut MountAttr) as *mut u8,
+                core::mem::size_of::<MountAttr>(),
+            )
+        };
+        if crate::memory::user_space::UserSpaceMemory::copy_from_user(attr, bytes).is_err() {
+            return -14;
+        }
+    }
     const VALID_MOUNT_ATTR_FLAGS: u64 = MOUNT_ATTR_RDONLY
         | MOUNT_ATTR_NOSUID
         | MOUNT_ATTR_NODEV

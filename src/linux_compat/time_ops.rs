@@ -34,6 +34,32 @@ fn inc_ops() {
     TIME_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Safely copy a POD structure from a user-space pointer into a local copy.
+///
+/// This avoids dereferencing an untrusted user pointer directly; the value is
+/// copied through the validated user-space memory path. Returns `EFAULT` if the
+/// pointer is null or the copy fails validation.
+fn copy_struct_from_user<T: Copy>(user_ptr: u64) -> LinuxResult<T> {
+    use crate::memory::user_space::UserSpaceMemory;
+
+    if user_ptr == 0 {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    // SAFETY: the slice covers exactly `size_of::<T>()` bytes of the uninitialized
+    // storage, which is fully written by a successful copy_from_user.
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            value.as_mut_ptr() as *mut u8,
+            core::mem::size_of::<T>(),
+        )
+    };
+    UserSpaceMemory::copy_from_user(user_ptr, bytes).map_err(|_| LinuxError::EFAULT)?;
+    // SAFETY: all bytes of `value` were initialized by the copy above.
+    Ok(unsafe { value.assume_init() })
+}
+
 /// Timer specification structure (struct itimerspec)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -162,19 +188,20 @@ pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    unsafe {
-        let sleep_time = *req;
+    // Copy the request out of user space instead of dereferencing the raw pointer.
+    let sleep_time: TimeSpec = copy_struct_from_user(req as u64)?;
 
-        // Validate sleep time
-        if sleep_time.tv_sec < 0 || sleep_time.tv_nsec < 0 || sleep_time.tv_nsec >= 1_000_000_000 {
-            return Err(LinuxError::EINVAL);
-        }
+    // Validate sleep time
+    if sleep_time.tv_sec < 0 || sleep_time.tv_nsec < 0 || sleep_time.tv_nsec >= 1_000_000_000 {
+        return Err(LinuxError::EINVAL);
+    }
 
-        let sleep_us = sleep_time.tv_sec as u64 * 1_000_000 + (sleep_time.tv_nsec as u64 / 1_000);
-        crate::time::sleep_us(sleep_us);
+    let sleep_us = sleep_time.tv_sec as u64 * 1_000_000 + (sleep_time.tv_nsec as u64 / 1_000);
+    crate::time::sleep_us(sleep_us);
 
-        // If interrupted by signal and rem is not null, store remaining time
-        if !rem.is_null() {
+    // If interrupted by signal and rem is not null, store remaining time
+    if !rem.is_null() {
+        unsafe {
             (*rem).tv_sec = 0;
             (*rem).tv_nsec = 0;
         }
@@ -360,7 +387,8 @@ pub fn timer_settime(
     let mut timers = POSIX_TIMERS.lock();
     let timer = timers.get_mut(&timerid).ok_or(LinuxError::EINVAL)?;
 
-    let spec = unsafe { *(new_value as *const ITimerSpec) };
+    // Copy the new timer spec out of user space rather than dereferencing directly.
+    let spec: ITimerSpec = copy_struct_from_user(new_value as u64)?;
     if spec.it_interval_sec < 0
         || spec.it_value_sec < 0
         || spec.it_interval_nsec < 0
