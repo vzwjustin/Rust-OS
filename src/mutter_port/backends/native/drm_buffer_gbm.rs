@@ -1,12 +1,25 @@
+//! DRM Buffer GBM — hardware-accelerated framebuffer backed by GBM (Generic Buffer Management).
+//!
+//! Represents a GPU-allocated buffer that can be scanned out directly to a display.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-drm-buffer-gbm.c
+
 use alloc::{boxed::Box, string::String, vec::Vec};
+use core::ffi::c_void;
 
 pub struct DrmBufferGbm {
-    // TODO: port DrmBufferGbm from meta-drm-buffer-gbm.c
+    /// GBM surface (opaque pointer to gbm_surface)
+    pub surface: *mut c_void,
+    /// GBM buffer object (opaque pointer to gbm_bo)
+    pub bo: *mut c_void,
 }
 
 impl DrmBufferGbm {
     pub fn new() -> Self {
-        DrmBufferGbm {}
+        DrmBufferGbm {
+            surface: core::ptr::null_mut(),
+            bo: core::ptr::null_mut(),
+        }
     }
 }
 
