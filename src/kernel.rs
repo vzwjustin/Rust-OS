@@ -197,6 +197,17 @@ pub fn init() -> Result<(), &'static str> {
     register_subsystem("desktop", 72, &["wayland"]);
     register_subsystem("workqueue", 73, &["softirq"]);
 
+    // Subsystems initialized in src/main.rs but not previously registered
+    // in the kernel subsystem registry.
+    register_subsystem("irq_domain", 17, &["interrupts"]);
+    register_subsystem("md", 21, &["block_io"]);
+    register_subsystem("mutter", 22, &["wayland"]);
+    register_subsystem("quota", 23, &["filesystem"]);
+    register_subsystem("rseq", 24, &["process"]);
+    register_subsystem("syscall_fast", 25, &["gdt", "interrupts"]);
+    register_subsystem("usermodehelper", 26, &["process"]);
+    register_subsystem("linux_integration", 27, &["linux_compat"]);
+
     crate::notifier::init();
     update_subsystem_state("notifier", SubsystemState::Ready)?;
 
