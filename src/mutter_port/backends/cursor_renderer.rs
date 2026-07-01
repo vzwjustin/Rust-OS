@@ -5,6 +5,8 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-cursor-renderer.c
 
+use core::ffi::c_void;
+
 /// Interface for hardware cursor inhibition.
 pub struct MetaHwCursorInhibitor;
 
@@ -18,13 +20,40 @@ impl MetaHwCursorInhibitor {
 
 /// Cursor renderer managing sprite updates and positioning.
 pub struct MetaCursorRenderer {
-    // TODO: backend, cursor, sprite, position fields from meta-cursor-renderer.c
+    /// Reference to backend (opaque).
+    pub backend: *mut c_void,
+    /// Current X position in stage coordinates.
+    pub current_x: f32,
+    /// Current Y position in stage coordinates.
+    pub current_y: f32,
+    /// Current sprite being rendered (opaque ClutterSprite).
+    pub sprite: *mut c_void,
+    /// Currently displayed cursor (opaque ClutterCursor).
+    pub displayed_cursor: *mut c_void,
+    /// Overlay cursor for stage rendering (opaque ClutterCursor).
+    pub overlay_cursor: *mut c_void,
+    /// Stage overlay for cursor rendering (opaque MetaOverlay).
+    pub stage_overlay: *mut c_void,
+    /// Whether overlay rendering is needed.
+    pub needs_overlay: bool,
+    /// Handler ID for after-paint signal.
+    pub after_paint_handler_id: u64,
 }
 
 impl MetaCursorRenderer {
     /// Create a new cursor renderer.
     pub fn new() -> Self {
-        MetaCursorRenderer {}
+        MetaCursorRenderer {
+            backend: core::ptr::null_mut(),
+            current_x: 0.0,
+            current_y: 0.0,
+            sprite: core::ptr::null_mut(),
+            displayed_cursor: core::ptr::null_mut(),
+            overlay_cursor: core::ptr::null_mut(),
+            stage_overlay: core::ptr::null_mut(),
+            needs_overlay: false,
+            after_paint_handler_id: 0,
+        }
     }
 
     /// Update the current cursor sprite.
@@ -57,8 +86,7 @@ impl MetaCursorRenderer {
 
     /// Check if cursor needs overlay rendering.
     pub fn needs_overlay(&self) -> bool {
-        // TODO: Determine overlay requirement
-        false
+        self.needs_overlay
     }
 
     /// Update cursor position in stage.

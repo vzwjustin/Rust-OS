@@ -2,6 +2,7 @@
 //!
 //! Device-to-output mapping for tablets and touch devices. Handles matching input
 //! devices to logical monitors based on EDID, size, and configuration hints.
+//! Maintains hash tables of input and output device mappings with D-Bus name tracking.
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-input-mapper.c
 
@@ -18,18 +19,39 @@ pub enum MetaOutputMatchType {
 
 pub const MAX_SIZE_MATCH_DIFF: f64 = 0.05;
 
-/// Input device mapper for associating devices with outputs.
+pub struct MetaBackend {
+    // Opaque backend type
+}
+
+pub struct MetaMonitorManager {
+    // Opaque monitor manager type
+}
+
+pub struct ClutterSeat {
+    // Opaque Clutter seat type
+}
+
+/// Input device mapper for associating input devices (tablets, touch) with outputs.
+/// Maintains mappings between ClutterInputDevice and MetaLogicalMonitor via D-Bus.
 pub struct InputMapper {
-    // backend reference
-    // monitor_manager reference
-    // seat reference
-    // input_devices: GHashTable
-    // output_devices: GHashTable
+    pub backend: *mut MetaBackend,
+    pub monitor_manager: *mut MetaMonitorManager,
+    pub seat: *mut ClutterSeat,
+    pub input_devices: *mut core::ffi::c_void,  // GHashTable<ClutterInputDevice, MetaMapperInputInfo>
+    pub output_devices: *mut core::ffi::c_void, // GHashTable<MetaLogicalMonitor, MetaMapperOutputInfo>
+    pub dbus_name_id: u32,
 }
 
 impl InputMapper {
     pub fn new() -> Self {
-        InputMapper {}
+        InputMapper {
+            backend: core::ptr::null_mut(),
+            monitor_manager: core::ptr::null_mut(),
+            seat: core::ptr::null_mut(),
+            input_devices: core::ptr::null_mut(),
+            output_devices: core::ptr::null_mut(),
+            dbus_name_id: 0,
+        }
     }
 }
 

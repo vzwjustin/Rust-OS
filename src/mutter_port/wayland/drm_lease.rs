@@ -1,17 +1,17 @@
 //! Wayland DRM Lease module
 //!
-//! Ported from: meta-wayland-drm-lease.c/h
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-drm-lease.h
+//!
+//! Manages DRM leases for Wayland clients requesting exclusive device access.
+//! Lease allocation and DRM device management are TODO.
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandDrmLeaseManager {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
+/// Placeholder unit type for DRM lease management in the compositor.
+pub struct MetaWaylandDrmLeaseManager;
 
 impl MetaWaylandDrmLeaseManager {
-    /// Initialize DRM lease manager for the compositor
-    /// TODO: port logic from meta_wayland_drm_lease_manager_init
+    /// Initialize DRM lease manager for the compositor.
+    /// TODO: DRM device enumeration and lease protocol binding.
     pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
+        // DRM lease protocol deferred to backend implementation.
     }
 }

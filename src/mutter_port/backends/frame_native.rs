@@ -28,14 +28,27 @@ pub struct GSource;
 
 /// Native frame with KMS update and buffer state.
 /// Carries rendering metadata for the frame pipeline.
+/// Stores DRM buffer references, KMS update state, damage regions, and sync file descriptors.
 pub struct MetaFrameNative {
-    // TODO: port internal fields from upstream
+    pub buffer: *mut MetaDrmBuffer,
+    pub scanout: *mut CoglScanout,
+    pub kms_update: *mut MetaKmsUpdate,
+    pub damage: *mut MtkRegion,
+    pub sync_fd: i32,
+    pub sync_events: u32,
 }
 
 impl MetaFrameNative {
     /// Create a new native frame.
     pub fn new() -> Self {
-        MetaFrameNative {}
+        MetaFrameNative {
+            buffer: core::ptr::null_mut(),
+            scanout: core::ptr::null_mut(),
+            kms_update: core::ptr::null_mut(),
+            damage: core::ptr::null_mut(),
+            sync_fd: -1,
+            sync_events: 0,
+        }
     }
 }
 

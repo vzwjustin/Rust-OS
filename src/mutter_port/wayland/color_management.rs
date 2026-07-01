@@ -1,17 +1,13 @@
 //! Wayland Color Management module
 //!
-//! Ported from: meta-wayland-color-management.c/h
+//! Manages color management protocols and settings for Wayland surfaces.
+//! Coordinates color space negotiation and ICC profile handling.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-color-management.h
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandColorManagement {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
-
-impl MetaWaylandColorManagement {
-    /// Initialize color management support for the compositor
-    /// TODO: port logic from meta_wayland_init_color_management
-    pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
-    }
+/// Initialize color management support for the compositor.
+///
+/// TODO: port logic from meta_wayland_init_color_management, wire protocol binding
+pub fn meta_wayland_init_color_management(_compositor: *mut core::ffi::c_void) {
+    // TODO: implement
 }

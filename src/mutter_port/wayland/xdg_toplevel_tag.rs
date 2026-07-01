@@ -1,17 +1,16 @@
 //! Wayland XDG Toplevel Tag module
 //!
-//! Ported from: meta-wayland-xdg-toplevel-tag.c/h
+//! Window tagging extension for xdg_shell. Allows applications to tag windows
+//! for grouping and lifecycle management.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-xdg-toplevel-tag.h
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandXdgToplevelTag {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
+/// XDG toplevel tag protocol manager.
+pub struct MetaWaylandXdgToplevelTag;
 
 impl MetaWaylandXdgToplevelTag {
-    /// Initialize XDG toplevel tag support for the compositor
-    /// TODO: port logic from meta_wayland_xdg_toplevel_tag_init
+    /// Initialize XDG toplevel tag protocol support for the compositor.
     pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
+        // TODO: register xdg_toplevel_tag Wayland protocol interface
     }
 }

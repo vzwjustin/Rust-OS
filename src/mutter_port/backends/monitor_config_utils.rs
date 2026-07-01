@@ -22,9 +22,18 @@ pub struct MetaMonitorManager;
 /// Logical monitor configuration.
 pub struct MetaLogicalMonitorConfig;
 
+/// Monitor specification (display identifier).
+pub struct MetaMonitorSpec;
+
 /// Monitors configuration.
+/// Holds layout mode, logical/physical monitor configs, and disabled/for-lease specs.
 pub struct MetaMonitorsConfig {
-    // TODO: port fields
+    pub logical_monitor_configs: Vec<*mut MetaLogicalMonitorConfig>,
+    pub disabled_monitor_specs: Vec<*mut MetaMonitorSpec>,
+    pub for_lease_monitor_specs: Vec<*mut MetaMonitorSpec>,
+    pub layout_mode: MetaLogicalMonitorLayoutMode,
+    pub flags: u32,
+    pub switch_config: u32,
 }
 
 /// Clone a list of logical monitor configs.
@@ -38,7 +47,14 @@ pub fn meta_clone_logical_monitor_config_list(
 /// Copy a monitors config.
 pub fn meta_monitors_config_copy(config: &MetaMonitorsConfig) -> MetaMonitorsConfig {
     // TODO: deep copy
-    MetaMonitorsConfig {}
+    MetaMonitorsConfig {
+        logical_monitor_configs: Vec::new(),
+        disabled_monitor_specs: Vec::new(),
+        for_lease_monitor_specs: Vec::new(),
+        layout_mode: config.layout_mode,
+        flags: config.flags,
+        switch_config: config.switch_config,
+    }
 }
 
 /// Verify logical monitor config list is valid.

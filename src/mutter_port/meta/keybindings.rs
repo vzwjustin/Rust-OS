@@ -1,6 +1,9 @@
 //! Mutter keybinding management
 //! Ported from meta/keybindings.h and meta/meta-keymap-description.h
-use alloc::{string::String, vec::Vec, format};
+//!
+//! MetaKeyBinding maps keyboard input to window manager actions.
+//! MetaKeymapDescription manages keyboard layout and input method state.
+use alloc::{string::String, vec::Vec};
 
 use crate::mutter_port::meta::types::*;
 
@@ -43,26 +46,38 @@ impl MetaKeyBinding {
 
 /// Keyboard layout/keymap information
 pub struct MetaKeymapDescription {
-    // TODO: port keymap fields
+    current_layout: Option<String>,
+    available_layouts: Vec<String>,
 }
 
 impl MetaKeymapDescription {
+    /// Create a new MetaKeymapDescription
+    pub fn new() -> Self {
+        Self {
+            current_layout: None,
+            available_layouts: Vec::new(),
+        }
+    }
+
     /// Get current keyboard layout name
     pub fn get_layout(&self) -> Option<&str> {
-        // TODO: implement
-        None
+        self.current_layout.as_ref().map(|s| s.as_str())
     }
 
     /// Get available layouts
     pub fn get_layouts(&self) -> Vec<String> {
-        // TODO: implement
-        Vec::new()
+        self.available_layouts.clone()
     }
 
     /// Switch keyboard layout
-    pub fn set_layout(&mut self, _layout: &str) {
+    pub fn set_layout(&mut self, layout: &str) {
+        self.current_layout = Some(String::from(layout));
         // TODO: implement
     }
 }
 
-// TODO: port remaining keybinding functions
+impl Default for MetaKeymapDescription {
+    fn default() -> Self {
+        Self::new()
+    }
+}

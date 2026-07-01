@@ -7,9 +7,11 @@
 
 use alloc::vec::Vec;
 
-/// Opaque barrier event type.
+/// Barrier event with time and coordinates. Opaque as full C structure is complex.
 pub struct MetaBarrierEvent {
-    // TODO: port event fields
+    pub time: u32,
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Base class for barrier implementations.

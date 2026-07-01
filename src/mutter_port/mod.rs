@@ -8,5 +8,6 @@ pub mod clutter;
 pub mod compositor;
 pub mod core;
 pub mod math;
+pub mod meta;
 pub mod mtk;
 pub mod wayland;

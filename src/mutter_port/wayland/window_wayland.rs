@@ -1,7 +1,7 @@
-//! GNOME src/wayland/meta-window-wayland.c
+//! Wayland Window module
 //!
-//! Represents a MetaWindow for Wayland clients. Bridges between Wayland
-//! protocol surfaces and the window manager's window abstraction.
+//! Represents a window for Wayland clients, bridging protocol surfaces to WM abstractions.
+//! Tracks window state, geometry, and pending xdg_shell configures.
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-window-wayland.c
 

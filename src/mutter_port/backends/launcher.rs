@@ -13,15 +13,29 @@ pub struct MetaBackend;
 /// D-Bus login1 session proxy.
 pub struct MetaDBusLogin1Session;
 
+/// D-Bus login1 seat proxy.
+pub struct MetaDBusLogin1Seat;
+
 /// Session launcher managing D-Bus login1 integration.
+/// Holds references to backend, session and seat proxies, and session state flags.
 pub struct MetaLauncher {
-    // TODO: port internal fields
+    pub backend: *mut MetaBackend,
+    pub session_proxy: *mut MetaDBusLogin1Session,
+    pub seat_proxy: *mut MetaDBusLogin1Seat,
+    pub session_active: bool,
+    pub have_control: bool,
 }
 
 impl MetaLauncher {
     /// Create new launcher (error if login1 unavailable).
-    pub fn new(_backend: &MetaBackend) -> Result<Self, String> {
-        Ok(MetaLauncher {})
+    pub fn new(_backend: *mut MetaBackend) -> Result<Self, String> {
+        Ok(MetaLauncher {
+            backend: _backend,
+            session_proxy: core::ptr::null_mut(),
+            seat_proxy: core::ptr::null_mut(),
+            session_active: true,
+            have_control: false,
+        })
     }
 
     /// Activate a virtual terminal.
@@ -32,8 +46,7 @@ impl MetaLauncher {
 
     /// Check if this session is currently active.
     pub fn is_session_active(&self) -> bool {
-        // TODO: check session state via D-Bus
-        false
+        self.session_active
     }
 
     /// Take device control from session manager.
@@ -49,14 +62,12 @@ impl MetaLauncher {
     }
 
     /// Get D-Bus login1 session proxy.
-    pub fn get_session_proxy(&self) -> Option<&MetaDBusLogin1Session> {
-        // TODO: return session proxy
-        None
+    pub fn get_session_proxy(&self) -> *mut MetaDBusLogin1Session {
+        self.session_proxy
     }
 
     /// Get backend.
-    pub fn get_backend(&self) -> Option<&MetaBackend> {
-        // TODO: return backend reference
-        None
+    pub fn get_backend(&self) -> *mut MetaBackend {
+        self.backend
     }
 }

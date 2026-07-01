@@ -258,13 +258,41 @@ impl Rectangle {
         }
     }
 
-    // TODO: Port of `mtk_rectangle_crop_and_scale` is intentionally
-    // unimplemented. The original scales `rect` against `src_rect`
-    // (a graphene_rect_t describing a source crop region) to fit a
-    // `dst_width` x `dst_height` target, via `graphene_rect_scale` and
-    // `graphene_rect_offset`. Porting it faithfully needs those graphene
-    // primitives (or local equivalents) implemented and unit-tested
-    // first; left as a stub since it is not pure self-contained geometry.
+    /// Port of `mtk_rectangle_crop_and_scale`.
+    ///
+    /// Maps `self` (expressed in a `dst_width` x `dst_height` destination
+    /// space) into the source crop region `src_rect`, then rounds outwards
+    /// (`Grow`) so the integer result fully contains the mapped rectangle.
+    /// Mirrors upstream's `graphene_rect_scale` + `graphene_rect_offset`
+    /// followed by `MTK_ROUNDING_STRATEGY_GROW` conversion.
+    pub fn crop_and_scale(
+        &self,
+        src_rect: &FloatRect,
+        dst_width: i32,
+        dst_height: i32,
+    ) -> Rectangle {
+        // Guard against a degenerate destination to avoid division by zero.
+        if dst_width == 0 || dst_height == 0 {
+            return Rectangle {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            };
+        }
+
+        let scale_x = src_rect.width / dst_width as f32;
+        let scale_y = src_rect.height / dst_height as f32;
+
+        let scaled = FloatRect {
+            x: self.x as f32 * scale_x + src_rect.x,
+            y: self.y as f32 * scale_y + src_rect.y,
+            width: self.width as f32 * scale_x,
+            height: self.height as f32 * scale_y,
+        };
+
+        Rectangle::from_float_rect(&scaled, RoundingStrategy::Grow)
+    }
 
     /// Port of `mtk_rectangle_scale_double`. Scales `self` by `scale`
     /// (uniformly in both axes) and rounds the result per
@@ -490,5 +518,28 @@ mod tests {
         let rect = Rectangle::new(0, 0, 10, 10);
         let scaled = rect.scale_double(2.0, RoundingStrategy::Round);
         assert_eq!(scaled, Rectangle::new(0, 0, 20, 20));
+    }
+
+    #[test]
+    fn test_crop_and_scale_full_frame_maps_to_src() {
+        // A rect covering the whole dst maps exactly onto the src crop.
+        let full = Rectangle::new(0, 0, 100, 100);
+        let src = FloatRect::new(10.0, 20.0, 50.0, 50.0);
+        assert_eq!(full.crop_and_scale(&src, 100, 100), Rectangle::new(10, 20, 50, 50));
+    }
+
+    #[test]
+    fn test_crop_and_scale_subrect() {
+        // Bottom-right quarter of the dst maps into the src, offset by origin.
+        let quarter = Rectangle::new(50, 50, 50, 50);
+        let src = FloatRect::new(10.0, 20.0, 50.0, 50.0);
+        assert_eq!(quarter.crop_and_scale(&src, 100, 100), Rectangle::new(35, 45, 25, 25));
+    }
+
+    #[test]
+    fn test_crop_and_scale_degenerate_dst_is_empty() {
+        let r = Rectangle::new(0, 0, 10, 10);
+        let src = FloatRect::new(0.0, 0.0, 1.0, 1.0);
+        assert_eq!(r.crop_and_scale(&src, 0, 0), Rectangle::new(0, 0, 0, 0));
     }
 }

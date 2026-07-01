@@ -9,13 +9,16 @@ pub const META_PLUGIN_API_VERSION: i32 = 13;
 
 /// Base plugin class for window manager extensions
 pub struct MetaPlugin {
-    // TODO: port plugin fields
     pub name: String,
+    manager: *mut core::ffi::c_void,
 }
 
 impl MetaPlugin {
     pub fn new(name: String) -> Self {
-        Self { name }
+        Self {
+            name,
+            manager: core::ptr::null_mut(),
+        }
     }
 
     /// Get plugin name
@@ -60,4 +63,8 @@ impl MetaPlugin {
     }
 }
 
-// TODO: port remaining plugin functions
+impl Default for MetaPlugin {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}

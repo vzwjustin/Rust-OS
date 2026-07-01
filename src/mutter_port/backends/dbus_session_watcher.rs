@@ -5,6 +5,8 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-dbus-session-watcher.h
 
+use alloc::collections::BTreeMap;
+
 pub struct MetaDbusSession {
     // TODO: port from meta-dbus-session.h
 }
@@ -19,13 +21,16 @@ pub struct MetaDbusSessionInterface {
 }
 
 /// MetaDbusSessionWatcher: Monitors D-Bus session lifecycle events.
+/// Tracks active clients and their sessions via a hash table.
 pub struct MetaDbusSessionWatcher {
-    // TODO: port remaining fields from upstream meta-dbus-session-watcher.c
+    pub clients: BTreeMap<usize, *mut core::ffi::c_void>,
 }
 
 impl MetaDbusSessionWatcher {
     pub fn new() -> Self {
-        MetaDbusSessionWatcher {}
+        MetaDbusSessionWatcher {
+            clients: BTreeMap::new(),
+        }
     }
 }
 

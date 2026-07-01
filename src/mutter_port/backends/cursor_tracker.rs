@@ -5,15 +5,35 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-cursor-tracker.c
 
+use core::ffi::c_void;
+
 /// Tracks pointer position, cursor sprite, and visibility state.
 pub struct MetaCursorTracker {
-    // TODO: pointer_x, pointer_y, current_cursor, scale, visibility_count fields
+    /// Pointer to MetaBackend instance (opaque).
+    pub backend: *mut c_void,
+    /// Current cursor object (opaque ClutterCursor pointer).
+    pub current_cursor: *mut c_void,
+    /// Cursor visibility inhibition count.
+    pub cursor_visibility_inhibitors: i32,
+    /// Pointer X coordinate.
+    pub pointer_x: f32,
+    /// Pointer Y coordinate.
+    pub pointer_y: f32,
+    /// Cursor scale factor for HiDPI.
+    pub scale: f32,
 }
 
 impl MetaCursorTracker {
     /// Create a new cursor tracker.
     pub fn new() -> Self {
-        MetaCursorTracker {}
+        MetaCursorTracker {
+            backend: core::ptr::null_mut(),
+            current_cursor: core::ptr::null_mut(),
+            cursor_visibility_inhibitors: 0,
+            pointer_x: 0.0,
+            pointer_y: 0.0,
+            scale: 1.0,
+        }
     }
 
     /// Get cursor hotspot offset.

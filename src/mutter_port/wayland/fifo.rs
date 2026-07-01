@@ -1,17 +1,13 @@
-//! Wayland FIFO module
+//! Wayland FIFO — manages FIFO presentation queue support.
 //!
-//! Ported from: meta-wayland-fifo.c/h
+//! Handles FIFO (First In, First Out) swap chain mode presentation for
+//! Wayland clients. Coordinates with DRM to queue frames in FIFO order.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-fifo.h
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandFifo {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
-
-impl MetaWaylandFifo {
-    /// Initialize FIFO swap chain support for the compositor
-    /// TODO: port logic from meta_wayland_fifo_init
-    pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
-    }
+/// Initialize FIFO swap chain support for the compositor.
+///
+/// Sets up FIFO presentation mode handling. DRM/I/O logic is left as TODO.
+pub fn meta_wayland_fifo_init(_compositor: *mut core::ffi::c_void) {
+    // TODO: DRM presentation queue setup
 }

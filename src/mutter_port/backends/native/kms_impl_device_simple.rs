@@ -1,21 +1,18 @@
-//! Non-atomic (legacy) KMS implementation for a single device.
+//! Simple (non-atomic) KMS implementation for GNOME Mutter.
 //!
-//! Handles KMS updates using separate ioctl calls (SET_CRTC, etc.)
-//! for systems without atomic modeset support. Falls back when
-//! atomic is unavailable.
+//! Provides legacy KMS modeset support via separate ioctl calls (SET_CRTC, etc.)
+//! for systems without atomic KMS. Falls back when atomic is unavailable.
+//! Upstream header not found; minimal stub.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-kms-impl-device-simple.h
-//! Note: Upstream header not found; minimal stub.
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-kms-impl-device-simple.h
 
-/// Simple (non-atomic) KMS implementation for a device
-pub struct MetaKmsImplDeviceSimple {
-    // TODO: Device state for legacy modeset operations
-}
+/// Simple (non-atomic) KMS implementation for a device.
+pub struct MetaKmsImplDeviceSimple;
 
 impl MetaKmsImplDeviceSimple {
-    /// Create simple KMS implementation for a device
+    /// Create simple KMS implementation for a device.
     pub fn new() -> Self {
-        MetaKmsImplDeviceSimple {}
+        MetaKmsImplDeviceSimple
     }
 }
 
