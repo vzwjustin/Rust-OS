@@ -5,6 +5,9 @@
 use alloc::{string::String, vec::Vec, boxed::Box};
 
 use crate::mutter_port::meta::types::*;
+// Use the rich workspace type (types::* only provides an opaque stub); this
+// matches what `meta::MetaWorkspace` re-exports.
+use crate::mutter_port::meta::workspace::MetaWorkspace;
 
 /// Manages idle detection and timeouts
 pub struct MetaIdleMonitor {
@@ -124,25 +127,41 @@ impl MetaWorkspaceManager {
     }
 
     /// Get workspace by index
-    pub fn get_workspace_by_index(&self, _index: u32) -> Option<&MetaWorkspace> {
-        // TODO: implement
-        None
+    pub fn get_workspace_by_index(&self, index: u32) -> Option<&MetaWorkspace> {
+        self.workspaces.get(index as usize).map(|w| w.as_ref())
     }
 
     /// Get active workspace
     pub fn get_active_workspace(&self) -> Option<&MetaWorkspace> {
-        // TODO: implement
-        None
+        self.workspaces
+            .get(self.active_index as usize)
+            .map(|w| w.as_ref())
     }
 
-    /// Create new workspace
-    pub fn create_workspace(&mut self, _name: Option<&str>) {
-        // TODO: implement
+    /// Create a new workspace, appended at the end, and return its index.
+    pub fn create_workspace(&mut self, name: Option<&str>) -> u32 {
+        let index = self.workspaces.len() as u32;
+        let mut ws = MetaWorkspace::new(index);
+        if let Some(n) = name {
+            ws.set_name(Some(String::from(n)));
+        }
+        self.workspaces.push(Box::new(ws));
+        index
     }
 
-    /// Remove workspace
-    pub fn remove_workspace(&mut self, _workspace: &MetaWorkspace) {
-        // TODO: implement
+    /// Remove the given workspace (matched by identity). Clamps the active
+    /// index if it now points past the end.
+    pub fn remove_workspace(&mut self, workspace: &MetaWorkspace) {
+        if let Some(pos) = self
+            .workspaces
+            .iter()
+            .position(|w| core::ptr::eq(w.as_ref(), workspace))
+        {
+            self.workspaces.remove(pos);
+            if self.active_index as usize >= self.workspaces.len() {
+                self.active_index = (self.workspaces.len().saturating_sub(1)) as u32;
+            }
+        }
     }
 
     /// Reorder workspaces
@@ -196,5 +215,38 @@ impl MetaDebugControl {
 impl Default for MetaDebugControl {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_and_index_workspaces() {
+        let mut m = MetaWorkspaceManager::new();
+        assert_eq!(m.get_n_workspaces(), 0);
+        assert!(m.get_active_workspace().is_none());
+
+        assert_eq!(m.create_workspace(Some("one")), 0);
+        assert_eq!(m.create_workspace(Some("two")), 1);
+        assert_eq!(m.get_n_workspaces(), 2);
+
+        assert_eq!(m.get_workspace_by_index(0).and_then(|w| w.get_name()), Some("one"));
+        assert_eq!(m.get_workspace_by_index(1).and_then(|w| w.get_name()), Some("two"));
+        assert!(m.get_workspace_by_index(2).is_none());
+        // active_index defaults to 0.
+        assert_eq!(m.get_active_workspace().and_then(|w| w.get_name()), Some("one"));
+    }
+
+    #[test]
+    fn test_remove_non_member_is_noop() {
+        let mut m = MetaWorkspaceManager::new();
+        m.create_workspace(Some("a"));
+        m.create_workspace(Some("b"));
+        // A workspace the manager doesn't own must not be removed.
+        let stray = MetaWorkspace::new(99);
+        m.remove_workspace(&stray);
+        assert_eq!(m.get_n_workspaces(), 2);
     }
 }
