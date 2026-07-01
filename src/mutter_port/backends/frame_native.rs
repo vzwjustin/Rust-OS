@@ -50,6 +50,93 @@ impl MetaFrameNative {
             sync_events: 0,
         }
     }
+
+    /// Set the DRM buffer for this frame.
+    pub fn set_buffer(&mut self, buffer: *mut MetaDrmBuffer) {
+        self.buffer = buffer;
+    }
+
+    /// Get the DRM buffer, if any.
+    pub fn get_buffer(&self) -> Option<*mut MetaDrmBuffer> {
+        if self.buffer.is_null() {
+            None
+        } else {
+            Some(self.buffer)
+        }
+    }
+
+    /// Set the Cogl scanout for this frame.
+    pub fn set_scanout(&mut self, scanout: *mut CoglScanout) {
+        self.scanout = scanout;
+    }
+
+    /// Get the Cogl scanout, if any.
+    pub fn get_scanout(&self) -> Option<*mut CoglScanout> {
+        if self.scanout.is_null() {
+            None
+        } else {
+            Some(self.scanout)
+        }
+    }
+
+    /// Set the KMS update for this frame.
+    pub fn set_kms_update(&mut self, update: *mut MetaKmsUpdate) {
+        self.kms_update = update;
+    }
+
+    /// Steal (take ownership of) the KMS update. Returns the raw
+    /// pointer and clears the frame's reference.
+    pub fn steal_kms_update(&mut self) -> Option<*mut MetaKmsUpdate> {
+        if self.kms_update.is_null() {
+            None
+        } else {
+            let update = self.kms_update;
+            self.kms_update = core::ptr::null_mut();
+            Some(update)
+        }
+    }
+
+    /// Whether this frame has a pending KMS update.
+    pub fn has_kms_update(&self) -> bool {
+        !self.kms_update.is_null()
+    }
+
+    /// Set the damage region.
+    pub fn set_damage(&mut self, damage: *mut MtkRegion) {
+        self.damage = damage;
+    }
+
+    /// Get the damage region, if any.
+    pub fn get_damage(&self) -> Option<*mut MtkRegion> {
+        if self.damage.is_null() {
+            None
+        } else {
+            Some(self.damage)
+        }
+    }
+
+    /// Set the sync file descriptor.
+    pub fn set_sync_fd(&mut self, sync_fd: i32) {
+        self.sync_fd = sync_fd;
+    }
+
+    /// Steal (take ownership of) the sync file descriptor. Returns
+    /// the fd and resets the frame's fd to -1.
+    pub fn steal_sync_fd(&mut self) -> Option<i32> {
+        if self.sync_fd < 0 {
+            None
+        } else {
+            let fd = self.sync_fd;
+            self.sync_fd = -1;
+            Some(fd)
+        }
+    }
+
+    /// Whether the frame is ready for presentation (has a buffer or
+    /// scanout, and no pending sync events).
+    pub fn is_ready(&self) -> bool {
+        (!self.buffer.is_null() || !self.scanout.is_null()) && self.sync_events == 0
+    }
 }
 
 impl Default for MetaFrameNative {
@@ -57,20 +144,3 @@ impl Default for MetaFrameNative {
         Self::new()
     }
 }
-
-// TODO: The following would require upstream integration:
-// pub fn meta_frame_native_from_frame(frame: &ClutterFrame) -> &MetaFrameNative { ... }
-// pub fn meta_frame_native_ensure_kms_update(frame: &mut MetaFrameNative, device: &MetaKmsDevice) -> &mut MetaKmsUpdate { ... }
-// pub fn meta_frame_native_steal_kms_update(frame: &mut MetaFrameNative) -> Option<MetaKmsUpdate> { ... }
-// pub fn meta_frame_native_has_kms_update(frame: &MetaFrameNative) -> bool { ... }
-// pub fn meta_frame_native_set_buffer(frame: &mut MetaFrameNative, buffer: &MetaDrmBuffer) { ... }
-// pub fn meta_frame_native_get_buffer(frame: &MetaFrameNative) -> Option<&MetaDrmBuffer> { ... }
-// pub fn meta_frame_native_set_scanout(frame: &mut MetaFrameNative, scanout: &CoglScanout) { ... }
-// pub fn meta_frame_native_get_scanout(frame: &MetaFrameNative) -> Option<&CoglScanout> { ... }
-// pub fn meta_frame_native_set_damage(frame: &mut MetaFrameNative, damage: &MtkRegion) { ... }
-// pub fn meta_frame_native_get_damage(frame: &MetaFrameNative) -> Option<&MtkRegion> { ... }
-// pub fn meta_frame_native_set_sync_fd(frame: &mut MetaFrameNative, sync_fd: i32) { ... }
-// pub fn meta_frame_native_steal_sync_fd(frame: &mut MetaFrameNative) -> Option<i32> { ... }
-// pub fn meta_frame_native_add_source(frame: &mut MetaFrameNative, source: &GSource) { ... }
-// pub fn meta_frame_native_remove_source(frame: &mut MetaFrameNative, source: &GSource) { ... }
-// pub fn meta_frame_native_is_ready(frame: &MetaFrameNative) -> bool { ... }

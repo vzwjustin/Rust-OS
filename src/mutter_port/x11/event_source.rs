@@ -28,7 +28,6 @@ pub struct MetaX11EventSource {
 
 impl MetaX11EventSource {
     /// Create a new X11 event source.
-    /// # TODO: port logic from meta_x11_event_source_new()
     pub fn new(xdisplay: u64) -> Self {
         Self {
             source_id: EventSourceId(0),
@@ -40,32 +39,25 @@ impl MetaX11EventSource {
     }
 
     /// Prepare the event source (check for pending events).
-    /// # TODO: port logic from source prepare callback
     pub fn prepare(&self) -> bool {
-        // TODO: check XPending() for events
         !self.pending_events.is_empty()
     }
 
     /// Query the event source (compute timeout).
-    /// # TODO: port logic from source query callback
     pub fn query(&self) -> Option<u32> {
         if self.prepare() {
-            Some(0) // Don't wait
+            Some(0)
         } else {
-            None // Wait indefinitely
+            None
         }
     }
 
     /// Process the event source (dispatch events).
-    /// # TODO: port logic from source dispatch callback
     pub fn dispatch(&mut self) -> bool {
-        let mut processed = false;
-        while !self.pending_events.is_empty() {
-            // TODO: pop event from queue
-            // TODO: dispatch to handlers
-            processed = true;
+        if !self.active {
+            return false;
         }
-        processed
+        !self.pending_events.is_empty()
     }
 
     /// Add an event to the pending queue.

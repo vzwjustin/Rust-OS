@@ -36,44 +36,66 @@ impl MetaCursorTracker {
         }
     }
 
-    /// Get cursor hotspot offset.
-    pub fn get_hot(&self) -> (i32, i32) {
-        // TODO: Return hotspot from current sprite
-        (0, 0)
+    /// Set the pointer position.
+    pub fn set_pointer_position(&mut self, x: f32, y: f32) {
+        self.pointer_x = x;
+        self.pointer_y = y;
     }
 
-    /// Get current cursor sprite texture.
+    /// Set the cursor scale factor.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
+    }
+
+    /// Get cursor hotspot offset. Returns (0, 0) when no cursor sprite
+    /// is loaded; a full implementation would read the hotspot from the
+    /// current cursor sprite.
+    pub fn get_hot(&self) -> (i32, i32) {
+        if self.current_cursor.is_null() {
+            (0, 0)
+        } else {
+            // Hotspot would be read from the cursor sprite metadata.
+            (0, 0)
+        }
+    }
+
+    /// Get current cursor sprite texture. Returns None when no cursor
+    /// is loaded.
     pub fn get_sprite(&self) -> Option<()> {
-        // TODO: Return CoglTexture when available
-        None
+        if self.current_cursor.is_null() {
+            None
+        } else {
+            Some(())
+        }
     }
 
     /// Get cursor scale factor.
     pub fn get_scale(&self) -> f32 {
-        // TODO: Return scale from backend
-        1.0
+        self.scale
     }
 
     /// Get pointer coordinates.
     pub fn get_pointer(&self) -> (f64, f64) {
-        // TODO: Return current pointer position
-        (0.0, 0.0)
+        (self.pointer_x as f64, self.pointer_y as f64)
     }
 
-    /// Get pointer visibility state.
+    /// Get pointer visibility state. The cursor is visible when there
+    /// are no visibility inhibitors.
     pub fn get_pointer_visible(&self) -> bool {
-        // TODO: Check visibility inhibitors
-        true
+        self.cursor_visibility_inhibitors == 0
     }
 
-    /// Inhibit cursor visibility.
+    /// Inhibit cursor visibility. Increments the inhibitor count.
     pub fn inhibit_cursor_visibility(&mut self) {
-        // TODO: Increment visibility inhibitor count
+        self.cursor_visibility_inhibitors += 1;
     }
 
-    /// Restore cursor visibility.
+    /// Restore cursor visibility. Decrements the inhibitor count,
+    /// saturating at zero.
     pub fn uninhibit_cursor_visibility(&mut self) {
-        // TODO: Decrement visibility inhibitor count
+        if self.cursor_visibility_inhibitors > 0 {
+            self.cursor_visibility_inhibitors -= 1;
+        }
     }
 }
 

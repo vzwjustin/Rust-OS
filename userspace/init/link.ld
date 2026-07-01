@@ -4,6 +4,11 @@
  * fixed user virtual address inside the kernel's user range
  * [USER_SPACE_START=0x1000_0000, USER_SPACE_END=0x8000_0000).
  *
+ * Keep the base above the low physical-memory identity map left by common
+ * bootloader page tables. The kernel exec loader maps ET_EXEC at p_vaddr, so
+ * linking at 0x1000_0000 can collide with a pre-existing 256 MiB identity
+ * mapping before userspace has its own page tables.
+ *
  * The kernel ELF loader enforces W^X, so we must NOT emit a writable+executable
  * segment.  This program therefore has no writable data/bss of its own; its only
  * writable memory is the kernel-provided stack.  Everything (.text/.rodata) lives
@@ -18,7 +23,7 @@ PHDRS {
 }
 
 SECTIONS {
-    . = 0x10000000;
+    . = 0x40000000;
 
     .text : ALIGN(0x1000) {
         *(.text._start)

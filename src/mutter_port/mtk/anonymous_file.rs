@@ -59,6 +59,9 @@ pub enum AnonymousFileError {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+/// # Safety
+/// The caller must ensure `num` is a valid syscall number and the
+/// arguments are valid for that syscall.
 unsafe fn syscall2(num: i64, arg1: i64, arg2: i64) -> i64 {
     let ret: i64;
     core::arch::asm!(
@@ -74,6 +77,9 @@ unsafe fn syscall2(num: i64, arg1: i64, arg2: i64) -> i64 {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+/// # Safety
+/// The caller must ensure `num` is a valid syscall number and the
+/// arguments are valid for that syscall.
 unsafe fn syscall3(num: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
     let ret: i64;
     core::arch::asm!(
@@ -90,7 +96,18 @@ unsafe fn syscall3(num: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn syscall6(num: i64, arg1: i64, arg2: i64, arg3: i64, arg4: i64, arg5: i64, arg6: i64) -> i64 {
+/// # Safety
+/// The caller must ensure `num` is a valid syscall number and the
+/// arguments are valid for that syscall.
+unsafe fn syscall6(
+    num: i64,
+    arg1: i64,
+    arg2: i64,
+    arg3: i64,
+    arg4: i64,
+    arg5: i64,
+    arg6: i64,
+) -> i64 {
     let ret: i64;
     core::arch::asm!(
         "syscall",
@@ -108,7 +125,11 @@ unsafe fn syscall6(num: i64, arg1: i64, arg2: i64, arg3: i64, arg4: i64, arg5: i
 }
 
 fn syscall_ret(raw: i64) -> Result<i32, i32> {
-    if raw >= 0 { Ok(raw as i32) } else { Err(-(raw) as i32) }
+    if raw >= 0 {
+        Ok(raw as i32)
+    } else {
+        Err(-(raw) as i32)
+    }
 }
 
 fn sys_memfd_create(name: &str, flags: u32) -> Result<i32, AnonymousFileError> {
@@ -143,12 +164,33 @@ fn sys_ftruncate(fd: i32, length: usize) -> Result<i32, AnonymousFileError> {
     }
 }
 
-fn sys_mmap(addr: *mut u8, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> Result<*mut u8, AnonymousFileError> {
+fn sys_mmap(
+    addr: *mut u8,
+    length: usize,
+    prot: i32,
+    flags: i32,
+    fd: i32,
+    offset: i64,
+) -> Result<*mut u8, AnonymousFileError> {
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: addr may be NULL; fd must be valid; offset page-aligned.
-        let raw = unsafe { syscall6(SYS_MMAP, addr as i64, length as i64, prot as i64, flags as i64, fd as i64, offset) };
-        if raw == MAP_FAILED as i64 { Err(AnonymousFileError::MmapFailed(0)) } else { Ok(raw as *mut u8) }
+        let raw = unsafe {
+            syscall6(
+                SYS_MMAP,
+                addr as i64,
+                length as i64,
+                prot as i64,
+                flags as i64,
+                fd as i64,
+                offset,
+            )
+        };
+        if raw == MAP_FAILED as i64 {
+            Err(AnonymousFileError::MmapFailed(0))
+        } else {
+            Ok(raw as *mut u8)
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -221,7 +263,9 @@ impl AnonymousFile {
             sys_ftruncate(fd, size)?;
             let mapped = sys_mmap(ptr::null_mut(), size, PROT_WRITE, MAP_SHARED, fd, 0)?;
             // SAFETY: mapped is a valid writable mapping of `size` bytes.
-            unsafe { ptr::copy_nonoverlapping(data.as_ptr(), mapped, size); }
+            unsafe {
+                ptr::copy_nonoverlapping(data.as_ptr(), mapped, size);
+            }
             sys_munmap(mapped, size)?;
             sys_fcntl(fd, F_ADD_SEALS, READONLY_SEALS)?;
         }
@@ -234,17 +278,25 @@ impl AnonymousFile {
     }
 
     /// Port of `mtk_anonymous_file_size`.
-    pub fn size(&self) -> usize { self.size }
+    pub fn size(&self) -> usize {
+        self.size
+    }
 
     /// Returns the raw file descriptor, or `-1` if freed.
-    pub fn fd(&self) -> i32 { self.fd }
+    pub fn fd(&self) -> i32 {
+        self.fd
+    }
 
     /// Returns `true` if the file descriptor is still open.
-    pub fn is_open(&self) -> bool { self.fd != INVALID_FD }
+    pub fn is_open(&self) -> bool {
+        self.fd != INVALID_FD
+    }
 
     /// Port of `mtk_anonymous_file_open_fd`.
     pub fn open_fd(&self, mapmode: AnonymousFileMapmode) -> Result<i32, AnonymousFileError> {
-        if self.fd == INVALID_FD { return Err(AnonymousFileError::InvalidFd); }
+        if self.fd == INVALID_FD {
+            return Err(AnonymousFileError::InvalidFd);
+        }
         match mapmode {
             AnonymousFileMapmode::Private => Ok(self.fd),
             AnonymousFileMapmode::Shared => sys_fcntl(self.fd, F_DUPFD_CLOEXEC, 0),
@@ -253,7 +305,11 @@ impl AnonymousFile {
 
     /// Port of `mtk_anonymous_file_close_fd`.
     pub fn close_fd(&self, fd: i32) -> Result<i32, AnonymousFileError> {
-        if fd == self.fd { Ok(0) } else { sys_close(fd) }
+        if fd == self.fd {
+            Ok(0)
+        } else {
+            sys_close(fd)
+        }
     }
 
     /// Port of `mtk_anonymous_file_free`.
@@ -269,7 +325,9 @@ impl AnonymousFile {
 }
 
 impl Drop for AnonymousFile {
-    fn drop(&mut self) { let _ = self.free(); }
+    fn drop(&mut self) {
+        let _ = self.free();
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +361,10 @@ mod tests {
     fn test_open_fd_on_invalid_fd_returns_error() {
         let mut file = AnonymousFile::from_fd(7, 100);
         file.fd = INVALID_FD;
-        assert_eq!(file.open_fd(AnonymousFileMapmode::Private), Err(AnonymousFileError::InvalidFd));
+        assert_eq!(
+            file.open_fd(AnonymousFileMapmode::Private),
+            Err(AnonymousFileError::InvalidFd)
+        );
     }
 
     #[test]
@@ -313,6 +374,9 @@ mod tests {
 
     #[test]
     fn test_readonly_seals_constant() {
-        assert_eq!(READONLY_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE);
+        assert_eq!(
+            READONLY_SEALS,
+            F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE
+        );
     }
 }

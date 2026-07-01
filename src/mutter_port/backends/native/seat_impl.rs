@@ -18,9 +18,9 @@ pub struct SeatImpl {
     /// Input thread (opaque pointer to GThread)
     pub input_thread: *mut c_void,
     /// Initialization mutex (opaque, GMutex-sized)
-    pub init_mutex: [u8; 56],  // sizeof(GMutex) ≈ 56 bytes on 64-bit
+    pub init_mutex: [u8; 56], // sizeof(GMutex) ≈ 56 bytes on 64-bit
     /// Initialization condition variable (opaque, GCond-sized)
-    pub init_cond: [u8; 48],   // sizeof(GCond) ≈ 48 bytes on 64-bit
+    pub init_cond: [u8; 48], // sizeof(GCond) ≈ 48 bytes on 64-bit
 
     /// Associated native seat (opaque pointer to MetaSeatNative)
     pub seat_native: *mut c_void,
@@ -33,7 +33,7 @@ pub struct SeatImpl {
     /// Libinput context (opaque pointer to libinput)
     pub libinput: *mut c_void,
     /// State lock (opaque RWLock-sized)
-    pub state_lock: [u8; 56],  // sizeof(GRWLock) ≈ 56 bytes
+    pub state_lock: [u8; 56], // sizeof(GRWLock) ≈ 56 bytes
 
     /// List of input devices (opaque pointer to GSList)
     pub devices: *mut c_void,

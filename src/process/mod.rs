@@ -329,6 +329,12 @@ pub struct ProcessControlBlock {
     pub restart_info: Option<(u64, [u64; 6])>,
     /// Address to clear and futex-wake on thread exit (set by CLONE_CHILD_CLEARTID)
     pub clear_child_tid: u64,
+    /// Namespace handle set for this process (a snapshot of the per-process
+    /// NsProxy maintained by `crate::namespace`). Wired up during fork by
+    /// `fork::copy_namespaces`; `None` means the process has not been
+    /// associated with an explicit namespace set yet (it falls back to the
+    /// global namespace table keyed by PID).
+    pub nsproxy: Option<crate::namespace::NsProxy>,
 }
 
 /// File descriptor information
@@ -660,6 +666,7 @@ impl ProcessControlBlock {
             alarm_interval: 0,
             restart_info: None,
             clear_child_tid: 0,
+            nsproxy: None,
         };
 
         // Set process name
@@ -873,7 +880,11 @@ impl ProcessManager {
         // `security::init()` installs PID 0's context, so a missing context here is expected
         // during early boot and a warning is the right level.
         if let Err(e) = crate::security::create_context(pid, parent_pid) {
-            crate::serial_println!("Warning: failed to create security context for PID {}: {}", pid, e);
+            crate::serial_println!(
+                "Warning: failed to create security context for PID {}: {}",
+                pid,
+                e
+            );
         }
 
         // Initialize IPC state for new process
@@ -943,7 +954,11 @@ impl ProcessManager {
         // context and only create one for genuinely new processes (or if it is somehow absent).
         if crate::security::get_context(pid).is_none() {
             if let Err(e) = crate::security::create_context(pid, parent_pid) {
-                crate::serial_println!("Warning: failed to create security context for PID {}: {}", pid, e);
+                crate::serial_println!(
+                    "Warning: failed to create security context for PID {}: {}",
+                    pid,
+                    e
+                );
             }
         }
 

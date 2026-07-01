@@ -75,9 +75,9 @@ impl MetaWaylandClient {
     }
 
     /// Check if this client matches the given wl_client
-    pub fn matches(&self, _wl_client: *const core::ffi::c_void) -> bool {
-        // TODO: implement cross-reference logic
-        false
+    pub fn matches(&self, wl_client: *const core::ffi::c_void) -> bool {
+        !self.wayland_client.is_null()
+            && self.wayland_client as *const core::ffi::c_void == wl_client
     }
 
     /// Set capabilities for this client
@@ -85,22 +85,35 @@ impl MetaWaylandClient {
         self.caps = caps;
     }
 
-    /// Check if this client has specific capabilities
-    /// TODO: port logic from meta_wayland_client_has_caps
+    /// Add capabilities to this client's capability bitset.
+    /// Mirrors meta_wayland_client_set_caps with OR semantics.
+    pub fn add_caps(&mut self, caps: u32) {
+        self.caps |= caps;
+    }
+
+    /// Check if this client has all of the specified capabilities.
+    /// Mirrors meta_wayland_client_has_caps: true when every bit in
+    /// `caps` is also set in `self.caps`.
     pub fn has_caps(&self, caps: u32) -> bool {
         (self.caps & caps) == caps
     }
 
-    /// Take the client fd (only for CREATED clients)
-    /// TODO: port logic from meta_wayland_client_take_client_fd
+    /// Take ownership of the client fd (only valid for CREATED clients).
+    /// Mirrors meta_wayland_client_take_client_fd: returns the fd and
+    /// invalidates the stored value so it cannot be taken twice.
     pub fn take_client_fd(&mut self) -> i32 {
         let fd = self.created_client_fd;
         self.created_client_fd = -1;
         fd
     }
 
-    /// Get the subprocess (only for SUBPROCESS clients)
-    /// TODO: port logic from meta_wayland_client_get_subprocess
+    /// Get the stored client fd without taking ownership.
+    pub fn get_client_fd(&self) -> i32 {
+        self.created_client_fd
+    }
+
+    /// Get the subprocess pointer (only valid for SUBPROCESS clients).
+    /// Mirrors meta_wayland_client_get_subprocess.
     pub fn get_subprocess(&self) -> Option<*mut core::ffi::c_void> {
         if self.subprocess.is_null() {
             None
@@ -109,21 +122,31 @@ impl MetaWaylandClient {
         }
     }
 
-    /// Set the window tag for this client
-    /// TODO: port logic from meta_wayland_client_set_window_tag
+    /// Set the subprocess pointer for SUBPROCESS clients.
+    pub fn set_subprocess(&mut self, subprocess: *mut core::ffi::c_void) {
+        self.subprocess = subprocess;
+    }
+
+    /// Set the window tag for this client.
+    /// Mirrors meta_wayland_client_set_window_tag.
     pub fn set_window_tag(&mut self, tag: Option<String>) {
         self.window_tag = tag;
     }
 
-    /// Get the window tag for this client
-    /// TODO: port logic from meta_wayland_client_get_window_tag
+    /// Get the window tag for this client.
+    /// Mirrors meta_wayland_client_get_window_tag.
     pub fn get_window_tag(&self) -> Option<&str> {
         self.window_tag.as_deref()
     }
 
-    /// Get the PID of the process that created this client
-    /// TODO: port logic from meta_wayland_client_get_pid
+    /// Get the PID of the process that created this client.
+    /// Mirrors meta_wayland_client_get_pid.
     pub fn get_pid(&self) -> i32 {
         self.pid
+    }
+
+    /// Set the PID of the process that created this client.
+    pub fn set_pid(&mut self, pid: i32) {
+        self.pid = pid;
     }
 }

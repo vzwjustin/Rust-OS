@@ -1,5 +1,7 @@
 //! LAPB state machine (mirrors Linux `net/lapb/`)
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LapbState {
     Disconnected,
@@ -7,16 +9,24 @@ pub enum LapbState {
     Connected,
 }
 
-static mut LAPB_STATE: LapbState = LapbState::Disconnected;
+impl LapbState {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => LapbState::Connecting,
+            2 => LapbState::Connected,
+            _ => LapbState::Disconnected,
+        }
+    }
+}
+
+static LAPB_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub fn get_state() -> LapbState {
-    unsafe { LAPB_STATE }
+    LapbState::from_u8(LAPB_STATE.load(Ordering::Relaxed))
 }
 
 pub fn connect() {
-    unsafe {
-        LAPB_STATE = LapbState::Connected;
-    }
+    LAPB_STATE.store(2, Ordering::Relaxed);
 }
 
 pub fn init() -> Result<(), &'static str> {

@@ -766,34 +766,30 @@ pub struct DRMPlaneResources {
 }
 
 // Global DRM compatibility layer instance
-static mut DRM_COMPAT: Option<DRMCompatLayer> = None;
+static DRM_COMPAT: spin::Mutex<Option<DRMCompatLayer>> = spin::Mutex::new(None);
 
 /// Initialize DRM compatibility layer
 pub fn init_drm_compat() -> Result<(), &'static str> {
-    unsafe {
-        if DRM_COMPAT.is_none() {
-            DRM_COMPAT = Some(DRMCompatLayer::new());
-        }
+    let mut guard = DRM_COMPAT.lock();
+    if guard.is_none() {
+        *guard = Some(DRMCompatLayer::new());
     }
     Ok(())
 }
 
-/// Get DRM compatibility layer instance
-pub fn get_drm_compat() -> Option<&'static mut DRMCompatLayer> {
-    unsafe { DRM_COMPAT.as_mut() }
+/// Run `f` with the DRM compatibility layer instance, if initialized.
+pub fn with_drm_compat<R>(f: impl FnOnce(&mut DRMCompatLayer) -> R) -> Option<R> {
+    DRM_COMPAT.lock().as_mut().map(f)
 }
 
 pub fn configure_primary_mode(width: u32, height: u32, bpp: u32) -> Result<(), &'static str> {
     init_drm_compat()?;
-    let drm = get_drm_compat().ok_or("DRM layer not initialized")?;
-    drm.configure_primary_mode(width, height, bpp)
+    with_drm_compat(|drm| drm.configure_primary_mode(width, height, bpp))
+        .unwrap_or(Err("DRM layer not initialized"))
 }
 
 /// Register a new GPU with DRM compatibility layer
 pub fn register_drm_device(card_number: u32, driver_name: &str) -> Result<(), &'static str> {
-    if let Some(drm) = get_drm_compat() {
-        drm.register_device(card_number, driver_name)
-    } else {
-        Err("DRM compatibility layer not initialized")
-    }
+    with_drm_compat(|drm| drm.register_device(card_number, driver_name))
+        .unwrap_or(Err("DRM compatibility layer not initialized"))
 }

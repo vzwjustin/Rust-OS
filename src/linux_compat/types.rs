@@ -137,7 +137,7 @@ impl TimeSpec {
 
 /// Time value (like Linux struct timeval)
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TimeVal {
     /// Seconds
     pub tv_sec: Time,
@@ -147,7 +147,7 @@ pub struct TimeVal {
 
 /// Resource usage statistics (like Linux struct rusage)
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Rusage {
     /// User CPU time
     pub ru_utime: TimeVal,
@@ -185,6 +185,7 @@ pub struct Rusage {
 
 /// Signal action structure (like Linux struct sigaction)
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SigAction {
     /// Signal handler
     pub sa_handler: usize,
@@ -245,6 +246,7 @@ pub struct PollFd {
 
 /// Directory entry structure
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Dirent {
     /// Inode number
     pub d_ino: Ino,
@@ -436,7 +438,7 @@ pub struct CloneArgs {
 
 /// Timestamp representation for statx
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct StatxTimestamp {
     /// Seconds since Epoch
     pub tv_sec: i64,
@@ -448,7 +450,7 @@ pub struct StatxTimestamp {
 
 /// Detailed file status structure for statx system call
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Statx {
     /// Mask indicating which fields are populated
     pub stx_mask: u32,

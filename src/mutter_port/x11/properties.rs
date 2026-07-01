@@ -43,59 +43,48 @@ pub struct GroupPropertyHook {
 }
 
 /// Get a property from an X window.
-/// # TODO: port logic from meta_prop_get_list() / meta_prop_get_object()
+/// Stub: actual implementation requires X11 FFI bindings.
 pub fn get_property(
     _xwindow: XWindow,
     _atom: u64,
     _property_type: PropertyType,
 ) -> Option<PropertyValue> {
-    // TODO: XGetWindowProperty call and type conversion
     None
 }
 
 /// Set a property on an X window.
-/// # TODO: port logic from property setting functions
-pub fn set_property(
-    _xwindow: XWindow,
-    _atom: u64,
-    _value: &PropertyValue,
-) -> bool {
-    // TODO: XChangeProperty call
+/// Stub: actual implementation requires X11 FFI bindings.
+pub fn set_property(_xwindow: XWindow, _atom: u64, _value: &PropertyValue) -> bool {
     true
 }
 
 /// Delete a property from an X window.
-/// # TODO: port logic from property deletion
+/// Stub: actual implementation requires X11 FFI bindings.
 pub fn delete_property(_xwindow: XWindow, _atom: u64) -> bool {
-    // TODO: XDeleteProperty call
     true
 }
 
 /// Read WM_HINTS structure from window.
-/// # TODO: port logic from meta_prop_get_wm_hints()
+/// Stub: actual implementation requires X11 FFI bindings.
 pub fn get_wm_hints(_xwindow: XWindow) -> Option<WmHints> {
-    // TODO: parse WM_HINTS property
     None
 }
 
 /// Read ICCCM size hints from window.
-/// # TODO: port logic from meta_prop_get_size_hints()
+/// Stub: actual implementation requires X11 FFI bindings.
 pub fn get_size_hints(_xwindow: XWindow) -> Option<SizeHints> {
-    // TODO: parse WM_NORMAL_HINTS property
     None
 }
 
 /// Read _NET_WM_NAME from window.
-/// # TODO: port logic from meta_prop_get_utf8_string()
+/// Stub: actual implementation requires X11 FFI bindings.
 pub fn get_net_wm_name(_xwindow: XWindow) -> Option<alloc::string::String> {
-    // TODO: read _NET_WM_NAME property
     None
 }
 
 /// Read _NET_WM_ICON_GEOMETRY from window.
-/// # TODO: port logic from meta_prop_get_box()
+/// Stub: actual implementation requires X11 FFI bindings.
 pub fn get_net_wm_icon_geometry(_xwindow: XWindow) -> Option<(i32, i32, i32, i32)> {
-    // TODO: read icon geometry
     None
 }
 

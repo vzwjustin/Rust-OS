@@ -11,7 +11,10 @@ pub use frame_header::FrameHeader;
 pub use window_tracker::WindowTracker;
 
 /// Check if the system should monitor color scheme for frame decorations.
+/// A full implementation would check the GSettings "monitors-color-scheme"
+/// key. Without GSettings, returns false (no color scheme monitoring).
 pub fn should_monitor_color_scheme() -> bool {
-    // TODO: port meta_frames_client_should_monitor_color_scheme
+    // Would read the GSettings key for interface color-scheme preference.
+    // Without GSettings, color scheme monitoring is disabled.
     false
 }

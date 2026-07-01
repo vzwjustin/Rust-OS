@@ -152,8 +152,8 @@ impl WaylandWindow {
 
     /// STUB: Update window bounds. Requires constraint application and
     /// frame prediction.
-    pub fn update_bounds(&mut self, _configure_serial: u32) {
-        // TODO: implement bounds update
+    pub fn update_bounds(&mut self, configure_serial: u32) {
+        self.acknowledge_configuration(configure_serial);
     }
 
     /// STUB: Send geometry configuration to client. Requires
@@ -167,7 +167,7 @@ impl WaylandWindow {
     }
 
     pub fn close(&mut self) {
-        // TODO: implement close logic
+        self.pending_configurations.clear();
     }
 }
 

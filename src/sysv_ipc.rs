@@ -506,8 +506,13 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
                 sem_nsems: set.sems.len() as u32,
                 __unused: [0; 2],
             };
-            unsafe {
-                *(arg as *mut SemidDs) = ds;
+            if crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                arg as u64,
+                crate::linux_compat::as_bytes(&ds),
+            )
+            .is_err()
+            {
+                return -14; // EFAULT
             }
             return 0;
         }
@@ -561,25 +566,44 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
                 .count() as i32;
         }
         GETALL => {
-            let arr = arg as *mut u16;
-            if arr.is_null() {
-                return -14;
+            if arg == 0 {
+                return -14; // EFAULT
             }
-            for (i, &val) in set.sems.iter().enumerate() {
+            let buf: Vec<u16> = set.sems.iter().map(|&v| v as u16).collect();
+            if crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                arg as u64,
+                // SAFETY: `buf` is a locally-owned `Vec<u16>`; the pointer is valid and
+                // the length in bytes is `buf.len() * 2` (each u16 is 2 bytes).
                 unsafe {
-                    *arr.add(i) = val as u16;
-                }
+                    core::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 2)
+                },
+            )
+            .is_err()
+            {
+                return -14; // EFAULT
             }
             return 0;
         }
         SETALL => {
-            let arr = arg as *const u16;
-            if arr.is_null() {
-                return -14;
+            if arg == 0 {
+                return -14; // EFAULT
             }
             let n = set.sems.len();
+            let mut buf = vec![0u16; n];
+            if crate::memory::user_space::UserSpaceMemory::copy_from_user(
+                arg as u64,
+                // SAFETY: `buf` is a locally-owned mutable `Vec<u16>`; the pointer is
+                // valid for writes and the length in bytes is `buf.len() * 2`.
+                unsafe {
+                    core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2)
+                },
+            )
+            .is_err()
+            {
+                return -14; // EFAULT
+            }
             for i in 0..n {
-                set.sems[i] = unsafe { *arr.add(i) } as i16;
+                set.sems[i] = buf[i] as i16;
             }
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
             set.last_pid = crate::process::current_pid();
@@ -587,7 +611,10 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
             return 0;
         }
         IPC_SET => {
-            let ds = unsafe { *(arg as *const SemidDs) };
+            let ds = match crate::linux_compat::copy_struct_from_user(arg as *const SemidDs) {
+                Ok(ds) => ds,
+                Err(_) => return -14, // EFAULT
+            };
             set.perm.uid = ds.sem_perm.uid;
             set.perm.gid = ds.sem_perm.gid;
             set.perm.mode = ds.sem_perm.mode;
@@ -796,8 +823,13 @@ pub fn shmctl(shmid: i32, cmd: i32, buf: u64) -> i32 {
                 __unused: [0; 2],
             };
             if buf != 0 {
-                unsafe {
-                    *(buf as *mut ShmidDs) = ds;
+                if crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                    buf,
+                    crate::linux_compat::as_bytes(&ds),
+                )
+                .is_err()
+                {
+                    return -14; // EFAULT
                 }
             }
             return 0;
@@ -809,7 +841,10 @@ pub fn shmctl(shmid: i32, cmd: i32, buf: u64) -> i32 {
             if buf == 0 {
                 return -14;
             }
-            let ds = unsafe { *(buf as *const ShmidDs) };
+            let ds = match crate::linux_compat::copy_struct_from_user(buf as *const ShmidDs) {
+                Ok(ds) => ds,
+                Err(_) => return -14, // EFAULT
+            };
             seg.perm.uid = ds.shm_perm.uid;
             seg.perm.gid = ds.shm_perm.gid;
             seg.perm.mode = ds.shm_perm.mode;
@@ -908,6 +943,8 @@ pub fn msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> i32 {
     if mtype <= 0 {
         return -22;
     }
+    // SAFETY: `msgp` is a validated user pointer and `msgsz` is the validated
+    // message length; `msgp.add(8)` skips the 8-byte mtype field.
     let text = unsafe { core::slice::from_raw_parts(msgp.add(8), msgsz) }.to_vec();
 
     q.messages.push((mtype, text));

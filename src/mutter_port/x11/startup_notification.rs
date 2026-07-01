@@ -6,7 +6,7 @@
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/x11/meta-startup-notification-x11.c
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// Represents an application startup sequence.
@@ -44,7 +44,6 @@ pub struct StartupSequence {
 
 impl StartupSequence {
     /// Create a new startup sequence.
-    /// # TODO: port logic from meta_startup_notification_x11_new_sequence()
     pub fn new(startup_id: String) -> Self {
         Self {
             startup_id,
@@ -79,6 +78,87 @@ impl StartupSequence {
     pub fn set_binary_name(&mut self, name: String) {
         self.binary_name = Some(name);
     }
+
+    /// Apply a single key=value attribute parsed from a startup info message.
+    fn apply_attribute(&mut self, key: &str, value: &str) {
+        match key {
+            "NAME" => self.application_name = Some(value.to_string()),
+            "ICON" => self.icon_name = Some(value.to_string()),
+            "BIN" => self.binary_name = Some(value.to_string()),
+            "DESKTOP" => self.desktop_name = Some(value.to_string()),
+            "SCREEN" => {
+                if let Ok(n) = value.parse::<i32>() {
+                    self.screen_number = n;
+                }
+            }
+            "WORKSPACE" => {
+                if let Ok(n) = value.parse::<i32>() {
+                    self.workspace_number = Some(n);
+                }
+            }
+            "PID" => {
+                if let Ok(n) = value.parse::<u32>() {
+                    self.launcher_pid = Some(n);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Parses a startup-notification message into its command name and attributes.
+///
+/// Messages use the form `command:KEY=VALUE KEY=VALUE ...` (the
+/// _NET_STARTUP_INFO encoding). The command is the leading token before the
+/// first colon; the remainder is a space-separated list of KEY=VALUE pairs.
+/// Values may be wrapped in single quotes to contain spaces. Returns the
+/// command and a list of (key, value) pairs.
+fn parse_startup_message(message: &str) -> (Option<String>, Vec<(String, String)>) {
+    let mut command = None;
+    let mut attrs = Vec::new();
+
+    let body = match message.find(':') {
+        Some(idx) => {
+            command = Some(message[..idx].to_string());
+            &message[idx + 1..]
+        }
+        None => message,
+    };
+    let mut chars = body.chars().peekable();
+    let mut current = String::new();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut in_quotes = false;
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '\'' {
+                in_quotes = false;
+            } else {
+                current.push(c);
+            }
+        } else if c == '\'' {
+            in_quotes = true;
+        } else if c == ' ' || c == '\t' || c == '\n' {
+            if !current.is_empty() {
+                tokens.push(core::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    for token in tokens {
+        if let Some(eq) = token.find('=') {
+            let key = token[..eq].to_string();
+            let value = token[eq + 1..].to_string();
+            attrs.push((key, value));
+        }
+    }
+
+    (command, attrs)
 }
 
 /// Manages startup sequences for the display.
@@ -92,7 +172,6 @@ pub struct MetaX11StartupNotification {
 
 impl MetaX11StartupNotification {
     /// Create a new startup notification manager.
-    /// # TODO: port logic from meta_startup_notification_x11_new()
     pub fn new() -> Self {
         Self {
             sequences: BTreeMap::new(),
@@ -101,7 +180,6 @@ impl MetaX11StartupNotification {
     }
 
     /// Create a new startup sequence.
-    /// # TODO: port logic from _startup_sequence_new()
     pub fn create_sequence(&mut self, startup_id: String) -> &mut StartupSequence {
         self.sequences
             .entry(startup_id.clone())
@@ -109,7 +187,6 @@ impl MetaX11StartupNotification {
     }
 
     /// Complete a startup sequence.
-    /// # TODO: port logic from sequence completion handling
     pub fn complete_sequence(&mut self, startup_id: &str) {
         if let Some(seq) = self.sequences.get_mut(startup_id) {
             seq.set_complete();
@@ -132,15 +209,76 @@ impl MetaX11StartupNotification {
     }
 
     /// Process _NET_STARTUP_INFO_BEGIN messages.
-    /// # TODO: port logic from meta_startup_notification_x11_begin()
-    pub fn handle_startup_info_begin(&mut self, _message: &str) {
-        // TODO: parse startup info message
+    ///
+    /// These begin a new startup sequence. The message body carries the
+    /// startup id (ID=...) plus optional attributes. We parse the message and
+    /// create or update the corresponding `StartupSequence`.
+    pub fn handle_startup_info_begin(&mut self, message: &str) {
+        let (command, attrs) = parse_startup_message(message);
+
+        // Extract the startup id from the ID= attribute.
+        let mut startup_id: Option<String> = None;
+        for (key, value) in &attrs {
+            if key == "ID" {
+                startup_id = Some(value.clone());
+                break;
+            }
+        }
+
+        let id = match startup_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let seq = self.create_sequence(id);
+        for (key, value) in attrs {
+            if key != "ID" {
+                seq.apply_attribute(&key, &value);
+            }
+        }
+        let _ = command;
     }
 
     /// Process _NET_STARTUP_INFO messages.
-    /// # TODO: port logic from meta_startup_notification_x11_message()
-    pub fn handle_startup_info_message(&mut self, _message: &str) {
-        // TODO: parse and update startup info
+    ///
+    /// These update or complete an existing sequence. The command token
+    /// determines the action: `new` creates/updates, `change` updates
+    /// attributes, and `remove` marks the sequence complete. The target
+    /// sequence is identified by its ID= attribute.
+    pub fn handle_startup_info_message(&mut self, message: &str) {
+        let (command, attrs) = parse_startup_message(message);
+
+        let mut startup_id: Option<String> = None;
+        for (key, value) in &attrs {
+            if key == "ID" {
+                startup_id = Some(value.clone());
+                break;
+            }
+        }
+
+        let id = match startup_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        match command.as_deref() {
+            Some("remove") => {
+                if let Some(seq) = self.sequences.get_mut(&id) {
+                    seq.set_complete();
+                }
+            }
+            Some("change") | Some("new") | None => {
+                let seq = self.create_sequence(id);
+                for (key, value) in attrs {
+                    if key != "ID" {
+                        seq.apply_attribute(&key, &value);
+                    }
+                }
+            }
+            Some(_) => {
+                // Unknown command: ignore but leave sequence intact.
+            }
+        }
     }
 }
 

@@ -177,7 +177,11 @@ pub struct MetaGammaLut {
 
 impl MetaGammaLut {
     /// Create a new gamma LUT from channel ramps.
-    pub fn new(red: alloc::vec::Vec<u16>, green: alloc::vec::Vec<u16>, blue: alloc::vec::Vec<u16>) -> Self {
+    pub fn new(
+        red: alloc::vec::Vec<u16>,
+        green: alloc::vec::Vec<u16>,
+        blue: alloc::vec::Vec<u16>,
+    ) -> Self {
         MetaGammaLut { red, green, blue }
     }
 }

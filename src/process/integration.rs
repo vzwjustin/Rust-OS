@@ -132,7 +132,8 @@ impl MemoryIntegration {
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType, PAGE_SIZE};
         use x86_64::VirtAddr;
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
         let fault_addr = VirtAddr::new(fault_address);
 
         // Check if we already have a region containing this address
@@ -168,7 +169,8 @@ impl MemoryIntegration {
         use crate::memory::{get_memory_manager, handle_page_fault};
         use x86_64::VirtAddr;
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
         let fault_addr = VirtAddr::new(fault_address);
 
         // Check if this is a valid copy-on-write region
@@ -190,7 +192,8 @@ impl MemoryIntegration {
             PAGE_SIZE,
         };
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
 
         // Calculate memory layout
         let base_address = 0x400000 + (pid as u64 * 0x10000000); // 256MB per process
@@ -246,7 +249,8 @@ impl MemoryIntegration {
         use crate::memory::{deallocate_memory, get_memory_manager, PAGE_SIZE};
         use x86_64::VirtAddr;
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
         let process_manager = get_process_manager();
 
         // Get process information for detailed cleanup
@@ -589,7 +593,8 @@ impl ProcessIntegration {
         use crate::memory::get_memory_manager;
 
         let process_manager = get_process_manager();
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
 
         if !crate::cgroup::can_fork(parent_pid) {
             return Err("cgroup pids controller denied fork");
@@ -725,7 +730,8 @@ impl ProcessIntegration {
     ) -> Result<(), &'static str> {
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
 
         // Clean up existing process memory
         MemoryIntegration::cleanup_process_memory(pid)?;
@@ -818,7 +824,11 @@ impl ProcessIntegration {
             // Align sp to 8 bytes
             sp &= !7u64;
 
-            // Write argv pointer array (NULL-terminated), in reverse order
+            // Write argv pointer array (NULL-terminated), in reverse order.
+            // SAFETY: `sp` points into the user stack region just allocated
+            // by `allocate_region(MemoryProtection::USER_DATA)`. The kernel
+            // owns these pages until the process is scheduled, so direct
+            // writes are sound. This mirrors Linux's `setup_arg_pages`.
             sp -= 8; // NULL terminator
             *(sp as *mut u64) = 0;
             for &addr in argv_addrs.iter().rev() {
@@ -1045,8 +1055,9 @@ impl ProcessIntegration {
     /// Comprehensive system health check
     pub fn system_health_check(&self) -> Result<SystemHealthReport, &'static str> {
         let process_manager = get_process_manager();
-        let memory_manager =
+        let memory_manager_guard =
             crate::memory::get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
         let ipc_manager = super::ipc::get_ipc_manager();
         let thread_manager = super::thread::get_thread_manager();
 
@@ -1143,22 +1154,22 @@ pub struct SystemHealthReport {
 }
 
 /// Global process integration manager
-static mut PROCESS_INTEGRATION: ProcessIntegration = ProcessIntegration::new();
+static PROCESS_INTEGRATION: Mutex<ProcessIntegration> = Mutex::new(ProcessIntegration::new());
 
 /// Get the global process integration manager
-pub fn get_integration_manager() -> &'static mut ProcessIntegration {
-    unsafe { &mut *core::ptr::addr_of_mut!(PROCESS_INTEGRATION) }
+pub fn get_integration_manager() -> spin::MutexGuard<'static, ProcessIntegration> {
+    PROCESS_INTEGRATION.lock()
 }
 
 /// Initialize process integration
 pub fn init() -> Result<(), &'static str> {
-    let integration = get_integration_manager();
+    let mut integration = get_integration_manager();
     integration.init()
 }
 
 /// Timer interrupt handler (to be called from interrupt handler)
 pub fn timer_interrupt_handler() -> Option<Pid> {
-    let integration = get_integration_manager();
+    let mut integration = get_integration_manager();
     integration.handle_timer().unwrap_or(None)
 }
 
@@ -1167,18 +1178,18 @@ pub fn page_fault_handler(fault_address: u64, error_code: u64) -> Result<(), &'s
     let process_manager = get_process_manager();
     let current_pid = process_manager.current_process();
 
-    let integration = get_integration_manager();
+    let mut integration = get_integration_manager();
     integration.handle_page_fault(current_pid, fault_address, error_code)
 }
 
 /// System call handler (to be called from interrupt handler)
 pub fn syscall_interrupt_handler(syscall_number: u64, args: &[u64]) -> Result<u64, &'static str> {
-    let integration = get_integration_manager();
+    let mut integration = get_integration_manager();
     integration.handle_syscall(syscall_number, args)
 }
 
 /// Keyboard interrupt handler (to be called from interrupt handler)
 pub fn keyboard_interrupt_handler(scancode: u8) -> Result<(), &'static str> {
-    let integration = get_integration_manager();
+    let mut integration = get_integration_manager();
     integration.handle_keyboard(scancode)
 }

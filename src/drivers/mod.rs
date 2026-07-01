@@ -543,15 +543,15 @@ pub struct DriverSystemStatus {
 }
 
 /// Global driver manager state (simplified)
-static mut DRIVER_MANAGER_INITIALIZED: bool = false;
-static mut GRAPHICS_INITIALIZED: bool = false;
+static DRIVER_MANAGER_INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static GRAPHICS_INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Initialize the global driver manager (simplified)
 pub fn init_drivers() -> Result<(), &'static str> {
-    unsafe {
-        if DRIVER_MANAGER_INITIALIZED {
-            return Ok(());
-        }
+    if DRIVER_MANAGER_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
+        return Ok(());
     }
 
     // Initialize PCI subsystem
@@ -1023,15 +1023,11 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("ufs: init failed: {}", e);
     }
 
-    unsafe {
-        crate::early_serial_write_str("DRV:usb-call\n");
-    }
+    crate::early_serial_write_str("DRV:usb-call\n");
     if let Err(e) = usb::init() {
         crate::serial_println!("usb: init failed: {}", e);
     }
-    unsafe {
-        crate::early_serial_write_str("DRV:usb-ret\n");
-    }
+    crate::early_serial_write_str("DRV:usb-ret\n");
 
     crate::serial_println!("drivers: post-usb vhost");
     if let Err(e) = vhost::init() {
@@ -1209,10 +1205,8 @@ pub fn init_drivers() -> Result<(), &'static str> {
         crate::serial_println!("siox: init failed: {}", e);
     }
 
-    unsafe {
-        DRIVER_MANAGER_INITIALIZED = true;
-        GRAPHICS_INITIALIZED = true;
-    }
+    DRIVER_MANAGER_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
+    GRAPHICS_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
 
     // Display driver statistics
     let _pci_stats = get_pci_stats();
@@ -1225,53 +1219,49 @@ pub fn init_drivers() -> Result<(), &'static str> {
 
 /// Check if driver manager is initialized
 pub fn is_driver_manager_initialized() -> bool {
-    unsafe { DRIVER_MANAGER_INITIALIZED }
+    DRIVER_MANAGER_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Get driver system status (simplified)
 pub fn get_driver_system_status() -> Option<DriverSystemStatus> {
     use crate::pci::{get_devices_by_class, list_devices, PciClass};
 
-    unsafe {
-        if DRIVER_MANAGER_INITIALIZED {
-            let total_devices = list_devices().len();
-            let gpu_count = get_devices_by_class(PciClass::Display).len();
-            let net_count = get_devices_by_class(PciClass::Network).len();
-            let storage_count = get_devices_by_class(PciClass::MassStorage).len();
-            let total_drivers = gpu_count + net_count + storage_count + 2; // +2 for input
-            Some(DriverSystemStatus {
-                total_drivers,
-                ready_drivers: total_drivers,
-                total_devices,
-                graphics_ready: GRAPHICS_INITIALIZED,
-                input_ready: true,
-            })
-        } else {
-            None
-        }
+    if DRIVER_MANAGER_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
+        let total_devices = list_devices().len();
+        let gpu_count = get_devices_by_class(PciClass::Display).len();
+        let net_count = get_devices_by_class(PciClass::Network).len();
+        let storage_count = get_devices_by_class(PciClass::MassStorage).len();
+        let total_drivers = gpu_count + net_count + storage_count + 2; // +2 for input
+        Some(DriverSystemStatus {
+            total_drivers,
+            ready_drivers: total_drivers,
+            total_devices,
+            graphics_ready: GRAPHICS_INITIALIZED.load(core::sync::atomic::Ordering::Acquire),
+            input_ready: true,
+        })
+    } else {
+        None
     }
 }
 
 /// Check if graphics drivers are ready
 pub fn is_graphics_ready() -> bool {
-    unsafe { GRAPHICS_INITIALIZED }
+    GRAPHICS_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Check if input drivers are ready
 pub fn is_input_ready() -> bool {
-    unsafe { DRIVER_MANAGER_INITIALIZED }
+    DRIVER_MANAGER_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Print driver information (simplified)
 pub fn print_driver_info() {
-    unsafe {
-        if DRIVER_MANAGER_INITIALIZED {
-            // Driver system initialized
-            // Total Drivers: 4
-            // Ready Drivers: 4
-            // Total Devices: 4
-            // Graphics Ready
-        }
+    if DRIVER_MANAGER_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
+        // Driver system initialized
+        // Total Drivers: 4
+        // Ready Drivers: 4
+        // Total Devices: 4
+        // Graphics Ready
     }
 }
 

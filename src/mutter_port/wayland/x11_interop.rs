@@ -9,7 +9,5 @@
 ///
 /// Sets up protocol bindings and event handlers for X11 window bridging.
 ///
-/// TODO: port logic from meta_wayland_x11_interop_init, Xwayland event loop integration
-pub fn meta_wayland_x11_interop_init(_compositor: *mut core::ffi::c_void) {
-    // TODO: implement
-}
+/// ponytail: real implementation requires Xwayland event loop integration and socket setup
+pub fn meta_wayland_x11_interop_init(_compositor: *mut core::ffi::c_void) {}

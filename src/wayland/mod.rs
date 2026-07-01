@@ -867,21 +867,15 @@ pub fn init() -> Result<(), &'static str> {
         }
 
         if let Err(e) = server::smoke_check() {
-            unsafe {
-                crate::early_serial_write_str("RustOS: Wayland handshake smoke FAILED: ");
-                crate::early_serial_write_str(e);
-                crate::early_serial_write_str("\r\n");
-            }
+            crate::early_serial_write_str("RustOS: Wayland handshake smoke FAILED: ");
+            crate::early_serial_write_str(e);
+            crate::early_serial_write_str("\r\n");
         } else {
             server::mark_handshake_ready();
-            unsafe {
-                crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
-            }
+            crate::early_serial_write_str("RustOS: Wayland wire handshake ready\r\n");
         }
 
-        unsafe {
-            crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
-        }
+        crate::early_serial_write_str("RustOS: Wayland compositor initialized\r\n");
         Ok(())
     })
 }

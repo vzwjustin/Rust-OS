@@ -111,6 +111,12 @@ pub fn user_bootstrap_active() -> bool {
     USER_BOOTSTRAP_ACTIVE.load(Ordering::Acquire)
 }
 
+fn user_resume_pending() -> bool {
+    let rip = USER_IRETQ_RIP.load(Ordering::Acquire);
+    let rsp = USER_IRETQ_RSP.load(Ordering::Acquire);
+    rip != RESUME_NONE && rsp != RESUME_NONE
+}
+
 /// Handle `exit` from a bootstrap user task (INT 0x80 path).
 pub fn complete_user_exit(status: i32) {
     let child_pid = process::current_pid();
@@ -124,11 +130,26 @@ pub fn complete_user_exit(status: i32) {
     pm.set_current_pid(parent_pid);
 }
 
+/// Complete a bootstrap user exit when a kernel resume target is still armed.
+pub fn complete_user_exit_if_pending(status: i32) -> bool {
+    if !user_resume_pending() {
+        if USER_KERNEL_RESUME.load(Ordering::Acquire) == RESUME_NONE {
+            return false;
+        }
+
+        USER_IRETQ_RIP.store(
+            user_bootstrap_kernel_entry as *const () as u64,
+            Ordering::Release,
+        );
+        USER_IRETQ_RSP.store(bootstrap_stack_top(), Ordering::Release);
+    }
+
+    complete_user_exit(status);
+    true
+}
+
 /// Take the `iretq` resume target after bootstrap `exit`, if any.
 pub fn take_user_resume() -> Option<(u64, u64)> {
-    if !USER_BOOTSTRAP_ACTIVE.load(Ordering::Acquire) {
-        return None;
-    }
     let rip = USER_IRETQ_RIP.load(Ordering::Acquire);
     let rsp = USER_IRETQ_RSP.load(Ordering::Acquire);
     if rip == RESUME_NONE || rsp == RESUME_NONE {
@@ -153,6 +174,10 @@ extern "C" fn user_bootstrap_kernel_entry() {
     // here with the bootstrap stack. We finish the bootstrap, run any
     // registered post-exit hook, and jump to the kernel resume address
     // registered by `service_pending` before the user task started.
+    crate::serial_println!(
+        "user_sched: bootstrap kernel entry status={}",
+        last_child_exit_status()
+    );
     end_user_bootstrap();
 
     if let Some(hook) = AFTER_USER_HOOK.lock().take() {
@@ -161,12 +186,19 @@ extern "C" fn user_bootstrap_kernel_entry() {
 
     let resume = USER_KERNEL_RESUME.load(Ordering::Acquire);
     if resume != RESUME_NONE {
+        crate::serial_println!("user_sched: kernel resume jump {:#x}", resume);
+        // SAFETY: `sti` followed by `jmp` atomically enables interrupts and
+        // jumps to the resume address. The `sti` instruction executes before
+        // any interrupt can be delivered (single-instruction window), and the
+        // `jmp` is `noreturn`. `resume` is a validated user-space entry point
+        // loaded from `USER_KERNEL_RESUME`.
         unsafe {
-            core::arch::asm!("jmp {}", in(reg) resume, options(noreturn));
+            core::arch::asm!("sti", "jmp {}", in(reg) resume, options(noreturn));
         }
     }
 
     loop {
+        x86_64::instructions::interrupts::enable();
         x86_64::instructions::hlt();
     }
 }
@@ -253,7 +285,8 @@ fn run_user_process(child_pid: u32) -> Result<(), ()> {
         pcb.set_state(ProcessState::Running);
     });
 
+    // SAFETY: sti instruction enables interrupts; called from ring 0 after scheduling setup.
     unsafe {
-        crate::usermode::switch_to_user_mode(entry, rsp);
+        crate::usermode::switch_to_user_mode_without_interrupts(entry, rsp);
     }
 }

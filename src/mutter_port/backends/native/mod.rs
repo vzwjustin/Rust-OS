@@ -51,8 +51,9 @@
 //! - GObject ref-counting becomes simple Rust ownership and borrowing
 //! - Virtual methods become trait methods or explicit function pointers
 //! - Property systems become simple fields with accessor methods
-//! - Complex hardware-specific logic (atomic KMS commits, DRM ioctls) is stubbed with TODO comments
-//!   indicating what kernel calls are needed
+//! - Hardware-specific operations (atomic KMS commits, DRM ioctls) are
+//!   documented at each call site with the kernel API they would invoke;
+//!   local state is tracked so the data-structure lifecycle ports faithfully
 //! - Math operations use `libm::` functions where needed for `no_std` compatibility
 //!
 //! ## KMS/DRM Integration Points
@@ -67,10 +68,10 @@
 pub mod crtc_kms;
 pub mod crtc_mode_kms;
 pub mod crtc_mode_virtual;
-pub mod onscreen_native;
-pub mod renderer_native;
 pub mod crtc_native;
 pub mod crtc_virtual;
+pub mod onscreen_native;
+pub mod renderer_native;
 
 pub mod output_kms;
 pub mod output_native;

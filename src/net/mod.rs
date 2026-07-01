@@ -91,7 +91,6 @@ pub mod x25;
 pub mod xdp;
 pub mod xfrm;
 
-use ::core::fmt;
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
@@ -153,8 +152,8 @@ impl NetworkAddress {
     }
 }
 
-impl fmt::Display for NetworkAddress {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl ::core::fmt::Display for NetworkAddress {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
         match self {
             NetworkAddress::IPv4([a, b, c, d]) => write!(f, "{}.{}.{}.{}", a, b, c, d),
             NetworkAddress::IPv6(bytes) => {
@@ -347,8 +346,8 @@ pub enum NetworkError {
     NotFound,
 }
 
-impl fmt::Display for NetworkError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl ::core::fmt::Display for NetworkError {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
         match self {
             NetworkError::InvalidPacket => write!(f, "Invalid packet format"),
             NetworkError::BufferOverflow => write!(f, "Buffer overflow"),
@@ -1060,12 +1059,12 @@ pub fn init() -> NetworkResult<()> {
     // Load hardware NIC drivers via PCI scanning
     match crate::drivers::network::init_global_network_drivers() {
         Ok(()) => {
-            if let Some(mgr) = crate::drivers::network::get_network_driver_manager() {
+            crate::drivers::network::with_network_driver_manager(|mgr| {
                 let drivers = mgr.list_drivers();
                 for (id, name, dtype) in drivers.iter() {
                     crate::serial_println!("net: driver #{} '{}' ({:?})", id, name, dtype);
                 }
-            }
+            });
         }
         Err(e) => {
             crate::serial_println!("net: hardware driver load failed: {:?}", e);

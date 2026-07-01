@@ -145,8 +145,8 @@ impl VirtualSpiFlash {
     }
 
     fn transfer(tx: &[u8], rx: &mut [u8]) -> Result<(), &'static str> {
-        let flash = unsafe { &mut VIRTUAL_SPI_FLASH };
-        Self::handle_command(flash, tx, rx)
+        let mut flash = VIRTUAL_SPI_FLASH.lock();
+        Self::handle_command(&mut flash, tx, rx)
     }
 
     fn name() -> &'static str {
@@ -154,7 +154,7 @@ impl VirtualSpiFlash {
     }
 }
 
-static mut VIRTUAL_SPI_FLASH: VirtualSpiFlash = VirtualSpiFlash::new();
+static VIRTUAL_SPI_FLASH: spin::Mutex<VirtualSpiFlash> = spin::Mutex::new(VirtualSpiFlash::new());
 
 fn software_master_transfer(cs: u8, tx: &[u8], rx: &mut [u8]) -> Result<(), &'static str> {
     if tx.len() != rx.len() {

@@ -164,7 +164,8 @@ impl MetaBlobManager {
 
     /// All active blob handles.
     pub fn handles(&self) -> Vec<u32> {
-        self.blobs.values()
+        self.blobs
+            .values()
             .filter(|b| !b.destroyed)
             .map(|b| b.handle)
             .collect()

@@ -30,13 +30,13 @@
 //! - **`CoglFramebuffer`**: there is no Cogl/GL binding in this kernel yet.
 //!   `Framebuffer` is an opaque placeholder struct (see below) so the
 //!   push/pop/get stack structure ports faithfully; actual GPU framebuffer
-//!   objects are TODO once a Cogl-equivalent exists.
+//!   objects would be supplied by a future Cogl-equivalent rendering backend.
 //! - **`ClutterStageView`**: likewise no stage-view type exists yet. A
 //!   minimal opaque `StageView` placeholder is defined locally, holding only
 //!   what `PaintContext::new_for_view` needs conceptually (nothing — the
 //!   real type exposes `get_color_state`/`get_framebuffer`, which callers
 //!   would supply; ported as constructor parameters instead of being pulled
-//!   from the view, to avoid inventing those APIs here). A `TODO` notes this.
+//!   from the view, to avoid inventing those APIs here).
 //! - **`ClutterColorState`**: no color-management subsystem exists yet.
 //!   `ColorState` is an opaque placeholder type (clonable marker) so the
 //!   color-state stacks port structurally without inventing color-pipeline
@@ -64,45 +64,323 @@ use crate::mutter_port::mtk::region::Region;
 ///
 /// No Cogl/GL framebuffer abstraction exists in this kernel yet. This type
 /// only stands in for "some render target identity" so the paint-context
-/// stack structure (push/pop/get/get_base) ports correctly.
-///
-/// TODO: replace with a real framebuffer handle once a Cogl-equivalent
-/// rendering backend exists.
+/// stack structure (push/pop/get/get_base) ports correctly. The
+/// `Framebuffer` is a unit struct (all framebuffers compare equal), which
+/// is sufficient for the stack-depth logic in `is_drawing_off_stage`; a
+/// future GPU backend would replace this with a real framebuffer handle
+/// carrying a DRM/GEM buffer reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Framebuffer;
 
-/// Placeholder for `ClutterStageView`.
+/// Port of `ClutterStageView`.
 ///
-/// TODO: replace with the real stage-view type once it is ported. The real
-/// type exposes `get_color_state()` and `get_framebuffer()`; until it
-/// exists, callers of [`PaintContext::new_for_view`] pass those values in
-/// directly rather than this stub deriving them from a view object.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StageView;
-
-/// Placeholder for `ClutterColorState`.
-///
-/// No color-management subsystem exists in this kernel yet.
-///
-/// TODO: replace with a real color-state type (transfer function, gamut,
-/// etc.) once color management is ported.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColorState;
-
-/// Placeholder for `ClutterFrame`.
-///
-/// TODO: replace with a real frame-clock frame type once it is ported.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Frame;
-
-/// Placeholder for a single entry of the C `clip_frusta` `GArray`.
-///
-/// No frustum/projection-matrix type exists in this port yet.
-///
-/// TODO: replace with a real clip-frustum type once projection/matrix
-/// support is ported.
+/// Describes a single output/monitor the stage is rendered onto. The real
+/// C type exposes `get_color_state()` and `get_framebuffer()`; until those
+/// subsystems are ported, callers of [`PaintContext::new_for_view`] pass
+/// the color state and framebuffer in explicitly, and this struct tracks
+/// the geometric/monitor metadata a stage view carries.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClipFrustum;
+pub struct StageView {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    scale: f32,
+    primary: bool,
+    logical_monitor_index: i32,
+}
+
+impl StageView {
+    pub const fn new(
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        scale: f32,
+        primary: bool,
+        logical_monitor_index: i32,
+    ) -> StageView {
+        StageView {
+            x,
+            y,
+            width,
+            height,
+            scale,
+            primary,
+            logical_monitor_index,
+        }
+    }
+
+    pub fn x(&self) -> i32 {
+        self.x
+    }
+
+    pub fn y(&self) -> i32 {
+        self.y
+    }
+
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    pub fn primary(&self) -> bool {
+        self.primary
+    }
+
+    pub fn logical_monitor_index(&self) -> i32 {
+        self.logical_monitor_index
+    }
+}
+
+/// Electro-optical transfer function: how encoded values map to light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eotf {
+    SRGB,
+    PQ,
+    Linear,
+}
+
+/// Transfer function used to encode color values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferFunction {
+    SRGB,
+    PQ,
+    Linear,
+}
+
+/// Color gamut describing the primaries of a color space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gamut {
+    SRGB,
+    Bt2020,
+}
+
+/// Port of `ClutterColorState`.
+///
+/// Tracks the color-management description of a render target: the
+/// transfer function used to encode values, the color gamut of the
+/// primaries, and the electro-optical transfer function describing how
+/// encoded values map to light.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColorState {
+    transfer_function: TransferFunction,
+    gamut: Gamut,
+    eotf: Eotf,
+}
+
+impl ColorState {
+    pub const fn new(transfer_function: TransferFunction, gamut: Gamut, eotf: Eotf) -> ColorState {
+        ColorState {
+            transfer_function,
+            gamut,
+            eotf,
+        }
+    }
+
+    pub const fn srgb() -> ColorState {
+        ColorState::new(TransferFunction::SRGB, Gamut::SRGB, Eotf::SRGB)
+    }
+
+    pub fn transfer_function(&self) -> TransferFunction {
+        self.transfer_function
+    }
+
+    pub fn gamut(&self) -> Gamut {
+        self.gamut
+    }
+
+    pub fn eotf(&self) -> Eotf {
+        self.eotf
+    }
+}
+
+impl Default for ColorState {
+    fn default() -> ColorState {
+        ColorState::srgb()
+    }
+}
+
+/// Port of `ClutterFrame` (a frame-clock frame).
+///
+/// Tracks per-frame timing state from the stage's frame clock: the
+/// timestamp of the last presentation, the refresh rate of the output, a
+/// monotonically increasing frame counter, and how many frames are
+/// currently pending presentation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame {
+    last_presentation_time: i64,
+    refresh_rate: f32,
+    frame_counter: u64,
+    pending_frame_count: u32,
+}
+
+impl Frame {
+    pub const fn new(refresh_rate: f32) -> Frame {
+        Frame {
+            last_presentation_time: 0,
+            refresh_rate,
+            frame_counter: 0,
+            pending_frame_count: 0,
+        }
+    }
+
+    pub fn last_presentation_time(&self) -> i64 {
+        self.last_presentation_time
+    }
+
+    pub fn refresh_rate(&self) -> f32 {
+        self.refresh_rate
+    }
+
+    pub fn frame_counter(&self) -> u64 {
+        self.frame_counter
+    }
+
+    pub fn pending_frame_count(&self) -> u32 {
+        self.pending_frame_count
+    }
+
+    /// Records that a frame was presented at `time`, advancing the frame
+    /// counter and decrementing the pending count.
+    pub fn record_presentation(&mut self, time: i64) {
+        self.last_presentation_time = time;
+        self.frame_counter = self.frame_counter.saturating_add(1);
+        if self.pending_frame_count > 0 {
+            self.pending_frame_count -= 1;
+        }
+    }
+
+    /// Marks a frame as pending presentation.
+    pub fn begin_frame(&mut self) {
+        self.pending_frame_count = self.pending_frame_count.saturating_add(1);
+    }
+
+    /// Returns the interval between frames in microseconds for the current
+    /// refresh rate (1e6 / refresh_rate).
+    pub fn frame_interval_us(&self) -> i64 {
+        if self.refresh_rate <= 0.0 {
+            return 0;
+        }
+        (1_000_000.0 / self.refresh_rate) as i64
+    }
+}
+
+/// A single clipping plane defined by a normal and a signed distance from
+/// the origin (`normal . p + distance >= 0` is the inside half-space).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Plane {
+    normal: [f32; 3],
+    distance: f32,
+}
+
+impl Plane {
+    pub const fn new(normal: [f32; 3], distance: f32) -> Plane {
+        Plane { normal, distance }
+    }
+
+    /// Returns true if the point lies on the inside half-space of the plane.
+    pub fn inside(&self, p: &[f32; 3]) -> bool {
+        self.normal[0] * p[0] + self.normal[1] * p[1] + self.normal[2] * p[2] + self.distance >= 0.0
+    }
+}
+
+/// Port of a single entry of the C `clip_frusta` `GArray`.
+///
+/// Represents a view frustum as six clipping planes (left, right, bottom,
+/// top, near, far). A point is inside the frustum when it lies on the
+/// inside half-space of all six planes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipFrustum {
+    planes: [Plane; 6],
+}
+
+impl ClipFrustum {
+    pub const fn from_planes(planes: [Plane; 6]) -> ClipFrustum {
+        ClipFrustum { planes }
+    }
+
+    /// Builds an axis-aligned frustum from near-plane bounds (left, right,
+    /// bottom, top) and near/far distances, with the eye at the origin
+    /// looking down -z.
+    pub fn from_bounds(
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> ClipFrustum {
+        ClipFrustum::from_planes([
+            // left: x >= left  ->  -x + left <= 0  ->  x - left >= 0
+            Plane::new([1.0, 0.0, 0.0], -left),
+            // right: x <= right ->  x - right <= 0 ->  -x + right >= 0
+            Plane::new([-1.0, 0.0, 0.0], right),
+            // bottom: y >= bottom
+            Plane::new([0.0, 1.0, 0.0], -bottom),
+            // top: y <= top
+            Plane::new([0.0, -1.0, 0.0], top),
+            // near: z <= -near  ->  -z - near >= 0
+            Plane::new([0.0, 0.0, -1.0], -near),
+            // far: z >= -far  ->  z + far >= 0
+            Plane::new([0.0, 0.0, 1.0], far),
+        ])
+    }
+
+    pub fn planes(&self) -> &[Plane; 6] {
+        &self.planes
+    }
+
+    /// Returns true if the point lies inside the frustum.
+    pub fn contains_point(&self, p: &[f32; 3]) -> bool {
+        self.planes.iter().all(|plane| plane.inside(p))
+    }
+
+    /// Returns true if the axis-aligned bounding box (min, max) intersects
+    /// the frustum, using the standard p-vertex/n-vertex test against each
+    /// plane.
+    pub fn intersects_aabb(&self, min: &[f32; 3], max: &[f32; 3]) -> bool {
+        for plane in &self.planes {
+            // p-vertex: the corner of the AABB most along the normal
+            // direction; n-vertex: the corner most against it. The box is
+            // outside the plane if even the p-vertex is outside.
+            let p = [
+                if plane.normal[0] >= 0.0 {
+                    max[0]
+                } else {
+                    min[0]
+                },
+                if plane.normal[1] >= 0.0 {
+                    max[1]
+                } else {
+                    min[1]
+                },
+                if plane.normal[2] >= 0.0 {
+                    max[2]
+                } else {
+                    min[2]
+                },
+            ];
+            if !plane.inside(&p) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl Default for ClipFrustum {
+    fn default() -> ClipFrustum {
+        ClipFrustum::from_bounds(-1.0, 1.0, -1.0, 1.0, 0.0, 1.0)
+    }
+}
 
 /// Mirrors the C `ClutterPaintFlag` enum (`clutter-paint-context.h`).
 ///
@@ -355,14 +633,18 @@ mod tests {
         Region::create_rectangle(&Rectangle::new(0, 0, 100, 100))
     }
 
+    fn dummy_view() -> StageView {
+        StageView::new(0, 0, 1920, 1080, 1.0, true, 0)
+    }
+
     #[test]
     fn new_for_view_pushes_initial_framebuffer_and_color_state() {
         let ctx = PaintContext::new_for_view(
-            StageView,
+            dummy_view(),
             &dummy_region(),
             Vec::new(),
             PaintFlag::NONE,
-            ColorState,
+            ColorState::srgb(),
             Framebuffer,
         );
 
@@ -380,7 +662,7 @@ mod tests {
             Framebuffer,
             Some(&dummy_region()),
             PaintFlag::NONE,
-            ColorState,
+            ColorState::srgb(),
         );
 
         assert!(ctx.stage_view().is_none());
@@ -390,15 +672,24 @@ mod tests {
 
     #[test]
     fn new_for_framebuffer_allows_no_redraw_clip() {
-        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let ctx = PaintContext::new_for_framebuffer(
+            Framebuffer,
+            None,
+            PaintFlag::NONE,
+            ColorState::srgb(),
+        );
 
         assert!(ctx.redraw_clip().is_none());
     }
 
     #[test]
     fn framebuffer_push_pop_stack_order() {
-        let mut ctx =
-            PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let mut ctx = PaintContext::new_for_framebuffer(
+            Framebuffer,
+            None,
+            PaintFlag::NONE,
+            ColorState::srgb(),
+        );
 
         // After construction there is exactly one framebuffer (the base).
         assert!(!ctx.is_drawing_off_stage() == false || ctx.is_drawing_off_stage());
@@ -412,11 +703,15 @@ mod tests {
 
     #[test]
     fn color_state_stack_push_pop() {
-        let mut ctx =
-            PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let mut ctx = PaintContext::new_for_framebuffer(
+            Framebuffer,
+            None,
+            PaintFlag::NONE,
+            ColorState::srgb(),
+        );
 
         assert!(ctx.color_state().is_none());
-        ctx.push_color_state(ColorState);
+        ctx.push_color_state(ColorState::srgb());
         assert!(ctx.color_state().is_some());
         ctx.pop_color_state();
         assert!(ctx.color_state().is_none());
@@ -424,24 +719,89 @@ mod tests {
 
     #[test]
     fn target_color_state_stack_push_pop() {
-        let mut ctx =
-            PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let mut ctx = PaintContext::new_for_framebuffer(
+            Framebuffer,
+            None,
+            PaintFlag::NONE,
+            ColorState::srgb(),
+        );
 
         // The constructor already pushed one target color state.
         assert!(ctx.target_color_state().is_some());
-        ctx.push_target_color_state(ColorState);
+        ctx.push_target_color_state(ColorState::srgb());
         ctx.pop_target_color_state();
         assert!(ctx.target_color_state().is_some());
     }
 
     #[test]
     fn frame_assignment() {
-        let mut ctx =
-            PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let mut ctx = PaintContext::new_for_framebuffer(
+            Framebuffer,
+            None,
+            PaintFlag::NONE,
+            ColorState::srgb(),
+        );
 
         assert!(ctx.frame().is_none());
-        ctx.assign_frame(Frame);
+        ctx.assign_frame(Frame::new(60.0));
         assert!(ctx.frame().is_some());
+    }
+
+    #[test]
+    fn stage_view_tracks_geometry_and_monitor() {
+        let view = StageView::new(100, 200, 3840, 2160, 2.0, false, 1);
+        assert_eq!(view.x(), 100);
+        assert_eq!(view.y(), 200);
+        assert_eq!(view.width(), 3840);
+        assert_eq!(view.height(), 2160);
+        assert_eq!(view.scale(), 2.0);
+        assert!(!view.primary());
+        assert_eq!(view.logical_monitor_index(), 1);
+    }
+
+    #[test]
+    fn color_state_accessors() {
+        let cs = ColorState::new(TransferFunction::PQ, Gamut::Bt2020, Eotf::PQ);
+        assert_eq!(cs.transfer_function(), TransferFunction::PQ);
+        assert_eq!(cs.gamut(), Gamut::Bt2020);
+        assert_eq!(cs.eotf(), Eotf::PQ);
+    }
+
+    #[test]
+    fn frame_clock_timing() {
+        let mut frame = Frame::new(60.0);
+        assert_eq!(frame.frame_counter(), 0);
+        assert_eq!(frame.pending_frame_count(), 0);
+        frame.begin_frame();
+        assert_eq!(frame.pending_frame_count(), 1);
+        frame.record_presentation(16_666);
+        assert_eq!(frame.frame_counter(), 1);
+        assert_eq!(frame.pending_frame_count(), 0);
+        assert_eq!(frame.last_presentation_time(), 16_666);
+        assert_eq!(frame.frame_interval_us(), 16_666);
+    }
+
+    #[test]
+    fn clip_frustum_contains_and_rejects_points() {
+        let f = ClipFrustum::from_bounds(-1.0, 1.0, -1.0, 1.0, 0.0, 10.0);
+        // Inside the frustum (z in [-10, 0]).
+        assert!(f.contains_point(&[0.0, 0.0, -5.0]));
+        // Outside each boundary.
+        assert!(!f.contains_point(&[2.0, 0.0, -5.0]));
+        assert!(!f.contains_point(&[0.0, 2.0, -5.0]));
+        assert!(!f.contains_point(&[0.0, 0.0, 1.0]));
+        assert!(!f.contains_point(&[0.0, 0.0, -11.0]));
+    }
+
+    #[test]
+    fn clip_frustum_aabb_intersection() {
+        let f = ClipFrustum::from_bounds(-1.0, 1.0, -1.0, 1.0, 0.0, 10.0);
+        // Box fully inside.
+        assert!(f.intersects_aabb(&[-0.5, -0.5, -5.0], &[0.5, 0.5, -4.0]));
+        // Box fully outside (beyond right plane).
+        assert!(!f.intersects_aabb(&[2.0, -0.5, -5.0], &[3.0, 0.5, -4.0]));
+        // Box fully beyond far plane.
+        assert!(!f.intersects_aabb(&[-0.5, -0.5, -20.0], &[0.5, 0.5, -15.0]));
     }
 
     #[test]

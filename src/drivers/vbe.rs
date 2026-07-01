@@ -170,6 +170,8 @@ pub struct ModeInfoBlock {
 
 impl Default for ModeInfoBlock {
     fn default() -> Self {
+        // SAFETY: ModeInfoBlock is repr(C, packed) containing only integers
+        // and arrays of integers. All-zero bit pattern is valid.
         unsafe { mem::zeroed() }
     }
 }
@@ -287,7 +289,16 @@ impl VideoMode {
             framebuffer_size,
             pixel_format,
             linear_mode,
-            memory_model: unsafe { mem::transmute(info.memory_model) },
+            memory_model: match info.memory_model {
+                0x00 => MemoryModel::Text,
+                0x01 => MemoryModel::CGA,
+                0x02 => MemoryModel::Hercules,
+                0x03 => MemoryModel::Planar,
+                0x04 => MemoryModel::PackedPixel,
+                0x05 => MemoryModel::NonChain4,
+                0x07 => MemoryModel::YUV,
+                _ => MemoryModel::DirectColor,
+            },
         })
     }
 
@@ -563,50 +574,43 @@ impl VbeDriver {
 }
 
 /// Global VBE driver instance
-static mut VBE_DRIVER: VbeDriver = VbeDriver::new();
+static VBE_DRIVER: spin::Mutex<VbeDriver> = spin::Mutex::new(VbeDriver::new());
+
+/// Run a closure with mutable access to the global VBE driver
+pub fn with_vbe_driver<R>(f: impl FnOnce(&mut VbeDriver) -> R) -> R {
+    f(&mut VBE_DRIVER.lock())
+}
 
 /// Initialize the global VBE driver
 pub fn init() -> Result<(), &'static str> {
-    unsafe { (&mut *core::ptr::addr_of_mut!(VBE_DRIVER)).init() }
-}
-
-/// Get a reference to the global VBE driver
-pub fn driver() -> &'static VbeDriver {
-    unsafe { &*core::ptr::addr_of!(VBE_DRIVER) }
-}
-
-/// Get a mutable reference to the global VBE driver
-pub unsafe fn driver_mut() -> &'static mut VbeDriver {
-    &mut *core::ptr::addr_of_mut!(VBE_DRIVER)
+    VBE_DRIVER.lock().init()
 }
 
 /// Set video mode using the global driver
 pub fn set_video_mode(mode_number: u16, linear: bool) -> Result<(), &'static str> {
-    unsafe { (&mut *core::ptr::addr_of_mut!(VBE_DRIVER)).set_mode(mode_number, linear) }
+    VBE_DRIVER.lock().set_mode(mode_number, linear)
 }
 
 /// Find and set the best video mode for desktop use
 pub fn set_desktop_mode(min_width: u16, min_height: u16) -> Result<VideoMode, &'static str> {
-    unsafe {
-        let driver = &mut *core::ptr::addr_of_mut!(VBE_DRIVER);
-        if !driver.is_initialized() {
-            driver.init()?;
-        }
-
-        let best_mode = driver
-            .find_best_mode(min_width, min_height, 32)
-            .ok_or("No suitable video mode found")?;
-
-        let mode_info = best_mode.clone();
-        driver.set_mode(best_mode.mode_number, true)?;
-
-        Ok(mode_info)
+    let mut driver = VBE_DRIVER.lock();
+    if !driver.is_initialized() {
+        driver.init()?;
     }
+
+    let best_mode = driver
+        .find_best_mode(min_width, min_height, 32)
+        .ok_or("No suitable video mode found")?
+        .clone();
+
+    driver.set_mode(best_mode.mode_number, true)?;
+
+    Ok(best_mode)
 }
 
 /// Get current framebuffer info
 pub fn get_current_framebuffer_info() -> Option<FramebufferInfo> {
-    unsafe { (&*core::ptr::addr_of!(VBE_DRIVER)).get_framebuffer_info() }
+    VBE_DRIVER.lock().get_framebuffer_info()
 }
 
 #[cfg(all(test, feature = "disabled-tests"))]

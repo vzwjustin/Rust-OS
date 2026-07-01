@@ -428,6 +428,9 @@ impl SoftDisk {
                     product_revision: *b"1.0 ",
                 };
                 if let Some(buf) = buffer {
+                    // SAFETY: `response` is a stack-local `Copy` struct; the
+                    // pointer is valid and the length is
+                    // `size_of::<ScsiInquiryResponse>()`.
                     let bytes = unsafe {
                         core::slice::from_raw_parts(
                             &response as *const ScsiInquiryResponse as *const u8,

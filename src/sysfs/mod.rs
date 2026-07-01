@@ -175,9 +175,7 @@ impl SysfsAttrInode {
                 }
                 "mem" => {
                     crate::serial_println!("[sysfs] Suspending CPU...");
-                    unsafe {
-                        core::arch::asm!("hlt", options(nomem, nostack));
-                    }
+                    x86_64::instructions::hlt();
                     Ok(buf.len())
                 }
                 "freeze" | "disk" => Ok(buf.len()),

@@ -7,7 +7,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -46,20 +46,16 @@ struct PowerDomain {
 
 // ── Platform power domains ──────────────────────────────────────────────
 
-static mut CPU_DOMAIN_ON: bool = true;
-static mut GPU_DOMAIN_ON: bool = false;
-static mut AUDIO_DOMAIN_ON: bool = false;
+static CPU_DOMAIN_ON: AtomicBool = AtomicBool::new(true);
+static GPU_DOMAIN_ON: AtomicBool = AtomicBool::new(false);
+static AUDIO_DOMAIN_ON: AtomicBool = AtomicBool::new(false);
 
 fn cpu_pd_on() -> Result<(), &'static str> {
-    unsafe {
-        CPU_DOMAIN_ON = true;
-    }
+    CPU_DOMAIN_ON.store(true, Ordering::Relaxed);
     Ok(())
 }
 fn cpu_pd_off() -> Result<(), &'static str> {
-    unsafe {
-        CPU_DOMAIN_ON = false;
-    }
+    CPU_DOMAIN_ON.store(false, Ordering::Relaxed);
     Ok(())
 }
 fn cpu_pd_set_perf(p: u32) -> Result<(), &'static str> {
@@ -82,15 +78,11 @@ pub static CPU_PD_OPS: PowerDomainOps = PowerDomainOps {
 };
 
 fn gpu_pd_on() -> Result<(), &'static str> {
-    unsafe {
-        GPU_DOMAIN_ON = true;
-    }
+    GPU_DOMAIN_ON.store(true, Ordering::Relaxed);
     Ok(())
 }
 fn gpu_pd_off() -> Result<(), &'static str> {
-    unsafe {
-        GPU_DOMAIN_ON = false;
-    }
+    GPU_DOMAIN_ON.store(false, Ordering::Relaxed);
     Ok(())
 }
 fn gpu_pd_set_perf(p: u32) -> Result<(), &'static str> {
@@ -113,15 +105,11 @@ pub static GPU_PD_OPS: PowerDomainOps = PowerDomainOps {
 };
 
 fn audio_pd_on() -> Result<(), &'static str> {
-    unsafe {
-        AUDIO_DOMAIN_ON = true;
-    }
+    AUDIO_DOMAIN_ON.store(true, Ordering::Relaxed);
     Ok(())
 }
 fn audio_pd_off() -> Result<(), &'static str> {
-    unsafe {
-        AUDIO_DOMAIN_ON = false;
-    }
+    AUDIO_DOMAIN_ON.store(false, Ordering::Relaxed);
     Ok(())
 }
 fn audio_pd_set_perf(p: u32) -> Result<(), &'static str> {

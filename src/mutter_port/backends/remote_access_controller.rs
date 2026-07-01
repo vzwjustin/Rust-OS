@@ -6,9 +6,13 @@
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-remote-access-controller-private.h
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Handle to an active remote access session (screen cast or remote desktop).
+#[derive(Clone)]
 pub struct MetaRemoteAccessHandle {
+    /// Unique session identifier.
+    pub id: u32,
     /// Whether the session has already stopped.
     pub has_stopped: bool,
     /// Whether animations should be disabled during this session.
@@ -17,10 +21,13 @@ pub struct MetaRemoteAccessHandle {
     pub is_recording: bool,
 }
 
+static NEXT_SESSION_ID: AtomicU32 = AtomicU32::new(1);
+
 impl MetaRemoteAccessHandle {
     /// Create a new remote access handle.
     pub fn new() -> Self {
         MetaRemoteAccessHandle {
+            id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             has_stopped: false,
             disable_animations: false,
             is_recording: false,
@@ -49,13 +56,13 @@ impl MetaRemoteAccessController {
     }
 
     /// Register a new active remote access handle.
-    pub fn notify_new_handle(&mut self, _handle: MetaRemoteAccessHandle) {
-        // TODO: Add handle to tracking, emit signal
+    pub fn notify_new_handle(&mut self, handle: MetaRemoteAccessHandle) {
+        self.session_managers.push(handle);
     }
 
     /// Mark a handle as stopped.
-    pub fn notify_handle_stopped(&mut self, _handle: &MetaRemoteAccessHandle) {
-        // TODO: Remove handle, clean up resources
+    pub fn notify_handle_stopped(&mut self, handle: &MetaRemoteAccessHandle) {
+        self.session_managers.retain(|h| h.id != handle.id);
     }
 }
 

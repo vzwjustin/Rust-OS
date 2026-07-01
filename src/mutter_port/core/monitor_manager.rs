@@ -15,7 +15,9 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::mutter_port::backends::logical_monitor::{LogicalMonitor, MonitorTransform, MtkRectangle};
+use crate::mutter_port::backends::logical_monitor::{
+    LogicalMonitor, MonitorTransform, MtkRectangle,
+};
 
 /// Monitor configuration mode (mirrors MetaMonitorSwitchConfigType).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,10 +320,10 @@ impl Default for MetaMonitorManager {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::mutter_port::backends::logical_monitor::{
         LogicalMonitor, Monitor, MonitorTransform, MtkRectangle,
     };
-    use super::*;
 
     fn make_monitor(x: i32, y: i32, w: i32, h: i32, number: i32) -> LogicalMonitor {
         LogicalMonitor::new(

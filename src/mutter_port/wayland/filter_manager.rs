@@ -42,8 +42,13 @@ pub struct FilterEntry {
 
 /// Filter manager for Wayland compositor globals.
 ///
-/// Maintains a list of global resource filters. Protocol I/O is TODO;
-/// this holds the manager state and filter list.
+/// Maintains a list of global resource filters. A full implementation
+/// would hook into `wl_global` filter dispatch (libwayland's
+/// `wl_display_set_global_filter`) so that each client only sees the
+/// globals whose filter callbacks return `MetaWaylandAccess::ALLOWED`.
+/// Without libwayland linked in this port, the manager holds the filter
+/// list and exposes query/eval helpers that the compositor can consult
+/// before advertising a global to a client.
 #[derive(Debug)]
 pub struct MetaWaylandFilterManager {
     pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
@@ -53,18 +58,33 @@ pub struct MetaWaylandFilterManager {
 impl MetaWaylandFilterManager {
     pub fn new(compositor: *mut core::ffi::c_void) -> Self {
         MetaWaylandFilterManager {
-            compositor: if compositor.is_null() { None } else { Some(compositor) },
+            compositor: if compositor.is_null() {
+                None
+            } else {
+                Some(compositor)
+            },
             filters: Vec::new(),
         }
     }
 
-    /// Add a filter for a global resource.
+    /// Add a filter for a global resource. If a filter for the same
+    /// global already exists, it is replaced (mirrors the C code which
+    /// keeps at most one filter per global).
     pub fn add_filter(
         &mut self,
         global: *mut core::ffi::c_void,
         filter_func: MetaWaylandFilterFunc,
         user_data: *mut core::ffi::c_void,
     ) {
+        if let Some(entry) = self
+            .filters
+            .iter_mut()
+            .find(|e| core::ptr::eq(e.global, global))
+        {
+            entry.filter_func = filter_func;
+            entry.user_data = user_data;
+            return;
+        }
         self.filters.push(FilterEntry {
             global,
             filter_func,
@@ -72,9 +92,54 @@ impl MetaWaylandFilterManager {
         });
     }
 
-    /// Remove all filters for a given global.
-    pub fn remove_filters_for_global(&mut self, global: *mut core::ffi::c_void) {
-        self.filters.retain(|entry| entry.global != global);
+    /// Remove all filters for a given global. Returns the number removed.
+    pub fn remove_filters_for_global(&mut self, global: *mut core::ffi::c_void) -> usize {
+        let before = self.filters.len();
+        self.filters
+            .retain(|entry| !core::ptr::eq(entry.global, global));
+        before - self.filters.len()
+    }
+
+    /// Get the filter entry for a global, if any.
+    pub fn get_filter(&self, global: *mut core::ffi::c_void) -> Option<&FilterEntry> {
+        self.filters
+            .iter()
+            .find(|e| core::ptr::eq(e.global, global))
+    }
+
+    /// Number of registered filters.
+    pub fn filter_count(&self) -> usize {
+        self.filters.len()
+    }
+
+    /// Evaluate the access decision for a global/client pair by invoking
+    /// the registered filter callback. If no filter is registered for the
+    /// global, the global is allowed by default (matching libwayland's
+    /// behaviour where an unfiltered global is visible to all clients).
+    ///
+    /// # Safety
+    /// Calls a foreign function pointer with the provided client and
+    /// global pointers; the caller must ensure both are valid for the
+    /// duration of the callback.
+    pub unsafe fn evaluate(
+        &self,
+        global: *const core::ffi::c_void,
+        client: *const core::ffi::c_void,
+    ) -> MetaWaylandAccess {
+        match self.get_filter(global as *mut _) {
+            Some(entry) => match entry.filter_func {
+                Some(f) => {
+                    let result = f(global, client, entry.user_data);
+                    if result == MetaWaylandAccess::DENIED as u32 {
+                        MetaWaylandAccess::DENIED
+                    } else {
+                        MetaWaylandAccess::ALLOWED
+                    }
+                }
+                None => MetaWaylandAccess::ALLOWED,
+            },
+            None => MetaWaylandAccess::ALLOWED,
+        }
     }
 }
 

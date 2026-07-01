@@ -17,9 +17,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::mutter_port::backends::logical_monitor::{LogicalMonitor, MonitorTransform, MtkRectangle};
 use super::monitor::{MetaMonitor, MonitorKind, MonitorMode};
 use super::monitor_manager::{LayoutMode, MetaMonitorManager, MonitorSwitchConfig};
+use crate::mutter_port::backends::logical_monitor::{
+    LogicalMonitor, MonitorTransform, MtkRectangle,
+};
 
 /// A configured monitor: which monitor, which mode, and its position.
 /// Mirrors MetaMonitorConfig.

@@ -12,8 +12,8 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/core/meta-cursor-sprite.c
 
-use crate::mutter_port::backends::logical_monitor::MonitorTransform;
 use super::cursor_tracker::CursorSpriteId;
+use crate::mutter_port::backends::logical_monitor::MonitorTransform;
 
 /// Cursor image metadata. Mirrors MetaCursorSprite.
 #[derive(Debug, Clone)]

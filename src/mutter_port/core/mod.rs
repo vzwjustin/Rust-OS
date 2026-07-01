@@ -1,6 +1,8 @@
 //! Ported from GNOME Mutter's `src/core/` — window/display/session
 //! management, input handling, and monitor configuration.
 
+pub use display::DisplayId;
+
 pub mod accel_parse;
 pub mod backend;
 pub mod bell;

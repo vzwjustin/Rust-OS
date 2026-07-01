@@ -512,6 +512,7 @@ impl IdeDriver {
         }
 
         // Parse identify data
+        // SAFETY: data is a 512-byte IDE identify block read from the device; IdeIdentify is repr(C) packed.
         let identify = unsafe { *(data.as_ptr() as *const IdeIdentify) };
         self.identify_data = Some(identify);
 
@@ -661,6 +662,8 @@ impl IdeDriver {
         self.wait_drq()?;
 
         // Read 256 words (512 bytes)
+        // SAFETY: `buffer` is a `&mut [u8]` with at least 512 bytes; 256 u16
+        // words = 512 bytes, so the pointer and length are valid.
         let words =
             unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u16, 256) };
         for word in words.iter_mut() {
@@ -679,6 +682,8 @@ impl IdeDriver {
         self.wait_drq()?;
 
         // Write 256 words (512 bytes)
+        // SAFETY: `buffer` is a `&[u8]` with exactly 512 bytes; 256 u16 words
+        // = 512 bytes, so the pointer and length are valid.
         let words = unsafe { core::slice::from_raw_parts(buffer.as_ptr() as *const u16, 256) };
         for &word in words {
             self.write_data(word);

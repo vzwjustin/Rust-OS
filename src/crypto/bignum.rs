@@ -45,7 +45,7 @@ impl BigUint {
             out[i * 4..i * 4 + 4].copy_from_slice(&b);
         }
         out.reverse(); // now big-endian, may have leading zero limbs' bytes
-        // strip leading zero bytes
+                       // strip leading zero bytes
         let first_nonzero = out.iter().position(|&b| b != 0).unwrap_or(out.len() - 1);
         let trimmed = &out[first_nonzero..];
         if trimmed.len() > len {

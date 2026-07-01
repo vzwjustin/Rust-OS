@@ -408,11 +408,20 @@ fn load_module(mut image: Vec<u8>, params: String, flags: u32) -> Result<i32, i3
 
     // Find and call the module's init_module entry point.
     let exit_fn: Option<fn()> = find_symbol_offset(&image, "cleanup_module")
-        .map(|off| unsafe { core::mem::transmute(image.as_ptr().add(off)) });
+        .map(|off| {
+            // SAFETY: `off` is the offset of `cleanup_module` within the
+            // loaded module image. The image has been loaded and relocated
+            // at `image.as_ptr()`, so `image.as_ptr().add(off)` points to a
+            // valid `fn()` with the Rust calling convention.
+            unsafe { core::mem::transmute(image.as_ptr().add(off)) }
+        });
 
     if let Some(init_off) = find_symbol_offset(&image, "init_module") {
+        // SAFETY: `init_off` is the offset of `init_module` within the loaded,
+        // relocated module image. `image.as_ptr().add(init_off)` points to a
+        // valid `fn() -> i32` entry point.
         let init_fn: fn() -> i32 = unsafe { core::mem::transmute(image.as_ptr().add(init_off)) };
-        let rc = unsafe { init_fn() };
+        let rc = init_fn();
         if rc != 0 {
             return Err(-rc); // init failed — do not register
         }
@@ -515,7 +524,7 @@ pub fn remove_module(name: &str) -> i32 {
     };
 
     if let Some(f) = exit_fn {
-        unsafe { f() };
+        f();
     }
 
     // Remove from live list.

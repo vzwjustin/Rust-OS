@@ -32,7 +32,9 @@ pub struct DisposeBin {
 impl DisposeBin {
     /// Port of `mtk_dispose_bin_new`.
     pub fn new() -> Self {
-        DisposeBin { entries: Vec::new() }
+        DisposeBin {
+            entries: Vec::new(),
+        }
     }
 
     /// Port of `mtk_dispose_bin_add` — idiomatic Rust closure API.
@@ -59,8 +61,12 @@ impl DisposeBin {
         }
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 impl Drop for DisposeBin {
@@ -87,9 +93,13 @@ mod tests {
         let counter = Rc::new(Cell::new(0));
         let mut bin = DisposeBin::new();
         let c1 = counter.clone();
-        bin.add(move || { c1.set(c1.get() + 1); });
+        bin.add(move || {
+            c1.set(c1.get() + 1);
+        });
         let c2 = counter.clone();
-        bin.add(move || { c2.set(c2.get() + 10); });
+        bin.add(move || {
+            c2.set(c2.get() + 10);
+        });
         assert_eq!(counter.get(), 0);
         bin.dispose();
         assert_eq!(counter.get(), 11);
@@ -101,10 +111,18 @@ mod tests {
         let order = Rc::new(Cell::new(0));
         let recorded = Rc::new(Cell::new(0u32));
         let mut bin = DisposeBin::new();
-        let o1 = order.clone(); let r1 = recorded.clone();
-        bin.add(move || { r1.set(r1.get() | (1 << o1.get())); o1.set(o1.get() + 1); });
-        let o2 = order.clone(); let r2 = recorded.clone();
-        bin.add(move || { r2.set(r2.get() | (1 << o2.get())); o2.set(o2.get() + 1); });
+        let o1 = order.clone();
+        let r1 = recorded.clone();
+        bin.add(move || {
+            r1.set(r1.get() | (1 << o1.get()));
+            o1.set(o1.get() + 1);
+        });
+        let o2 = order.clone();
+        let r2 = recorded.clone();
+        bin.add(move || {
+            r2.set(r2.get() | (1 << o2.get()));
+            o2.set(o2.get() + 1);
+        });
         bin.dispose();
         assert_eq!(recorded.get(), 0b11);
     }
@@ -115,7 +133,9 @@ mod tests {
         {
             let mut bin = DisposeBin::new();
             let c = counter.clone();
-            bin.add(move || { c.set(c.get() + 1); });
+            bin.add(move || {
+                c.set(c.get() + 1);
+            });
         }
         assert_eq!(counter.get(), 1);
     }

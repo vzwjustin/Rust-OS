@@ -24,23 +24,33 @@ pub struct MetaLauncher {
     pub seat_proxy: *mut MetaDBusLogin1Seat,
     pub session_active: bool,
     pub have_control: bool,
+    /// The seat ID (e.g., "seat0").
+    pub seat_id: String,
+    /// Current virtual terminal number.
+    pub current_vt: u32,
 }
 
 impl MetaLauncher {
     /// Create new launcher (error if login1 unavailable).
-    pub fn new(_backend: *mut MetaBackend) -> Result<Self, String> {
+    pub fn new(backend: *mut MetaBackend) -> Result<Self, String> {
         Ok(MetaLauncher {
-            backend: _backend,
+            backend,
             session_proxy: core::ptr::null_mut(),
             seat_proxy: core::ptr::null_mut(),
             session_active: true,
             have_control: false,
+            seat_id: String::from("seat0"),
+            current_vt: 0,
         })
     }
 
-    /// Activate a virtual terminal.
-    pub fn activate_vt(&self, _vt: u32) -> Result<(), String> {
-        // TODO: D-Bus call to ActiveSession (vt, u)
+    /// Activate a virtual terminal. A full implementation would call
+    /// the login1 D-Bus ActivateSession method. Records the VT number.
+    pub fn activate_vt(&mut self, vt: u32) -> Result<(), String> {
+        if vt == 0 {
+            return Err("invalid VT number".into());
+        }
+        self.current_vt = vt;
         Ok(())
     }
 
@@ -49,16 +59,34 @@ impl MetaLauncher {
         self.session_active
     }
 
-    /// Take device control from session manager.
-    pub fn take_control(&self) -> Result<(), String> {
-        // TODO: D-Bus call to TakeControl ()
+    /// Take device control from session manager. A full implementation
+    /// would call the login1 D-Bus TakeControl method. Records the
+    /// control state.
+    pub fn take_control(&mut self) -> Result<(), String> {
+        if self.have_control {
+            return Err("already have control".into());
+        }
+        self.have_control = true;
+        Ok(())
+    }
+
+    /// Release device control.
+    pub fn release_control(&mut self) -> Result<(), String> {
+        if !self.have_control {
+            return Err("do not have control".into());
+        }
+        self.have_control = false;
         Ok(())
     }
 
     /// Get the seat ID for this session.
     pub fn get_seat_id(&self) -> &str {
-        // TODO: return seat id from session
-        "seat0"
+        &self.seat_id
+    }
+
+    /// Get the current VT number.
+    pub fn get_current_vt(&self) -> u32 {
+        self.current_vt
     }
 
     /// Get D-Bus login1 session proxy.

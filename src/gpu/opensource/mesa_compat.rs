@@ -565,21 +565,20 @@ pub enum FormatUsage {
 }
 
 // Global Mesa compatibility layer
-static mut MESA_COMPAT: Option<MesaCompatLayer> = None;
+static MESA_COMPAT: spin::Mutex<Option<MesaCompatLayer>> = spin::Mutex::new(None);
 
 /// Initialize Mesa compatibility layer
 pub fn init_mesa_compat() -> Result<(), &'static str> {
-    unsafe {
-        if MESA_COMPAT.is_none() {
-            MESA_COMPAT = Some(MesaCompatLayer::new());
-        }
+    let mut guard = MESA_COMPAT.lock();
+    if guard.is_none() {
+        *guard = Some(MesaCompatLayer::new());
     }
     Ok(())
 }
 
-/// Get Mesa compatibility layer instance
-pub fn get_mesa_compat() -> Option<&'static mut MesaCompatLayer> {
-    unsafe { MESA_COMPAT.as_mut() }
+/// Run `f` with the Mesa compatibility layer instance, if initialized.
+pub fn with_mesa_compat<R>(f: impl FnOnce(&mut MesaCompatLayer) -> R) -> Option<R> {
+    MESA_COMPAT.lock().as_mut().map(f)
 }
 
 /// Create Mesa screen for GPU
@@ -588,26 +587,19 @@ pub fn create_mesa_screen(
     driver_name: &str,
     gpu_caps: &super::super::GPUCapabilities,
 ) -> Result<(), &'static str> {
-    if let Some(mesa) = get_mesa_compat() {
-        mesa.create_screen(gpu_id, driver_name, gpu_caps)
-    } else {
-        Err("Mesa compatibility layer not initialized")
-    }
+    with_mesa_compat(|mesa| mesa.create_screen(gpu_id, driver_name, gpu_caps))
+        .unwrap_or_else(|| Err("Mesa compatibility layer not initialized"))
 }
 
 /// Get OpenGL information for GPU
 pub fn get_opengl_info(gpu_id: u32) -> Option<OpenGLInfo> {
-    if let Some(mesa) = get_mesa_compat() {
-        Some(OpenGLInfo {
-            version: mesa.get_gl_version_string(gpu_id),
-            vendor: mesa.get_vendor_string(gpu_id),
-            renderer: mesa.get_renderer_string(gpu_id),
-            glsl_version: mesa.get_glsl_version_string(gpu_id),
-            extensions: mesa.get_extensions(gpu_id),
-        })
-    } else {
-        None
-    }
+    with_mesa_compat(|mesa| OpenGLInfo {
+        version: mesa.get_gl_version_string(gpu_id),
+        vendor: mesa.get_vendor_string(gpu_id),
+        renderer: mesa.get_renderer_string(gpu_id),
+        glsl_version: mesa.get_glsl_version_string(gpu_id),
+        extensions: mesa.get_extensions(gpu_id),
+    })
 }
 
 /// OpenGL information structure

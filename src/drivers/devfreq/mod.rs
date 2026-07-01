@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
 use crate::drivers::opp;
@@ -104,14 +104,14 @@ fn gov_passive(current: u64, _busy: u64, _total: u64) -> u64 {
 
 // ── DDR devfreq profile ─────────────────────────────────────────────────
 
-static mut DDR_FREQ: u64 = 1_600_000_000; // 1600 MHz DDR
+static DDR_FREQ: AtomicU64 = AtomicU64::new(1_600_000_000); // 1600 MHz DDR
 
 fn ddr_get_target(current: u64, busy: u64, total: u64) -> u64 {
     gov_simple_ondemand(current, busy, total)
 }
 
 fn ddr_get_cur_freq() -> u64 {
-    unsafe { DDR_FREQ }
+    DDR_FREQ.load(Ordering::Relaxed)
 }
 
 fn ddr_set_freq(freq: u64) -> Result<(), &'static str> {
@@ -122,9 +122,7 @@ fn ddr_set_freq(freq: u64) -> Result<(), &'static str> {
         .min_by_key(|&&f| if f >= freq { f - freq } else { freq - f })
         .copied()
         .ok_or("No valid DDR frequency")?;
-    unsafe {
-        DDR_FREQ = nearest;
-    }
+    DDR_FREQ.store(nearest, Ordering::Relaxed);
     Ok(())
 }
 

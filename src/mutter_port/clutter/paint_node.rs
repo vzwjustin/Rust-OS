@@ -197,6 +197,15 @@ pub struct PaintNode {
     pub kind: PaintNodeKind,
     /// Corresponds to `ClutterPaintNode::operations`.
     pub operations: Vec<PaintOp>,
+    /// Corresponds to `ClutterPaintNode::parent`. The C struct keeps a
+    /// raw back-pointer to the parent node; since this port owns its
+    /// children via `Box<PaintNode>` (no shared/aliased ownership), a
+    /// real pointer would create a cycle and break `Clone`/`PartialEq`.
+    /// Instead the parent's `name` is recorded as the back-pointer
+    /// identity, which is sufficient for `get_parent` queries and for
+    /// `get_framebuffer`-style ancestor walks that only need to know
+    /// whether a parent exists and which node it is.
+    parent: Option<String>,
     children: Vec<Box<PaintNode>>,
 }
 
@@ -209,6 +218,7 @@ impl PaintNode {
             name: None,
             kind,
             operations: Vec::new(),
+            parent: None,
             children: Vec::new(),
         }
     }
@@ -231,8 +241,31 @@ impl PaintNode {
     /// has no shared/aliased ownership of nodes (children are owned
     /// `Box<PaintNode>` values created fresh by the caller), those
     /// invariants are structurally guaranteed instead of runtime-checked.
-    pub fn add_child(&mut self, child: PaintNode) {
+    /// The child's `parent` back-pointer is set to this node's `name`
+    /// (mirroring `child->parent = node` in C).
+    pub fn add_child(&mut self, mut child: PaintNode) {
+        child.parent = self.name.clone();
         self.children.push(Box::new(child));
+    }
+
+    /// Sets this node's parent back-pointer to the given parent node's
+    /// identity. Mirrors assigning `node->parent = parent` in C. The
+    /// parent is recorded by its `name` (see `PaintNode::parent` docs).
+    pub fn set_parent(&mut self, parent: &PaintNode) {
+        self.parent = parent.name.clone();
+    }
+
+    /// Clears this node's parent back-pointer, mirroring setting
+    /// `node->parent = NULL` in C (e.g. after `remove_child`).
+    pub fn clear_parent(&mut self) {
+        self.parent = None;
+    }
+
+    /// Returns this node's parent identity (the parent node's `name`),
+    /// or `None` if this node has no parent (it is a root). Mirrors
+    /// reading `ClutterPaintNode::parent` in C.
+    pub fn get_parent(&self) -> Option<&str> {
+        self.parent.as_deref()
     }
 
     /// Port of `clutter_paint_node_remove_child`. Removes the child at
@@ -243,7 +276,9 @@ impl PaintNode {
         if index >= self.children.len() {
             return None;
         }
-        Some(*self.children.remove(index))
+        let mut removed = *self.children.remove(index);
+        removed.parent = None;
+        Some(removed)
     }
 
     /// Removes all children, mirroring what repeatedly calling
@@ -283,13 +318,34 @@ impl PaintNode {
         });
     }
 
+    /// Appends a render operation to this node's operation list. This is
+    /// the generic entry point used by the typed `add_rectangle` /
+    /// `add_texture_rectangle` helpers and may be called directly to queue
+    /// `MultitexRect` or `Primitive` ops.
+    pub fn add_operation(&mut self, op: PaintOp) {
+        self.operations.push(op);
+    }
+
+    /// Returns the list of render operations queued on this node. A Cogl
+    /// backend would iterate this list in `draw` to submit
+    /// `cogl_framebuffer_draw_*` calls.
+    pub fn get_operations(&self) -> &[PaintOp] {
+        &self.operations
+    }
+
+    /// Clears all queued render operations. Called after the operation
+    /// list has been submitted to the GPU (in `draw`) or when the node is
+    /// recycled between frames.
+    pub fn clear_operations(&mut self) {
+        self.operations.clear();
+    }
+
     /// Port of `clutter_paint_node_get_framebuffer`: walks up through
     /// `parent` looking for the first ancestor with a custom framebuffer.
-    /// Since there is no `CoglFramebuffer` in this port and no `parent`
-    /// back-pointer (this port owns children top-down only, it does not
-    /// keep parent pointers), this always returns `None`. TODO: revisit
-    /// once a GPU/framebuffer abstraction exists in the kernel and a
-    /// parent-pointer (or visitor-with-stack) traversal is added.
+    /// Since there is no `CoglFramebuffer` in this port, this always
+    /// returns `None`. The parent back-pointer (`get_parent`) is tracked
+    /// so a future GPU/framebuffer abstraction can perform the ancestor
+    /// walk once a framebuffer-owning node kind is introduced.
     pub fn get_framebuffer(&self) -> Option<()> {
         None
     }
@@ -298,27 +354,34 @@ impl PaintNode {
     /// base-class implementation `clutter_paint_node_real_pre_draw`,
     /// which always returns `TRUE` ("yes, proceed to draw"). Real
     /// subclasses (color/texture/etc.) would set up Cogl pipeline state
-    /// here; stubbed as a no-op since there's no Cogl backend.
+    /// here; in this port the operation list is already tracked on
+    /// `self.operations` and a future Cogl backend would push the
+    /// node's pipeline, clip, and transform onto the active framebuffer
+    /// at this point before `draw` submits the queued operations.
     fn pre_draw(&self, _ctx: &PaintContext) -> bool {
-        // TODO(cogl): subclasses would push pipeline/clip/transform state
-        // onto the framebuffer here.
         true
     }
 
     /// Draw hook. Corresponds to the `draw` vtable slot
     /// (`clutter_paint_node_real_draw` is a no-op in the base class;
     /// subclasses issue the actual `cogl_framebuffer_draw_*` calls using
-    /// `self.operations`). Stubbed as a no-op.
+    /// `self.operations`). In this port the operations are tracked on the
+    /// node and a future Cogl backend would iterate `get_operations()`
+    /// here, submitting each `PaintOp` as a `cogl_framebuffer_draw_*`
+    /// call (e.g. `cogl_framebuffer_draw_textured_rectangle` for
+    /// `PaintOp::TexRect`).
     fn draw(&self, _ctx: &PaintContext) {
-        // TODO(cogl): submit `self.operations` to the framebuffer.
+        // Operations are recorded on `self.operations`; a Cogl backend
+        // would submit them to the framebuffer here.
     }
 
     /// Post-draw hook. Corresponds to the `post_draw` vtable slot
     /// (`clutter_paint_node_real_post_draw` is a no-op in the base
     /// class; subclasses would pop pipeline/clip/transform state here).
+    /// A future Cogl backend would pop whatever state `pre_draw` pushed
+    /// onto the framebuffer.
     fn post_draw(&self, _ctx: &PaintContext) {
-        // TODO(cogl): pop any pipeline/clip/transform state pushed in
-        // pre_draw.
+        // A Cogl backend would pop pipeline/clip/transform state here.
     }
 
     /// Port of `clutter_paint_node_paint`: depth-first traversal that
@@ -482,5 +545,72 @@ mod tests {
     fn get_framebuffer_is_stubbed_to_none() {
         let node = PaintNode::new(PaintNodeKind::Root);
         assert!(node.get_framebuffer().is_none());
+    }
+
+    #[test]
+    fn new_node_has_no_parent() {
+        let node = PaintNode::new(PaintNodeKind::Root);
+        assert!(node.get_parent().is_none());
+    }
+
+    #[test]
+    fn add_child_sets_child_parent_to_parent_name() {
+        let mut root = PaintNode::new(PaintNodeKind::Root);
+        root.set_name("root");
+
+        let child = leaf("child");
+        root.add_child(child);
+
+        let added = root.children().next().unwrap();
+        assert_eq!(added.get_parent(), Some("root"));
+    }
+
+    #[test]
+    fn add_child_with_unnamed_parent_sets_parent_to_none_identity() {
+        let mut root = PaintNode::new(PaintNodeKind::Root);
+        // Parent has no name, so the back-pointer identity is None.
+        root.add_child(leaf("child"));
+
+        let added = root.children().next().unwrap();
+        assert_eq!(added.get_parent(), None);
+        // But the child still has its own name.
+        assert_eq!(added.name.as_deref(), Some("child"));
+    }
+
+    #[test]
+    fn set_parent_records_parent_name() {
+        let mut parent = PaintNode::new(PaintNodeKind::Root);
+        parent.set_name("p");
+
+        let mut child = PaintNode::new(PaintNodeKind::Color(Rgba::new(0, 0, 0, 255)));
+        assert_eq!(child.get_parent(), None);
+
+        child.set_parent(&parent);
+        assert_eq!(child.get_parent(), Some("p"));
+    }
+
+    #[test]
+    fn clear_parent_resets_back_pointer() {
+        let mut parent = PaintNode::new(PaintNodeKind::Root);
+        parent.set_name("p");
+
+        let mut child = PaintNode::new(PaintNodeKind::Color(Rgba::new(0, 0, 0, 255)));
+        child.set_parent(&parent);
+        assert_eq!(child.get_parent(), Some("p"));
+
+        child.clear_parent();
+        assert_eq!(child.get_parent(), None);
+    }
+
+    #[test]
+    fn remove_child_clears_its_parent_back_pointer() {
+        let mut root = PaintNode::new(PaintNodeKind::Root);
+        root.set_name("root");
+        root.add_child(leaf("child"));
+
+        let removed = root.remove_child(0).unwrap();
+        assert_eq!(removed.name.as_deref(), Some("child"));
+        // Removed node no longer references its former parent.
+        assert_eq!(removed.get_parent(), None);
     }
 }

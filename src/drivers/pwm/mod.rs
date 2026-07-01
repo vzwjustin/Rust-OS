@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -60,10 +60,10 @@ struct SoftwarePwmChannel {
     state: PwmState,
 }
 
-static mut SW_PWM_CHANNELS: Vec<SoftwarePwmChannel> = Vec::new();
+static SW_PWM_CHANNELS: Mutex<Vec<SoftwarePwmChannel>> = Mutex::new(Vec::new());
 
 fn sw_apply(channel: u32, state: &PwmState) -> Result<(), &'static str> {
-    let channels = unsafe { &mut SW_PWM_CHANNELS };
+    let mut channels = SW_PWM_CHANNELS.lock();
     let idx = channel as usize;
     if idx >= channels.len() {
         return Err("PWM channel out of range");
@@ -73,7 +73,7 @@ fn sw_apply(channel: u32, state: &PwmState) -> Result<(), &'static str> {
 }
 
 fn sw_get_state(channel: u32) -> Result<PwmState, &'static str> {
-    let channels = unsafe { &SW_PWM_CHANNELS };
+    let channels = SW_PWM_CHANNELS.lock();
     let idx = channel as usize;
     if idx >= channels.len() {
         return Err("PWM channel out of range");
@@ -223,13 +223,11 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     let npwm = sw_npwm() as usize;
-    unsafe {
-        SW_PWM_CHANNELS = (0..npwm)
-            .map(|_| SoftwarePwmChannel {
-                state: PwmState::default(),
-            })
-            .collect();
-    }
+    *SW_PWM_CHANNELS.lock() = (0..npwm)
+        .map(|_| SoftwarePwmChannel {
+            state: PwmState::default(),
+        })
+        .collect();
 
     register_chip("software-pwm", SOFTWARE_PWM_OPS)?;
     crate::serial_println!("pwm: software chip registered ({} channels)", npwm);

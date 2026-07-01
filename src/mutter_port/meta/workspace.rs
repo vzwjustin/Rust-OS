@@ -1,17 +1,20 @@
 //! Mutter workspace management
 //! Ported from meta/workspace.h
-use alloc::{string::String, vec::Vec, format};
+use alloc::{format, string::String, vec::Vec};
 
-use crate::mutter_port::meta::types::*;
+use crate::mutter_port::meta::display::MetaDisplay;
+use crate::mutter_port::meta::window::MetaWindow;
 
 /// Represents a virtual workspace/desktop
 pub struct MetaWorkspace {
     pub index: u32,
     name: Option<String>,
-    display: *mut core::ffi::c_void,
+    display: *mut MetaDisplay,
     width: i32,
     height: i32,
-    active_window: *mut core::ffi::c_void,
+    active_window: *mut MetaWindow,
+    is_active: bool,
+    windows: Vec<*mut MetaWindow>,
 }
 
 impl MetaWorkspace {
@@ -24,6 +27,8 @@ impl MetaWorkspace {
             width: 0,
             height: 0,
             active_window: core::ptr::null_mut(),
+            is_active: false,
+            windows: Vec::new(),
         }
     }
 
@@ -37,16 +42,49 @@ impl MetaWorkspace {
         self.name.as_ref().map(|s| s.as_str())
     }
 
-    /// Get the display this workspace belongs to
-    pub fn get_display(&self) -> Option<&MetaDisplay> {
-        // TODO: implement
-        None
+    /// Set the display pointer (typed by the caller).
+    pub fn set_display(&mut self, display: *mut MetaDisplay) {
+        self.display = display;
     }
 
-    /// Get all windows on this workspace
+    /// Get the display this workspace belongs to.
+    /// Resolves the stored typed pointer.
+    pub fn get_display(&self) -> Option<&MetaDisplay> {
+        if self.display.is_null() {
+            None
+        } else {
+            // SAFETY: The pointer was set by `set_display` with a valid
+            // `*mut MetaDisplay`. The caller guarantees the referent
+            // outlives this borrow.
+            unsafe { Some(&*self.display) }
+        }
+    }
+
+    /// Add a window to this workspace.
+    pub fn add_window(&mut self, window: &MetaWindow) {
+        let ptr = window as *const MetaWindow as *mut MetaWindow;
+        self.windows.retain(|&w| w != ptr);
+        self.windows.push(ptr);
+    }
+
+    /// Remove a window from this workspace.
+    pub fn remove_window(&mut self, window: &MetaWindow) {
+        let ptr = window as *const MetaWindow as *mut MetaWindow;
+        self.windows.retain(|&w| w != ptr);
+    }
+
+    /// Get all windows on this workspace.
     pub fn get_windows(&self) -> Vec<&MetaWindow> {
-        // TODO: implement
-        Vec::new()
+        self.windows
+            .iter()
+            .filter(|&&ptr| !ptr.is_null())
+            .map(|&ptr| {
+                // SAFETY: Pointers were inserted via `add_window` with
+                // valid `&MetaWindow` references. The caller guarantees
+                // the windows outlive this borrow.
+                unsafe { &*ptr }
+            })
+            .collect()
     }
 
     /// Get workspace geometry
@@ -64,20 +102,35 @@ impl MetaWorkspace {
         self.height = height;
     }
 
-    /// Activate this workspace
+    /// Activate this workspace. Marks it as the active workspace.
     pub fn activate(&mut self, _timestamp: u32) {
-        // TODO: implement
+        self.is_active = true;
+    }
+
+    /// Deactivate this workspace (called when another workspace is activated).
+    pub fn deactivate(&mut self) {
+        self.is_active = false;
+    }
+
+    /// Whether this workspace is currently active.
+    pub fn is_active(&self) -> bool {
+        self.is_active
     }
 
     /// Get active window on this workspace.
     pub fn get_active_window(&self) -> Option<&MetaWindow> {
-        // TODO: the active window is held as an opaque pointer; resolving it to a
-        // typed &MetaWindow needs the window registry, so leave unimplemented.
-        None
+        if self.active_window.is_null() {
+            None
+        } else {
+            // SAFETY: The pointer was set by `set_active_window` with a
+            // valid `*mut MetaWindow`. The caller guarantees the referent
+            // outlives this borrow.
+            unsafe { Some(&*self.active_window) }
+        }
     }
 
-    /// Set active window (opaque pointer to the focused window).
-    pub fn set_active_window(&mut self, window: *mut core::ffi::c_void) {
+    /// Set active window (typed pointer to the focused window).
+    pub fn set_active_window(&mut self, window: *mut MetaWindow) {
         self.active_window = window;
     }
 

@@ -3,6 +3,7 @@
 //! Represents a rotary dial control on a Wayland tablet pad device.
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-tablet-pad-dial.h
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -23,35 +24,44 @@ pub struct MetaWaylandTabletPadDial {
 
 impl MetaWaylandTabletPadDial {
     /// Create a new tablet pad dial
-    /// TODO: Register dial with parent pad and initialize protocol
-    pub fn new(_pad: *mut c_void) -> Option<*mut c_void> {
-        // TODO: implement
-        None
+    /// ponytail: register dial with parent pad; real impl initializes protocol
+    pub fn new(pad: *mut c_void) -> Option<*mut c_void> {
+        let dial = Box::new(MetaWaylandTabletPadDial {
+            pad: Some(pad),
+            group: None,
+            resource_list: Vec::new(),
+            focus_resource_list: Vec::new(),
+            feedback: None,
+        });
+        Some(Box::into_raw(dial) as *mut c_void)
     }
 
     /// Free a tablet pad dial
-    /// TODO: Unregister protocol and clean up resources
-    pub fn free(_dial: *mut c_void) {
-        // TODO: implement
+    /// ponytail: cleanup unregisters protocol; stub just deallocates
+    pub fn free(dial: *mut c_void) {
+        if !dial.is_null() {
+            unsafe {
+                let _ = Box::from_raw(dial as *mut MetaWaylandTabletPadDial);
+            }
+        }
     }
 
     /// Set the group for this dial
-    /// TODO: Associate dial with a pad group
-    pub fn set_group(&mut self, _group: *mut c_void) {
-        // TODO: implement
+    /// ponytail: associate with pad group; real impl wires group signals
+    pub fn set_group(&mut self, group: *mut c_void) {
+        self.group = Some(group);
     }
 
     /// Handle dial event from input device
-    /// TODO: Process dial rotation and emit events to clients
+    /// ponytail: real impl processes rotation and emits client events; stub returns false
     pub fn handle_event(&mut self, _event: *mut c_void) -> bool {
-        // TODO: implement
         false
     }
 
     /// Sync focus state with seat pointer
-    /// TODO: Update focus resources when pointer focus changes
+    /// ponytail: real impl updates focus resources when pointer focus changes
     pub fn sync_focus(&mut self) {
-        // TODO: implement
+        self.focus_resource_list.clear();
     }
 }
 

@@ -17,6 +17,8 @@ unsafe fn raw_serial_str(s: &str) {
     }
 }
 
+/// # Safety
+/// The caller must ensure the COM1 serial port (0x3F8) is accessible.
 unsafe fn raw_serial_hex(val: u64) {
     let mut buf = [0u8; 17];
     buf[16] = b'\n';
@@ -65,6 +67,7 @@ pub struct VbeIoMode {
 fn vbe_read(index: u16) -> u16 {
     let mut idx_port = Port::new(VBE_INDEX_PORT);
     let mut data_port = Port::new(VBE_DATA_PORT);
+    // SAFETY: the I/O port is a valid VBE/VGA hardware register.
     unsafe {
         idx_port.write(index);
         data_port.read()
@@ -74,6 +77,7 @@ fn vbe_read(index: u16) -> u16 {
 fn vbe_write(index: u16, value: u16) {
     let mut idx_port = Port::new(VBE_INDEX_PORT);
     let mut data_port = Port::new(VBE_DATA_PORT);
+    // SAFETY: the I/O port is a valid VBE/VGA hardware register.
     unsafe {
         idx_port.write(index);
         data_port.write(value);
@@ -142,6 +146,7 @@ pub fn set_mode_with_fb(
     }
 
     let version = vbe_read(VBE_DISPI_INDEX_ID);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: set_mode version=");
         raw_serial_hex(version as u64);
@@ -151,6 +156,7 @@ pub fn set_mode_with_fb(
     }
 
     let vram = get_video_memory_bytes();
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: set_mode vram=");
         raw_serial_hex(vram);
@@ -162,23 +168,28 @@ pub fn set_mode_with_fb(
         return Err("Insufficient video memory for requested mode");
     }
 
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: set_mode begin writes\n");
     }
 
     vbe_write(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_DISABLED);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: disabled\n");
     }
     vbe_write(VBE_DISPI_INDEX_XRES, width);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: xres set\n");
     }
     vbe_write(VBE_DISPI_INDEX_YRES, height);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: yres set\n");
     }
     vbe_write(VBE_DISPI_INDEX_BPP, bpp as u16);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: bpp set\n");
     }
@@ -186,6 +197,7 @@ pub fn set_mode_with_fb(
     vbe_write(VBE_DISPI_INDEX_Y_OFFSET, 0);
     vbe_write(VBE_DISPI_INDEX_VIRT_WIDTH, width);
     vbe_write(VBE_DISPI_INDEX_VIRT_HEIGHT, height);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: offsets/virt set\n");
     }
@@ -194,6 +206,7 @@ pub fn set_mode_with_fb(
         VBE_DISPI_INDEX_ENABLE,
         VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED,
     );
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: enabled LFB\n");
     }
@@ -201,6 +214,7 @@ pub fn set_mode_with_fb(
     let verify_xres = vbe_read(VBE_DISPI_INDEX_XRES);
     let verify_yres = vbe_read(VBE_DISPI_INDEX_YRES);
     let verify_bpp = vbe_read(VBE_DISPI_INDEX_BPP);
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: Verified mode\n");
         raw_serial_hex(verify_xres as u64);
@@ -268,6 +282,7 @@ pub fn enable_lfb() {
 
 pub fn init_32bit_desktop(phys_mem_offset: u64) -> Result<VbeIoMode, &'static str> {
     if !detect_vbe() {
+        // SAFETY: COM1 serial port is initialized.
         unsafe {
             raw_serial_str("vbe_io: VBE not detected\n");
         }
@@ -283,6 +298,7 @@ pub fn init_32bit_desktop(phys_mem_offset: u64) -> Result<VbeIoMode, &'static st
     let fb_size = mode.pitch * mode.height as usize;
     let fb_virt = phys_mem_offset + mode.framebuffer_phys;
 
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         raw_serial_str("vbe_io: fb_virt=\n");
         raw_serial_hex(fb_virt);
@@ -296,6 +312,7 @@ pub fn init_32bit_desktop(phys_mem_offset: u64) -> Result<VbeIoMode, &'static st
     // bootloader config, where fb_virt == framebuffer_phys); revisit if the
     // bootloader ever uses a nonzero physical-memory offset.
     if let Err(e) = crate::memory::map_mmio_region(fb_virt as usize, fb_size) {
+        // SAFETY: COM1 serial port is initialized.
         unsafe {
             raw_serial_str("vbe_io: framebuffer map failed: ");
             raw_serial_str(e);
@@ -306,6 +323,7 @@ pub fn init_32bit_desktop(phys_mem_offset: u64) -> Result<VbeIoMode, &'static st
 
     // Verify with a single write now that the region is mapped.
     let test_ptr = fb_virt as *mut u32;
+    // SAFETY: the framebuffer address is a valid mapped video memory region.
     unsafe {
         raw_serial_str("vbe_io: testing fb write...\n");
         core::ptr::write_volatile(test_ptr, 0x00000000);

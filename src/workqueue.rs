@@ -146,8 +146,6 @@ impl Work {
 }
 
 // Work is Send — the func pointer is only called from the worker thread.
-unsafe impl Send for Work {}
-unsafe impl Sync for Work {}
 
 // ── DelayedWork ─────────────────────────────────────────────────────────
 
@@ -184,9 +182,6 @@ impl DelayedWork {
         }
     }
 }
-
-unsafe impl Send for DelayedWork {}
-unsafe impl Sync for DelayedWork {}
 
 // ── Worker ──────────────────────────────────────────────────────────────
 
@@ -436,9 +431,6 @@ impl Workqueue {
         count
     }
 }
-
-unsafe impl Send for Workqueue {}
-unsafe impl Sync for Workqueue {}
 
 // ── System workqueue singletons ──────────────────────────────────────────
 

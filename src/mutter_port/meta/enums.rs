@@ -150,4 +150,69 @@ pub enum MetaButtonFunction {
     Last = 14,
 }
 
-// TODO: Add remaining enums from meta-enums.h
+/// Window state flags (from meta-window.h).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaWindowState {
+    Normal = 0,
+    Withdrawn = 1,
+    Iconic = 2,
+    Fullscreen = 3,
+    Maximized = 4,
+    TiledLeft = 5,
+    TiledRight = 6,
+    Tiled = 7,
+}
+
+/// Display tile mode for edge tiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaTileMode {
+    None = 0,
+    Left = 1,
+    Right = 2,
+    Top = 3,
+    Bottom = 4,
+}
+
+/// Monitor switch config type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaMonitorSwitchConfigType {
+    None = 0,
+    All = 1,
+    External = 2,
+    Internal = 3,
+}
+
+/// Keyboard accessibility features.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaKeyboardAccessibilityFlags {
+    SlowKeys = 1 << 0,
+    StickyKeys = 1 << 1,
+    MouseKeys = 1 << 2,
+    BounceKeys = 1 << 3,
+    ToggleKeys = 1 << 4,
+}
+
+/// Cursor type enumeration (mirrors ClutterCursorType).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaCursor {
+    Default = 0,
+    Pointer = 1,
+    Move = 2,
+    ResizeUp = 3,
+    ResizeDown = 4,
+    ResizeLeft = 5,
+    ResizeRight = 6,
+    ResizeUpLeft = 7,
+    ResizeUpRight = 8,
+    ResizeDownLeft = 9,
+    ResizeDownRight = 10,
+    Text = 11,
+    Wait = 12,
+    NotAllowed = 13,
+    Grab = 14,
+    Grabbing = 15,
+    Hidden = 16,
+}

@@ -7,7 +7,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -47,14 +47,14 @@ fn fixed_enabled() -> bool {
 }
 
 fn fixed_rate_fn() -> u64 {
-    unsafe { FIXED_CLOCK_RATE }
+    FIXED_CLOCK_RATE.load(Ordering::Relaxed)
 }
 
-static mut FIXED_CLOCK_RATE: u64 = 25_000_000; // 25 MHz default
+static FIXED_CLOCK_RATE: AtomicU64 = AtomicU64::new(25_000_000); // 25 MHz default
 
 fn fixed_recalc(parent_rate: u64) -> u64 {
     let _ = parent_rate;
-    unsafe { FIXED_CLOCK_RATE }
+    FIXED_CLOCK_RATE.load(Ordering::Relaxed)
 }
 
 fn fixed_name() -> &'static str {
@@ -75,12 +75,12 @@ pub static FIXED_CLK_OPS: ClkOps = ClkOps {
 
 // ── CPU PLL clock (derived from fixed clock) ────────────────────────────
 
-static mut CPU_PLL_RATE: u64 = 3_200_000_000; // 3.2 GHz
+static CPU_PLL_RATE: AtomicU64 = AtomicU64::new(3_200_000_000); // 3.2 GHz
 
 fn cpu_pll_recalc(parent_rate: u64) -> u64 {
     // PLL multiplies parent by a fixed factor
     let _ = parent_rate;
-    unsafe { CPU_PLL_RATE }
+    CPU_PLL_RATE.load(Ordering::Relaxed)
 }
 
 fn cpu_pll_round(rate: u64, _parent_rate: u64) -> u64 {
@@ -90,9 +90,7 @@ fn cpu_pll_round(rate: u64, _parent_rate: u64) -> u64 {
 
 fn cpu_pll_set_rate(rate: u64, _parent_rate: u64) -> Result<u64, &'static str> {
     let rounded = cpu_pll_round(rate, 0);
-    unsafe {
-        CPU_PLL_RATE = rounded;
-    }
+    CPU_PLL_RATE.store(rounded, Ordering::Relaxed);
     Ok(rounded)
 }
 
@@ -114,10 +112,10 @@ pub static CPU_PLL_OPS: ClkOps = ClkOps {
 
 // ── Peripheral clock (gatable divider from CPU PLL) ─────────────────────
 
-static mut PERIPH_DIVIDER: u32 = 8;
+static PERIPH_DIVIDER: AtomicU32 = AtomicU32::new(8);
 
 fn periph_recalc(parent_rate: u64) -> u64 {
-    let div = unsafe { PERIPH_DIVIDER } as u64;
+    let div = PERIPH_DIVIDER.load(Ordering::Relaxed) as u64;
     if div == 0 {
         parent_rate
     } else {
@@ -140,22 +138,22 @@ fn periph_set_rate(rate: u64, parent_rate: u64) -> Result<u64, &'static str> {
     }
     let div = (parent_rate + rate / 2) / rate;
     let div = div.clamp(1, 256) as u32;
-    unsafe {
-        PERIPH_DIVIDER = div;
-    }
+    PERIPH_DIVIDER.store(div, Ordering::Relaxed);
     Ok(parent_rate / div as u64)
 }
 
 fn periph_enable() -> Result<(), &'static str> {
+    PERIPH_ENABLED.store(true, Ordering::Relaxed);
     Ok(())
 }
 fn periph_disable() -> Result<(), &'static str> {
+    PERIPH_ENABLED.store(false, Ordering::Relaxed);
     Ok(())
 }
 
-static mut PERIPH_ENABLED: bool = false;
+static PERIPH_ENABLED: AtomicBool = AtomicBool::new(false);
 fn periph_is_enabled() -> bool {
-    unsafe { PERIPH_ENABLED }
+    PERIPH_ENABLED.load(Ordering::Relaxed)
 }
 
 fn periph_name() -> &'static str {

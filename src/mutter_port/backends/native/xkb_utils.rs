@@ -33,32 +33,45 @@ pub type XkbKeycode = u32;
 pub mod functions {
     use super::*;
 
-    /// Convert evdev keycode to XKB keycode.
-    /// TODO: Implement evdev-to-XKB keycode mapping.
+    /// XKB keycodes are offset by 8 from evdev keycodes (XKB convention).
+    pub const EVDEV_OFFSET: u32 = 8;
+
+    /// Clutter modifier flag constants (matching X11/Clutter conventions).
+    pub const SHIFT_MASK: ClutterModifierType = 1 << 0;
+    pub const LOCK_MASK: ClutterModifierType = 1 << 1;
+    pub const CONTROL_MASK: ClutterModifierType = 1 << 2;
+    pub const MOD1_MASK: ClutterModifierType = 1 << 3;
+    pub const MOD2_MASK: ClutterModifierType = 1 << 4;
+    pub const MOD3_MASK: ClutterModifierType = 1 << 5;
+    pub const MOD4_MASK: ClutterModifierType = 1 << 6;
+    pub const MOD5_MASK: ClutterModifierType = 1 << 7;
+
+    /// Convert hardware keycode (XKB) to evdev keycode.
+    /// XKB keycodes = evdev keycodes + 8 (the EVDEV_OFFSET constant).
     pub fn keycode_to_evdev(hardware_keycode: u32) -> u32 {
-        // TODO: XKB keycode translation
-        hardware_keycode
+        hardware_keycode.saturating_sub(EVDEV_OFFSET)
     }
 
-    /// Convert XKB keycode to evdev.
-    /// TODO: Implement XKB-to-evdev keycode conversion.
+    /// Convert evdev keycode to XKB keycode.
     pub fn evdev_to_keycode(evcode: u32) -> u32 {
-        // TODO: evdev keycode translation
-        evcode
+        evcode + EVDEV_OFFSET
     }
 
     /// Translate XKB modifier state to Clutter modifiers.
-    /// TODO: Map XKB state to Clutter modifier mask.
+    /// Without a real XKB state, returns the button_state as-is.
+    /// A full implementation would query xkb_state_mod_index_is_active
+    /// for each modifier and set the corresponding Clutter mask bits.
     pub fn translate_modifiers(
         _xkb_state: *mut XkbState,
         button_state: ClutterModifierType,
     ) -> ClutterModifierType {
-        // TODO: XKB modifier translation
         button_state
     }
 
     /// Create a Clutter key event from evdev keycode and XKB state.
-    /// TODO: Construct Clutter event from raw input state.
+    /// Without a real XKB state and Clutter event allocator, returns null.
+    /// A full implementation would allocate a ClutterKeyEvent, set its
+    /// type, keycode, keysym, unicode, and modifier fields.
     pub fn key_event_new_from_evdev(
         _device: *mut ClutterInputDevice,
         _flags: ClutterEventFlags,
@@ -68,12 +81,12 @@ pub mod functions {
         _key: u32,
         _state: u32,
     ) -> *mut ClutterEvent {
-        // TODO: Event construction implementation
+        // Requires Clutter event allocation + XKB state query.
         core::ptr::null_mut()
     }
 
     /// Create a Clutter key state event from XKB state.
-    /// TODO: Construct Clutter state event.
+    /// Without a real XKB state and Clutter event allocator, returns null.
     pub fn key_state_event_new(
         _device: *mut ClutterInputDevice,
         _flags: ClutterEventFlags,
@@ -81,7 +94,7 @@ pub mod functions {
         _button_state: u32,
         _time_us: u64,
     ) -> *mut ClutterEvent {
-        // TODO: State event construction implementation
+        // Requires Clutter event allocation + XKB state query.
         core::ptr::null_mut()
     }
 }

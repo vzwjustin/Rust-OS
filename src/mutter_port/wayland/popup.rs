@@ -53,7 +53,7 @@ impl PopupSurface {
     /// STUB: Reposition popup. Requires anchor rect, gravity, constraint
     /// adjustment, and screen boundary checking.
     pub fn reposition(&mut self) {
-        // TODO: implement popup repositioning logic
+        // ponytail: real implementation requires anchor/gravity/constraint calculation
     }
 
     /// STUB: Grab keyboard/pointer input. Requires seat integration and
@@ -95,7 +95,7 @@ impl PopupGrab {
     /// STUB: Handle input events during popup grab. Requires event
     /// routing and pointer tracking.
     pub fn handle_event(&self) {
-        // TODO: implement event handling during popup grab
+        // ponytail: real implementation requires event routing to seat and pointer tracking
     }
 }
 

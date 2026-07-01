@@ -11,6 +11,7 @@ use super::process_ops;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
 use crate::drivers::tty::{self, pty};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process;
 
 /// Re-export termios types from the TTY driver layer.
@@ -71,9 +72,7 @@ fn write_slave_name(id: u32, buf: *mut u8, buflen: usize) -> LinuxResult<()> {
     if buflen < name.len() {
         return Err(LinuxError::ERANGE);
     }
-    unsafe {
-        core::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
-    }
+    copy_bytes_to_user(buf, name.as_bytes())?;
     Ok(())
 }
 
@@ -151,6 +150,42 @@ fn inc_ops() {
     TTY_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+fn copy_bytes_to_user(dst: *mut u8, bytes: &[u8]) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
+}
+
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
+}
+
+fn with_termios_mut<R>(
+    termios_p: *mut Termios,
+    f: impl FnOnce(&mut Termios) -> R,
+) -> LinuxResult<R> {
+    if termios_p.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let mut termios: Termios = copy_struct_from_user(termios_p)?;
+    let result = f(&mut termios);
+    copy_struct_to_user(termios_p, &termios)?;
+    Ok(result)
+}
+
+fn with_termios<R>(termios_p: *const Termios, f: impl FnOnce(&Termios) -> R) -> LinuxResult<R> {
+    if termios_p.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let termios: Termios = copy_struct_from_user(termios_p)?;
+    Ok(f(&termios))
+}
+
 // ============================================================================
 // Terminal Control Operations
 // ============================================================================
@@ -168,9 +203,7 @@ pub fn tcgetattr(fd: Fd, termios_p: *mut Termios) -> LinuxResult<i32> {
     }
 
     let termios = termios_for_fd(fd)?;
-    unsafe {
-        *termios_p = termios;
-    }
+    copy_struct_to_user(termios_p, &termios)?;
 
     Ok(0)
 }
@@ -193,19 +226,19 @@ pub fn tcsetattr(fd: Fd, optional_actions: i32, termios_p: *const Termios) -> Li
 
     match optional_actions {
         TCSANOW => {
-            let termios = unsafe { *termios_p };
+            let termios: Termios = copy_struct_from_user(termios_p)?;
             set_termios_for_fd(fd, termios)?;
             Ok(0)
         }
         TCSADRAIN => {
             tcdrain(fd)?;
-            let termios = unsafe { *termios_p };
+            let termios: Termios = copy_struct_from_user(termios_p)?;
             set_termios_for_fd(fd, termios)?;
             Ok(0)
         }
         TCSAFLUSH => {
             tcflush(fd, 2)?;
-            let termios = unsafe { *termios_p };
+            let termios: Termios = copy_struct_from_user(termios_p)?;
             set_termios_for_fd(fd, termios)?;
             Ok(0)
         }
@@ -296,7 +329,7 @@ pub fn cfgetispeed(termios_p: *const Termios) -> u32 {
         return 0;
     }
 
-    unsafe { (*termios_p).c_ispeed }
+    with_termios(termios_p, |termios| termios.c_ispeed).unwrap_or(0)
 }
 
 /// cfgetospeed - get output baud rate
@@ -307,7 +340,7 @@ pub fn cfgetospeed(termios_p: *const Termios) -> u32 {
         return 0;
     }
 
-    unsafe { (*termios_p).c_ospeed }
+    with_termios(termios_p, |termios| termios.c_ospeed).unwrap_or(0)
 }
 
 /// cfsetispeed - set input baud rate
@@ -318,10 +351,7 @@ pub fn cfsetispeed(termios_p: *mut Termios, speed: u32) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    unsafe {
-        (*termios_p).c_ispeed = speed;
-    }
-
+    with_termios_mut(termios_p, |termios| termios.c_ispeed = speed)?;
     Ok(0)
 }
 
@@ -333,10 +363,7 @@ pub fn cfsetospeed(termios_p: *mut Termios, speed: u32) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    unsafe {
-        (*termios_p).c_ospeed = speed;
-    }
-
+    with_termios_mut(termios_p, |termios| termios.c_ospeed = speed)?;
     Ok(0)
 }
 
@@ -435,7 +462,7 @@ pub fn openpty(
     let (pty_id, master_fd, slave_fd) = pty::create_pair()?;
 
     if !termp.is_null() {
-        let termios = unsafe { *termp };
+        let termios: Termios = copy_struct_from_user(termp)?;
         pty::set_termios(pty_id, true, termios)?;
         pty::set_termios(pty_id, false, termios)?;
         pty::set_granted(pty_id)?;
@@ -446,14 +473,12 @@ pub fn openpty(
     }
 
     if !winp.is_null() {
-        let winsize = unsafe { *winp };
+        let winsize: WinSize = copy_struct_from_user(winp)?;
         pty::set_winsize(pty_id, winsize)?;
     }
 
-    unsafe {
-        *amaster = master_fd;
-        *aslave = slave_fd;
-    }
+    copy_struct_to_user(amaster, &master_fd)?;
+    copy_struct_to_user(aslave, &slave_fd)?;
 
     if !name.is_null() {
         write_slave_name(pty_id, name, 256)?;
@@ -481,9 +506,7 @@ pub fn forkpty(
 
     match process_ops::fork() {
         Ok(child_pid) => {
-            unsafe {
-                *amaster = master_fd;
-            }
+            copy_struct_to_user(amaster, &master_fd)?;
             let _ = slave_fd;
             Ok(child_pid)
         }
@@ -588,9 +611,7 @@ pub fn ttyname(fd: Fd, buf: *mut u8, buflen: usize) -> LinuxResult<i32> {
             if buflen < name.len() {
                 return Err(LinuxError::ERANGE);
             }
-            unsafe {
-                core::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
-            }
+            copy_bytes_to_user(buf, name)?;
             return Ok(0);
         }
         return write_slave_name(pty_id, buf, buflen).map(|_| 0);
@@ -601,9 +622,7 @@ pub fn ttyname(fd: Fd, buf: *mut u8, buflen: usize) -> LinuxResult<i32> {
         if buflen < name.len() {
             return Err(LinuxError::ERANGE);
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
-        }
+        copy_bytes_to_user(buf, name)?;
         return Ok(0);
     }
 
@@ -617,10 +636,11 @@ pub fn ctermid(buf: *mut u8) -> *mut u8 {
     let name = b"/dev/tty\0";
 
     if !buf.is_null() {
-        unsafe {
-            core::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
+        if copy_bytes_to_user(buf, name).is_ok() {
+            buf
+        } else {
+            core::ptr::null_mut()
         }
-        buf
     } else {
         name.as_ptr() as *mut u8
     }

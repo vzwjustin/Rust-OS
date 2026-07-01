@@ -133,8 +133,10 @@ impl WaylandOutput {
 
     /// STUB: Set output mode. Requires CRTC reprogramming and
     /// client notification via wl_output.mode events.
-    pub fn set_mode(&mut self, _mode_index: usize) {
-        // TODO: implement mode switching
+    pub fn set_mode(&mut self, mode_index: usize) {
+        if mode_index < self.modes.len() {
+            self.current_mode_index = mode_index;
+        }
     }
 
     /// STUB: Get DPI calculations. Requires physical size and

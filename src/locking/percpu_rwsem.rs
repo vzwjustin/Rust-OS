@@ -63,6 +63,8 @@ pub struct PercpuRwSemaphore {
     writer_busy: AtomicBool,
 }
 
+// SAFETY: PercpuRwSemaphore uses only atomics and PerCpu (which is itself
+// Send+Sync). All interior mutability goes through atomic operations.
 unsafe impl Send for PercpuRwSemaphore {}
 unsafe impl Sync for PercpuRwSemaphore {}
 

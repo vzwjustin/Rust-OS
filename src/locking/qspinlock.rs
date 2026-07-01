@@ -92,9 +92,6 @@ pub struct QSpinLock {
     tail: AtomicU32,
 }
 
-unsafe impl Send for QSpinLock {}
-unsafe impl Sync for QSpinLock {}
-
 impl QSpinLock {
     /// Create a new, unlocked queued spinlock.
     pub const fn new() -> Self {

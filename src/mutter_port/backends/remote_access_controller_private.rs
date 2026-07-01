@@ -9,25 +9,34 @@ use super::remote_access_controller::{MetaRemoteAccessController, MetaRemoteAcce
 
 impl MetaRemoteAccessHandle {
     /// Mark this handle as stopped and trigger cleanup.
+    /// Sets the `has_stopped` flag to prevent double-stop.
     pub fn notify_stopped(&mut self) {
-        // TODO: Call stop callback, emit signals
+        if !self.has_stopped {
+            self.has_stopped = true;
+            // A full implementation would call the stop callback and
+            // emit the "stopped" signal to D-Bus clients.
+        }
     }
 
     /// Set whether animations should be disabled while this session is active.
-    pub fn set_disable_animations(&mut self, _disable: bool) {
-        // TODO: Update animation disable flag, notify display server
+    pub fn set_disable_animations(&mut self, disable: bool) {
+        self.disable_animations = disable;
+        // A full implementation would notify the display server to
+        // suspend or resume Clutter animations.
     }
 }
 
 impl MetaRemoteAccessController {
     /// Add a session manager to track new sessions created via D-Bus.
+    /// Without D-Bus transport, this is a no-op placeholder.
     pub fn add_session_manager(&mut self, _session_manager: &()) {
-        // TODO: Register D-Bus interface handlers, connect signals
+        // D-Bus session manager registration requires a D-Bus transport
+        // layer. The session_managers list is used for handle tracking.
     }
 
-    /// Register a new handle with the controller (internal use).
+    /// Register a new handle with the controller.
+    /// Adds the handle to the active list.
     pub fn register_handle(&mut self, handle: MetaRemoteAccessHandle) {
-        // TODO: Add to active_handles, emit new-handle signal
         self.notify_new_handle(handle);
     }
 }

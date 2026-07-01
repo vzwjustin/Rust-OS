@@ -118,26 +118,44 @@ fn is_hda_controller(dev: &PciDevice) -> bool {
 }
 
 #[inline]
+/// # Safety
+/// The caller must ensure `base + off` is a valid, mapped MMIO address
+/// for an HDA device register, aligned to 4 bytes.
 unsafe fn mmio_r32(base: usize, off: usize) -> u32 {
     ptr::read_volatile((base + off) as *const u32)
 }
 #[inline]
+/// # Safety
+/// The caller must ensure `base + off` is a valid, mapped MMIO address
+/// for an HDA device register, aligned to 4 bytes.
 unsafe fn mmio_w32(base: usize, off: usize, val: u32) {
     ptr::write_volatile((base + off) as *mut u32, val);
 }
 #[inline]
+/// # Safety
+/// The caller must ensure `base + off` is a valid, mapped MMIO address
+/// for an HDA device register, aligned to 2 bytes.
 unsafe fn mmio_r16(base: usize, off: usize) -> u16 {
     ptr::read_volatile((base + off) as *const u16)
 }
 #[inline]
+/// # Safety
+/// The caller must ensure `base + off` is a valid, mapped MMIO address
+/// for an HDA device register, aligned to 2 bytes.
 unsafe fn mmio_w16(base: usize, off: usize, val: u16) {
     ptr::write_volatile((base + off) as *mut u16, val);
 }
 #[inline]
+/// # Safety
+/// The caller must ensure `base + off` is a valid, mapped MMIO address
+/// for an HDA device register.
 unsafe fn mmio_r8(base: usize, off: usize) -> u8 {
     ptr::read_volatile((base + off) as *const u8)
 }
 #[inline]
+/// # Safety
+/// The caller must ensure `base + off` is a valid, mapped MMIO address
+/// for an HDA device register.
 unsafe fn mmio_w8(base: usize, off: usize, val: u8) {
     ptr::write_volatile((base + off) as *mut u8, val);
 }
@@ -186,8 +204,10 @@ struct CommandRing {
 
 impl CommandRing {
     fn new(mmio: usize) -> Result<Self, &'static str> {
-        let corb = DmaBuffer::allocate(CORB_ENTRIES * 4, 128).map_err(|_| "CORB DMA alloc failed")?;
-        let rirb = DmaBuffer::allocate(RIRB_ENTRIES * 8, 128).map_err(|_| "RIRB DMA alloc failed")?;
+        let corb =
+            DmaBuffer::allocate(CORB_ENTRIES * 4, 128).map_err(|_| "CORB DMA alloc failed")?;
+        let rirb =
+            DmaBuffer::allocate(RIRB_ENTRIES * 8, 128).map_err(|_| "RIRB DMA alloc failed")?;
         Ok(Self {
             mmio,
             corb,
@@ -203,9 +223,17 @@ impl CommandRing {
         mmio_w8(self.mmio, REG_RIRBCTL, 0);
 
         mmio_w32(self.mmio, REG_CORBLBASE, self.corb.physical_addr() as u32);
-        mmio_w32(self.mmio, REG_CORBUBASE, (self.corb.physical_addr() >> 32) as u32);
+        mmio_w32(
+            self.mmio,
+            REG_CORBUBASE,
+            (self.corb.physical_addr() >> 32) as u32,
+        );
         mmio_w32(self.mmio, REG_RIRBLBASE, self.rirb.physical_addr() as u32);
-        mmio_w32(self.mmio, REG_RIRBUBASE, (self.rirb.physical_addr() >> 32) as u32);
+        mmio_w32(
+            self.mmio,
+            REG_RIRBUBASE,
+            (self.rirb.physical_addr() >> 32) as u32,
+        );
 
         // Ring size: 0 => 2 entries, 1 => 16, 2 => 256. We allocated 256.
         mmio_w8(self.mmio, REG_CORBSIZE, 0x02);
@@ -274,6 +302,9 @@ struct CodecGraph {
     pin: Widget,
 }
 
+/// # Safety
+/// The caller must ensure `cad` is a valid codec address and the HDA
+/// controller is initialized and ready for codec discovery commands.
 unsafe fn discover_codec(ring: &mut CommandRing, cad: u8) -> Result<CodecGraph, &'static str> {
     // Root node (nid 0) sub-node range -> function groups.
     let root_subnodes = ring.get_param(cad, 0, PARAM_SUB_NODE_COUNT)?;
@@ -364,7 +395,8 @@ impl PlaybackStream {
         params: crate::sound::PcmHwParams,
     ) -> Result<Self, &'static str> {
         let bdl = DmaBuffer::allocate(BDL_PERIODS * 16, 128).map_err(|_| "BDL DMA alloc failed")?;
-        let ring_buf = DmaBuffer::allocate(RING_BYTES, 128).map_err(|_| "playback DMA ring alloc failed")?;
+        let ring_buf =
+            DmaBuffer::allocate(RING_BYTES, 128).map_err(|_| "playback DMA ring alloc failed")?;
 
         // Fill BDL: BDL_PERIODS entries of {addr:u64, length:u32, flags:u32(IOC bit0)}.
         let bdl_ptr = bdl.virtual_addr() as *mut u32;
@@ -415,9 +447,14 @@ impl PlaybackStream {
     /// never let write_pos catch up to LPIB exactly (which would be
     /// indistinguishable from "buffer empty").
     fn free_space(&self) -> usize {
+        // SAFETY: the MMIO address is a valid mapped HDA controller register.
         let lpib = unsafe { mmio_r32(self.mmio, self.sd_base + SD_LPIB) } as usize % RING_BYTES;
         let wp = self.write_pos.load(Ordering::Relaxed) % RING_BYTES;
-        let used = if wp >= lpib { wp - lpib } else { RING_BYTES - lpib + wp };
+        let used = if wp >= lpib {
+            wp - lpib
+        } else {
+            RING_BYTES - lpib + wp
+        };
         RING_BYTES.saturating_sub(used).saturating_sub(1)
     }
 
@@ -433,6 +470,7 @@ impl PlaybackStream {
         let dst = self.ring_buf.virtual_addr();
         let wp = self.write_pos.load(Ordering::Relaxed) % RING_BYTES;
         let first = core::cmp::min(n, RING_BYTES - wp);
+        // SAFETY: src and dst are valid DMA buffers of equal size, non-overlapping.
         unsafe {
             ptr::copy_nonoverlapping(buf.as_ptr(), dst.add(wp), first);
             if n > first {
@@ -456,6 +494,9 @@ pub struct HdaController {
     playback: Option<PlaybackStream>,
 }
 
+// SAFETY: HdaController wraps an MMIO base address (usize) and a command
+// ring. Access is serialized through the Mutex<HdaController> handed out
+// by the public API. The MMIO address is a fixed hardware mapping.
 unsafe impl Send for HdaController {}
 
 /// Handle returned by `probe_and_init()` to the PCM core so it can bind a
@@ -488,7 +529,10 @@ impl HdaCardHandle {
 pub fn probe_and_init() -> Result<Option<HdaCardHandle>, &'static str> {
     let candidate = {
         let bus = pci_bus().lock();
-        bus.get_devices().iter().find(|d| is_hda_controller(d)).cloned()
+        bus.get_devices()
+            .iter()
+            .find(|d| is_hda_controller(d))
+            .cloned()
     };
     let Some(dev) = candidate else {
         return Ok(None);
@@ -514,6 +558,7 @@ pub fn probe_and_init() -> Result<Option<HdaCardHandle>, &'static str> {
     // input/output/bidir streams.
     let mmio = crate::memory::map_mmio_region(base_phys, 0x4000)?;
 
+    // SAFETY: the MMIO address is a valid mapped HDA controller register.
     unsafe {
         // Controller reset: clear then set CRST, per HDA spec 4.3.
         mmio_w32(mmio, REG_GCTL, 0);

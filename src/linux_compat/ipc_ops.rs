@@ -112,28 +112,29 @@ fn read_c_string(ptr: *const u8, max_len: usize) -> LinuxResult<String> {
     UserSpaceMemory::copy_string_from_user(ptr as u64, max_len).map_err(|_| LinuxError::EFAULT)
 }
 
-fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
-    if dst.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
 }
 
-fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
-    if src.is_null() {
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
+}
+
+fn user_array_addr<T>(base: *const T, index: usize) -> LinuxResult<u64> {
+    if base.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let mut value = core::mem::MaybeUninit::<T>::uninit();
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
-    Ok(unsafe { value.assume_init() })
+    let offset = index
+        .checked_mul(core::mem::size_of::<T>())
+        .ok_or(LinuxError::EINVAL)?;
+    (base as u64)
+        .checked_add(offset as u64)
+        .ok_or(LinuxError::EINVAL)
+}
+
+fn copy_struct_array_from_user<T: Copy>(base: *const T, index: usize) -> LinuxResult<T> {
+    copy_struct_from_user(user_array_addr(base, index)? as *const T)
 }
 
 fn normalize_mq_name(name: *const u8) -> LinuxResult<String> {
@@ -153,7 +154,7 @@ fn mq_attr_from_user(attr: *const MqAttr, oflag: i32) -> LinuxResult<MqAttr> {
             mq_curmsgs: 0,
         }
     } else {
-        unsafe { *attr }
+        copy_struct_from_user(attr)?
     };
 
     if out.mq_maxmsg <= 0
@@ -172,10 +173,7 @@ fn copy_mq_attr_to_user(attr: *mut MqAttr, value: MqAttr) -> LinuxResult<()> {
     if attr.is_null() {
         return Ok(());
     }
-    unsafe {
-        *attr = value;
-    }
-    Ok(())
+    copy_struct_to_user(attr, &value)
 }
 
 /// Increment operation counter
@@ -400,19 +398,21 @@ pub fn msgsnd(msqid: MsqId, msgp: *const u8, msgsz: usize, _msgflg: i32) -> Linu
     }
 
     // SysV msgbuf starts with long mtype. This kernel target is 64-bit.
-    // Use read_unaligned in case userspace provides a misaligned pointer.
-    let msg_type_long = unsafe { (msgp as *const i64).read_unaligned() };
+    // Copy through the user access helper so misaligned user pointers do not
+    // become raw kernel dereferences.
+    let msg_type_long: i64 = copy_struct_from_user(msgp as *const i64)?;
     if msg_type_long <= 0 || msg_type_long > u32::MAX as i64 {
         return Err(LinuxError::EINVAL);
     }
     let msg_type = msg_type_long as u32;
-    let data_ptr = unsafe { msgp.add(core::mem::size_of::<i64>()) };
+    let data_addr = (msgp as u64)
+        .checked_add(core::mem::size_of::<i64>() as u64)
+        .ok_or(LinuxError::EFAULT)?;
 
     // Copy message data
-    let mut data = Vec::with_capacity(msgsz);
-    for i in 0..msgsz {
-        data.push(unsafe { *data_ptr.add(i) });
-    }
+    let mut data = Vec::new();
+    data.resize(msgsz, 0);
+    UserSpaceMemory::copy_from_user(data_addr, &mut data).map_err(|_| LinuxError::EFAULT)?;
 
     let ipc_manager = get_ipc_manager();
     let sender_pid = current_pid();
@@ -452,8 +452,10 @@ pub fn msgrcv(
             copy_struct_to_user(msgp as *mut i64, &msg_type)?;
 
             // Write message data
-            let data_ptr = unsafe { msgp.add(core::mem::size_of::<i64>()) };
-            UserSpaceMemory::copy_to_user(data_ptr as u64, &message.data[..copy_size])
+            let data_addr = (msgp as u64)
+                .checked_add(core::mem::size_of::<i64>() as u64)
+                .ok_or(LinuxError::EFAULT)?;
+            UserSpaceMemory::copy_to_user(data_addr, &message.data[..copy_size])
                 .map_err(|_| LinuxError::EFAULT)?;
 
             Ok(copy_size as isize)
@@ -591,6 +593,8 @@ struct SemBuf {
 
 /// IPC_NOWAIT flag for semop
 const SEM_IPC_NOWAIT: i16 = 0o4000;
+const SEM_OP_INDEX_OUT_OF_RANGE: usize = usize::MAX;
+const SEM_OP_VALUE_OVERFLOW: usize = usize::MAX - 1;
 
 /// Check if all operations in a semop batch can proceed without blocking.
 /// Returns Ok(()) if all can proceed, or Err(index) indicating the first
@@ -602,13 +606,17 @@ fn try_semops(sem_set: &SemaphoreSet, ops: &[SemBuf]) -> Result<(), usize> {
     for (i, op) in ops.iter().enumerate() {
         let sem_num = op.sem_num as usize;
         if sem_num >= temp.len() {
-            return Err(usize::MAX); // EFBIG indicator
+            return Err(SEM_OP_INDEX_OUT_OF_RANGE);
         }
 
         if op.sem_op > 0 {
-            temp[sem_num] += op.sem_op as i32;
+            temp[sem_num] = temp[sem_num]
+                .checked_add(op.sem_op as i32)
+                .ok_or(SEM_OP_VALUE_OVERFLOW)?;
         } else if op.sem_op < 0 {
-            let new_val = temp[sem_num] + op.sem_op as i32;
+            let new_val = temp[sem_num]
+                .checked_add(op.sem_op as i32)
+                .ok_or(SEM_OP_VALUE_OVERFLOW)?;
             if new_val < 0 {
                 return Err(i); // Would block at operation i
             }
@@ -626,13 +634,17 @@ fn try_semops(sem_set: &SemaphoreSet, ops: &[SemBuf]) -> Result<(), usize> {
 
 /// Apply semaphore operations (assumes they won't block — caller verified with try_semops).
 /// Wakes any waiters that can now proceed after the operations are applied.
-fn apply_semops(sem_set: &mut SemaphoreSet, ops: &[SemBuf]) {
+fn apply_semops(sem_set: &mut SemaphoreSet, ops: &[SemBuf]) -> LinuxResult<()> {
     for op in ops {
         let sem_num = op.sem_num as usize;
         if op.sem_op > 0 {
-            sem_set.semaphores[sem_num] += op.sem_op as i32;
+            sem_set.semaphores[sem_num] = sem_set.semaphores[sem_num]
+                .checked_add(op.sem_op as i32)
+                .ok_or(LinuxError::ERANGE)?;
         } else if op.sem_op < 0 {
-            sem_set.semaphores[sem_num] += op.sem_op as i32;
+            sem_set.semaphores[sem_num] = sem_set.semaphores[sem_num]
+                .checked_add(op.sem_op as i32)
+                .ok_or(LinuxError::ERANGE)?;
         }
         // sem_op == 0: wait-for-zero is a no-op on the value
     }
@@ -642,7 +654,10 @@ fn apply_semops(sem_set: &mut SemaphoreSet, ops: &[SemBuf]) {
     sem_set.waiters.retain(|entry| {
         let sem_num = entry.sem_num as usize;
         let can_proceed = if entry.sem_op < 0 {
-            (sem_set.semaphores[sem_num] + entry.sem_op as i32) >= 0
+            sem_set.semaphores[sem_num]
+                .checked_add(entry.sem_op as i32)
+                .map(|value| value >= 0)
+                .unwrap_or(false)
         } else if entry.sem_op == 0 {
             sem_set.semaphores[sem_num] == 0
         } else {
@@ -660,6 +675,8 @@ fn apply_semops(sem_set: &mut SemaphoreSet, ops: &[SemBuf]) {
     for pid in to_wake {
         let _ = crate::process::get_process_manager().unblock_process(pid);
     }
+
+    Ok(())
 }
 
 /// semop - semaphore operations
@@ -678,7 +695,7 @@ pub fn semop(semid: SemId, sops: *mut u8, nsops: usize) -> LinuxResult<i32> {
     let sembuf_ptr = sops as *const SemBuf;
     let mut operations: Vec<SemBuf> = Vec::with_capacity(nsops);
     for i in 0..nsops {
-        operations.push(copy_struct_from_user(unsafe { sembuf_ptr.add(i) })?);
+        operations.push(copy_struct_array_from_user(sembuf_ptr, i)?);
     }
 
     // Check for IPC_NOWAIT on any operation
@@ -695,13 +712,16 @@ pub fn semop(semid: SemId, sops: *mut u8, nsops: usize) -> LinuxResult<i32> {
         // Try to perform all operations atomically
         match try_semops(sem_set, &operations) {
             Ok(()) => {
-                apply_semops(sem_set, &operations);
+                apply_semops(sem_set, &operations)?;
                 drop(sem_table);
                 return Ok(0);
             }
-            Err(usize::MAX) => {
+            Err(SEM_OP_INDEX_OUT_OF_RANGE) => {
                 // EFBIG — semaphore number out of range
                 return Err(LinuxError::EFBIG);
+            }
+            Err(SEM_OP_VALUE_OVERFLOW) => {
+                return Err(LinuxError::ERANGE);
             }
             Err(block_idx) => {
                 // Operation block_idx would block
@@ -845,9 +865,15 @@ pub fn semtimedop(
 
     // Parse the timeout if provided (TimeSpec: seconds + nanoseconds)
     let deadline_ns = if !timeout.is_null() {
-        let ts = unsafe { &*(timeout as *const crate::linux_compat::types::TimeSpec) };
-        let now_ns = crate::time::uptime_ns();
-        Some(now_ns + (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64))
+        let ts = copy_struct_from_user(timeout as *const crate::linux_compat::types::TimeSpec)?;
+        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+            return Err(LinuxError::EINVAL);
+        }
+        let timeout_ns = (ts.tv_sec as u64)
+            .checked_mul(1_000_000_000)
+            .and_then(|sec_ns| sec_ns.checked_add(ts.tv_nsec as u64))
+            .ok_or(LinuxError::EINVAL)?;
+        Some(crate::time::uptime_ns().saturating_add(timeout_ns))
     } else {
         None
     };
@@ -856,7 +882,7 @@ pub fn semtimedop(
     let sembuf_ptr = sops as *const SemBuf;
     let mut operations: Vec<SemBuf> = Vec::with_capacity(nsops);
     for i in 0..nsops {
-        operations.push(copy_struct_from_user(unsafe { sembuf_ptr.add(i) })?);
+        operations.push(copy_struct_array_from_user(sembuf_ptr, i)?);
     }
 
     let nowait = operations.iter().any(|op| op.sem_flg & SEM_IPC_NOWAIT != 0);
@@ -877,12 +903,15 @@ pub fn semtimedop(
 
         match try_semops(sem_set, &operations) {
             Ok(()) => {
-                apply_semops(sem_set, &operations);
+                apply_semops(sem_set, &operations)?;
                 drop(sem_table);
                 return Ok(0);
             }
-            Err(usize::MAX) => {
+            Err(SEM_OP_INDEX_OUT_OF_RANGE) => {
                 return Err(LinuxError::EFBIG);
+            }
+            Err(SEM_OP_VALUE_OVERFLOW) => {
+                return Err(LinuxError::ERANGE);
             }
             Err(block_idx) => {
                 if nowait {
@@ -1173,10 +1202,9 @@ pub fn mq_timedsend(
         return Err(LinuxError::EAGAIN);
     }
 
-    let mut data = Vec::with_capacity(msg_len);
-    for i in 0..msg_len {
-        data.push(unsafe { *msg_ptr.add(i) });
-    }
+    let mut data = Vec::new();
+    data.resize(msg_len, 0);
+    UserSpaceMemory::copy_from_user(msg_ptr as u64, &mut data).map_err(|_| LinuxError::EFAULT)?;
     let sequence = NEXT_MQ_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let insert_at = queue
         .messages
@@ -1214,17 +1242,12 @@ pub fn mq_timedreceive(
     if msg_len < queue.attr.mq_msgsize as usize {
         return Err(LinuxError::EINVAL);
     }
-    let msg = queue.messages.pop_front().ok_or(LinuxError::EAGAIN)?;
-    for (i, byte) in msg.data.iter().enumerate() {
-        unsafe {
-            *msg_ptr.add(i) = *byte;
-        }
-    }
+    let msg = queue.messages.front().cloned().ok_or(LinuxError::EAGAIN)?;
+    UserSpaceMemory::copy_to_user(msg_ptr as u64, &msg.data).map_err(|_| LinuxError::EFAULT)?;
     if !msg_prio.is_null() {
-        unsafe {
-            *msg_prio = msg.priority;
-        }
+        copy_struct_to_user(msg_prio, &msg.priority)?;
     }
+    queue.messages.pop_front();
     queue.attr.mq_curmsgs = queue.messages.len() as i64;
     Ok(msg.data.len() as isize)
 }
@@ -1266,7 +1289,7 @@ pub fn mq_getsetattr(mqd: i32, newattr: *const MqAttr, oldattr: *mut MqAttr) -> 
     drop(queues);
 
     if !newattr.is_null() {
-        let new_flags = unsafe { (*newattr).mq_flags } as i32;
+        let new_flags = copy_struct_from_user(newattr)?.mq_flags as i32;
         let bits = if (new_flags & O_NONBLOCK) != 0 {
             cur_flags.bits() | crate::vfs::OpenFlags::NONBLOCK
         } else {
@@ -1309,7 +1332,7 @@ pub fn signalfd(fd: Fd, mask: *const SigSet, flags: i32) -> LinuxResult<Fd> {
         return Err(LinuxError::EFAULT);
     }
 
-    let signal_mask = unsafe { *(mask as *const u64) };
+    let signal_mask = copy_struct_from_user(mask as *const u64)?;
     super::special_fd::signalfd(fd, signal_mask, flags)
 }
 

@@ -11,23 +11,31 @@ const SYS_SCHED_YIELD: usize = 24;
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     let msg = b"rustos-init: hi from static Rust PID1\n";
-    unsafe {
-        let _ = syscall3(SYS_WRITE, 1, msg.as_ptr() as usize, msg.len());
-    }
+    write(1, msg);
     exit(0)
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     let msg = b"rustos-init: panic\n";
-    unsafe {
-        let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as usize, msg.len());
-    }
+    write(2, msg);
     exit(101)
 }
 
+/// Write `buf` to file descriptor `fd`. Returns the number of bytes written
+/// or a negative errno on failure.
+#[inline(always)]
+fn write(fd: usize, buf: &[u8]) -> isize {
+    // SAFETY: syscall3 only touches registers; the buffer pointer/len are
+    // derived from a valid Rust slice so the kernel reads in-bounds memory.
+    unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as usize, buf.len()) }
+}
+
+/// Exit the process with status `code`. Never returns.
 fn exit(code: usize) -> ! {
     loop {
+        // SAFETY: the exit syscall never returns; if it somehow does, we
+        // yield and retry rather than falling through.
         unsafe {
             let _ = syscall1(SYS_EXIT, code);
             let _ = syscall0(SYS_SCHED_YIELD);

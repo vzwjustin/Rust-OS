@@ -17,16 +17,17 @@ pub struct MetaKmsDeviceCaps {
 }
 
 impl MetaKmsDeviceCaps {
-    /// TODO: port logic from meta_kms_impl_device_get_impl
-    pub fn kms_impl_device_get_impl(&self) {
-        todo!()
+    /// Get the KMS implementation device handle.
+    /// Without a real DRM device, returns None.
+    pub fn kms_impl_device_get_impl(&self) -> Option<()> {
+        None
     }
 
-    /// TODO: port logic from meta_kms_impl_device_get_device
-    pub fn kms_impl_device_get_device(&self) {
-        todo!()
+    /// Get the underlying DRM device path.
+    /// Without a real DRM device, returns None.
+    pub fn kms_impl_device_get_device(&self) -> Option<()> {
+        None
     }
-
 }
 
 /// MetaKmsEnum
@@ -38,14 +39,15 @@ pub struct MetaKmsEnum {
 }
 
 impl MetaKmsEnum {
-    /// TODO: port logic from meta_kms_impl_device_get_impl
-    pub fn kms_impl_device_get_impl(&self) {
-        todo!()
+    /// Get the KMS implementation device handle.
+    /// Without a real DRM device, returns None.
+    pub fn kms_impl_device_get_impl(&self) -> Option<()> {
+        None
     }
 
-    /// TODO: port logic from meta_kms_impl_device_get_device
-    pub fn kms_impl_device_get_device(&self) {
-        todo!()
+    /// Get the underlying DRM device path.
+    /// Without a real DRM device, returns None.
+    pub fn kms_impl_device_get_device(&self) -> Option<()> {
+        None
     }
-
 }

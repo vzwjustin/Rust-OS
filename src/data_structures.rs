@@ -53,6 +53,7 @@ impl<T> LockFreeMpscQueue<T> {
         }));
 
         let prev_head = self.head.swap(new_node, Ordering::AcqRel);
+        // SAFETY: See module-level safety documentation.
         unsafe {
             (*prev_head).next.store(new_node, Ordering::Release);
         }
@@ -61,6 +62,7 @@ impl<T> LockFreeMpscQueue<T> {
     /// Dequeue an item (single consumer only)
     pub fn dequeue(&self) -> Option<T> {
         let tail = self.tail.load(Ordering::Relaxed);
+        // SAFETY: See module-level safety documentation.
         let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
         if next.is_null() {
@@ -68,9 +70,11 @@ impl<T> LockFreeMpscQueue<T> {
         }
 
         self.tail.store(next, Ordering::Relaxed);
+        // SAFETY: See module-level safety documentation.
         let data = unsafe { (*next).data.assume_init_read() };
 
         // Free the old tail node
+        // SAFETY: See module-level safety documentation.
         unsafe {
             let _ = Box::from_raw(tail);
         }
@@ -81,6 +85,7 @@ impl<T> LockFreeMpscQueue<T> {
     /// Check if queue is empty (approximate)
     pub fn is_empty(&self) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
+        // SAFETY: See module-level safety documentation.
         let next = unsafe { (*tail).next.load(Ordering::Acquire) };
         next.is_null()
     }
@@ -115,6 +120,7 @@ impl<T> CacheFriendlyRingBuffer<T> {
         }
 
         let layout = Layout::array::<T>(capacity).ok()?;
+        // SAFETY: See module-level safety documentation.
         let buffer = NonNull::new(unsafe { alloc(layout) as *mut T })?;
 
         Some(Self {
@@ -137,6 +143,7 @@ impl<T> CacheFriendlyRingBuffer<T> {
             return Err(item); // Buffer full
         }
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             ptr::write(self.buffer.as_ptr().add(head), item);
         }
@@ -154,6 +161,7 @@ impl<T> CacheFriendlyRingBuffer<T> {
             return None; // Buffer empty
         }
 
+        // SAFETY: See module-level safety documentation.
         let item = unsafe { ptr::read(self.buffer.as_ptr().add(tail)) };
         self.tail.store((tail + 1) & self.mask, Ordering::Release);
         Some(item)
@@ -186,6 +194,7 @@ impl<T> Drop for CacheFriendlyRingBuffer<T> {
 
         // Deallocate buffer
         let layout = Layout::array::<T>(self.capacity).unwrap();
+        // SAFETY: See module-level safety documentation.
         unsafe {
             dealloc(self.buffer.as_ptr() as *mut u8, layout);
         }
@@ -244,6 +253,7 @@ impl<T> LockFreeStack<T> {
                 return None;
             }
 
+            // SAFETY: See module-level safety documentation.
             let next = unsafe { (*head).next };
 
             match self
@@ -251,6 +261,7 @@ impl<T> LockFreeStack<T> {
                 .compare_exchange_weak(head, next, Ordering::Release, Ordering::Relaxed)
             {
                 Ok(_) => {
+                    // SAFETY: See module-level safety documentation.
                     let data = unsafe { Box::from_raw(head).data };
                     return Some(data);
                 }
@@ -293,9 +304,11 @@ impl<K: Eq + core::hash::Hash, V> CacheFriendlyHashTable<K, V> {
         }
 
         let layout = Layout::array::<Bucket<K, V>>(capacity).ok()?;
+        // SAFETY: See module-level safety documentation.
         let buckets = NonNull::new(unsafe { alloc(layout) as *mut Bucket<K, V> })?;
 
         // Initialize buckets
+        // SAFETY: See module-level safety documentation.
         unsafe {
             for i in 0..capacity {
                 ptr::write(
@@ -359,6 +372,7 @@ impl<K: Eq + core::hash::Hash, V> CacheFriendlyHashTable<K, V> {
         let mut value_option = Some(value);
 
         for _ in 0..self.capacity {
+            // SAFETY: See module-level safety documentation.
             let bucket = unsafe { &*self.buckets.as_ptr().add(index) };
 
             let current_key = bucket.key.load(Ordering::Acquire);
@@ -383,6 +397,7 @@ impl<K: Eq + core::hash::Hash, V> CacheFriendlyHashTable<K, V> {
                     }
                     Err(_) => {
                         // Someone else inserted, clean up and restore our values
+                        // SAFETY: See module-level safety documentation.
                         unsafe {
                             key_option = Some(*Box::from_raw(key_ptr));
                             value_option = Some(*Box::from_raw(value_ptr));
@@ -413,6 +428,7 @@ impl<K: Eq + core::hash::Hash, V> CacheFriendlyHashTable<K, V> {
 impl<K, V> Drop for CacheFriendlyHashTable<K, V> {
     fn drop(&mut self) {
         // Clean up all allocated keys and values
+        // SAFETY: See module-level safety documentation.
         unsafe {
             for i in 0..self.capacity {
                 let bucket = &*self.buckets.as_ptr().add(i);
@@ -442,6 +458,7 @@ pub mod prefetch {
     /// Prefetch data for reading
     #[inline(always)]
     pub fn prefetch_read<T>(ptr: *const T) {
+        // SAFETY: See module-level safety documentation.
         unsafe {
             core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_T0);
         }
@@ -450,6 +467,7 @@ pub mod prefetch {
     /// Prefetch data for writing
     #[inline(always)]
     pub fn prefetch_write<T>(ptr: *const T) {
+        // SAFETY: See module-level safety documentation.
         unsafe {
             core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_T0);
         }
@@ -458,6 +476,7 @@ pub mod prefetch {
     /// Prefetch cache line for exclusive access
     #[inline(always)]
     pub fn prefetch_exclusive<T>(ptr: *const T) {
+        // SAFETY: See module-level safety documentation.
         unsafe {
             // Use PREFETCHW instruction when available
             core::arch::asm!(

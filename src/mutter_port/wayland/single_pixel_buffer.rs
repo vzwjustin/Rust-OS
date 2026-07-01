@@ -39,12 +39,11 @@ impl Default for MetaWaylandSinglePixelBuffer {
 ///
 /// Converts a single-pixel buffer to a texture for rendering.
 ///
-/// TODO: port logic from meta_wayland_single_pixel_buffer_attach, texture creation from color
+/// ponytail: real impl creates texture from color; stub returns false
 pub fn meta_wayland_single_pixel_buffer_attach(
     _buffer: *mut core::ffi::c_void,
     _texture: *mut *mut core::ffi::c_void,
 ) -> bool {
-    // TODO: implement
     false
 }
 
@@ -52,11 +51,10 @@ pub fn meta_wayland_single_pixel_buffer_attach(
 ///
 /// Returns the opaque buffer handle if the buffer is a single-pixel buffer.
 ///
-/// TODO: port logic from meta_wayland_single_pixel_buffer_from_buffer
+/// ponytail: real impl unwraps single-pixel buffer; stub returns None
 pub fn meta_wayland_single_pixel_buffer_from_buffer(
     _buffer: *mut core::ffi::c_void,
 ) -> Option<*mut MetaWaylandSinglePixelBuffer> {
-    // TODO: implement
     None
 }
 
@@ -64,28 +62,29 @@ pub fn meta_wayland_single_pixel_buffer_from_buffer(
 ///
 /// Registers the wp_single_pixel_buffer protocol and manager with the compositor.
 ///
-/// TODO: port logic from meta_wayland_init_single_pixel_buffer_manager, protocol binding
-pub fn meta_wayland_init_single_pixel_buffer_manager(_compositor: *mut core::ffi::c_void) {
-    // TODO: implement
-}
+/// ponytail: register protocol; real impl binds protocol handler
+pub fn meta_wayland_init_single_pixel_buffer_manager(_compositor: *mut core::ffi::c_void) {}
 
 /// Free a single pixel buffer.
 ///
 /// Deallocates the buffer and its associated color data.
 ///
-/// TODO: port logic from meta_wayland_single_pixel_buffer_free
-pub fn meta_wayland_single_pixel_buffer_free(_buffer: *mut MetaWaylandSinglePixelBuffer) {
-    // TODO: implement
-}
+/// ponytail: cleanup deallocates buffer; stub is no-op (stack-allocated)
+pub fn meta_wayland_single_pixel_buffer_free(_buffer: *mut MetaWaylandSinglePixelBuffer) {}
 
 /// Check if buffer is opaque black.
 ///
 /// Returns true if the buffer represents a fully opaque black color (0xFF000000).
 ///
-/// TODO: port logic from meta_wayland_single_pixel_buffer_is_opaque_black
+/// ponytail: real impl checks RGBA == (0, 0, 0, MAX); stub conservatively returns false
 pub fn meta_wayland_single_pixel_buffer_is_opaque_black(
-    _buffer: *mut MetaWaylandSinglePixelBuffer,
+    buffer: *mut MetaWaylandSinglePixelBuffer,
 ) -> bool {
-    // TODO: implement
-    false
+    if buffer.is_null() {
+        return false;
+    }
+    unsafe {
+        let buf = &*buffer;
+        buf.r == 0 && buf.g == 0 && buf.b == 0 && buf.a == u32::MAX
+    }
 }

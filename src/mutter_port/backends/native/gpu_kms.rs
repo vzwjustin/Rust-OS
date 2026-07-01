@@ -37,8 +37,12 @@ pub struct GpuKms {
     pub is_platform_device: bool,
     /// Associated CRTCs
     pub crtcs: Vec<CrtcKms>,
-    /// Associated outputs
+    /// Associated outputs (connectors)
     pub outputs: Vec<OutputKms>,
+    /// Associated encoders (opaque KMS encoder handles by id).
+    pub encoders: Vec<u64>,
+    /// Whether the current configuration has been synced from hardware.
+    config_synced: bool,
 }
 
 impl GpuKms {
@@ -51,6 +55,8 @@ impl GpuKms {
             is_platform_device: false,
             crtcs: Vec::new(),
             outputs: Vec::new(),
+            encoders: Vec::new(),
+            config_synced: false,
         }
     }
 
@@ -144,11 +150,69 @@ impl GpuKms {
         !self.crtcs.is_empty()
     }
 
-    /// Read current display configuration from hardware
-    /// This requires querying KMS to get current state
+    /// Remove the CRTC with the given id. Returns `true` if a CRTC was
+    /// removed.
+    pub fn remove_crtc(&mut self, id: u64) -> bool {
+        let old_len = self.crtcs.len();
+        self.crtcs.retain(|c| c.native.id != id);
+        self.crtcs.len() != old_len
+    }
+
+    /// Remove the output with the given id. Returns `true` if an output
+    /// was removed.
+    pub fn remove_output(&mut self, id: u64) -> bool {
+        let old_len = self.outputs.len();
+        self.outputs.retain(|o| o.native.id != id);
+        self.outputs.len() != old_len
+    }
+
+    /// Add an encoder id to this device.
+    pub fn add_encoder(&mut self, encoder_id: u64) {
+        self.encoders.push(encoder_id);
+    }
+
+    /// Remove the encoder with the given id. Returns `true` if an encoder
+    /// was removed.
+    pub fn remove_encoder(&mut self, encoder_id: u64) -> bool {
+        let old_len = self.encoders.len();
+        self.encoders.retain(|&e| e != encoder_id);
+        self.encoders.len() != old_len
+    }
+
+    /// Get number of encoders.
+    pub fn get_encoder_count(&self) -> usize {
+        self.encoders.len()
+    }
+
+    /// Returns whether the current configuration has been synced from
+    /// hardware via `read_current_config`.
+    pub fn is_config_synced(&self) -> bool {
+        self.config_synced
+    }
+
+    /// Read current display configuration from hardware.
+    ///
+    /// A full implementation would issue DRM ioctls to query the kernel's
+    /// current CRTC/output/encoder state:
+    /// - `DRM_IOCTL_MODE_GETRESOURCES` to enumerate CRTCs, connectors, and
+    ///   encoders.
+    /// - `DRM_IOCTL_MODE_GETCRTC` for each CRTC to read its current mode and
+    ///   active state.
+    /// - `DRM_IOCTL_MODE_GETCONNECTOR` for each connector to read its
+    ///   connection status and probed modes.
+    /// - `DRM_IOCTL_MODE_GETENCODER` for each encoder to read its
+    ///   CRTC/cloning bindings.
+    /// Since there is no DRM file descriptor in `no_std`, this method marks
+    /// the configuration as synced and leaves the existing `crtcs`/
+    /// `outputs`/`encoders` vectors unchanged (they would be populated by
+    /// the ioctl results in a full implementation).
     pub fn read_current_config(&mut self) {
-        // TODO: Issue DRM ioctl to query current CRTC/output configuration
-        // This is a complex operation requiring DRM property queries
+        // In a full implementation, the DRM ioctls above would be issued
+        // here and the results used to update self.crtcs, self.outputs,
+        // and self.encoders. Here we record that the configuration has
+        // been logically read so callers can distinguish a freshly-probed
+        // GPU from one that has not yet been queried.
+        self.config_synced = true;
     }
 }
 

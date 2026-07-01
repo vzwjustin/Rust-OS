@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -66,8 +66,8 @@ struct PinState {
 
 // ── Software pin controller ─────────────────────────────────────────────
 
-static mut SW_PIN_FUNCS: Vec<Option<u32>> = Vec::new();
-static mut SW_PIN_CONFIGS: Vec<PinConfigParam> = Vec::new();
+static SW_PIN_FUNCS: Mutex<Vec<Option<u32>>> = Mutex::new(Vec::new());
+static SW_PIN_CONFIGS: Mutex<Vec<PinConfigParam>> = Mutex::new(Vec::new());
 
 fn sw_groups_count() -> u32 {
     4
@@ -148,7 +148,7 @@ fn sw_function_groups(sel: u32) -> Vec<u32> {
 }
 fn sw_pinmux_set(function: u32, group: u32) -> Result<(), &'static str> {
     let pins = sw_group_pins(group);
-    let funcs = unsafe { &mut SW_PIN_FUNCS };
+    let mut funcs = SW_PIN_FUNCS.lock();
     for pin in pins {
         let idx = pin as usize;
         if idx < funcs.len() {
@@ -158,7 +158,7 @@ fn sw_pinmux_set(function: u32, group: u32) -> Result<(), &'static str> {
     Ok(())
 }
 fn sw_pin_config_set(pin: u32, config: PinConfigParam) -> Result<(), &'static str> {
-    let configs = unsafe { &mut SW_PIN_CONFIGS };
+    let mut configs = SW_PIN_CONFIGS.lock();
     let idx = pin as usize;
     if idx >= configs.len() {
         return Err("Pin out of range");
@@ -167,7 +167,7 @@ fn sw_pin_config_set(pin: u32, config: PinConfigParam) -> Result<(), &'static st
     Ok(())
 }
 fn sw_pin_config_get(pin: u32) -> Result<PinConfigParam, &'static str> {
-    let configs = unsafe { &SW_PIN_CONFIGS };
+    let configs = SW_PIN_CONFIGS.lock();
     let idx = pin as usize;
     if idx >= configs.len() {
         return Err("Pin out of range");
@@ -399,10 +399,8 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     let npins = (SW_PINCTRL_OPS.get_npins)();
-    unsafe {
-        SW_PIN_FUNCS = alloc::vec![None; npins as usize];
-        SW_PIN_CONFIGS = alloc::vec![PinConfigParam::PullNone; npins as usize];
-    }
+    *SW_PIN_FUNCS.lock() = alloc::vec![None; npins as usize];
+    *SW_PIN_CONFIGS.lock() = alloc::vec![PinConfigParam::PullNone; npins as usize];
 
     register_controller("software-pinctrl", &SW_PINCTRL_OPS)?;
     crate::serial_println!("pinctrl: software controller registered ({} pins)", npins);

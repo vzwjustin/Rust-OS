@@ -20,7 +20,7 @@ use bootloader::bootinfo::MemoryRegion;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
-use spin::{Mutex, RwLock};
+use spin::{Mutex, RwLock, RwLockReadGuard};
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
@@ -1582,6 +1582,8 @@ impl PageTableManager {
         flags: PageTableFlags,
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> Result<(), MapToError<Size4KiB>> {
+        // SAFETY: the physical frame and virtual address are valid and aligned;
+        // the page table frame is mapped and writable.
         unsafe {
             self.mapper
                 .map_to(page, frame, flags, frame_allocator)
@@ -1598,6 +1600,8 @@ impl PageTableManager {
 
     /// Update page flags
     pub fn update_flags(&mut self, page: Page, flags: PageTableFlags) -> Result<(), &'static str> {
+        // SAFETY: the page is mapped in the active table; the page table frame
+        // is mapped and writable.
         unsafe {
             self.mapper
                 .update_flags(page, flags)
@@ -1615,6 +1619,8 @@ impl PageTableManager {
             + level_4_table_frame.start_address().as_u64())
         .as_mut_ptr();
 
+        // SAFETY: level_4_table_ptr is a mapped page table frame; PageTable is
+        // repr(C) aligned to 4096.
         unsafe {
             let level_4_table = &*(level_4_table_ptr as *const PageTable);
             let level_4_index = page.p4_index();
@@ -1675,6 +1681,7 @@ impl PageTableManager {
             let frame = frame_allocator.allocate_frame().ok_or("Out of memory")?;
 
             // Zero the page for security
+            // SAFETY: page_ptr is a valid mapped kernel page of PAGE_SIZE bytes.
             unsafe {
                 let page_ptr: *mut u8 =
                     (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr();
@@ -1717,6 +1724,7 @@ impl PageTableManager {
         let new_frame = frame_allocator.allocate_frame().ok_or("Out of memory")?;
 
         // Copy content from old page to new page
+        // SAFETY: src and dst are valid mapped pages of equal size, non-overlapping.
         unsafe {
             let old_ptr: *const u8 =
                 (self.physical_memory_offset + old_phys_addr.as_u64()).as_ptr();
@@ -1758,6 +1766,7 @@ impl PageTableManager {
             let frame = frame_allocator.allocate_frame().ok_or("Out of memory")?;
 
             // Zero the page for security
+            // SAFETY: page_ptr is a valid mapped kernel page of PAGE_SIZE bytes.
             unsafe {
                 let page_ptr: *mut u8 =
                     (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr();
@@ -1808,6 +1817,8 @@ impl PageTableManager {
                 let dst_page = Page::containing_address(dst_page_addr);
 
                 // Map destination page to same physical frame
+                // SAFETY: the physical frame and virtual address are valid and
+                // aligned; the page table frame is mapped and writable.
                 unsafe {
                     self.mapper
                         .map_to(dst_page, frame, flags, frame_allocator)
@@ -1842,6 +1853,7 @@ impl PageTableManager {
             .ok_or("Out of memory for child P4 table")?;
 
         // Zero the new P4 frame so unused entries are empty.
+        // SAFETY: p4_ptr is a valid mapped kernel page of 4096 bytes.
         unsafe {
             let p4_ptr: *mut u8 =
                 (self.physical_memory_offset + p4_frame.start_address().as_u64()).as_mut_ptr();
@@ -1851,6 +1863,7 @@ impl PageTableManager {
         // Create an OffsetPageTable for the new P4.
         let p4_virt =
             VirtAddr::new(self.physical_memory_offset.as_u64() + p4_frame.start_address().as_u64());
+        // SAFETY: p4_virt is a mapped page table frame; PageTable is repr(C) aligned to 4096.
         let p4_table: &mut PageTable = unsafe { &mut *(p4_virt.as_mut_ptr() as *mut PageTable) };
         let mut new_mapper: OffsetPageTable<'static> =
             unsafe { OffsetPageTable::new(p4_table, self.physical_memory_offset) };
@@ -1873,6 +1886,7 @@ impl PageTableManager {
         let current_p4_virt = VirtAddr::new(
             self.physical_memory_offset.as_u64() + current_p4_frame.start_address().as_u64(),
         );
+        // SAFETY: current_p4_virt is a mapped P4 table frame; PageTable is repr(C) aligned to 4096.
         let current_p4: &PageTable = unsafe { &*(current_p4_virt.as_ptr() as *const PageTable) };
 
         for p4_idx in 0..512 {
@@ -1888,6 +1902,8 @@ impl PageTableManager {
                     // Kernel mapping — copy the P4 entry directly so the
                     // child shares the kernel address space. This is safe
                     // because kernel mappings are identical in all processes.
+                    // SAFETY: p4_virt is a mapped P4 table frame; PageTable is
+                    // repr(C) aligned to 4096.
                     unsafe {
                         let new_p4: &mut PageTable = &mut *(p4_virt.as_mut_ptr() as *mut PageTable);
                         new_p4[p4_idx] = current_p4[p4_idx].clone();
@@ -1917,6 +1933,7 @@ impl PageTableManager {
         let p4_entry = &current_p4[p4_idx];
         let p3_phys = p4_entry.addr();
         let p3_virt = VirtAddr::new(self.physical_memory_offset.as_u64() + p3_phys.as_u64());
+        // SAFETY: p3_virt is a mapped P3 table frame; PageTable is repr(C) aligned to 4096.
         let p3: &PageTable = unsafe { &*(p3_virt.as_ptr() as *const PageTable) };
 
         for p3_idx in 0..512 {
@@ -1936,6 +1953,8 @@ impl PageTableManager {
                 // COW: map as read-only even if original was writable.
                 let cow_flags = Flags::PRESENT | Flags::USER_ACCESSIBLE;
 
+                // SAFETY: the physical frame and virtual address are valid and
+                // aligned; the page table frame is mapped and writable.
                 unsafe {
                     new_mapper
                         .map_to(page, frame, cow_flags, frame_allocator)
@@ -1947,6 +1966,7 @@ impl PageTableManager {
 
             let p2_phys = p3_entry.addr();
             let p2_virt = VirtAddr::new(self.physical_memory_offset.as_u64() + p2_phys.as_u64());
+            // SAFETY: p2_virt is a mapped P2 table frame; PageTable is repr(C) aligned to 4096.
             let p2: &PageTable = unsafe { &*(p2_virt.as_ptr() as *const PageTable) };
 
             for p2_idx in 0..512 {
@@ -1966,6 +1986,8 @@ impl PageTableManager {
 
                     let cow_flags = Flags::PRESENT | Flags::USER_ACCESSIBLE;
 
+                    // SAFETY: the physical frame and virtual address are valid
+                    // and aligned; the page table frame is mapped and writable.
                     unsafe {
                         new_mapper
                             .map_to(page, frame, cow_flags, frame_allocator)
@@ -1978,6 +2000,7 @@ impl PageTableManager {
                 let p1_phys = p2_entry.addr();
                 let p1_virt =
                     VirtAddr::new(self.physical_memory_offset.as_u64() + p1_phys.as_u64());
+                // SAFETY: p1_virt is a mapped P1 table frame; PageTable is repr(C) aligned to 4096.
                 let p1: &PageTable = unsafe { &*(p1_virt.as_ptr() as *const PageTable) };
 
                 for p1_idx in 0..512 {
@@ -2006,6 +2029,8 @@ impl PageTableManager {
                         original_flags
                     };
 
+                    // SAFETY: the physical frame and virtual address are valid
+                    // and aligned; the page table frame is mapped and writable.
                     unsafe {
                         new_mapper
                             .map_to(page, frame, cow_flags, frame_allocator)
@@ -2130,11 +2155,23 @@ impl MemoryManager {
 
             let flags = region.protection.to_page_table_flags();
             let mut first_frame = None;
+            let mut mapped_count = 0usize;
 
             for page in region.pages() {
-                let frame = frame_allocator
-                    .allocate_frame()
-                    .ok_or(MemoryError::OutOfMemory)?;
+                let frame = match frame_allocator.allocate_frame() {
+                    Some(frame) => frame,
+                    None => {
+                        for mapped_page in region.pages().take(mapped_count) {
+                            if let Some(frame_to_free) = page_table_manager.unmap_page(mapped_page)
+                            {
+                                let zone = MemoryZone::from_address(frame_to_free.start_address());
+                                frame_allocator.deallocate_frame(frame_to_free, zone);
+                            }
+                        }
+
+                        return Err(MemoryError::OutOfMemory);
+                    }
+                };
 
                 if first_frame.is_none() {
                     first_frame = Some(frame.start_address());
@@ -2145,6 +2182,7 @@ impl MemoryManager {
                     region.region_type,
                     MemoryRegionType::UserStack | MemoryRegionType::UserHeap
                 ) {
+                    // SAFETY: page_ptr is a valid mapped kernel page of PAGE_SIZE bytes.
                     unsafe {
                         let page_ptr = (self.physical_memory_offset
                             + frame.start_address().as_u64())
@@ -2153,9 +2191,24 @@ impl MemoryManager {
                     }
                 }
 
-                page_table_manager
+                if page_table_manager
                     .map_page(page, frame, flags, &mut *frame_allocator)
-                    .map_err(|_| MemoryError::MappingFailed)?;
+                    .is_err()
+                {
+                    let zone = MemoryZone::from_address(frame.start_address());
+                    frame_allocator.deallocate_frame(frame, zone);
+
+                    for mapped_page in region.pages().take(mapped_count) {
+                        if let Some(frame_to_free) = page_table_manager.unmap_page(mapped_page) {
+                            let zone = MemoryZone::from_address(frame_to_free.start_address());
+                            frame_allocator.deallocate_frame(frame_to_free, zone);
+                        }
+                    }
+
+                    return Err(MemoryError::MappingFailed);
+                }
+
+                mapped_count += 1;
             }
 
             region.mapped = true;
@@ -2323,6 +2376,10 @@ impl MemoryManager {
             }
         }
 
+        if !self.page_table_range_is_free(start, aligned_size) {
+            return Err(MemoryError::RegionOverlap);
+        }
+
         self.map_region(&mut region)?;
         if let Err(e) = self.add_region(region.clone()) {
             let _ = self.unmap_region(&mut region);
@@ -2401,15 +2458,19 @@ impl MemoryManager {
         let regions = self.regions.read();
         let mut current_addr = VirtAddr::new(USER_SPACE_START as u64);
 
-        while current_addr.as_u64() + size as u64 <= USER_SPACE_END as u64 {
-            let end_addr = current_addr + size;
+        while let Some(end_u) = current_addr.as_u64().checked_add(size as u64) {
+            if end_u > USER_SPACE_END as u64 {
+                break;
+            }
+
+            let end_addr = VirtAddr::new(end_u);
 
             let overlaps = regions.values().any(|region| {
                 let region_end = region.end();
                 !(end_addr <= region.start || current_addr >= region_end)
             });
 
-            if !overlaps {
+            if !overlaps && self.page_table_range_is_free(current_addr, size) {
                 return Some(current_addr);
             }
 
@@ -2421,6 +2482,33 @@ impl MemoryManager {
         }
 
         None
+    }
+
+    fn page_table_range_is_free(&self, start: VirtAddr, size: usize) -> bool {
+        if size == 0 {
+            return true;
+        }
+
+        let Some(end) = start.as_u64().checked_add(size as u64) else {
+            return false;
+        };
+
+        let page_table_manager = self.page_table_manager.lock();
+        let mut addr = align_down(start.as_u64() as usize, PAGE_SIZE) as u64;
+        while addr < end {
+            if page_table_manager
+                .translate_addr(VirtAddr::new(addr))
+                .is_some()
+            {
+                return false;
+            }
+            addr = match addr.checked_add(PAGE_SIZE as u64) {
+                Some(next) => next,
+                None => return false,
+            };
+        }
+
+        true
     }
 
     /// Initialize the kernel heap with guard pages
@@ -2566,6 +2654,7 @@ impl MemoryManager {
             match swap_manager.swap_in(slot, &mut page_data) {
                 Ok(_) => {
                     // 3. Copy the data to the new physical frame
+                    // SAFETY: src and dst are valid mapped pages of equal size, non-overlapping.
                     unsafe {
                         let page_ptr = (self.physical_memory_offset
                             + frame.start_address().as_u64())
@@ -2575,6 +2664,7 @@ impl MemoryManager {
                 }
                 Err(_e) => {
                     // Failed to read from swap - zero the page as fallback
+                    // SAFETY: page_ptr is a valid mapped kernel page of PAGE_SIZE bytes.
                     unsafe {
                         let page_ptr = (self.physical_memory_offset
                             + frame.start_address().as_u64())
@@ -2586,6 +2676,7 @@ impl MemoryManager {
         } else {
             // No swap entry found - zero the page as fallback
             // This handles the case where the page was never swapped out
+            // SAFETY: page_ptr is a valid mapped kernel page of PAGE_SIZE bytes.
             unsafe {
                 let page_ptr = (self.physical_memory_offset + frame.start_address().as_u64())
                     .as_mut_ptr::<u8>();
@@ -2636,6 +2727,7 @@ impl MemoryManager {
         };
 
         // Zero the page for security
+        // SAFETY: page_ptr is a valid mapped kernel page of PAGE_SIZE bytes.
         unsafe {
             let page_ptr =
                 (self.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
@@ -2689,6 +2781,7 @@ impl MemoryManager {
 
         // Read the page content
         let mut page_data = [0u8; PAGE_SIZE];
+        // SAFETY: src and dst are valid mapped pages of equal size, non-overlapping.
         unsafe {
             let page_ptr = (self.physical_memory_offset + phys_addr.as_u64()).as_ptr::<u8>();
             core::ptr::copy_nonoverlapping(page_ptr, page_data.as_mut_ptr(), PAGE_SIZE);
@@ -2730,6 +2823,7 @@ impl MemoryManager {
             .ok_or(MemoryError::OutOfMemory)?;
 
         // Copy content from old page to new page
+        // SAFETY: src and dst are valid mapped pages of equal size, non-overlapping.
         unsafe {
             let old_ptr = (self.physical_memory_offset + old_frame_addr.as_u64()).as_ptr::<u8>();
             let new_ptr = (self.physical_memory_offset + new_frame.start_address().as_u64())
@@ -3082,6 +3176,7 @@ static ASLR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate ASLR offset using hardware RNG
 pub fn generate_aslr_offset() -> u64 {
+    // SAFETY: RDRAND is checked via CPUID before use; RDTSC is always available on x86_64.
     let random_value = unsafe {
         let mut value: u64 = 0;
         // Try hardware RNG first, but only if RDRAND is actually supported
@@ -3214,6 +3309,8 @@ pub fn init_memory_management(
     let physical_memory_offset = VirtAddr::new_truncate(physical_memory_offset.unwrap_or(0));
 
     // Get current page table
+    // SAFETY: virt is a mapped P4 table frame via the physical-memory offset;
+    // PageTable is repr(C) aligned to 4096.
     let level_4_table = unsafe {
         let (level_4_table_frame, _) = Cr3::read();
         let phys = level_4_table_frame.start_address();
@@ -3223,6 +3320,8 @@ pub fn init_memory_management(
     };
 
     // Create page table manager
+    // SAFETY: level_4_table points to the mapped active P4 frame;
+    // physical_memory_offset matches the active offset.
     let mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
     let page_table_manager = PageTableManager::new(mapper, physical_memory_offset);
 
@@ -3240,6 +3339,7 @@ pub fn init_memory_management(
 
         let p4_ptr = (physical_memory_offset.as_u64() + p4_frame.start_address().as_u64())
             as *const PageTable;
+        // SAFETY: p4_ptr is a mapped P4 table frame; PageTable is repr(C) aligned to 4096.
         let p4 = unsafe { &*p4_ptr };
 
         for p4e in p4.iter() {
@@ -3249,6 +3349,7 @@ pub fn init_memory_management(
             let p3_phys = p4e.addr();
             frame_allocator.mark_frame_used(p3_phys);
             let p3_ptr = (physical_memory_offset.as_u64() + p3_phys.as_u64()) as *const PageTable;
+            // SAFETY: p3_ptr is a mapped P3 table frame; PageTable is repr(C) aligned to 4096.
             let p3 = unsafe { &*p3_ptr };
 
             for p3e in p3.iter() {
@@ -3262,6 +3363,7 @@ pub fn init_memory_management(
                 frame_allocator.mark_frame_used(p2_phys);
                 let p2_ptr =
                     (physical_memory_offset.as_u64() + p2_phys.as_u64()) as *const PageTable;
+                // SAFETY: p2_ptr is a mapped P2 table frame; PageTable is repr(C) aligned to 4096.
                 let p2 = unsafe { &*p2_ptr };
 
                 for p2e in p2.iter() {
@@ -3322,14 +3424,32 @@ pub fn hotplug_remove_usable_range(start: u64, end: u64) -> Result<usize, Memory
     Ok(removed)
 }
 
-/// Get global memory manager
-pub fn get_memory_manager() -> Option<&'static MemoryManager> {
-    unsafe {
-        MEMORY_MANAGER
-            .read()
-            .as_ref()
-            .map(|mm| core::mem::transmute(mm))
+/// RAII guard that holds the `MEMORY_MANAGER` read lock and derefs to
+/// `&MemoryManager`.  This keeps the borrow sound (the lock is held for the
+/// lifetime of the guard) while letting callers use the manager directly
+/// via `Deref`.
+pub struct MemoryManagerGuard {
+    inner: RwLockReadGuard<'static, Option<MemoryManager>>,
+}
+
+impl core::ops::Deref for MemoryManagerGuard {
+    type Target = MemoryManager;
+    fn deref(&self) -> &MemoryManager {
+        self.inner.as_ref().expect("MemoryManager not initialized")
     }
+}
+
+/// Get global memory manager.
+///
+/// Returns a guard that derefs to `&MemoryManager`, holding the read lock
+/// for the lifetime of the guard.  Returns `None` if the manager has not
+/// been initialized yet.
+pub fn get_memory_manager() -> Option<MemoryManagerGuard> {
+    let guard = MEMORY_MANAGER.read();
+    if guard.is_none() {
+        return None;
+    }
+    Some(MemoryManagerGuard { inner: guard })
 }
 
 /// Get the physical memory offset for direct physical-memory mapping.
@@ -3770,16 +3890,19 @@ pub fn map_mmio_region(phys: usize, size: usize) -> Result<usize, &'static str> 
             if let Some(mm) = get_memory_manager() {
                 let pml4_addr =
                     mm.physical_memory_offset.as_u64() + Cr3::read().0.start_address().as_u64();
+                // SAFETY: pml4_addr is a direct-mapped PML4 physical address; PageTable is repr(C) aligned to 4096.
                 let pml4 = unsafe { &mut *(pml4_addr as *mut PageTable) };
                 let p4_idx = (addr >> 39) & 0o777;
                 let p3_idx = (addr >> 30) & 0o777;
                 let p2_idx = (addr >> 21) & 0o777;
                 if pml4[p4_idx].flags().contains(PageTableFlags::PRESENT) {
                     let p3_addr = mm.physical_memory_offset.as_u64() + pml4[p4_idx].addr().as_u64();
+                    // SAFETY: p3_addr is a direct-mapped P3 table physical address; PageTable is repr(C) aligned to 4096.
                     let p3 = unsafe { &mut *(p3_addr as *mut PageTable) };
                     if p3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
                         let p2_addr =
                             mm.physical_memory_offset.as_u64() + p3[p3_idx].addr().as_u64();
+                        // SAFETY: p2_addr is a direct-mapped P2 table physical address; PageTable is repr(C) aligned to 4096.
                         let p2 = unsafe { &mut *(p2_addr as *mut PageTable) };
                         if p2[p2_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
                             // 2MB huge page — update L2 entry flags, preserve
@@ -3795,6 +3918,7 @@ pub fn map_mmio_region(phys: usize, size: usize) -> Result<usize, &'static str> 
                             // 4KB page — update L1 entry
                             let p1_addr =
                                 mm.physical_memory_offset.as_u64() + p2[p2_idx].addr().as_u64();
+                            // SAFETY: p1_addr is a direct-mapped P1 table physical address; PageTable is repr(C) aligned to 4096.
                             let p1 = unsafe { &mut *(p1_addr as *mut PageTable) };
                             let p1_idx = (addr >> 12) & 0o777;
                             if p1[p1_idx].flags().contains(PageTableFlags::PRESENT) {
@@ -3879,12 +4003,14 @@ pub fn map_user_huge_page(
 
     let (pml4_frame, _) = Cr3::read();
     let pml4_virt = offset + pml4_frame.start_address().as_u64();
+    // SAFETY: pml4_virt is a mapped PML4 table frame; PageTable is repr(C) aligned to 4096.
     let pml4 = unsafe { &mut *(pml4_virt.as_mut_ptr() as *mut PageTable) };
 
     if !pml4[p4_idx].flags().contains(PageTableFlags::PRESENT) {
         let frame = frame_allocator
             .allocate_frame()
             .ok_or("out of physical frames")?;
+        // SAFETY: the pointer is a valid mapped kernel page of PAGE_SIZE bytes.
         unsafe {
             core::ptr::write_bytes(
                 (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
@@ -3899,12 +4025,14 @@ pub fn map_user_huge_page(
     }
 
     let p3_virt = offset + pml4[p4_idx].addr().as_u64();
+    // SAFETY: p3_virt is a mapped P3 table frame; PageTable is repr(C) aligned to 4096.
     let p3 = unsafe { &mut *(p3_virt.as_mut_ptr() as *mut PageTable) };
 
     if !p3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
         let frame = frame_allocator
             .allocate_frame()
             .ok_or("out of physical frames")?;
+        // SAFETY: the pointer is a valid mapped kernel page of PAGE_SIZE bytes.
         unsafe {
             core::ptr::write_bytes(
                 (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
@@ -3919,6 +4047,7 @@ pub fn map_user_huge_page(
     }
 
     let p2_virt = offset + p3[p3_idx].addr().as_u64();
+    // SAFETY: p2_virt is a mapped P2 table frame; PageTable is repr(C) aligned to 4096.
     let p2 = unsafe { &mut *(p2_virt.as_mut_ptr() as *mut PageTable) };
 
     if p2[p2_idx].flags().contains(PageTableFlags::PRESENT) {
@@ -3948,6 +4077,7 @@ pub fn unmap_user_huge_page(virt: usize) -> Result<Option<PhysAddr>, &'static st
 
     let (pml4_frame, _) = Cr3::read();
     let pml4_virt = offset + pml4_frame.start_address().as_u64();
+    // SAFETY: pml4_virt is a mapped PML4 table frame; PageTable is repr(C) aligned to 4096.
     let pml4 = unsafe { &*(pml4_virt.as_ptr() as *const PageTable) };
 
     if !pml4[p4_idx].flags().contains(PageTableFlags::PRESENT) {
@@ -3955,12 +4085,14 @@ pub fn unmap_user_huge_page(virt: usize) -> Result<Option<PhysAddr>, &'static st
     }
 
     let p3_virt = offset + pml4[p4_idx].addr().as_u64();
+    // SAFETY: p3_virt is a mapped P3 table frame; PageTable is repr(C) aligned to 4096.
     let p3 = unsafe { &*(p3_virt.as_ptr() as *const PageTable) };
     if !p3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
         return Ok(None);
     }
 
     let p2_virt = offset + p3[p3_idx].addr().as_u64();
+    // SAFETY: p2_virt is a mapped P2 table frame; PageTable is repr(C) aligned to 4096.
     let p2 = unsafe { &mut *(p2_virt.as_mut_ptr() as *mut PageTable) };
     if !p2[p2_idx]
         .flags()
@@ -4009,6 +4141,7 @@ pub fn map_user_page(virt: usize, flags: PageTableFlags) -> Result<(), &'static 
         .ok_or("out of physical frames")?;
 
     // Zero the frame via the physical-offset map before it becomes user-visible.
+    // SAFETY: ptr is a valid mapped kernel page of 4096 bytes.
     unsafe {
         let ptr = (mm.physical_memory_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
         core::ptr::write_bytes(ptr, 0, 4096);
@@ -4085,6 +4218,7 @@ pub fn populate_user_mapping_from_vfs(
             }
 
             let phys = translate_addr(VirtAddr::new(va as u64)).ok_or("mmap page not mapped")?;
+            // SAFETY: src and dst are valid mapped pages of equal size, non-overlapping.
             unsafe {
                 let ptr = (mm.physical_memory_offset + phys.as_u64())
                     .as_mut_ptr::<u8>()
@@ -4136,6 +4270,8 @@ pub fn selftest_user_paging() -> Result<(), &'static str> {
     map_user_page(TEST_VA, flags)?;
 
     let p = TEST_VA as *mut u64;
+    // SAFETY: p points to a freshly mapped and zeroed test page; the volatile
+    // reads/writes do not require an initialized value.
     unsafe {
         if p.read_volatile() != 0 {
             let _ = unmap_user_page(TEST_VA);

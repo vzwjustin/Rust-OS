@@ -71,10 +71,37 @@ impl MetaRemoteDesktopSession {
     }
 
     /// Register a screen cast session with this remote desktop session.
-    /// Returns an error if incompatible states are detected.
-    pub fn register_screen_cast_session(&mut self, _screen_cast: &()) -> Result<(), String> {
-        // TODO: Validate session type, bind screen cast streams
+    /// Validates that the session is not already active and stores the
+    /// screen cast session reference. A full implementation would bind
+    /// screen cast streams and negotiate the D-Bus PipeWire connection.
+    pub fn register_screen_cast_session(
+        &mut self,
+        screen_cast_session: *mut c_void,
+    ) -> Result<(), String> {
+        if self.active {
+            return Err(
+                "cannot register screen cast session: remote desktop session is active".into(),
+            );
+        }
+        if !self.screen_cast_session.is_null() {
+            return Err("screen cast session already registered".into());
+        }
+        self.screen_cast_session = screen_cast_session;
         Ok(())
+    }
+
+    /// Activate the remote desktop session.
+    pub fn activate(&mut self) -> Result<(), String> {
+        if self.screen_cast_session.is_null() {
+            return Err("no screen cast session registered".into());
+        }
+        self.active = true;
+        Ok(())
+    }
+
+    /// Deactivate the remote desktop session.
+    pub fn deactivate(&mut self) {
+        self.active = false;
     }
 }
 

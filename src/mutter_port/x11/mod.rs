@@ -33,13 +33,13 @@ pub use events::XEvent;
 pub use frame::{FrameId, MetaX11Frame};
 pub use group::{GroupId, MetaX11Group};
 pub use properties::{
-    delete_property, get_net_wm_name, get_net_wm_icon_geometry, get_property, get_size_hints,
+    delete_property, get_net_wm_icon_geometry, get_net_wm_name, get_property, get_size_hints,
     get_wm_hints, set_property, GroupPropertyHook, PropertyType, PropertyValue, SizeHints,
     WindowPropertyHook, WmHints,
 };
 pub use selection::{
     MetaSelectionSourceX11, MetaX11SelectionInputStream, MetaX11SelectionOutputStream,
-    SelectionType,
+    SelectionTransfer, SelectionType, TransferId, TransferState,
 };
 pub use shadow_factory::{MetaShadowFactory, Shadow};
 pub use shape::WindowShape;

@@ -131,63 +131,63 @@ pub fn create_system_validation_suite(config: SystemValidationConfig) -> TestSui
 
 // Setup and teardown functions
 fn setup_system_validation_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_system_validation_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_stability_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_stability_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_memory_safety_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_memory_controller().reset();
 }
 
 fn teardown_memory_safety_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_security_verification_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_security_verification_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_compatibility_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_compatibility_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_hardware_validation_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
 }
 
 fn teardown_hardware_validation_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_performance_regression_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_performance_regression_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 // System validation test implementations
@@ -234,9 +234,7 @@ fn test_long_term_stability() -> TestResult {
 
         // Brief pause to prevent overwhelming the system
         for _ in 0..1000 {
-            unsafe {
-                core::arch::asm!("pause");
-            }
+            core::hint::spin_loop();
         }
     }
 
@@ -523,9 +521,7 @@ impl StabilityMetrics {
 fn create_system_load() {
     // Create some CPU load
     for _ in 0..100 {
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
     }
 
     // Create some memory allocation activity using real memory manager

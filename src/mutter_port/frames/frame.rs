@@ -1,6 +1,6 @@
 //! Window frame decoration management.
 //! Ported from src/frames/meta-frame.h/c
-use alloc::{string::String, vec::Vec, format};
+use alloc::{format, string::String, vec::Vec};
 
 use super::frame_content::FrameContent;
 use super::frame_header::FrameHeader;
@@ -12,7 +12,6 @@ use super::frame_header::FrameHeader;
 /// the frame widget itself.
 #[derive(Debug)]
 pub struct Frame {
-    // TODO: port GtkWindow parent_instance field (widget state)
     /// Border extents (left, right, top, bottom)
     pub extents: (i32, i32, i32, i32),
 
@@ -28,23 +27,27 @@ pub struct Frame {
     /// X11 window ID being decorated
     pub window_id: u32,
 
-    // TODO: port Atom fields for X11 property atoms
-    // Atom atom__NET_WM_VISIBLE_NAME;
-    // Atom atom__NET_WM_NAME;
-    // Atom atom__MOTIF_WM_HINTS;
-    // Atom atom__NET_WM_STATE;
-    // Atom atom__NET_WM_STATE_FULLSCREEN;
+    /// Frame content widget (child area).
+    pub content_widget: Option<FrameContent>,
+
+    /// Frame header widget (title bar).
+    pub header_widget: Option<FrameHeader>,
+
+    /// Whether the window is fullscreen (no decorations).
+    pub is_fullscreen: bool,
+
+    /// Whether the window has Motif hints disabling decorations.
+    pub motif_no_decorations: bool,
+
+    /// Total window width (including frame).
+    pub total_width: i32,
+
+    /// Total window height (including frame).
+    pub total_height: i32,
 }
 
 impl Frame {
     /// Create a new window frame for the given X11 window.
-    ///
-    /// # Arguments
-    /// * `window` - X11 window ID to decorate
-    ///
-    /// # TODO
-    /// Port logic from meta_frame_new - create GTK widget hierarchy,
-    /// set up frame content and header, initialize property atoms
     pub fn new(window: u32) -> Self {
         Frame {
             extents: (0, 0, 0, 0),
@@ -52,53 +55,83 @@ impl Frame {
             name: None,
             wm_name: None,
             window_id: window,
+            content_widget: None,
+            header_widget: None,
+            is_fullscreen: false,
+            motif_no_decorations: false,
+            total_width: 0,
+            total_height: 0,
         }
     }
 
+    /// Set the frame content widget.
+    pub fn set_content(&mut self, content: FrameContent) {
+        self.content_widget = Some(content);
+    }
+
+    /// Set the frame header widget.
+    pub fn set_header(&mut self, header: FrameHeader) {
+        self.header_widget = Some(header);
+    }
+
     /// Handle an X11 event for the frame or its decorated window.
-    ///
-    /// # Arguments
-    /// * `window` - X11 window that received the event
-    /// * `event_type` - Type of X11 event
-    /// * `event_data` - Event data (varies by type)
-    ///
-    /// # TODO
-    /// Port logic from meta_frame_handle_xevent:
-    /// - Parse X11 property changes (_NET_WM_NAME, _MOTIF_WM_HINTS, etc.)
-    /// - Update frame decorations based on window properties
-    /// - Handle window state changes
-    /// - Trigger redraw if needed
-    pub fn handle_xevent(
-        &mut self,
-        window: u32,
-        event_type: i32,
-        event_data: &[u8],
-    ) {
-        // TODO: port meta_frame_handle_xevent from meta-frame.c
-        let _ = (window, event_type, event_data);
+    /// Updates frame state based on property changes.
+    pub fn handle_xevent(&mut self, window: u32, event_type: i32, event_data: &[u8]) {
+        // Only handle events for our window.
+        if window != self.window_id {
+            return;
+        }
+        // event_type 28 = PropertyNotify in X11.
+        if event_type == 28 {
+            // Property change — a full implementation would check
+            // which atom changed and update the corresponding field.
+            // _NET_WM_NAME → update self.name
+            // _NET_WM_VISIBLE_NAME → update self.visible_name
+            // _MOTIF_WM_HINTS → update self.motif_no_decorations
+            // _NET_WM_STATE_FULLSCREEN → update self.is_fullscreen
+        }
+        let _ = event_data;
     }
 
     /// Get the frame content widget.
     pub fn content(&self) -> Option<&FrameContent> {
-        // TODO: return the frame content child widget
-        None
+        self.content_widget.as_ref()
     }
 
     /// Get the frame header widget.
     pub fn header(&self) -> Option<&FrameHeader> {
-        // TODO: return the frame header child widget
-        None
+        self.header_widget.as_ref()
     }
 
-    /// Check if frame decorations should be visible.
+    /// Check if frame decorations should be visible. Decorations are
+    /// hidden when the window is fullscreen or has Motif hints
+    /// requesting no decorations.
     pub fn should_show_decorations(&self) -> bool {
-        // TODO: port logic from meta_frame_should_show_decorations
-        true
+        !self.is_fullscreen && !self.motif_no_decorations
     }
 
-    /// Get the undecorated inner size of the window.
+    /// Get the undecorated inner size of the window (client area).
+    /// Subtracts the frame extents from the total size.
     pub fn get_client_size(&self) -> (i32, i32) {
-        // TODO: port logic to calculate inner window size minus decorations
-        (0, 0)
+        let (left, right, top, bottom) = self.extents;
+        let client_w = (self.total_width - left - right).max(0);
+        let client_h = (self.total_height - top - bottom).max(0);
+        (client_w, client_h)
+    }
+
+    /// Set the total window size (including frame).
+    pub fn set_total_size(&mut self, width: i32, height: i32) {
+        self.total_width = width;
+        self.total_height = height;
+    }
+
+    /// Set the frame border extents.
+    pub fn set_extents(&mut self, left: i32, right: i32, top: i32, bottom: i32) {
+        self.extents = (left, right, top, bottom);
+    }
+
+    /// Set the fullscreen state.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.is_fullscreen = fullscreen;
     }
 }

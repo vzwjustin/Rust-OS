@@ -66,6 +66,9 @@ struct CoolingDevice {
 // ── MSR CPU temperature (software sensor) ───────────────────────────────
 
 #[inline]
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model.
 unsafe fn rdmsr(msr: u32) -> u64 {
     let low: u32;
     let high: u32;
@@ -124,18 +127,16 @@ const CPU_ZONE_OPS: ThermalZoneOps = ThermalZoneOps {
 
 // ── Processor cooling device ────────────────────────────────────────────
 
-static mut PROCESSOR_COOLING_STATE: CoolingState = CoolingState::Off;
+static PROCESSOR_COOLING_STATE: spin::Mutex<CoolingState> = spin::Mutex::new(CoolingState::Off);
 
 fn processor_set_state(state: CoolingState) -> Result<(), &'static str> {
-    unsafe {
-        PROCESSOR_COOLING_STATE = state;
-    }
+    *PROCESSOR_COOLING_STATE.lock() = state;
     crate::serial_println!("thermal: processor cooling -> {:?}", state);
     Ok(())
 }
 
 fn processor_get_state() -> CoolingState {
-    unsafe { PROCESSOR_COOLING_STATE }
+    *PROCESSOR_COOLING_STATE.lock()
 }
 
 fn processor_max_state() -> u8 {
@@ -190,6 +191,8 @@ fn scan_dsdt_for_thermal_zones() -> Vec<String> {
     };
 
     // Read DSDT length from SDT header (offset 4, u32 LE).
+    // SAFETY: `virt` is a mapped DSDT address and 36 is the minimum SDT
+    // header size.
     let header_slice = unsafe { core::slice::from_raw_parts(virt as *const u8, 36) };
     let length = u32::from_le_bytes([
         header_slice[4],
@@ -201,6 +204,8 @@ fn scan_dsdt_for_thermal_zones() -> Vec<String> {
         return zones;
     }
 
+    // SAFETY: `virt` is a mapped address and `length` is validated to be in
+    // the range 36..=256*1024.
     let table = unsafe { core::slice::from_raw_parts(virt as *const u8, length) };
 
     // Scan for AML NameSeg patterns like "TZ00", "TZ01" (Thermal Zone devices).

@@ -17,9 +17,9 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use crate::mutter_port::backends::logical_monitor::MonitorTransform;
 use super::monitor_config_manager::{ConfigSource, MonitorConfig, MonitorsConfig};
 use super::monitor_manager::LayoutMode;
+use crate::mutter_port::backends::logical_monitor::MonitorTransform;
 
 /// A stored monitor configuration entry, keyed by the monitor set identity.
 /// Mirrors the structure of monitors.xml <configuration> elements.

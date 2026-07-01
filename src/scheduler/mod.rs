@@ -594,6 +594,9 @@ pub unsafe extern "C" fn context_switch(old_state: *mut CpuState, new_state: *co
 }
 
 /// Save FPU/SSE state
+/// # Safety
+/// The caller must ensure `fpu_state` points to valid, writable memory
+/// of at least `size_of::<FpuState>()` bytes.
 pub unsafe fn save_fpu_state(fpu_state: *mut FpuState) {
     use core::arch::asm;
 
@@ -606,6 +609,9 @@ pub unsafe fn save_fpu_state(fpu_state: *mut FpuState) {
 }
 
 /// Restore FPU/SSE state
+/// # Safety
+/// The caller must ensure `fpu_state` points to valid memory of at least
+/// `size_of::<FpuState>()` bytes, previously saved by `save_fpu_state`.
 pub unsafe fn restore_fpu_state(fpu_state: *const FpuState) {
     use core::arch::asm;
 
@@ -618,6 +624,9 @@ pub unsafe fn restore_fpu_state(fpu_state: *const FpuState) {
 }
 
 /// Initialize FPU for the current CPU
+/// # Safety
+/// The caller must ensure this is called only once per CPU during
+/// initialization and that FPU/SSE is available on the CPU.
 pub unsafe fn init_fpu() {
     use core::arch::asm;
 
@@ -635,6 +644,9 @@ pub unsafe fn init_fpu() {
 }
 
 /// Complete context switch with FPU state
+/// # Safety
+/// The caller must ensure all pointer arguments are valid and point to
+/// appropriate state structures for the old and new tasks.
 pub unsafe fn context_switch_with_fpu(
     old_cpu_state: *mut CpuState,
     old_fpu_state: *mut FpuState,

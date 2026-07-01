@@ -2,7 +2,7 @@
 //! Ported from meta/meta-*-manager.h
 //!
 //! Managers coordinate device input, orientation, workspaces, and system state.
-use alloc::{string::String, vec::Vec, boxed::Box};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use crate::mutter_port::meta::types::*;
 // Use the rich workspace type (types::* only provides an opaque stub); this
@@ -270,11 +270,20 @@ mod tests {
         assert_eq!(m.create_workspace(Some("two")), 1);
         assert_eq!(m.get_n_workspaces(), 2);
 
-        assert_eq!(m.get_workspace_by_index(0).and_then(|w| w.get_name()), Some("one"));
-        assert_eq!(m.get_workspace_by_index(1).and_then(|w| w.get_name()), Some("two"));
+        assert_eq!(
+            m.get_workspace_by_index(0).and_then(|w| w.get_name()),
+            Some("one")
+        );
+        assert_eq!(
+            m.get_workspace_by_index(1).and_then(|w| w.get_name()),
+            Some("two")
+        );
         assert!(m.get_workspace_by_index(2).is_none());
         // active_index defaults to 0.
-        assert_eq!(m.get_active_workspace().and_then(|w| w.get_name()), Some("one"));
+        assert_eq!(
+            m.get_active_workspace().and_then(|w| w.get_name()),
+            Some("one")
+        );
     }
 
     #[test]
@@ -285,10 +294,19 @@ mod tests {
         }
         // active defaults to index 0 ("a"); move it to index 2.
         m.reorder_workspace(0, 2);
-        assert_eq!(m.get_workspace_by_index(0).and_then(|w| w.get_name()), Some("b"));
-        assert_eq!(m.get_workspace_by_index(2).and_then(|w| w.get_name()), Some("a"));
+        assert_eq!(
+            m.get_workspace_by_index(0).and_then(|w| w.get_name()),
+            Some("b")
+        );
+        assert_eq!(
+            m.get_workspace_by_index(2).and_then(|w| w.get_name()),
+            Some("a")
+        );
         // The active workspace still resolves to "a" at its new index.
-        assert_eq!(m.get_active_workspace().and_then(|w| w.get_name()), Some("a"));
+        assert_eq!(
+            m.get_active_workspace().and_then(|w| w.get_name()),
+            Some("a")
+        );
     }
 
     #[test]

@@ -252,6 +252,7 @@ pub fn ptrace(request: u32, pid: u32, addr: u64, data: u64) -> i64 {
                 return -14; // EFAULT
             }
             // Read a word from the tracee's memory at addr
+            // SAFETY: addr is a validated user-space address; the read/write is within the process's address space.
             let val = unsafe { core::ptr::read_volatile(addr as *const u64) };
             val as i64
         }
@@ -268,6 +269,7 @@ pub fn ptrace(request: u32, pid: u32, addr: u64, data: u64) -> i64 {
             if !ptrace_addr_in_user_range(addr) {
                 return -14; // EFAULT
             }
+            // SAFETY: addr is a validated user-space address; the read/write is within the process's address space.
             unsafe {
                 core::ptr::write_volatile(addr as *mut u64, data);
             }
@@ -421,8 +423,14 @@ pub fn ptrace(request: u32, pid: u32, addr: u64, data: u64) -> i64 {
             }
             // Write signal mask to data pointer
             if data != 0 {
-                unsafe {
-                    *(data as *mut u64) = 0; // Empty mask for now
+                let mask: u64 = 0; // Empty mask for now
+                if crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                    data,
+                    crate::linux_compat::as_bytes(&mask),
+                )
+                .is_err()
+                {
+                    return -14; // EFAULT
                 }
             }
             0

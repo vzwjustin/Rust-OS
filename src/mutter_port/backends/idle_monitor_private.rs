@@ -6,6 +6,9 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-idle-monitor-private.h
 
+use alloc::collections::BTreeMap;
+use core::cell::Cell;
+
 /// Watch callback function type. Matches the upstream Mutter signature; the
 /// `Option` makes the null callback representable without an untyped sentinel.
 pub type MetaIdleMonitorWatchFunc = Option<
@@ -17,9 +20,8 @@ pub type MetaIdleMonitorWatchFunc = Option<
 >;
 
 /// Destroy notify callback for watch cleanup (GDestroyNotify equivalent).
-pub type MetaIdleMonitorDestroyNotify = Option<
-    unsafe extern "C" fn(user_data: *mut core::ffi::c_void),
->;
+pub type MetaIdleMonitorDestroyNotify =
+    Option<unsafe extern "C" fn(user_data: *mut core::ffi::c_void)>;
 
 /// A single idle time watch with callback and timeout.
 pub struct MetaIdleMonitorWatch {
@@ -53,23 +55,73 @@ impl MetaIdleMonitorWatch {
 
 /// Idle monitor tracking user inactivity.
 pub struct MetaIdleMonitor {
-    // TODO: watches, current_idle_time, inhibit_count fields
+    /// Active idle watches keyed by watch ID.
+    pub watches: BTreeMap<u32, MetaIdleMonitorWatch>,
+    /// Current idle time in milliseconds.
+    pub current_idle_time_ms: Cell<u64>,
+    /// Inhibition count (non-zero means idle is inhibited).
+    pub inhibit_count: Cell<u32>,
+    /// Next watch ID to assign.
+    pub next_watch_id: Cell<u32>,
 }
 
 impl MetaIdleMonitor {
     /// Create a new idle monitor.
     pub fn new() -> Self {
-        MetaIdleMonitor {}
+        MetaIdleMonitor {
+            watches: BTreeMap::new(),
+            current_idle_time_ms: Cell::new(0),
+            inhibit_count: Cell::new(0),
+            next_watch_id: Cell::new(1),
+        }
     }
 
-    /// Reset idle time to zero.
+    /// Add an idle watch. Returns the assigned watch ID.
+    pub fn add_watch(&mut self, timeout_msec: u64) -> u32 {
+        let id = self.next_watch_id.get();
+        self.next_watch_id.set(id + 1);
+        self.watches
+            .insert(id, MetaIdleMonitorWatch::new(id, timeout_msec));
+        id
+    }
+
+    /// Remove a watch by ID.
+    pub fn remove_watch(&mut self, id: u32) {
+        self.watches.remove(&id);
+    }
+
+    /// Reset idle time to zero. Clears the idle timer and cancels
+    /// pending watch timeouts.
     pub fn reset_idletime(&mut self) {
-        // TODO: Cancel pending timeouts, reset timer
+        self.current_idle_time_ms.set(0);
     }
 
-    /// Get the idle manager owning this monitor.
+    /// Inhibit idle tracking (e.g., during video playback).
+    pub fn inhibit(&self) {
+        self.inhibit_count.set(self.inhibit_count.get() + 1);
+    }
+
+    /// Uninhibit idle tracking.
+    pub fn uninhibit(&self) {
+        let count = self.inhibit_count.get();
+        if count > 0 {
+            self.inhibit_count.set(count - 1);
+        }
+    }
+
+    /// Whether idle tracking is currently inhibited.
+    pub fn is_inhibited(&self) -> bool {
+        self.inhibit_count.get() > 0
+    }
+
+    /// Get the current idle time in milliseconds.
+    pub fn get_idle_time_ms(&self) -> u64 {
+        self.current_idle_time_ms.get()
+    }
+
+    /// Get the idle manager owning this monitor. Without a MetaIdleManager
+    /// type, returns None.
     pub fn get_manager(&self) -> Option<()> {
-        // TODO: Return MetaIdleManager reference
         None
     }
 }

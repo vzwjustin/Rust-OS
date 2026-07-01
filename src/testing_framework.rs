@@ -885,18 +885,20 @@ pub mod unit_tests {
         {
             use crate::memory::{get_memory_manager, MemoryZone};
 
-            if let Some(memory_manager) = get_memory_manager() {
-                let frame = {
-                    let mut manager = memory_manager.lock();
-                    manager.allocate_frame_in_zone(MemoryZone::Normal)
-                };
+            if let Some(memory_manager_guard) = get_memory_manager() {
+                if let Some(memory_manager) = memory_manager_guard.as_ref() {
+                    let frame = {
+                        let mut manager = memory_manager.lock();
+                        manager.allocate_frame_in_zone(MemoryZone::Normal)
+                    };
 
-                if let Some(frame) = frame {
-                    let mut manager = memory_manager.lock();
-                    manager.deallocate_frame(frame, MemoryZone::Normal);
-                    return TestResult::Pass;
-                } else {
-                    return TestResult::Fail;
+                    if let Some(frame) = frame {
+                        let mut manager = memory_manager.lock();
+                        manager.deallocate_frame(frame, MemoryZone::Normal);
+                        return TestResult::Pass;
+                    } else {
+                        return TestResult::Fail;
+                    }
                 }
             }
         }
@@ -1150,38 +1152,33 @@ pub fn create_default_test_suites() -> Vec<TestSuite> {
 // ============================================================================
 
 /// Global test framework instance
-static mut TEST_FRAMEWORK: Option<TestFramework> = None;
-static FRAMEWORK_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static TEST_FRAMEWORK: spin::Mutex<Option<TestFramework>> = spin::Mutex::new(None);
 
 /// Initialize the global testing framework
 pub fn init_testing_framework() {
-    if FRAMEWORK_INITIALIZED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        unsafe {
-            TEST_FRAMEWORK = Some(TestFramework::new());
-        }
+    let mut guard = TEST_FRAMEWORK.lock();
+    if guard.is_none() {
+        *guard = Some(TestFramework::new());
     }
 }
 
-/// Get the global test framework instance
-pub fn get_test_framework() -> &'static mut TestFramework {
-    unsafe {
-        if TEST_FRAMEWORK.is_none() {
-            init_testing_framework();
-        }
-        TEST_FRAMEWORK
-            .as_mut()
-            .expect("Test framework not initialized")
-    }
+/// Run a closure against the global test framework.
+///
+/// Returns `None` if the framework is uninitialized, or if it is currently
+/// borrowed for a running test suite (setup/teardown callbacks reenter here).
+pub fn with_test_framework<R>(f: impl FnOnce(&mut TestFramework) -> R) -> Option<R> {
+    TEST_FRAMEWORK.lock().as_mut().map(f)
 }
 
 /// Run all default tests
 pub fn run_all_tests() -> TestStats {
-    let framework = get_test_framework();
+    // Take the framework out so setup/teardown callbacks can reenter
+    // `with_test_framework` without deadlocking on the mutex.
+    let mut framework = TEST_FRAMEWORK
+        .lock()
+        .take()
+        .unwrap_or_else(TestFramework::new);
 
-    // Add default test suites
     for suite in create_default_test_suites() {
         framework.add_suite(suite);
     }
@@ -1190,21 +1187,40 @@ pub fn run_all_tests() -> TestStats {
     let stats = framework.run_all_tests();
     framework.disable_mocks();
 
+    *TEST_FRAMEWORK.lock() = Some(framework);
+    stats
+}
+
+/// Run whatever suites are currently loaded in the global framework.
+///
+/// Uses take-and-restore so setup/teardown callbacks can reenter
+/// `with_test_framework` without deadlocking.
+pub fn run_loaded_tests() -> TestStats {
+    let mut framework = TEST_FRAMEWORK
+        .lock()
+        .take()
+        .unwrap_or_else(TestFramework::new);
+    let stats = framework.run_all_tests();
+    *TEST_FRAMEWORK.lock() = Some(framework);
     stats
 }
 
 /// Run tests by type
 pub fn run_tests_by_type(test_type: TestType) -> TestStats {
-    let framework = get_test_framework();
+    let mut framework = TEST_FRAMEWORK
+        .lock()
+        .take()
+        .unwrap_or_else(TestFramework::new);
 
-    // Add default test suites if empty
     if framework.suite_count() == 0 {
         for suite in create_default_test_suites() {
             framework.add_suite(suite);
         }
     }
 
-    framework.run_tests_by_type(test_type)
+    let stats = framework.run_tests_by_type(test_type);
+    *TEST_FRAMEWORK.lock() = Some(framework);
+    stats
 }
 
 // ============================================================================

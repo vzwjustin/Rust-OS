@@ -156,104 +156,104 @@ pub fn create_memory_management_tests() -> TestSuite {
 // Setup and teardown functions
 fn setup_integration_tests() {
     // Initialize test environment
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_integration_tests() {
     // Clean up test environment
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_syscall_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_syscall_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_process_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_process_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_filesystem_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_filesystem_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_memory_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_memory_controller().reset();
 }
 
 fn teardown_memory_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_scheduler_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_scheduler_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_context_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_context_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_sync_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_sync_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_process_integration_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_process_integration_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_memory_integration_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_memory_controller().reset();
 }
 
 fn teardown_memory_integration_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_page_fault_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_page_fault_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_heap_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_memory_controller().reset();
 }
 
 fn teardown_heap_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 // Integration test implementations

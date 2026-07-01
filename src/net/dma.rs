@@ -141,11 +141,15 @@ impl DmaBuffer {
 
     /// Get buffer as slice
     pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: The DMA buffer is owned by `self`; `virtual_addr` and `size`
+        // are valid and the buffer remains live for the lifetime of `self`.
         unsafe { core::slice::from_raw_parts(self.virtual_addr, self.size) }
     }
 
     /// Get buffer as mutable slice
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: The DMA buffer is owned by `self`; `virtual_addr` and `size`
+        // are valid and `&mut self` ensures exclusive mutable access.
         unsafe { core::slice::from_raw_parts_mut(self.virtual_addr, self.size) }
     }
 

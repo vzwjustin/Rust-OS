@@ -47,14 +47,51 @@ fn copy_u64_to_user_addr(dst: u64, value: u64) -> LinuxResult<()> {
     UserSpaceMemory::copy_to_user(dst, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
 }
 
+fn copy_u32_to_user_addr(dst: u64, value: u32) -> LinuxResult<()> {
+    UserSpaceMemory::copy_to_user(dst, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
+}
+
 fn copy_u64_from_user_addr(src: u64) -> LinuxResult<u64> {
     let mut bytes = [0u8; core::mem::size_of::<u64>()];
     UserSpaceMemory::copy_from_user(src, &mut bytes).map_err(|_| LinuxError::EFAULT)?;
     Ok(u64::from_ne_bytes(bytes))
 }
 
+fn copy_i32_from_user_addr(src: u64) -> LinuxResult<i32> {
+    let mut bytes = [0u8; core::mem::size_of::<i32>()];
+    UserSpaceMemory::copy_from_user(src, &mut bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(i32::from_ne_bytes(bytes))
+}
+
+fn with_futex_atomic_i32<R>(uaddr: *mut i32, f: impl FnOnce(&AtomicI32) -> R) -> LinuxResult<R> {
+    if uaddr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    UserSpaceMemory::validate_user_ptr(uaddr as u64, core::mem::size_of::<i32>() as u64, true)
+        .map_err(|_| LinuxError::EFAULT)?;
+
+    // SAFETY: the futex word is a validated writable userspace i32. Linux PI futex
+    // operations require atomic read-modify-write directly on that word.
+    let word = unsafe { &*(uaddr as *const AtomicI32) };
+    Ok(f(word))
+}
+
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
+}
+
 fn copy_usize_to_user(dst: *mut usize, value: usize) -> LinuxResult<()> {
     UserSpaceMemory::copy_to_user(dst as u64, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
+}
+
+/// Safely read a 4-byte futex word from a userspace address.
+fn read_futex_word(uaddr: *mut i32) -> LinuxResult<i32> {
+    if uaddr.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let mut buf = [0u8; 4];
+    UserSpaceMemory::copy_from_user(uaddr as u64, &mut buf).map_err(|_| LinuxError::EFAULT)?;
+    Ok(i32::from_ne_bytes(buf))
 }
 
 /// A thread blocked on a futex, together with the bitset it is waiting on.
@@ -74,6 +111,9 @@ struct FutexWaiter {
 static FUTEX_WAITERS: RwLock<BTreeMap<usize, Vec<FutexWaiter>>> = RwLock::new(BTreeMap::new());
 
 #[inline(always)]
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model and that writing to it has no harmful side effects.
 unsafe fn wrmsr(msr: u32, value: u64) {
     let low = value as u32;
     let high = (value >> 32) as u32;
@@ -340,6 +380,12 @@ pub fn futex(
     if uaddr.is_null() {
         return Err(LinuxError::EFAULT);
     }
+    crate::memory::user_space::UserSpaceMemory::validate_user_ptr(uaddr as u64, 4, true)
+        .map_err(|_| LinuxError::EFAULT)?;
+    if !_uaddr2.is_null() {
+        crate::memory::user_space::UserSpaceMemory::validate_user_ptr(_uaddr2 as u64, 4, true)
+            .map_err(|_| LinuxError::EFAULT)?;
+    }
 
     // Strip the flag bits before matching the operation. FUTEX_CLOCK_REALTIME
     // only selects the clock used for the (currently best-effort) timeout, so
@@ -348,10 +394,8 @@ pub fn futex(
 
     match op {
         futex_op::FUTEX_WAIT => {
-            unsafe {
-                if *uaddr != val {
-                    return Err(LinuxError::EAGAIN);
-                }
+            if copy_i32_from_user_addr(uaddr as u64)? != val {
+                return Err(LinuxError::EAGAIN);
             }
 
             let key = uaddr as usize;
@@ -437,10 +481,8 @@ pub fn futex(
             if _uaddr2.is_null() {
                 return Err(LinuxError::EFAULT);
             }
-            unsafe {
-                if *uaddr != _val3 {
-                    return Err(LinuxError::EAGAIN);
-                }
+            if copy_i32_from_user_addr(uaddr as u64)? != _val3 {
+                return Err(LinuxError::EAGAIN);
             }
             let key = uaddr as usize;
             let key2 = _uaddr2 as usize;
@@ -481,10 +523,8 @@ pub fn futex(
             if bitset == 0 {
                 return Err(LinuxError::EINVAL);
             }
-            unsafe {
-                if *uaddr != val {
-                    return Err(LinuxError::EAGAIN);
-                }
+            if read_futex_word(uaddr)? != val {
+                return Err(LinuxError::EAGAIN);
             }
 
             let key = uaddr as usize;
@@ -543,11 +583,11 @@ pub fn futex(
             // FUTEX_LOCK_PI: Lock a PI futex. If the futex word is 0 (unlocked),
             // atomically set it to our TID. Otherwise, wait.
             let pid = process::current_pid() as i32;
-            let futex_word = unsafe { &*(uaddr as *const AtomicI32) };
-            if futex_word
-                .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
+            if with_futex_atomic_i32(uaddr, |futex_word| {
+                futex_word
+                    .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            })? {
                 return Ok(0);
             }
             // Slow path: wait like FUTEX_WAIT but don't check val
@@ -564,18 +604,20 @@ pub fn futex(
                 let _ = process::get_process_manager().block_process(pid as u32);
             }
             // When woken, try to acquire again
-            let _ = futex_word.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst);
+            let _ = with_futex_atomic_i32(uaddr, |futex_word| {
+                futex_word.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+            })?;
             Ok(0)
         }
         futex_op::FUTEX_UNLOCK_PI => {
             // FUTEX_UNLOCK_PI: Unlock a PI futex. Atomically set to 0 and wake
             // one waiter.
             let pid = process::current_pid() as i32;
-            let futex_word = unsafe { &*(uaddr as *const AtomicI32) };
-            if futex_word
-                .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
+            if !with_futex_atomic_i32(uaddr, |futex_word| {
+                futex_word
+                    .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            })? {
                 return Err(LinuxError::EPERM);
             }
             let key = uaddr as usize;
@@ -596,11 +638,11 @@ pub fn futex(
         futex_op::FUTEX_TRYLOCK_PI => {
             // FUTEX_TRYLOCK_PI: Try to lock a PI futex without waiting.
             let pid = process::current_pid() as i32;
-            let futex_word = unsafe { &*(uaddr as *const AtomicI32) };
-            if futex_word
-                .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
+            if with_futex_atomic_i32(uaddr, |futex_word| {
+                futex_word
+                    .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            })? {
                 Ok(0)
             } else {
                 Err(LinuxError::EAGAIN)
@@ -618,10 +660,8 @@ pub fn futex(
             }
 
             // Check that *uaddr still equals val (like FUTEX_WAIT).
-            unsafe {
-                if *uaddr != val {
-                    return Err(LinuxError::EAGAIN);
-                }
+            if read_futex_word(uaddr)? != val {
+                return Err(LinuxError::EAGAIN);
             }
 
             let key = uaddr as usize;
@@ -643,12 +683,13 @@ pub fn futex(
             // When woken, we've been requeued to uaddr2 and it's our turn.
             // Try to acquire the PI futex at uaddr2 by atomically setting it
             // to our TID (if it's 0).
-            let pi_futex = unsafe { &*(_uaddr2 as *const AtomicI32) };
             let tid = pid as i32;
-            pi_futex
-                .compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst)
-                .map(|_| 0)
-                .map_err(|_| LinuxError::EAGAIN)
+            with_futex_atomic_i32(_uaddr2, |pi_futex| {
+                pi_futex
+                    .compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst)
+                    .map(|_| 0)
+                    .map_err(|_| LinuxError::EAGAIN)
+            })?
         }
         futex_op::FUTEX_CMP_REQUEUE_PI => {
             // FUTEX_CMP_REQUEUE_PI: Wake up to `val` waiters on uaddr and
@@ -662,10 +703,8 @@ pub fn futex(
             }
 
             // CMP check: *uaddr must equal val3, otherwise EAGAIN.
-            unsafe {
-                if *uaddr != _val3 {
-                    return Err(LinuxError::EAGAIN);
-                }
+            if copy_i32_from_user_addr(uaddr as u64)? != _val3 {
+                return Err(LinuxError::EAGAIN);
             }
 
             let key = uaddr as usize;
@@ -788,9 +827,7 @@ pub fn set_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
     }
 
     let mut area = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(u_info, area.as_mut_ptr(), 32);
-    }
+    UserSpaceMemory::copy_from_user(u_info as u64, &mut area).map_err(|_| LinuxError::EFAULT)?;
     THREAD_AREAS.write().insert(current_tid(), area);
     Ok(0)
 }
@@ -805,9 +842,7 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
 
     let tid = current_tid();
     let area = THREAD_AREAS.read().get(&tid).copied().unwrap_or([0u8; 32]);
-    unsafe {
-        core::ptr::copy_nonoverlapping(area.as_ptr(), u_info, 32);
-    }
+    UserSpaceMemory::copy_to_user(u_info as u64, &area).map_err(|_| LinuxError::EFAULT)?;
     Ok(0)
 }
 
@@ -942,13 +977,13 @@ pub fn sched_getaffinity(_pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> Lin
 // ============================================================================
 
 /// exit - terminate current thread
-pub fn exit(status: i32) -> ! {
+pub fn exit(status: i32) -> i64 {
     inc_ops();
     process_ops::exit(status)
 }
 
 /// exit_group - terminate all threads in process
-pub fn exit_group(status: i32) -> ! {
+pub fn exit_group(status: i32) -> i64 {
     inc_ops();
     process_ops::exit(status)
 }
@@ -1017,7 +1052,7 @@ pub fn clone3(cl_args: *const CloneArgs, size: usize) -> LinuxResult<Pid> {
         return Err(LinuxError::EINVAL);
     }
 
-    let args = unsafe { &*cl_args };
+    let args: CloneArgs = copy_struct_from_user(cl_args)?;
 
     if (args.flags & clone_flags::CLONE_THREAD) != 0 {
         return Err(LinuxError::EINVAL);
@@ -1045,12 +1080,10 @@ pub fn getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> LinuxResult<i3
         .unwrap_or(0);
 
     if !cpu.is_null() {
-        // SAFETY: caller guarantees cpu points to a valid, writable u32.
-        unsafe { *cpu = cpu_id };
+        copy_u32_to_user_addr(cpu as u64, cpu_id)?;
     }
     if !node.is_null() {
-        // SAFETY: caller guarantees node points to a valid, writable u32.
-        unsafe { *node = node_id };
+        copy_u32_to_user_addr(node as u64, node_id)?;
     }
     Ok(0)
 }

@@ -1,6 +1,6 @@
 //! Miscellaneous Mutter types
 //! Ported from various meta/*.h files
-use alloc::{string::String, vec::Vec, format, collections::BTreeMap};
+use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 
 use crate::mutter_port::meta::types::*;
 
@@ -45,10 +45,7 @@ pub struct MetaSettings {
 impl MetaSettings {
     /// Get setting value as bool
     pub fn get_bool(&self, key: &str) -> bool {
-        self.settings
-            .get(key)
-            .map(|v| v == "true")
-            .unwrap_or(false)
+        self.settings.get(key).map(|v| v == "true").unwrap_or(false)
     }
 
     /// Set setting value
@@ -187,9 +184,7 @@ pub struct MetaLaunchContext {
 
 impl MetaLaunchContext {
     pub fn new() -> Self {
-        Self {
-            display_name: None,
-        }
+        Self { display_name: None }
     }
 }
 
@@ -202,23 +197,39 @@ impl Default for MetaLaunchContext {
 /// Sound player for system sounds. Plays system notification sounds.
 pub struct MetaSoundPlayer {
     current_sound: Option<String>,
+    is_playing: bool,
 }
 
 impl MetaSoundPlayer {
     pub fn new() -> Self {
         Self {
             current_sound: None,
+            is_playing: false,
         }
     }
 
-    /// Play system sound
-    pub fn play_from_file(&self, _path: &str, _display_name: &str) {
-        // TODO: implement
+    /// Play system sound from file path. A full implementation would
+    /// decode the audio file and play it via the kernel audio driver.
+    /// For now, the sound path and playing state are tracked.
+    pub fn play_from_file(&mut self, path: &str, _display_name: &str) {
+        self.current_sound = Some(String::from(path));
+        self.is_playing = true;
     }
 
-    /// Stop playing sound
-    pub fn stop(&self) {
-        // TODO: implement
+    /// Stop playing sound. Clears the current sound and playing state.
+    pub fn stop(&mut self) {
+        self.current_sound = None;
+        self.is_playing = false;
+    }
+
+    /// Whether a sound is currently playing.
+    pub fn is_playing(&self) -> bool {
+        self.is_playing
+    }
+
+    /// Get the path of the currently playing sound.
+    pub fn get_current_sound(&self) -> Option<&str> {
+        self.current_sound.as_deref()
     }
 }
 

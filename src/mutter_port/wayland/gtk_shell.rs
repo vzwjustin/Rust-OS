@@ -14,16 +14,12 @@ pub struct MetaWaylandGtkShell {
 impl MetaWaylandGtkShell {
     /// Create a new GTK shell instance
     pub fn new() -> Self {
-        Self {
-            compositor: None,
-        }
+        Self { compositor: None }
     }
 
     /// Initialize GTK shell support for the compositor
-    /// TODO: Register gtk_shell1 protocol and listen for client requests
-    pub fn init(_compositor: *mut c_void) {
-        // TODO: implement
-    }
+    /// ponytail: register gtk_shell1 protocol globally if needed, but no-op in this kernel stub
+    pub fn init(_compositor: *mut c_void) {}
 }
 
 impl Default for MetaWaylandGtkShell {

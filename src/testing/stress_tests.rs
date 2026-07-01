@@ -186,63 +186,63 @@ pub fn create_stress_test_suite() -> TestSuite {
 // Setup and teardown functions
 fn setup_all_stress_tests() {
     // Initialize stress testing environment
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_all_stress_tests() {
     // Clean up stress testing environment
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_stress_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_stress_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_memory_stress_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_memory_controller().reset();
 }
 
 fn teardown_memory_stress_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_process_stress_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_process_stress_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_interrupt_stress_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
 }
 
 fn teardown_interrupt_stress_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_network_stress_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_network_stress_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_io_stress_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::reset_all_mocks();
 }
 
 fn teardown_io_stress_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 // Stress test implementations
@@ -365,14 +365,14 @@ fn test_memory_pressure() -> TestResult {
 
         // Get initial memory statistics
         let _initial_stats = {
-            let manager = memory_manager;
+            let manager = &memory_manager;
             manager.get_zone_stats()
         };
 
         // Allocate memory frames to create pressure
         for i in 0..500 {
             // Reduced for real hardware
-            let manager = memory_manager;
+            let manager = &memory_manager;
 
             // Try different zones to test zone management
             let zone = match i % 3 {
@@ -402,7 +402,7 @@ fn test_memory_pressure() -> TestResult {
 
         // Free remaining allocations
         {
-            let manager = memory_manager;
+            let manager = &memory_manager;
             for (frame, zone) in allocated_frames {
                 manager.deallocate_frame(frame, zone);
             }
@@ -413,7 +413,7 @@ fn test_memory_pressure() -> TestResult {
 
         // Get final memory statistics
         let _final_stats = {
-            let manager = memory_manager;
+            let manager = &memory_manager;
             manager.get_zone_stats()
         };
 
@@ -507,9 +507,7 @@ fn test_interrupt_stress() -> TestResult {
         // Perform CPU-intensive work to trigger timer interrupts
         for _ in 0..1000 {
             work_counter = work_counter.wrapping_add(1);
-            unsafe {
-                core::arch::asm!("pause");
-            }
+            core::hint::spin_loop();
         }
 
         // Yield to allow interrupt processing

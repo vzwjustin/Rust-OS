@@ -140,7 +140,8 @@ pub fn try_collapse_region(virt: usize) -> Result<(), &'static str> {
         return Err("range not marked MADV_HUGEPAGE");
     }
 
-    let mm = memory::get_memory_manager().ok_or("memory manager not initialized")?;
+    let mm_guard = memory::get_memory_manager().ok_or("memory manager not initialized")?;
+    let mm = &*mm_guard;
     let page_size = 4096usize;
 
     // Verify every 4 KiB page in the 2 MiB window is mapped with uniform flags.

@@ -8,6 +8,21 @@
 //! - No C bindings; no `bindings::rb_node`
 //! - Nodes are heap-allocated via `Box`
 //! - `RBTreeNodeReservation` is a pre-allocated node used for lock-safe insertion
+//!
+//! # Safety
+//!
+//! All `unsafe` blocks in this module operate on `NonNull<RBNode<K, V>>`
+//! pointers that are either:
+//! - Owned exclusively by the current code path (just allocated, not yet linked)
+//! - Validated by tree invariants (every node in the tree was inserted via
+//!   `Box::into_raw` and is removed via `Box::from_raw` before deallocation)
+//!
+//! The tree maintains the red-black invariant at all times: every path from
+//! root to a null child has the same number of black nodes. Raw pointer
+//! dereferences are safe because:
+//! - Nodes are never deallocated while in the tree (only on drop or removal)
+//! - Parent/child pointers are updated atomically during rotations
+//! - The root is always valid or null (never dangling)
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
@@ -656,6 +671,7 @@ impl<K: Ord, V> RBTreeNodeReservation<K, V> {
         core::mem::forget(self); // don't drop the pre-allocated memory
         // Initialize the node in-place
         unsafe {
+            // SAFETY: node is a freshly allocated NonNull<RBNode>; the slot is uninitialized but valid for writes.
             core::ptr::write(node.as_ptr(), RBNode {
                 color:  Color::Red,
                 parent: None,

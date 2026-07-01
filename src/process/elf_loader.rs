@@ -188,8 +188,12 @@ impl ElfLoader {
             return Err(ElfLoaderError::FileTooSmall);
         }
 
-        // Safe to read header
-        let header = unsafe { core::ptr::read(data.as_ptr() as *const Elf64Header) };
+        // Read header with read_unaligned — `data` is a byte slice whose
+        // address is only guaranteed 1-byte aligned, but Elf64Header contains
+        // u64 fields (align 8). Using `ptr::read` on a misaligned pointer is
+        // UB; `read_unaligned` copies the bytes without an alignment requirement.
+        // SAFETY: the ELF header/segment pointer is within a valid mapped buffer.
+        let header = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const Elf64Header) };
 
         Ok(header)
     }
@@ -269,8 +273,9 @@ impl ElfLoader {
 
         for i in 0..header.e_phnum {
             let offset = header.e_phoff as usize + (i as usize * phdr_size);
+            // SAFETY: the ELF header/segment pointer is within a valid mapped buffer.
             let phdr = unsafe {
-                core::ptr::read((data.as_ptr().add(offset)) as *const Elf64ProgramHeader)
+                core::ptr::read_unaligned((data.as_ptr().add(offset)) as *const Elf64ProgramHeader)
             };
             program_headers.push(phdr);
         }
@@ -417,6 +422,7 @@ impl ElfLoader {
             }
 
             if translate_addr(region_start).is_some() {
+                // SAFETY: the ELF header/segment pointer is within a valid mapped buffer.
                 unsafe {
                     let dest_ptr = region_start.as_mut_ptr::<u8>();
                     let src_ptr = binary_data[file_offset..file_offset + file_size].as_ptr();
@@ -434,6 +440,7 @@ impl ElfLoader {
 
             let bss_start = VirtAddr::new(region_start.as_u64() + bss_offset as u64);
             if translate_addr(bss_start).is_some() {
+                // SAFETY: the BSS region is a valid mapped user-space address range.
                 unsafe {
                     core::ptr::write_bytes(bss_start.as_mut_ptr::<u8>(), 0, bss_size);
                 }

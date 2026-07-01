@@ -32,6 +32,11 @@ struct RcuHead {
     target_seq: u64,
 }
 
+// SAFETY: RcuHead contains a function pointer (fn(*mut u8)) and a usize
+// argument. Function pointers are Send+Sync, and the arg is an opaque
+// usize value managed by the caller. The callback is only invoked after
+// a grace period has elapsed, at which point no other thread holds a
+// reference to the data.
 unsafe impl Send for RcuHead {}
 unsafe impl Sync for RcuHead {}
 

@@ -139,6 +139,8 @@ pub fn add_key(
     let payload_data = if payload.is_null() || plen == 0 {
         Vec::new()
     } else {
+        // SAFETY: `payload` is a validated user pointer and `plen` is the
+        // validated payload length.
         unsafe { core::slice::from_raw_parts(payload, plen) }.to_vec()
     };
 
@@ -304,6 +306,8 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
                 if plen == 0 {
                     key.payload.clear();
                 } else {
+                    // SAFETY: `payload` is a validated user pointer and `plen`
+                    // is the validated payload length.
                     key.payload = unsafe { core::slice::from_raw_parts(payload, plen) }.to_vec();
                 }
                 return 0;
@@ -341,6 +345,7 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
                     let count = core::cmp::min(key.links.len(), buflen / 4);
                     for i in 0..count {
                         unsafe {
+                            // SAFETY: buf is a validated user buffer with sufficient space for key.links.len() * 4 bytes.
                             core::ptr::write(buf.add(i * 4) as *mut u32, key.links[i]);
                         }
                     }
@@ -518,6 +523,8 @@ pub fn keyctl(cmd: u32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32 {
                 if payload.is_null() || plen == 0 {
                     key.payload.clear();
                 } else {
+                    // SAFETY: `payload` is a validated user pointer and `plen`
+                    // is the validated payload length.
                     key.payload = unsafe { core::slice::from_raw_parts(payload, plen) }.to_vec();
                 }
                 return 0;
@@ -653,6 +660,8 @@ fn read_cstr(ptr: *const u8) -> String {
     while unsafe { *ptr.add(len) } != 0 {
         len += 1;
     }
+    // SAFETY: `ptr` is a valid C string pointer and `len` was computed by
+    // scanning for the null terminator.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
     String::from_utf8_lossy(bytes).into_owned()
 }

@@ -75,10 +75,11 @@ impl MetaCursorXcursor {
         }
     }
 
-    /// Get an xcursor sprite by type.
-    pub fn get(_cursor_type: ClutterCursorType) -> Option<Self> {
-        // TODO: Load cursor from xcursor theme
-        None
+    /// Get an xcursor sprite by type. Without an Xcursor theme loader,
+    /// returns a default sprite with the correct type. A full
+    /// implementation would load the cursor from the Xcursor theme.
+    pub fn get(cursor_type: ClutterCursorType) -> Option<Self> {
+        Some(Self::new(cursor_type))
     }
 
     /// Set the theme scale factor.
@@ -92,16 +93,26 @@ impl MetaCursorXcursor {
         self.cursor
     }
 
-    /// Get the current image frame.
+    /// Get the current image frame. Returns the xcursor_images pointer
+    /// if available, otherwise None.
     pub fn get_current_image(&self) -> Option<*mut c_void> {
-        // TODO: Return XcursorImage with animation frame
-        None
+        if self.xcursor_images.is_null() {
+            None
+        } else {
+            Some(self.xcursor_images)
+        }
     }
 
-    /// Get scaled image dimensions.
+    /// Get scaled image dimensions. Returns (width, height) based on
+    /// the theme scale. Without loaded cursor images, returns (0, 0).
     pub fn get_scaled_image_size(&self) -> (i32, i32) {
-        // TODO: Return width, height at current theme scale
-        (0, 0)
+        if self.cursor_images.is_empty() {
+            return (0, 0);
+        }
+        // Default cursor size is 24x24 at scale 1.
+        let base = 24i32;
+        let scaled = base * self.theme_scale;
+        (scaled, scaled)
     }
 }
 
@@ -111,14 +122,48 @@ impl Default for MetaCursorXcursor {
     }
 }
 
-/// Get standardized cursor name from cursor type.
-pub fn meta_cursor_get_name(_cursor: ClutterCursorType) -> Option<&'static str> {
-    // TODO: Map cursor type to CSS/XCursor name
-    None
+/// Get standardized cursor name from cursor type. Maps Clutter cursor
+/// types to XCursor/CSS cursor names.
+pub fn meta_cursor_get_name(cursor: ClutterCursorType) -> Option<&'static str> {
+    match cursor {
+        ClutterCursorType::CLUTTER_CURSOR_DEFAULT => Some("default"),
+        ClutterCursorType::CLUTTER_CURSOR_POINTER => Some("pointer"),
+        ClutterCursorType::CLUTTER_CURSOR_MOVE => Some("move"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_UP => Some("n-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_DOWN => Some("s-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_LEFT => Some("w-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_RIGHT => Some("e-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_UP_LEFT => Some("nw-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_UP_RIGHT => Some("ne-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_DOWN_LEFT => Some("sw-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_DOWN_RIGHT => Some("se-resize"),
+        ClutterCursorType::CLUTTER_CURSOR_TEXT => Some("text"),
+        ClutterCursorType::CLUTTER_CURSOR_WAIT => Some("wait"),
+        ClutterCursorType::CLUTTER_CURSOR_NOT_ALLOWED => Some("not-allowed"),
+        ClutterCursorType::CLUTTER_CURSOR_GRAB => Some("grab"),
+        ClutterCursorType::CLUTTER_CURSOR_GRABBING => Some("grabbing"),
+    }
 }
 
-/// Get legacy X11 cursor name.
-pub fn meta_cursor_get_legacy_name(_cursor: ClutterCursorType) -> Option<&'static str> {
-    // TODO: Map cursor type to legacy X cursor name
-    None
+/// Get legacy X11 cursor name. Maps Clutter cursor types to the
+/// corresponding X11 cursor font glyph names.
+pub fn meta_cursor_get_legacy_name(cursor: ClutterCursorType) -> Option<&'static str> {
+    match cursor {
+        ClutterCursorType::CLUTTER_CURSOR_DEFAULT => Some("left_ptr"),
+        ClutterCursorType::CLUTTER_CURSOR_POINTER => Some("hand2"),
+        ClutterCursorType::CLUTTER_CURSOR_MOVE => Some("fleur"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_UP => Some("top_side"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_DOWN => Some("bottom_side"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_LEFT => Some("left_side"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_RIGHT => Some("right_side"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_UP_LEFT => Some("top_left_corner"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_UP_RIGHT => Some("top_right_corner"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_DOWN_LEFT => Some("bottom_left_corner"),
+        ClutterCursorType::CLUTTER_CURSOR_RESIZE_DOWN_RIGHT => Some("bottom_right_corner"),
+        ClutterCursorType::CLUTTER_CURSOR_TEXT => Some("xterm"),
+        ClutterCursorType::CLUTTER_CURSOR_WAIT => Some("watch"),
+        ClutterCursorType::CLUTTER_CURSOR_NOT_ALLOWED => Some("circle"),
+        ClutterCursorType::CLUTTER_CURSOR_GRAB => Some("hand1"),
+        ClutterCursorType::CLUTTER_CURSOR_GRABBING => Some("hand1"),
+    }
 }

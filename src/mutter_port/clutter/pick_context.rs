@@ -47,6 +47,53 @@ pub enum PickMode {
     All,
 }
 
+/// A 4x4 row-major transform matrix stored as 16 `f32` values.
+///
+/// Stand-in for `graphene_matrix_t`, which is not available in this port.
+/// The layout is row-major: `m[row * 4 + col]`. Supports `identity()` and
+/// `multiply()` (this * other, matching `graphene_matrix_multiply`'s
+/// "result = self * b" convention where vectors are column vectors
+/// post-multiplied).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Matrix4x4(pub [f32; 16]);
+
+impl Matrix4x4 {
+    /// Returns the identity matrix.
+    pub const fn identity() -> Self {
+        Matrix4x4([
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+    }
+
+    /// Returns `self * other` (row-major, column-vector convention).
+    ///
+    /// `result[row * 4 + col] = sum_k self[row*4+k] * other[k*4+col]`.
+    pub fn multiply(&self, other: &Matrix4x4) -> Matrix4x4 {
+        let mut out = [0.0f32; 16];
+        for row in 0..4 {
+            for col in 0..4 {
+                let mut sum = 0.0;
+                for k in 0..4 {
+                    sum += self.0[row * 4 + k] * other.0[k * 4 + col];
+                }
+                out[row * 4 + col] = sum;
+            }
+        }
+        Matrix4x4(out)
+    }
+
+    /// Returns the matrix elements as a flat row-major `[f32; 16]` array.
+    pub fn as_array(&self) -> [f32; 16] {
+        self.0
+    }
+}
+
+impl Default for Matrix4x4 {
+    fn default() -> Self {
+        Matrix4x4::identity()
+    }
+}
+
 /// Placeholder for a 3D pick ray (simplified from `graphene_ray_t`).
 ///
 /// A full implementation would hold ray origin, direction, and support
@@ -112,6 +159,13 @@ pub struct PickContext {
     pick_stack: PickStack,
     ray: Ray,
     point: Point3D,
+    /// Stack of accumulated transform matrices. `transforms[0]` is the
+    /// current/topmost (innermost) transform, mirroring the C
+    /// `graphene_matrix_t` stack managed inside `ClutterPickStack`. The
+    /// base (bottom of stack) is the identity; `get_transform` returns the
+    /// product of all pushed matrices, i.e. the composite transform from
+    /// the root to the current node.
+    transforms: Vec<Matrix4x4>,
 }
 
 impl PickContext {
@@ -119,13 +173,15 @@ impl PickContext {
     ///
     /// Creates a new pick context for a pick pass starting at the given
     /// point and ray. The `pick_stack` is created empty and populated as
-    /// actors render during the pass.
+    /// actors render during the pass. The transform stack is initialized
+    /// with a single identity matrix as the base.
     pub fn new_for_view(mode: PickMode, point: Point3D, ray: Ray) -> PickContext {
         PickContext {
             mode,
             pick_stack: PickStack::new(),
             ray,
             point,
+            transforms: Vec::new(),
         }
     }
 
@@ -175,35 +231,47 @@ impl PickContext {
 
     /// Port of `clutter_pick_context_push_transform`.
     ///
-    /// Pushes a transform matrix onto the pick stack. Pop with
-    /// `pop_transform` when done.
-    ///
-    /// TODO: `transform` is a placeholder; once matrix support is ported,
-    /// this should accept a real matrix type.
-    pub fn push_transform(&mut self, _transform: &[f32; 16]) {
-        // Placeholder: actual implementation would push to the pick stack's
-        // transform matrix stack once supported.
+    /// Pushes a transform matrix onto the transform stack. The pushed
+    /// matrix is composed with the current (topmost) transform so that
+    /// `get_transform` returns the cumulative root-to-current transform.
+    /// Pop with `pop_transform` when done.
+    pub fn push_transform(&mut self, transform: Matrix4x4) {
+        let current = self.current_transform();
+        let composed = current.multiply(&transform);
+        self.transforms.insert(0, composed);
     }
 
     /// Port of `clutter_pick_context_get_transform`.
     ///
-    /// Retrieves the current transform matrix of the pick stack.
-    ///
-    /// TODO: once matrix support is ported, return a real matrix type.
-    pub fn get_transform(&self) -> [f32; 16] {
-        // Placeholder: returns identity matrix
-        [
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-        ]
+    /// Retrieves the current (composite) transform matrix of the pick
+    /// stack: the product of all matrices pushed since the base. Returns
+    /// the identity if nothing has been pushed.
+    pub fn get_transform(&self) -> Matrix4x4 {
+        self.current_transform()
     }
 
     /// Port of `clutter_pick_context_pop_transform`.
     ///
     /// Pops the current transform from the transform stack. It is a
-    /// programming error to call this without a corresponding `push_transform` first.
+    /// programming error to call this without a corresponding
+    /// `push_transform` first.
     pub fn pop_transform(&mut self) {
-        // Placeholder: actual implementation would pop from the pick stack's
-        // transform matrix stack once supported.
+        debug_assert!(
+            !self.transforms.is_empty(),
+            "pop_transform without a matching push_transform"
+        );
+        if !self.transforms.is_empty() {
+            self.transforms.remove(0);
+        }
+    }
+
+    /// Returns the current composite transform: the topmost pushed matrix
+    /// if any, otherwise the identity (the implicit base of the stack).
+    fn current_transform(&self) -> Matrix4x4 {
+        self.transforms
+            .first()
+            .copied()
+            .unwrap_or(Matrix4x4::identity())
     }
 
     /// Port of `clutter_pick_context_intersects_box`.
@@ -285,10 +353,47 @@ mod tests {
         let ctx = PickContext::new_for_view(PickMode::None, point, ray);
 
         let transform = ctx.get_transform();
-        assert_eq!(transform[0], 1.0);
-        assert_eq!(transform[5], 1.0);
-        assert_eq!(transform[10], 1.0);
-        assert_eq!(transform[15], 1.0);
+        assert_eq!(transform, Matrix4x4::identity());
+    }
+
+    #[test]
+    fn push_get_pop_transform_composes_matrices() {
+        let point = Point3D::new(0.0, 0.0, 0.0);
+        let ray = Ray::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let mut ctx = PickContext::new_for_view(PickMode::All, point, ray);
+
+        // Base transform is identity.
+        assert_eq!(ctx.get_transform(), Matrix4x4::identity());
+
+        // Push a translation matrix (row-major: x offset in [3], y in [7]).
+        let translate = Matrix4x4([
+            1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 20.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]);
+        ctx.push_transform(translate);
+
+        // After one push, the composite equals the pushed matrix.
+        assert_eq!(ctx.get_transform(), translate);
+
+        // Push a second translation; composite should be translate * translate2.
+        let translate2 = Matrix4x4([
+            1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 7.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]);
+        ctx.push_transform(translate2);
+        assert_eq!(ctx.get_transform(), translate.multiply(&translate2));
+
+        // Pop returns to the first pushed transform.
+        ctx.pop_transform();
+        assert_eq!(ctx.get_transform(), translate);
+
+        // Pop returns to the identity base.
+        ctx.pop_transform();
+        assert_eq!(ctx.get_transform(), Matrix4x4::identity());
+    }
+
+    #[test]
+    fn matrix4x4_identity_multiply_is_identity() {
+        let m = Matrix4x4::identity();
+        assert_eq!(m.multiply(&Matrix4x4::identity()), Matrix4x4::identity());
     }
 
     #[test]

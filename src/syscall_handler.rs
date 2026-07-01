@@ -8,6 +8,86 @@ use crate::memory::user_space::UserSpaceMemory;
 use crate::syscall::SyscallNumber;
 use x86_64::structures::idt::InterruptStackFrame;
 
+fn copy_struct_from_user<T: Copy>(user_ptr: u64) -> Result<T, crate::linux_compat::LinuxError> {
+    if user_ptr == 0 {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    let bytes = crate::linux_compat::as_bytes_mut(&mut value);
+
+    UserSpaceMemory::copy_from_user(user_ptr, bytes)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)?;
+
+    // SAFETY: `copy_from_user` returned success after filling exactly
+    // `size_of::<T>()` bytes. Callers use this helper for syscall ABI POD
+    // structs with no invalid bit patterns.
+    Ok(unsafe { value.assume_init() })
+}
+
+fn timespec_timeout_ms_from_user(user_ptr: u64) -> Result<i32, crate::linux_compat::LinuxError> {
+    let ts = copy_struct_from_user::<crate::linux_compat::TimeSpec>(user_ptr)?;
+    if ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+        return Err(crate::linux_compat::LinuxError::EINVAL);
+    }
+
+    let ms = ts
+        .tv_sec
+        .saturating_mul(1000)
+        .saturating_add(ts.tv_nsec / 1_000_000);
+    Ok(ms.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+}
+
+fn copy_u32_slice_to_user(
+    user_ptr: *mut u32,
+    values: &[u32],
+) -> crate::linux_compat::LinuxResult<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    if user_ptr.is_null() {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+
+    let byte_len = values
+        .len()
+        .checked_mul(core::mem::size_of::<u32>())
+        .ok_or(crate::linux_compat::LinuxError::EINVAL)?;
+    let mut bytes = alloc::vec::Vec::with_capacity(byte_len);
+    for value in values {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+
+    UserSpaceMemory::copy_to_user(user_ptr as u64, &bytes)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)
+}
+
+fn copy_u32_slice_from_user(
+    user_ptr: *const u32,
+    count: usize,
+) -> crate::linux_compat::LinuxResult<alloc::vec::Vec<u32>> {
+    if count == 0 {
+        return Ok(alloc::vec::Vec::new());
+    }
+    if user_ptr.is_null() {
+        return Err(crate::linux_compat::LinuxError::EFAULT);
+    }
+
+    let byte_len = count
+        .checked_mul(core::mem::size_of::<u32>())
+        .ok_or(crate::linux_compat::LinuxError::EINVAL)?;
+    let mut bytes = alloc::vec::Vec::new();
+    bytes.resize(byte_len, 0);
+    UserSpaceMemory::copy_from_user(user_ptr as u64, &mut bytes)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)?;
+
+    let mut values = alloc::vec::Vec::with_capacity(count);
+    for chunk in bytes.chunks_exact(core::mem::size_of::<u32>()) {
+        values.push(u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
 /// Syscall dispatcher - routes syscalls to appropriate handlers
 ///
 /// Syscall arguments are passed in registers (System V AMD64 ABI):
@@ -51,6 +131,12 @@ pub fn dispatch_syscall(
     }
     if crate::trace::function_tracer_enabled() {
         crate::trace::record_function_trace("dispatch_syscall", dispatch_addr, syscall_num);
+    }
+
+    if matches!(syscall_num, 60 | 231)
+        && crate::user_sched::complete_user_exit_if_pending(arg1 as i32)
+    {
+        return 0;
     }
 
     let pid = crate::process::current_pid();
@@ -190,11 +276,10 @@ fn syscall_execve(filename: *const u8, argv: *const *const u8, envp: *const *con
 }
 
 fn syscall_exit(status: i32) -> i64 {
-    if crate::user_sched::user_bootstrap_active() {
-        crate::user_sched::complete_user_exit(status);
+    if crate::user_sched::complete_user_exit_if_pending(status) {
         return 0;
     }
-    crate::linux_compat::process_ops::exit(status);
+    crate::linux_compat::process_ops::exit(status)
 }
 
 fn syscall_wait4(pid: i32, wstatus: *mut i32, options: i32, rusage: *mut u8) -> i64 {
@@ -360,8 +445,11 @@ fn syscall_futex(
     let to = if timeout.is_null() {
         None
     } else {
-        let ts = unsafe { &*(timeout as *const crate::linux_compat::TimeSpec) };
-        Some(crate::futex::FutexTimeout::from_timespec(ts, false))
+        let ts = match copy_struct_from_user::<crate::linux_compat::TimeSpec>(timeout as u64) {
+            Ok(ts) => ts,
+            Err(e) => return -(e as i64),
+        };
+        Some(crate::futex::FutexTimeout::from_timespec(&ts, false))
     };
     crate::futex::do_futex(uaddr, futex_op, val, to.as_ref(), uaddr2, val as i32, val3) as i64
 }
@@ -590,10 +678,8 @@ fn syscall_getgroups(size: i32, list: *mut u32) -> i64 {
     if size < count {
         return -(crate::linux_compat::LinuxError::EINVAL as i64);
     }
-    unsafe {
-        for (i, &gid) in groups.iter().enumerate() {
-            core::ptr::write(list.add(i), gid);
-        }
+    if let Err(err) = copy_u32_slice_to_user(list, &groups) {
+        return -(err as i64);
     }
     count as i64
 }
@@ -604,12 +690,10 @@ fn syscall_setgroups(size: i32, list: *const u32) -> i64 {
     if size > 32 {
         return -(crate::linux_compat::LinuxError::EINVAL as i64);
     }
-    let mut groups = alloc::vec::Vec::with_capacity(size as usize);
-    for i in 0..size as usize {
-        unsafe {
-            groups.push(core::ptr::read(list.add(i)));
-        }
-    }
+    let groups = match copy_u32_slice_from_user(list, size as usize) {
+        Ok(groups) => groups,
+        Err(err) => return -(err as i64),
+    };
     let pm = crate::process::get_process_manager();
     let pid = pm.current_process();
     match pm.set_supplementary_groups(pid, groups) {
@@ -1377,9 +1461,9 @@ fn syscall_ppoll(fds: *mut u8, nfds: u64, ts: *const u8, sigmask: *const u8) -> 
     let timeout_ms = if ts.is_null() {
         -1
     } else {
-        unsafe {
-            (*(ts as *const crate::linux_compat::TimeSpec)).tv_sec as i32 * 1000
-                + (*(ts as *const crate::linux_compat::TimeSpec)).tv_nsec as i32 / 1_000_000
+        match timespec_timeout_ms_from_user(ts as u64) {
+            Ok(ms) => ms,
+            Err(e) => return -(e as i64),
         }
     };
     let _ = sigmask;
@@ -1471,9 +1555,9 @@ fn syscall_epoll_pwait2(
     let timeout_ms = if timeout.is_null() {
         -1
     } else {
-        unsafe {
-            (*(timeout as *const crate::linux_compat::TimeSpec)).tv_sec as i32 * 1000
-                + (*(timeout as *const crate::linux_compat::TimeSpec)).tv_nsec as i32 / 1_000_000
+        match timespec_timeout_ms_from_user(timeout as u64) {
+            Ok(ms) => ms,
+            Err(e) => return -(e as i64),
         }
     };
     let _ = sigmask;
@@ -1526,7 +1610,6 @@ fn read_signalfd_mask(mask: *const u8, sizemask: u32) -> crate::linux_compat::Li
         return Err(crate::linux_compat::LinuxError::EINVAL);
     }
     let mut bytes = [0u8; 8];
-    // SAFETY: caller guarantees mask points to at least sizemask bytes.
     read_user_bytes(mask, &mut bytes)?;
     Ok(u64::from_ne_bytes(bytes))
 }
@@ -1535,32 +1618,16 @@ fn read_user_bytes(ptr: *const u8, dst: &mut [u8]) -> crate::linux_compat::Linux
     if ptr.is_null() {
         return Err(crate::linux_compat::LinuxError::EFAULT);
     }
-    let valid = crate::memory::check_memory_access(ptr as usize, dst.len(), false, 3)
-        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)?;
-    if !valid {
-        return Err(crate::linux_compat::LinuxError::EFAULT);
-    }
-
-    unsafe {
-        core::ptr::copy_nonoverlapping(ptr, dst.as_mut_ptr(), dst.len());
-    }
-    Ok(())
+    UserSpaceMemory::copy_from_user(ptr as u64, dst)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)
 }
 
 fn write_user_bytes(ptr: *mut u8, src: &[u8]) -> crate::linux_compat::LinuxResult<()> {
     if ptr.is_null() {
         return Err(crate::linux_compat::LinuxError::EFAULT);
     }
-    let valid = crate::memory::check_memory_access(ptr as usize, src.len(), true, 3)
-        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)?;
-    if !valid {
-        return Err(crate::linux_compat::LinuxError::EFAULT);
-    }
-
-    unsafe {
-        core::ptr::copy_nonoverlapping(src.as_ptr(), ptr, src.len());
-    }
-    Ok(())
+    UserSpaceMemory::copy_to_user(ptr as u64, src)
+        .map_err(|_| crate::linux_compat::LinuxError::EFAULT)
 }
 fn syscall_timerfd_create(clockid: i32, flags: i32) -> i64 {
     match crate::linux_compat::special_fd::timerfd_create(clockid, flags) {
@@ -1953,6 +2020,7 @@ struct Int80Frame {
 /// arg5=r8, arg6=r9) and returns the i64 result, which the asm trampoline writes
 /// back into the saved RAX slot.
 extern "C" fn syscall_0x80_dispatch(frame: *const Int80Frame) -> i64 {
+    // SAFETY: frame pointer is a valid saved register frame.
     let f = unsafe { &*frame };
 
     if crate::usermode::in_user_mode() {
@@ -1963,12 +2031,18 @@ extern "C" fn syscall_0x80_dispatch(frame: *const Int80Frame) -> i64 {
 
     // Successful execve must not return to the old user RIP; redirect the iretq frame.
     if let Some((entry, stack)) = crate::usermode::take_pending_user_entry() {
+        // SAFETY: frame pointer is a valid saved register frame.
         unsafe {
             crate::usermode::patch_syscall_return_to_user(frame as *mut u8, entry, stack);
         }
-    } else if let Some((rip, rsp)) = crate::user_sched::take_user_resume() {
-        unsafe {
-            crate::usermode::patch_syscall_return_to_kernel(frame as *mut u8, rip, rsp);
+    } else if matches!(f.rax, 60 | 231) {
+        // Only exit/exit_group completes the bootstrap user task. Other syscalls
+        // must return to their saved user RIP so the process can continue.
+        if let Some((rip, rsp)) = crate::user_sched::take_user_resume() {
+            // SAFETY: frame pointer is a valid saved register frame.
+            unsafe {
+                crate::usermode::patch_syscall_return_to_kernel(frame as *mut u8, rip, rsp);
+            }
         }
     }
 
