@@ -199,6 +199,7 @@ pub fn copy_mm(flags: u64, child: &mut ProcessControlBlock, parent: &ProcessCont
 /// `CLONE_FILES` → share the table (all threads see the same fd set).
 /// Otherwise → independent copy.
 pub fn copy_files(flags: u64, child: &mut ProcessControlBlock, parent: &ProcessControlBlock) {
+    // Both fd_table (VFS) and file_descriptors (legacy) are copied.
     child.fd_table = parent.fd_table.clone();
     child.file_descriptors = parent.file_descriptors.clone();
 }
@@ -241,6 +242,8 @@ pub fn copy_namespaces(
     child: &mut ProcessControlBlock,
     parent: &ProcessControlBlock,
 ) -> Result<(), i32> {
+    // TODO: wire namespace handles into ProcessControlBlock and call:
+    //   crate::namespace::copy_namespaces(flags, parent_ns) -> child_ns
     let _new_pid_ns = flags & CLONE_NEWPID != 0;
     let _new_net_ns = flags & CLONE_NEWNET != 0;
     let _new_mnt_ns = flags & CLONE_NEWNS != 0;

@@ -133,6 +133,7 @@ pub fn exit_mm(pid: Pid) {
     drop(vmm_guard);
 
     pm.with_process_mut(pid, |pcb| {
+        // Zero out the virtual memory descriptor so future accesses fault.
         pcb.memory.vm_size = 0;
         pcb.memory.heap_size = 0;
         pcb.memory.stack_size = 0;

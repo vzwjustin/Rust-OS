@@ -324,7 +324,14 @@ pub fn launch_client() -> Result<(), &'static str> {
 
     // Step 8: Fill the SHM pool data with a GNOME-style desktop:
     // top bar, desktop background, and a bottom dock.
-    {
+    //
+    // This holds the Compositor write lock for a long pixel-fill loop. If a
+    // timer interrupt preempts us while the lock is held, the scheduler can
+    // switch to another context that also wants this lock and spins forever
+    // (the original holder never resumes to release it) — the same
+    // single-core IRQ/lock-ordering deadlock class fixed elsewhere this
+    // session. Disable interrupts for the whole critical section.
+    crate::interrupts::without_interrupts(|| -> Result<(), &'static str> {
         let mut comp = wayland::compositor_mut();
         let client_id = server::pipe_client_id(MUTTER_PIPE)
             .ok_or("Mutter: client not found after wire setup")?;
@@ -462,7 +469,8 @@ pub fn launch_client() -> Result<(), &'static str> {
             }
             crate::serial_println!("mutter: icons fill done");
         }
-    }
+        Ok(())
+    })?;
     crate::serial_println!("mutter: SHM fill block exited");
 
     // Step 9: wl_surface.attach — attach the buffer to the surface

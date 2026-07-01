@@ -266,7 +266,18 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
     }
 }
 
+// Wrapped in `without_interrupts`: this holds `compositor_mut()` (a blocking
+// write lock) for the whole dispatch. `poll_kernel_input()` (called directly
+// from the keyboard/mouse ISRs) takes the same lock via `try_compositor_mut()`
+// plus a scheduler tick can preempt this code while the lock is held; if the
+// preempted-to context then does a genuinely blocking `compositor_mut()`
+// acquire, the original holder never runs again to release it -- the same
+// single-core IRQ/lock-ordering deadlock fixed elsewhere in this file.
 fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
+    crate::interrupts::without_interrupts(|| dispatch_message_locked(pipe_id, client_id, message))
+}
+
+fn dispatch_message_locked(pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
     let mut comp = compositor_mut();
 
     if message.header.object_id == DISPLAY_OBJECT_ID {
