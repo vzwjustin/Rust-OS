@@ -39,23 +39,27 @@ impl MetaCursorTracker {
 
     /// Show cursor
     pub fn show_cursor(&mut self) {
-        // TODO: implement
+        self.visible = true;
     }
 
     /// Hide cursor
     pub fn hide_cursor(&mut self) {
-        // TODO: implement
+        self.visible = false;
     }
 
     /// Check if cursor is visible
     pub fn is_visible(&self) -> bool {
-        // TODO: implement
-        true
+        self.visible
     }
 
     /// Set cursor theme
-    pub fn set_theme(&mut self, _theme: &str) {
-        // TODO: implement
+    pub fn set_theme(&mut self, theme: &str) {
+        self.theme = Some(String::from(theme));
+    }
+
+    /// Get cursor theme
+    pub fn get_theme(&self) -> Option<&str> {
+        self.theme.as_ref().map(|s| s.as_str())
     }
 
     /// Get cursor sprite

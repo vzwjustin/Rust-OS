@@ -32,7 +32,6 @@ impl MetaCompositor {
     /// Enable/disable compositing
     pub fn set_enabled(&mut self, enabled: bool) {
         self.is_enabled = enabled;
-        // TODO: implement
     }
 
     /// Check if compositor is active
@@ -83,7 +82,11 @@ impl MetaBackground {
         self.red = red;
         self.green = green;
         self.blue = blue;
-        // TODO: implement
+    }
+
+    /// Get background color
+    pub fn get_color(&self) -> (f32, f32, f32) {
+        (self.red, self.green, self.blue)
     }
 
     /// Load background image
@@ -123,19 +126,26 @@ impl MetaWindowActor {
     /// Show the actor
     pub fn show(&mut self) {
         self.is_visible = true;
-        // TODO: implement
     }
 
     /// Hide the actor
     pub fn hide(&mut self) {
         self.is_visible = false;
-        // TODO: implement
+    }
+
+    /// Check if actor is visible
+    pub fn is_visible(&self) -> bool {
+        self.is_visible
     }
 
     /// Set opacity (0.0 - 1.0)
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
-        // TODO: implement
+    }
+
+    /// Get current opacity
+    pub fn get_opacity(&self) -> f32 {
+        self.opacity
     }
 }
 

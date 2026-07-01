@@ -98,13 +98,11 @@ impl MetaDisplay {
 
     /// Get screen dimensions
     pub fn get_screen_width(&self) -> i32 {
-        // TODO: implement
-        0
+        self.screen_width
     }
 
     pub fn get_screen_height(&self) -> i32 {
-        // TODO: implement
-        0
+        self.screen_height
     }
 }
 

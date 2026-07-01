@@ -59,38 +59,32 @@ impl MetaWindow {
 
     /// Check if window appears focused visually
     pub fn appears_focused(&self) -> bool {
-        // TODO: implement
-        false
+        self.appears_focused
     }
 
     /// Check if window is override-redirect (unmanaged)
     pub fn is_override_redirect(&self) -> bool {
-        // TODO: implement
-        false
+        self.override_redirect
     }
 
     /// Check if window should be excluded from taskbar
     pub fn is_skip_taskbar(&self) -> bool {
-        // TODO: implement
-        false
+        self.skip_taskbar
     }
 
     /// Get the buffer rectangle (full window including decoration)
     pub fn get_buffer_rect(&self) -> MtkRectangle {
-        // TODO: implement
-        MtkRectangle::default()
+        self.buffer_rect
     }
 
     /// Get the frame rectangle (outer window bounds)
     pub fn get_frame_rect(&self) -> MtkRectangle {
-        // TODO: implement
-        MtkRectangle::default()
+        self.frame_rect
     }
 
     /// Get the client content rectangle (inner content area)
     pub fn get_client_content_rect(&self) -> MtkRectangle {
-        // TODO: implement
-        MtkRectangle::default()
+        self.client_rect
     }
 
     /// Convert client-relative coordinates to frame-relative
@@ -124,8 +118,7 @@ impl MetaWindow {
 
     /// Get the monitor index this window is on
     pub fn get_monitor(&self) -> i32 {
-        // TODO: implement
-        0
+        self.monitor
     }
 
     /// Maximize or restore window
@@ -135,13 +128,11 @@ impl MetaWindow {
 
     /// Get maximize state
     pub fn is_maximized_vertically(&self) -> bool {
-        // TODO: implement
-        false
+        self.maximized_vertically
     }
 
     pub fn is_maximized_horizontally(&self) -> bool {
-        // TODO: implement
-        false
+        self.maximized_horizontally
     }
 
     /// Minimize window
@@ -161,8 +152,7 @@ impl MetaWindow {
 
     /// Get window ID
     pub fn get_id(&self) -> u64 {
-        // TODO: implement
-        0
+        self.id
     }
 
     /// Get window title
