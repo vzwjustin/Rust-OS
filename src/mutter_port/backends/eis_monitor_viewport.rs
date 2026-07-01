@@ -5,13 +5,16 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-eis-monitor-viewport.h
 
-pub struct MetaLogicalMonitor {
-    // Opaque logical monitor type
-}
+/// Opaque logical monitor type (defined elsewhere in mutter).
+pub struct MetaLogicalMonitor;
 
 /// MetaEisMonitorViewport — EIS viewport for a logical monitor.
-/// Bridges a logical monitor's geometry to the EIS coordinate space.
+///
+/// Bridges a logical monitor's geometry to the EIS coordinate space,
+/// exposing position, size, physical scale, and coordinate transformation.
+/// Implements the EisViewport interface for pointer/keyboard/touch routing.
 pub struct MetaEisMonitorViewport {
+    /// Reference to the parent logical monitor (opaque).
     pub logical_monitor: *mut MetaLogicalMonitor,
 }
 

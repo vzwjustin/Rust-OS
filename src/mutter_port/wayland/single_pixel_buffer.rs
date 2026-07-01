@@ -6,23 +6,32 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-single-pixel-buffer.h
 
-/// Opaque single-pixel buffer handle.
+/// Single-pixel buffer with RGBA color representation.
 ///
-/// Represents a single-pixel buffer with an encoded color value.
-#[derive(Debug)]
+/// Encodes a solid color directly without allocating full pixel buffers.
+/// Color values are stored as normalized 32-bit unsigned integers.
+#[derive(Debug, Clone, Copy)]
 pub struct MetaWaylandSinglePixelBuffer {
-    // Opaque handle; details are in C implementation
+    /// Red channel (0..=u32::MAX normalized to 0.0..=1.0).
+    pub r: u32,
+    /// Green channel (0..=u32::MAX normalized to 0.0..=1.0).
+    pub g: u32,
+    /// Blue channel (0..=u32::MAX normalized to 0.0..=1.0).
+    pub b: u32,
+    /// Alpha channel (0..=u32::MAX normalized to 0.0..=1.0).
+    pub a: u32,
 }
 
 impl MetaWaylandSinglePixelBuffer {
-    pub fn new() -> Self {
-        MetaWaylandSinglePixelBuffer {}
+    /// Create a new single-pixel buffer with the given RGBA values.
+    pub fn new(r: u32, g: u32, b: u32, a: u32) -> Self {
+        MetaWaylandSinglePixelBuffer { r, g, b, a }
     }
 }
 
 impl Default for MetaWaylandSinglePixelBuffer {
     fn default() -> Self {
-        Self::new()
+        MetaWaylandSinglePixelBuffer::new(0, 0, 0, u32::MAX)
     }
 }
 

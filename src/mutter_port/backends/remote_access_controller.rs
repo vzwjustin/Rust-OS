@@ -4,19 +4,27 @@
 //! Coordinates between D-Bus session manager and active remote access sessions.
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-remote-access-controller-private.h
-//!
-//! Note: Upstream header meta-remote-access-controller.h not found; minimal stub based on private header.
 
 use alloc::vec::Vec;
 
 /// Handle to an active remote access session (screen cast or remote desktop).
 pub struct MetaRemoteAccessHandle {
-    // TODO: Session binding, stop callback from C implementation
+    /// Whether the session has already stopped.
+    pub has_stopped: bool,
+    /// Whether animations should be disabled during this session.
+    pub disable_animations: bool,
+    /// Whether the session is actively recording.
+    pub is_recording: bool,
 }
 
 impl MetaRemoteAccessHandle {
+    /// Create a new remote access handle.
     pub fn new() -> Self {
-        MetaRemoteAccessHandle {}
+        MetaRemoteAccessHandle {
+            has_stopped: false,
+            disable_animations: false,
+            is_recording: false,
+        }
     }
 }
 
@@ -28,13 +36,15 @@ impl Default for MetaRemoteAccessHandle {
 
 /// Central controller for all remote access sessions on this display server.
 pub struct MetaRemoteAccessController {
-    active_handles: Vec<MetaRemoteAccessHandle>,
+    /// List of active remote access handles.
+    pub session_managers: Vec<MetaRemoteAccessHandle>,
 }
 
 impl MetaRemoteAccessController {
+    /// Create a new remote access controller.
     pub fn new() -> Self {
         MetaRemoteAccessController {
-            active_handles: Vec::new(),
+            session_managers: Vec::new(),
         }
     }
 

@@ -13,15 +13,21 @@ pub struct MetaMonitor {
 }
 
 /// MetaStreamMonitor: Captures a single monitor's output.
+/// Extends MetaStream with monitor and logical monitor references for display capture.
 pub struct MetaStreamMonitor {
-    base: MetaStream,
-    // TODO: monitor: *mut MetaMonitor,
+    pub base: MetaStream,
+    /// Monitor reference (opaque MetaMonitor*)
+    pub monitor: *mut core::ffi::c_void,
+    /// Logical monitor reference (opaque MetaLogicalMonitor*)
+    pub logical_monitor: *mut core::ffi::c_void,
 }
 
 impl MetaStreamMonitor {
     pub fn new() -> Self {
         MetaStreamMonitor {
             base: MetaStream::new(),
+            monitor: core::ptr::null_mut(),
+            logical_monitor: core::ptr::null_mut(),
         }
     }
 }

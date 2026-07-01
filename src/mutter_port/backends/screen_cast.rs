@@ -6,6 +6,7 @@
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-screen-cast.h
 
 use alloc::vec::Vec;
+use core::ffi::c_void;
 
 /// Cursor rendering mode for screen cast sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,13 +27,16 @@ pub const META_SCREEN_CAST_FLAG_IS_PLATFORM: u32 = 1 << 1;
 
 /// Main screen cast object managing sessions and stream permissions.
 pub struct MetaScreenCast {
-    // TODO: Backend pointer, enabled flag, session tracking from C implementation
+    /// Render device for screen cast operations (opaque).
+    pub screen_cast_device: *mut c_void,
 }
 
 impl MetaScreenCast {
     /// Create a new MetaScreenCast instance.
     pub fn new() -> Self {
-        MetaScreenCast {}
+        MetaScreenCast {
+            screen_cast_device: core::ptr::null_mut(),
+        }
     }
 }
 

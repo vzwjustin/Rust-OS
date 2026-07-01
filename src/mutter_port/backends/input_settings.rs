@@ -49,16 +49,41 @@ impl Default for MetaKbdA11ySettings {
 }
 
 /// Main input settings manager.
+/// Manages input device settings through GSettings and backend integration.
 pub struct InputSettings {
-    // backend reference
-    // seat reference
-    // GSettings for mouse, touchpad, trackball, pointing_stick, keyboard
-    // device list and mappings
+    /// Backend reference (opaque MetaBackend*)
+    pub backend: *mut core::ffi::c_void,
+    /// Clutter seat reference (opaque ClutterSeat*)
+    pub seat: *mut core::ffi::c_void,
+    /// Mouse settings (opaque GSettings*)
+    pub mouse_settings: *mut core::ffi::c_void,
+    /// Touchpad settings (opaque GSettings*)
+    pub touchpad_settings: *mut core::ffi::c_void,
+    /// Trackball settings (opaque GSettings*)
+    pub trackball_settings: *mut core::ffi::c_void,
+    /// Pointing stick settings (opaque GSettings*)
+    pub pointing_stick_settings: *mut core::ffi::c_void,
+    /// Keyboard settings (opaque GSettings*)
+    pub keyboard_settings: *mut core::ffi::c_void,
+    /// Keyboard accessibility settings (opaque GSettings*)
+    pub keyboard_a11y_settings: *mut core::ffi::c_void,
+    /// Current keyboard a11y configuration
+    pub kbd_a11y_settings: MetaKbdA11ySettings,
 }
 
 impl InputSettings {
     pub fn new() -> Self {
-        InputSettings {}
+        InputSettings {
+            backend: core::ptr::null_mut(),
+            seat: core::ptr::null_mut(),
+            mouse_settings: core::ptr::null_mut(),
+            touchpad_settings: core::ptr::null_mut(),
+            trackball_settings: core::ptr::null_mut(),
+            pointing_stick_settings: core::ptr::null_mut(),
+            keyboard_settings: core::ptr::null_mut(),
+            keyboard_a11y_settings: core::ptr::null_mut(),
+            kbd_a11y_settings: MetaKbdA11ySettings::new(),
+        }
     }
 }
 

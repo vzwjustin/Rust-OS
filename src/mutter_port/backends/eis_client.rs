@@ -1,38 +1,48 @@
 //! Eis Client — Per-client EIS connection handler from GNOME Mutter
 //!
 //! Wraps a libeis client connection and processes EIS events.
-//! Event parsing and device routing are left as TODO.
+//! Manages virtual input devices, keymaps, and viewport synchronization.
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-eis-client.h
 
 use alloc::collections::BTreeMap;
+use core::ffi::c_void;
 
-pub struct MetaEis {
-    // Opaque parent type
-}
+/// Opaque EIS manager reference.
+pub struct MetaEis;
 
-pub struct MetaEisDevice {
-    // Opaque device type
-}
+/// Opaque EIS device reference (libeis device wrapper).
+pub struct MetaEisDevice;
 
-pub struct MetaEisViewport {
-    // Opaque viewport type
-}
+/// Opaque EIS viewport reference.
+pub struct MetaEisViewport;
 
 /// MetaEisClient — Per-client EIS connection.
-/// Processes inbound events from a libeis client socket.
+/// Processes inbound events from a libeis client socket, managing virtual devices,
+/// keymaps, and viewport state per connected EIS client.
 pub struct MetaEisClient {
+    /// Reference to the parent EIS manager (opaque).
     pub eis: *mut MetaEis,
-    pub eis_client: *mut core::ffi::c_void,
-    pub eis_seat: *mut core::ffi::c_void,
-    pub eis_devices: BTreeMap<usize, *mut MetaEisDevice>,
+    /// Opaque libeis client connection.
+    pub eis_client: *mut c_void,
+    /// Opaque libeis seat for this client.
+    pub eis_seat: *mut c_void,
+    /// Hash table mapping eis_device pointers to MetaEisDevice wrappers.
+    pub eis_devices: BTreeMap<*mut c_void, *mut MetaEisDevice>,
+    /// Cached pointer (mouse) device for this client.
     pub pointer_device: *mut MetaEisDevice,
+    /// Cached keyboard device for this client.
     pub keyboard_device: *mut MetaEisDevice,
-    pub keymap_changed_handler_id: usize,
-    pub keymap_state_changed_handler_id: usize,
+    /// Handler ID for keymap change signal subscription.
+    pub keymap_changed_handler_id: u64,
+    /// Handler ID for keymap state change signal subscription.
+    pub keymap_state_changed_handler_id: u64,
+    /// Flag: whether client has absolute position pointer devices.
     pub have_abs_pointer_devices: bool,
+    /// Flag: whether client has touch input devices.
     pub have_touch_devices: bool,
-    pub viewports_changed_handler_id: usize,
+    /// Handler ID for viewport changes signal subscription.
+    pub viewports_changed_handler_id: u64,
 }
 
 impl MetaEisClient {

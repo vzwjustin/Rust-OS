@@ -15,10 +15,13 @@ use crate::mutter_port::backends::common_types::*;
 
 use alloc::string::String;
 
-/// MetaSpaDictEntry
+/// MetaSpaDictEntry — A key/value dictionary entry for SPA (Simple Plugin API) properties.
 #[derive(Debug, Clone)]
 pub struct MetaSpaDictEntry {
-    // TODO: Add fields from C struct
+    /// The property key name (e.g., "key.name").
+    pub key: Option<alloc::string::String>,
+    /// The property value as a string.
+    pub value: Option<alloc::string::String>,
 }
 
 impl MetaSpaDictEntry {
