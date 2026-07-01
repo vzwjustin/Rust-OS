@@ -4,14 +4,7 @@
 //! Re-exports `core::fmt` types and provides a `Display` trait wrapper
 //! for foreign types.
 
-pub use core::fmt::{
-    Arguments,
-    Debug,
-    Error,
-    Formatter,
-    Result,
-    Write,
-};
+pub use core::fmt::{Arguments, Debug, Error, Formatter, Result, Write};
 
 /// Internal adapter used to route formatting trait implementations for foreign types.
 #[doc(hidden)]
@@ -30,15 +23,7 @@ macro_rules! impl_fmt_adapter_forward {
     };
 }
 
-use core::fmt::{
-    Binary,
-    LowerExp,
-    LowerHex,
-    Octal,
-    Pointer,
-    UpperExp,
-    UpperHex,
-};
+use core::fmt::{Binary, LowerExp, LowerHex, Octal, Pointer, UpperExp, UpperHex};
 impl_fmt_adapter_forward!(Debug, LowerHex, UpperHex, Octal, Binary, Pointer, LowerExp, UpperExp);
 
 /// A copy of `core::fmt::Display` that allows implementing it for foreign types.

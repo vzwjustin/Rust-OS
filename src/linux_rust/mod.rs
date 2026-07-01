@@ -16,13 +16,13 @@
 //! - `bitmap`: Bitmap operations
 //! - `bitfield`: Bitfield register operations
 
-pub mod build_assert;
-pub mod sizes;
+pub mod bitfield;
+pub mod bitmap;
 pub mod bits;
-pub mod ioctl;
-pub mod num;
 pub mod bounded;
+pub mod build_assert;
 pub mod ffi;
 pub mod fmt;
-pub mod bitmap;
-pub mod bitfield;
+pub mod ioctl;
+pub mod num;
+pub mod sizes;

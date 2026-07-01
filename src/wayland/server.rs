@@ -43,32 +43,42 @@ pub fn mark_handshake_ready() {
 }
 
 /// Attach a compositor client to a Unix socket connection pipe.
+///
+/// Wrapped in `without_interrupts`: `poll_kernel_input()` (called directly
+/// from the keyboard/mouse ISRs) also blocks on `PIPE_CLIENTS.lock()`. If a
+/// keyboard/mouse interrupt lands while this non-IRQ code holds the lock,
+/// the ISR spins on it forever on this single-core target -- the lock
+/// holder can never run again to release it.
 pub fn attach_connection(pipe_id: u32) -> Result<(), &'static str> {
-    let mut map = PIPE_CLIENTS.lock();
-    if map.contains_key(&pipe_id) {
-        return Ok(());
-    }
+    crate::interrupts::without_interrupts(|| {
+        let mut map = PIPE_CLIENTS.lock();
+        if map.contains_key(&pipe_id) {
+            return Ok(());
+        }
 
-    if !compositor().is_initialized() {
-        return Err("Wayland compositor is not initialized");
-    }
+        if !compositor().is_initialized() {
+            return Err("Wayland compositor is not initialized");
+        }
 
-    let client_id = compositor_mut().connect_client();
-    map.insert(pipe_id, client_id);
-    Ok(())
+        let client_id = compositor_mut().connect_client();
+        map.insert(pipe_id, client_id);
+        Ok(())
+    })
 }
 
 /// Detach a compositor client when its socket connection closes.
 pub fn detach_connection(pipe_id: u32) {
-    if let Some(client_id) = PIPE_CLIENTS.lock().remove(&pipe_id) {
-        compositor_mut().disconnect_client(client_id);
-    }
-    READ_BUFFERS.lock().remove(&pipe_id);
+    crate::interrupts::without_interrupts(|| {
+        if let Some(client_id) = PIPE_CLIENTS.lock().remove(&pipe_id) {
+            compositor_mut().disconnect_client(client_id);
+        }
+        READ_BUFFERS.lock().remove(&pipe_id);
+    });
 }
 
 /// Get the compositor client ID associated with a pipe.
 pub fn pipe_client_id(pipe_id: u32) -> Option<u32> {
-    PIPE_CLIENTS.lock().get(&pipe_id).copied()
+    crate::interrupts::without_interrupts(|| PIPE_CLIENTS.lock().get(&pipe_id).copied())
 }
 
 /// Process Wayland wire data from a connected client and return reply bytes.
@@ -107,7 +117,8 @@ pub fn process_wire_request(data: &[u8], pipe_id: u32) -> Option<Vec<u8>> {
             }
         }
 
-        let client_id = *PIPE_CLIENTS.lock().get(&pipe_id)?;
+        let client_id =
+            crate::interrupts::without_interrupts(|| PIPE_CLIENTS.lock().get(&pipe_id).copied())?;
         if let Some(response) = dispatch_message(pipe_id, client_id, &message) {
             replies.extend_from_slice(&response);
         }
@@ -131,7 +142,8 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
         };
     }
 
-    let client_id = *PIPE_CLIENTS.lock().get(&pipe_id)?;
+    let client_id =
+        crate::interrupts::without_interrupts(|| PIPE_CLIENTS.lock().get(&pipe_id).copied())?;
     let interface = {
         let comp = compositor();
         let client = comp.get_client(client_id)?;
@@ -254,7 +266,18 @@ fn request_arg_types(pipe_id: u32, data: &[u8]) -> Option<Vec<ArgType>> {
     }
 }
 
+// Wrapped in `without_interrupts`: this holds `compositor_mut()` (a blocking
+// write lock) for the whole dispatch. `poll_kernel_input()` (called directly
+// from the keyboard/mouse ISRs) takes the same lock via `try_compositor_mut()`
+// plus a scheduler tick can preempt this code while the lock is held; if the
+// preempted-to context then does a genuinely blocking `compositor_mut()`
+// acquire, the original holder never runs again to release it -- the same
+// single-core IRQ/lock-ordering deadlock fixed elsewhere in this file.
 fn dispatch_message(pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
+    crate::interrupts::without_interrupts(|| dispatch_message_locked(pipe_id, client_id, message))
+}
+
+fn dispatch_message_locked(pipe_id: u32, client_id: u32, message: &Message) -> Option<Vec<u8>> {
     let mut comp = compositor_mut();
 
     if message.header.object_id == DISPLAY_OBJECT_ID {

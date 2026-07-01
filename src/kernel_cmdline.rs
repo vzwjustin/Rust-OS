@@ -131,7 +131,8 @@ mod tests {
 
     #[test]
     fn parses_root_rootfstype_init() {
-        let c = parse_cmdline("console=ttyS0 root=/dev/sda1 rootfstype=ext4 init=/bin/myinit quiet");
+        let c =
+            parse_cmdline("console=ttyS0 root=/dev/sda1 rootfstype=ext4 init=/bin/myinit quiet");
         assert_eq!(c.root, RootParam::Device("/dev/sda1".to_string()));
         assert_eq!(c.rootfstype.as_deref(), Some("ext4"));
         assert_eq!(c.init.as_deref(), Some("/bin/myinit"));

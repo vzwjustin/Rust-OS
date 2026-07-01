@@ -17,8 +17,12 @@ pub fn add_filter(filter: CanFilter) {
 
 pub fn match_id(id: u32) -> bool {
     let filters = FILTERS.read();
-    if filters.is_empty() { return true; }
-    filters.iter().any(|f| (id & f.can_mask) == (f.can_id & f.can_mask))
+    if filters.is_empty() {
+        return true;
+    }
+    filters
+        .iter()
+        .any(|f| (id & f.can_mask) == (f.can_id & f.can_mask))
 }
 
 pub fn init() -> Result<(), &'static str> {

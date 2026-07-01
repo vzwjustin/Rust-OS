@@ -148,10 +148,7 @@ impl<T> RwSemaphore<T> {
             if self.try_acquire_read_fast() {
                 // Remove our slot from the wait list (best-effort).
                 let mut wl = self.wait_list.lock();
-                if let Some(pos) = wl
-                    .iter()
-                    .position(|w| w.kind == RwWaiterKind::Reader)
-                {
+                if let Some(pos) = wl.iter().position(|w| w.kind == RwWaiterKind::Reader) {
                     wl.remove(pos);
                 }
                 return ReadGuard { lock: self };
@@ -191,7 +188,12 @@ impl<T> RwSemaphore<T> {
                 // Only our own waiter bias is outstanding; attempt grab.
                 if self
                     .count
-                    .compare_exchange(cur, RWSEM_WRITER_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+                    .compare_exchange(
+                        cur,
+                        RWSEM_WRITER_LOCKED,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
                     .is_ok()
                 {
                     return WriteGuard { lock: self };

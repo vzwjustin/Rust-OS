@@ -14,7 +14,9 @@ pub fn get_state() -> LapbState {
 }
 
 pub fn connect() {
-    unsafe { LAPB_STATE = LapbState::Connected; }
+    unsafe {
+        LAPB_STATE = LapbState::Connected;
+    }
 }
 
 pub fn init() -> Result<(), &'static str> {

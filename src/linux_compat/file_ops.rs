@@ -21,6 +21,57 @@ use crate::vfs::{self, InodeType, OpenFlags as VfsOpenFlags, SeekFrom, VfsError}
 /// FD_CLOEXEC flag stored in PCB fd flags
 const FD_CLOEXEC: u32 = 1;
 const MAX_RW_CHUNK: usize = 64 * 1024;
+const PAGE_SIZE: usize = 4096;
+
+const OPEN_HOW_SIZE_VER0: usize = core::mem::size_of::<OpenHow>();
+const S_IALLUGO: u64 = 0o7777;
+const O_DSYNC: u64 = 1 << 12;
+const FASYNC: u64 = 1 << 13;
+const O_DIRECT: u64 = 1 << 14;
+const O_LARGEFILE: u64 = 1 << 15;
+const O_NOATIME: u64 = 1 << 18;
+const O_SYNC: u64 = (1 << 20) | O_DSYNC;
+const O_PATH: u64 = 1 << 21;
+const __O_TMPFILE: u64 = 1 << 22;
+const O_EMPTYPATH: u64 = 1 << 26;
+const OPENAT2_REGULAR: u64 = 1 << 32;
+const O_TMPFILE: u64 = __O_TMPFILE | open_flags::O_DIRECTORY as u64;
+
+const VALID_OPENAT2_FLAGS: u64 = open_flags::O_RDONLY as u64
+    | open_flags::O_WRONLY as u64
+    | open_flags::O_RDWR as u64
+    | open_flags::O_CREAT as u64
+    | open_flags::O_EXCL as u64
+    | open_flags::O_NOCTTY as u64
+    | open_flags::O_TRUNC as u64
+    | open_flags::O_APPEND as u64
+    | open_flags::O_NONBLOCK as u64
+    | O_DSYNC
+    | FASYNC
+    | O_DIRECT
+    | O_LARGEFILE
+    | open_flags::O_DIRECTORY as u64
+    | open_flags::O_NOFOLLOW as u64
+    | O_NOATIME
+    | open_flags::O_CLOEXEC as u64
+    | O_SYNC
+    | O_PATH
+    | __O_TMPFILE
+    | O_EMPTYPATH
+    | OPENAT2_REGULAR;
+
+const RESOLVE_NO_XDEV: u64 = 0x01;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_BENEATH: u64 = 0x08;
+const RESOLVE_IN_ROOT: u64 = 0x10;
+const RESOLVE_CACHED: u64 = 0x20;
+const VALID_RESOLVE_FLAGS: u64 = RESOLVE_NO_XDEV
+    | RESOLVE_NO_MAGICLINKS
+    | RESOLVE_NO_SYMLINKS
+    | RESOLVE_BENEATH
+    | RESOLVE_IN_ROOT
+    | RESOLVE_CACHED;
 
 /// Resolve a path against the current process's CWD.
 /// If `path` starts with '/', it is returned as-is.
@@ -222,8 +273,25 @@ pub(crate) fn linux_flags_to_vfs(flags: i32) -> u32 {
     if flags & open_flags::O_DIRECTORY != 0 {
         vfs_flags |= VfsOpenFlags::DIRECTORY;
     }
+    if flags & open_flags::O_CLOEXEC != 0 {
+        vfs_flags |= VfsOpenFlags::CLOEXEC;
+    }
 
     vfs_flags
+}
+
+pub(crate) fn validate_regular_open_flags(flags: i32) -> LinuxResult<()> {
+    let flags = flags as u64;
+
+    if flags & !VALID_OPENAT2_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if flags & (O_PATH | __O_TMPFILE | O_EMPTYPATH | OPENAT2_REGULAR) != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+
+    Ok(())
 }
 
 /// Helper to convert null-terminated C string to Rust string
@@ -525,12 +593,45 @@ pub fn newfstatat(
         return Err(LinuxError::EFAULT);
     }
 
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    const AT_NO_AUTOMOUNT: i32 = 0x800;
+    const AT_EMPTY_PATH: i32 = 0x1000;
+    const VALID_FLAGS: i32 = AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH;
+
+    if flags & !VALID_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let path_str = c_str_to_string(pathname)?;
+    if path_str.is_empty() {
+        if flags & AT_EMPTY_PATH == 0 {
+            return Err(LinuxError::ENOENT);
+        }
+
+        let stat_result = if dirfd == AT_FDCWD {
+            let pid = process::current_pid();
+            let cwd = process::get_process_manager()
+                .get_process(pid)
+                .map(|pcb| pcb.cwd.clone())
+                .ok_or(LinuxError::ESRCH)?;
+            vfs::vfs_stat(&cwd)
+        } else {
+            vfs::vfs_fstat(dirfd)
+        };
+
+        return match stat_result {
+            Ok(vfs_stat) => {
+                populate_linux_stat(statbuf, &vfs_stat);
+                Ok(0)
+            }
+            Err(e) => Err(vfs_error_to_linux(e)),
+        };
+    }
+
     // Resolve the path relative to dirfd
     let path_str = resolve_at_path(dirfd, pathname)?;
 
     // AT_SYMLINK_NOFOLLOW (0x100): stat the symlink itself, not the target.
-    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
-
     let stat_result = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         vfs::vfs_lstat(&path_str)
     } else {
@@ -1175,18 +1276,67 @@ pub fn openat2(
         return Err(LinuxError::EFAULT);
     }
 
-    let expected_size = core::mem::size_of::<OpenHow>();
-    if size < expected_size {
-        return Err(LinuxError::EINVAL);
-    }
+    let open_how = copy_open_how_from_user(how, size)?;
+    validate_openat2_how(&open_how)?;
 
-    let open_how = unsafe { &*how };
     openat(
         dirfd,
         pathname,
         open_how.flags as i32,
         open_how.mode as Mode,
     )
+}
+
+fn copy_open_how_from_user(how: *const OpenHow, size: usize) -> LinuxResult<OpenHow> {
+    if size < OPEN_HOW_SIZE_VER0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if size > PAGE_SIZE {
+        return Err(LinuxError::E2BIG);
+    }
+
+    let mut raw = vec![0u8; size];
+    UserSpaceMemory::copy_from_user(how as u64, &mut raw).map_err(|_| LinuxError::EFAULT)?;
+
+    if raw[OPEN_HOW_SIZE_VER0..].iter().any(|byte| *byte != 0) {
+        return Err(LinuxError::E2BIG);
+    }
+
+    let mut fixed = [0u8; OPEN_HOW_SIZE_VER0];
+    fixed.copy_from_slice(&raw[..OPEN_HOW_SIZE_VER0]);
+
+    let open_how = unsafe { core::ptr::read_unaligned(fixed.as_ptr() as *const OpenHow) };
+    Ok(open_how)
+}
+
+fn validate_openat2_how(how: &OpenHow) -> LinuxResult<()> {
+    if how.flags & !VALID_OPENAT2_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if how.resolve & !VALID_RESOLVE_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if how.resolve & RESOLVE_BENEATH != 0 && how.resolve & RESOLVE_IN_ROOT != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let create_like = how.flags & (open_flags::O_CREAT as u64 | __O_TMPFILE) != 0;
+    if create_like {
+        if how.mode & !S_IALLUGO != 0 {
+            return Err(LinuxError::EINVAL);
+        }
+    } else if how.mode != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if how.flags & (O_PATH | __O_TMPFILE | OPENAT2_REGULAR) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if how.resolve != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    Ok(())
 }
 
 fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) {
@@ -1247,7 +1397,7 @@ pub fn statx(
     dirfd: Fd,
     pathname: *const u8,
     flags: i32,
-    _mask: u32,
+    mask: u32,
     statxbuf: *mut Statx,
 ) -> LinuxResult<i32> {
     inc_ops();
@@ -1256,9 +1406,54 @@ pub fn statx(
         return Err(LinuxError::EFAULT);
     }
 
-    let is_empty_path = (flags & 0x1000) != 0; // AT_EMPTY_PATH
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    const AT_NO_AUTOMOUNT: i32 = 0x800;
+    const AT_EMPTY_PATH: i32 = 0x1000;
+    const AT_STATX_SYNC_TYPE: i32 = 0x6000;
+    const VALID_FLAGS: i32 =
+        AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE;
+    const STATX__RESERVED: u32 = 0x8000_0000;
 
-    if pathname.is_null() || (is_empty_path && unsafe { *pathname == 0 }) {
+    if flags & !VALID_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
+        return Err(LinuxError::EINVAL);
+    }
+    if mask & STATX__RESERVED != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let is_empty_path = (flags & AT_EMPTY_PATH) != 0;
+
+    if pathname.is_null() {
+        if !is_empty_path {
+            return Err(LinuxError::EFAULT);
+        }
+
+        if dirfd == AT_FDCWD {
+            let pid = process::current_pid();
+            let cwd = process::get_process_manager()
+                .get_process(pid)
+                .map(|pcb| pcb.cwd.clone())
+                .ok_or(LinuxError::ESRCH)?;
+            match vfs::vfs_stat(&cwd) {
+                Ok(vfs_stat) => {
+                    populate_statx(&vfs_stat, statxbuf);
+                    return Ok(0);
+                }
+                Err(e) => return Err(vfs_error_to_linux(e)),
+            }
+        } else {
+            match vfs::vfs_fstat(dirfd) {
+                Ok(vfs_stat) => {
+                    populate_statx(&vfs_stat, statxbuf);
+                    return Ok(0);
+                }
+                Err(e) => return Err(vfs_error_to_linux(e)),
+            }
+        }
+    } else if is_empty_path && unsafe { *pathname == 0 } {
         if dirfd == AT_FDCWD {
             let pid = process::current_pid();
             let cwd = process::get_process_manager()
@@ -1285,7 +1480,13 @@ pub fn statx(
 
     let resolved_path = resolve_at_path(dirfd, pathname)?;
 
-    match vfs::vfs_stat(&resolved_path) {
+    let stat_result = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        vfs::vfs_lstat(&resolved_path)
+    } else {
+        vfs::vfs_stat(&resolved_path)
+    };
+
+    match stat_result {
         Ok(vfs_stat) => {
             populate_statx(&vfs_stat, statxbuf);
             Ok(0)
@@ -1295,26 +1496,60 @@ pub fn statx(
 }
 
 /// faccessat2 - check file accessibility relative to directory fd with flags
-pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, _flags: i32) -> LinuxResult<i32> {
+pub fn faccessat2(dirfd: Fd, path: *const u8, mode: i32, flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     if path.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    const AT_EACCESS: i32 = 0x200;
+    const AT_EMPTY_PATH: i32 = 0x1000;
+    const VALID_FLAGS: i32 = AT_SYMLINK_NOFOLLOW | AT_EACCESS | AT_EMPTY_PATH;
+
     if mode != access::F_OK && (mode & !(access::R_OK | access::W_OK | access::X_OK)) != 0 {
         return Err(LinuxError::EINVAL);
     }
 
-    let resolved_path = resolve_at_path(dirfd, path)?;
+    if flags & !VALID_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let path_str = c_str_to_string(path)?;
 
     let pid = process::current_pid();
     let (uid, gid, groups) = process::get_process_manager()
         .get_process(pid)
-        .map(|pcb| (pcb.euid, pcb.egid, pcb.supplementary_groups.clone()))
+        .map(|pcb| {
+            if flags & AT_EACCESS != 0 {
+                (pcb.euid, pcb.egid, pcb.supplementary_groups.clone())
+            } else {
+                (pcb.uid, pcb.gid, pcb.supplementary_groups.clone())
+            }
+        })
         .ok_or(LinuxError::ESRCH)?;
 
-    match vfs::vfs_stat(&resolved_path) {
+    let stat_result = if path_str.is_empty() && flags & AT_EMPTY_PATH != 0 {
+        if dirfd == AT_FDCWD {
+            let cwd = process::get_process_manager()
+                .get_process(pid)
+                .map(|pcb| pcb.cwd.clone())
+                .unwrap_or_else(|| String::from("/"));
+            vfs::vfs_stat(&cwd)
+        } else {
+            vfs::vfs_fstat(dirfd)
+        }
+    } else {
+        let resolved_path = resolve_at_path(dirfd, path)?;
+        if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            vfs::vfs_lstat(&resolved_path)
+        } else {
+            vfs::vfs_stat(&resolved_path)
+        }
+    };
+
+    match stat_result {
         Ok(vfs_stat) => check_access_permissions(&vfs_stat, mode, uid, gid, &groups).map(|_| 0),
         Err(e) => Err(vfs_error_to_linux(e)),
     }
@@ -1732,19 +1967,44 @@ pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // FALLOC_FL_KEEP_SIZE = 0x01, FALLOC_FL_PUNCH_HOLE = 0x02
+    // Linux validates fallocate modes centrally in vfs_fallocate().
     const FALLOC_FL_KEEP_SIZE: i32 = 0x01;
     const FALLOC_FL_PUNCH_HOLE: i32 = 0x02;
+    const FALLOC_FL_COLLAPSE_RANGE: i32 = 0x08;
+    const FALLOC_FL_ZERO_RANGE: i32 = 0x10;
+    const FALLOC_FL_INSERT_RANGE: i32 = 0x20;
+    const FALLOC_FL_UNSHARE_RANGE: i32 = 0x40;
+    const FALLOC_FL_WRITE_ZEROES: i32 = 0x80;
+    const FALLOC_FL_MODE_MASK: i32 = FALLOC_FL_PUNCH_HOLE
+        | FALLOC_FL_COLLAPSE_RANGE
+        | FALLOC_FL_ZERO_RANGE
+        | FALLOC_FL_INSERT_RANGE
+        | FALLOC_FL_UNSHARE_RANGE
+        | FALLOC_FL_WRITE_ZEROES;
+
+    if mode & !(FALLOC_FL_MODE_MASK | FALLOC_FL_KEEP_SIZE) != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
 
     let keep_size = (mode & FALLOC_FL_KEEP_SIZE) != 0;
-    let punch_hole = (mode & FALLOC_FL_PUNCH_HOLE) != 0;
-
-    if punch_hole {
-        // Punching holes requires a real block-level filesystem with
-        // sparse file support.  Our ramfs-backed VFS doesn't support
-        // deallocation, so treat it as a no-op (the region stays
-        // zero-filled on next read).
-        return Ok(0);
+    match mode & FALLOC_FL_MODE_MASK {
+        0 => {}
+        FALLOC_FL_PUNCH_HOLE => {
+            if !keep_size {
+                return Err(LinuxError::ENOTSUP);
+            }
+            return Err(LinuxError::ENOTSUP);
+        }
+        FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE | FALLOC_FL_WRITE_ZEROES => {
+            if keep_size {
+                return Err(LinuxError::ENOTSUP);
+            }
+            return Err(LinuxError::ENOTSUP);
+        }
+        FALLOC_FL_ZERO_RANGE | FALLOC_FL_UNSHARE_RANGE => {
+            return Err(LinuxError::ENOTSUP);
+        }
+        _ => return Err(LinuxError::ENOTSUP),
     }
 
     // For the default (allocate) mode, extend the file if the new
@@ -1753,7 +2013,7 @@ pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
     // where the file size is not changed but blocks are allocated).
     let stat = vfs::vfs_fstat(fd).map_err(vfs_error_to_linux)?;
     let current_size = stat.size as i64;
-    let new_end = offset + len;
+    let new_end = offset.checked_add(len).ok_or(LinuxError::EFBIG)?;
 
     if new_end > current_size && !keep_size {
         vfs::vfs_ftruncate(fd, new_end as u64).map_err(vfs_error_to_linux)?;

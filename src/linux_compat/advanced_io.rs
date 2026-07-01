@@ -256,7 +256,7 @@ pub fn preadv2(
     iov: *const IoVec,
     iovcnt: i32,
     offset: Off,
-    _flags: i32,
+    flags: i32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -267,6 +267,7 @@ pub fn preadv2(
     if iov.is_null() || iovcnt <= 0 {
         return Err(LinuxError::EINVAL);
     }
+    validate_rwf_flags(flags)?;
 
     if offset == -1 {
         return readv(fd, iov, iovcnt);
@@ -288,7 +289,7 @@ pub fn pwritev2(
     iov: *const IoVec,
     iovcnt: i32,
     offset: Off,
-    _flags: i32,
+    flags: i32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -299,6 +300,7 @@ pub fn pwritev2(
     if iov.is_null() || iovcnt <= 0 {
         return Err(LinuxError::EINVAL);
     }
+    validate_rwf_flags(flags)?;
 
     if offset == -1 {
         return writev(fd, iov, iovcnt);
@@ -309,6 +311,41 @@ pub fn pwritev2(
     }
 
     pwritev(fd, iov, iovcnt, offset)
+}
+
+fn validate_rwf_flags(flags: i32) -> LinuxResult<()> {
+    const RWF_HIPRI: i32 = 0x0000_0001;
+    const RWF_DSYNC: i32 = 0x0000_0002;
+    const RWF_SYNC: i32 = 0x0000_0004;
+    const RWF_NOWAIT: i32 = 0x0000_0008;
+    const RWF_APPEND: i32 = 0x0000_0010;
+    const RWF_NOAPPEND: i32 = 0x0000_0020;
+    const RWF_ATOMIC: i32 = 0x0000_0040;
+    const RWF_DONTCACHE: i32 = 0x0000_0080;
+    const RWF_NOSIGNAL: i32 = 0x0000_0100;
+    const RWF_SUPPORTED: i32 = RWF_HIPRI
+        | RWF_DSYNC
+        | RWF_SYNC
+        | RWF_NOWAIT
+        | RWF_APPEND
+        | RWF_NOAPPEND
+        | RWF_ATOMIC
+        | RWF_DONTCACHE
+        | RWF_NOSIGNAL;
+
+    if flags & !RWF_SUPPORTED != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+    if flags & RWF_APPEND != 0 && flags & RWF_NOAPPEND != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let unsupported_semantics = RWF_NOWAIT | RWF_APPEND | RWF_NOAPPEND | RWF_ATOMIC | RWF_DONTCACHE;
+    if flags & unsupported_semantics != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+
+    Ok(())
 }
 
 // ============================================================================

@@ -112,32 +112,43 @@ impl<T: Integer, const N: u32> ops::Deref for Bounded<T, N> {
 // Arithmetic forwarders
 impl<T: Integer, const N: u32> ops::Add<T> for Bounded<T, N> {
     type Output = T;
-    fn add(self, rhs: T) -> T { self.0 + rhs }
+    fn add(self, rhs: T) -> T {
+        self.0 + rhs
+    }
 }
 
 impl<T: Integer, const N: u32> ops::Sub<T> for Bounded<T, N> {
     type Output = T;
-    fn sub(self, rhs: T) -> T { self.0 - rhs }
+    fn sub(self, rhs: T) -> T {
+        self.0 - rhs
+    }
 }
 
 impl<T: Integer, const N: u32> ops::Mul<T> for Bounded<T, N> {
     type Output = T;
-    fn mul(self, rhs: T) -> T { self.0 * rhs }
+    fn mul(self, rhs: T) -> T {
+        self.0 * rhs
+    }
 }
 
 impl<T: Integer, const N: u32> ops::Div<T> for Bounded<T, N> {
     type Output = T;
-    fn div(self, rhs: T) -> T { self.0 / rhs }
+    fn div(self, rhs: T) -> T {
+        self.0 / rhs
+    }
 }
 
 impl<T: Integer, const N: u32> ops::Rem<T> for Bounded<T, N> {
     type Output = T;
-    fn rem(self, rhs: T) -> T { self.0 % rhs }
+    fn rem(self, rhs: T) -> T {
+        self.0 % rhs
+    }
 }
 
 // From<bool> for 1-bit Bounded
-impl<T: Integer + From<bool>, const N: u32> From<bool> for Bounded<T, N> where
-    Bounded<T, N>: Sized
+impl<T: Integer + From<bool>, const N: u32> From<bool> for Bounded<T, N>
+where
+    Bounded<T, N>: Sized,
 {
     fn from(value: bool) -> Self {
         // SAFETY: `bool` is 0 or 1, which fits in any `N >= 1` bits.
@@ -219,7 +230,7 @@ macro_rules! bitfield {
         $vis:vis struct $Name:ident($storage:ty) {
             $(
                 $(#[$field_attr:meta])*
-                $hi:literal : $lo:literal $field:ident $(=> $conv:ty)? $(?=> $conv_fall:ty)?;
+                $hi:literal : $lo:literal $field:ident $(=> $conv:ty)?;
             )+
         }
     ) => {

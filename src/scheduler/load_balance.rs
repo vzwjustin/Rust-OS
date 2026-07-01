@@ -194,7 +194,8 @@ pub const MAX_CPUS: usize = 64;
 /// in a static protected by a spin-lock per slot.
 ///
 /// Note: initialised lazily; callers must call `init_run_queues()` before use.
-static RUN_QUEUES: spin::Mutex<alloc::vec::Vec<RunQueue>> = spin::Mutex::new(alloc::vec::Vec::new());
+static RUN_QUEUES: spin::Mutex<alloc::vec::Vec<RunQueue>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
 
 /// Initialise `num_cpus` per-CPU run queues.
 pub fn init_run_queues(num_cpus: u32) {
@@ -285,10 +286,10 @@ impl SchedDomain {
                 | sd_flags::SD_BALANCE_WAKE
                 | sd_flags::SD_WAKE_AFFINE
                 | sd_flags::SD_BALANCE_NEWIDLE,
-            min_interval_ns: 1_000_000,      // 1 ms
-            max_interval_ns: 32_000_000,     // 32 ms
+            min_interval_ns: 1_000_000,  // 1 ms
+            max_interval_ns: 32_000_000, // 32 ms
             last_balance_ns: 0,
-            imbalance_pct: 117,              // 17 % imbalance threshold (Linux default)
+            imbalance_pct: 117, // 17 % imbalance threshold (Linux default)
         }
     }
 
@@ -332,7 +333,11 @@ pub struct LoadBalanceResult {
 /// tasks *should* be moved; in a real kernel the per-CPU task lists would be
 /// locked and entries physically migrated.  This implementation updates
 /// `RunQueue::nr_running` counters to reflect the simulated migration.
-pub fn load_balance(this_cpu: u32, domain: &mut SchedDomain, idle: CpuIdleType) -> LoadBalanceResult {
+pub fn load_balance(
+    this_cpu: u32,
+    domain: &mut SchedDomain,
+    idle: CpuIdleType,
+) -> LoadBalanceResult {
     let mut result = LoadBalanceResult::default();
 
     let local_load = cpu_load(this_cpu);
@@ -358,9 +363,7 @@ pub fn load_balance(this_cpu: u32, domain: &mut SchedDomain, idle: CpuIdleType) 
 
     // Imbalance check: only migrate if busiest is significantly heavier.
     // Linux uses: avg_load > (local_load * imbalance_pct) / 100
-    let threshold = local_load
-        .saturating_mul(domain.imbalance_pct as u64)
-        / 100;
+    let threshold = local_load.saturating_mul(domain.imbalance_pct as u64) / 100;
     if busiest_load <= threshold {
         return result;
     }
@@ -434,7 +437,12 @@ pub fn rebalance_domains(this_cpu: u32, idle: CpuIdleType, now_ns: u64, domain: 
 /// On a real SMP kernel this raises a soft-IRQ (`SCHED_SOFTIRQ`) that defers
 /// `rebalance_domains` to a safe context.  Here we call it directly since the
 /// RustOS IRQ model does not yet have soft-IRQs.
-pub fn trigger_load_balance(this_cpu: u32, idle: CpuIdleType, now_ns: u64, domain: &mut SchedDomain) {
+pub fn trigger_load_balance(
+    this_cpu: u32,
+    idle: CpuIdleType,
+    now_ns: u64,
+    domain: &mut SchedDomain,
+) {
     rebalance_domains(this_cpu, idle, now_ns, domain);
 }
 

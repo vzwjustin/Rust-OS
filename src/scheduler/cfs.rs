@@ -49,14 +49,10 @@ pub const NICE_0_WEIGHT: u64 = 1024;
 /// Precomputed inverse weights (2^32 / weight) to allow multiply-instead-of-divide.
 /// Mirrors `prio_to_wmult[]` in Linux.
 pub const PRIO_TO_WMULT: [u32; 40] = [
-    48388, 59856, 76040, 92818, 118348,
-    147320, 184698, 229616, 287308, 360437,
-    449829, 563644, 704093, 875809, 1099582,
-    1376151, 1717300, 2157191, 2708050, 3363326,
-    4194304, 5237765, 6557202, 8166337, 10153587,
-    12820798, 15790321, 19976592, 24970740, 31350126,
-    39045157, 49367440, 61356676, 76695844, 95443717,
-    119304647, 148102320, 186737708, 238609294, 286331153,
+    48388, 59856, 76040, 92818, 118348, 147320, 184698, 229616, 287308, 360437, 449829, 563644,
+    704093, 875809, 1099582, 1376151, 1717300, 2157191, 2708050, 3363326, 4194304, 5237765,
+    6557202, 8166337, 10153587, 12820798, 15790321, 19976592, 24970740, 31350126, 39045157,
+    49367440, 61356676, 76695844, 95443717, 119304647, 148102320, 186737708, 238609294, 286331153,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -360,8 +356,14 @@ pub fn update_curr(cfs_rq: &mut CfsRunQueue, pid: Pid, now_ns: u64) {
     }
 
     // Update min_vruntime: the minimum of (curr.vruntime, leftmost in tree).
-    let leftmost_vr = cfs_rq.leftmost().and_then(|p| cfs_rq.entities.get(&p)).map(|se| se.vruntime);
-    let curr_vr = cfs_rq.curr.and_then(|p| cfs_rq.entities.get(&p)).map(|se| se.vruntime);
+    let leftmost_vr = cfs_rq
+        .leftmost()
+        .and_then(|p| cfs_rq.entities.get(&p))
+        .map(|se| se.vruntime);
+    let curr_vr = cfs_rq
+        .curr
+        .and_then(|p| cfs_rq.entities.get(&p))
+        .map(|se| se.vruntime);
     let new_min = match (leftmost_vr, curr_vr) {
         (Some(a), Some(b)) => a.min(b),
         (Some(a), None) | (None, Some(a)) => a,
@@ -454,8 +456,16 @@ pub fn pick_next_entity(cfs_rq: &CfsRunQueue) -> Option<Pid> {
     // hasn't fallen too far behind the leftmost task.
     if let Some(next_pid) = cfs_rq.next {
         if next_pid != leftmost {
-            let lv = cfs_rq.entities.get(&leftmost).map(|se| se.vruntime).unwrap_or(0);
-            let nv = cfs_rq.entities.get(&next_pid).map(|se| se.vruntime).unwrap_or(u64::MAX);
+            let lv = cfs_rq
+                .entities
+                .get(&leftmost)
+                .map(|se| se.vruntime)
+                .unwrap_or(0);
+            let nv = cfs_rq
+                .entities
+                .get(&next_pid)
+                .map(|se| se.vruntime)
+                .unwrap_or(u64::MAX);
             if nv <= lv + SCHED_WAKEUP_GRANULARITY_NS {
                 return Some(next_pid);
             }
@@ -477,7 +487,11 @@ pub fn sched_slice(cfs_rq: &CfsRunQueue, pid: Pid) -> u64 {
         return SCHED_LATENCY_NS;
     }
     let period = sched_period(cfs_rq.nr_running);
-    let se_weight = cfs_rq.entities.get(&pid).map(|se| se.load.weight).unwrap_or(NICE_0_WEIGHT);
+    let se_weight = cfs_rq
+        .entities
+        .get(&pid)
+        .map(|se| se.load.weight)
+        .unwrap_or(NICE_0_WEIGHT);
     // period * se_weight / total_weight
     let slice = (period as u128 * se_weight as u128 / cfs_rq.load.weight as u128) as u64;
     slice.max(SCHED_MIN_GRANULARITY_NS)
@@ -520,7 +534,11 @@ pub fn check_preempt_tick(cfs_rq: &CfsRunQueue, curr_pid: Pid, now_ns: u64) -> b
     // Also preempt if the leftmost task's vruntime is significantly smaller.
     if let Some(leftmost) = cfs_rq.leftmost() {
         if leftmost != curr_pid {
-            let lv = cfs_rq.entities.get(&leftmost).map(|s| s.vruntime).unwrap_or(0);
+            let lv = cfs_rq
+                .entities
+                .get(&leftmost)
+                .map(|s| s.vruntime)
+                .unwrap_or(0);
             let cv = se.vruntime;
             if cv > lv + SCHED_MIN_GRANULARITY_NS {
                 return true;

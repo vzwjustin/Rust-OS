@@ -61,8 +61,10 @@ impl BitmapVec {
         let bit = index % BITS_PER_USIZE;
         // SAFETY: `word` is within bounds (checked above), and we only use
         // the reference for an atomic RMW which is safe for concurrent access.
-        let ptr = self.data.as_ptr().add(word) as *const AtomicUsize;
-        unsafe { (*ptr).fetch_or(1 << bit, Ordering::Relaxed); }
+        unsafe {
+            let ptr = self.data.as_ptr().add(word) as *const AtomicUsize;
+            (*ptr).fetch_or(1 << bit, Ordering::Relaxed);
+        }
     }
 
     /// Clear bit at `index`.
@@ -86,8 +88,10 @@ impl BitmapVec {
         let bit = index % BITS_PER_USIZE;
         // SAFETY: `word` is within bounds (checked above), and we only use
         // the reference for an atomic RMW which is safe for concurrent access.
-        let ptr = self.data.as_ptr().add(word) as *const AtomicUsize;
-        unsafe { (*ptr).fetch_and(!(1 << bit), Ordering::Relaxed); }
+        unsafe {
+            let ptr = self.data.as_ptr().add(word) as *const AtomicUsize;
+            (*ptr).fetch_and(!(1 << bit), Ordering::Relaxed);
+        }
     }
 
     /// Test if bit at `index` is set.

@@ -236,6 +236,8 @@ pub struct ProcessControlBlock {
     pub dumpable: bool,
     /// Signal sent on parent death (0 = none)
     pub parent_death_signal: u32,
+    /// Linux no_new_privs bit (prctl PR_SET_NO_NEW_PRIVS/PR_GET_NO_NEW_PRIVS).
+    pub no_new_privs: bool,
     /// Permitted capability mask
     pub cap_permitted: u64,
     /// Effective capability mask
@@ -598,6 +600,7 @@ impl ProcessControlBlock {
             major_faults: 0,
             dumpable: true,
             parent_death_signal: 0,
+            no_new_privs: false,
             cap_permitted: u64::MAX,
             cap_effective: u64::MAX,
             cap_inheritable: 0,
@@ -789,7 +792,14 @@ impl ProcessManager {
         // and the insert are a single atomic step (no TOCTOU where two callers
         // both pass the check and overshoot MAX_PROCESSES). The PID is only
         // allocated after the limit passes, so a rejected create never burns a PID.
-        let pid = {
+        //
+        // `processes`, `scheduler`, and the cgroup locks below are also taken
+        // from the timer ISR (scheduler tick, cgroup CPU charging). If a timer
+        // tick lands here while one of these is held, the ISR's own attempt to
+        // re-acquire the same lock self-deadlocks the CPU (IF=0 inside the ISR
+        // means the original holder can never resume to release it). Run the
+        // whole critical section with interrupts disabled to prevent that.
+        let pid = crate::interrupts::without_interrupts(|| -> Result<Pid, &'static str> {
             let mut processes = self.processes.write();
 
             if self.process_count.load(Ordering::SeqCst) >= MAX_PROCESSES {
@@ -816,6 +826,7 @@ impl ProcessManager {
                     pcb.supplementary_groups = parent_pcb.supplementary_groups.clone();
                     pcb.dumpable = parent_pcb.dumpable;
                     pcb.parent_death_signal = parent_pcb.parent_death_signal;
+                    pcb.no_new_privs = parent_pcb.no_new_privs;
                     pcb.cap_permitted = parent_pcb.cap_permitted;
                     pcb.cap_effective = parent_pcb.cap_effective;
                     pcb.cap_inheritable = parent_pcb.cap_inheritable;
@@ -832,11 +843,11 @@ impl ProcessManager {
                     return Err("cgroup pids controller charge failed");
                 }
             }
-            pid
-        };
+            Ok(pid)
+        })?;
 
         // Add to scheduler
-        {
+        crate::interrupts::without_interrupts(|| -> Result<(), &'static str> {
             let mut scheduler = self.scheduler.lock();
             if let Err(e) = scheduler.add_process(pid, priority) {
                 if parent_pid.is_some() {
@@ -847,7 +858,8 @@ impl ProcessManager {
                 self.process_count.fetch_sub(1, Ordering::SeqCst);
                 return Err(e);
             }
-        }
+            Ok(())
+        })?;
 
         // Create a security context for the new process (inherits from parent if provided).
         let _ = crate::security::create_context(pid, parent_pid);
@@ -979,9 +991,18 @@ impl ProcessManager {
     }
 
     /// Get process information
+    ///
+    /// Wrapped in `without_interrupts`: the timer ISR's scheduler-tick path
+    /// also takes `self.processes.read()`. Without this, a non-ISR caller
+    /// holding the lock (e.g. exec's `with_process_mut` below) can be
+    /// preempted by the timer, whose ISR then spins forever trying to
+    /// re-acquire the same lock (CPU is single-core here, so the lock
+    /// holder never gets to run again to release it) -- a self-deadlock.
     pub fn get_process(&self, pid: Pid) -> Option<ProcessControlBlock> {
-        let processes = self.processes.read();
-        processes.get(&pid).cloned()
+        crate::interrupts::without_interrupts(|| {
+            let processes = self.processes.read();
+            processes.get(&pid).cloned()
+        })
     }
 
     /// Mutate a process in place under the processes lock.
@@ -1001,8 +1022,13 @@ impl ProcessManager {
     where
         F: FnOnce(&mut ProcessControlBlock) -> R,
     {
-        let mut processes = self.processes.write();
-        processes.get_mut(&pid).map(f)
+        // See get_process() above: must disable interrupts while holding
+        // processes.write(), since the timer ISR's scheduler-tick path
+        // takes processes.read() and this is a single-core deadlock risk.
+        crate::interrupts::without_interrupts(|| {
+            let mut processes = self.processes.write();
+            processes.get_mut(&pid).map(f)
+        })
     }
 
     /// Get current running process ID

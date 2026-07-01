@@ -12,16 +12,13 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use spin::Mutex;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 use super::{
-    EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_MSC, EV_LED, EV_SW, EV_SND, EV_FF,
-    EV_REP,
-    SYN_REPORT, SYN_DROPPED,
-    KEY_MAX, REL_MAX, ABS_MAX, MSC_MAX, LED_MAX, SW_MAX, SND_MAX, FF_MAX,
-    ABS_MT_SLOT,
-    InputEvent,
+    InputEvent, ABS_MAX, ABS_MT_SLOT, EV_ABS, EV_FF, EV_KEY, EV_LED, EV_MSC, EV_REL, EV_REP,
+    EV_SND, EV_SW, EV_SYN, FF_MAX, KEY_MAX, LED_MAX, MSC_MAX, REL_MAX, SND_MAX, SW_MAX,
+    SYN_DROPPED, SYN_REPORT,
 };
 
 /// Linux `EV_VERSION` — evdev protocol version.
@@ -214,9 +211,9 @@ impl EvdevClient {
     /// Flushes pending events and queues SYN_DROPPED if queue is non-empty.
     pub fn set_clk_type(&mut self, clkid: u32) -> Result<(), &'static str> {
         let new_clk = match clkid {
-            0 => InputClockType::Realtime,    // CLOCK_REALTIME
-            1 => InputClockType::Monotonic,   // CLOCK_MONOTONIC
-            7 => InputClockType::Boottime,    // CLOCK_BOOTTIME
+            0 => InputClockType::Realtime,  // CLOCK_REALTIME
+            1 => InputClockType::Monotonic, // CLOCK_MONOTONIC
+            7 => InputClockType::Boottime,  // CLOCK_BOOTTIME
             _ => return Err("invalid clockid"),
         };
 
@@ -264,7 +261,7 @@ pub struct EvdevDevice {
     pub hint_events_per_packet: u32,
     /// Capability bitmaps, indexed by event type.
     /// Each bitmap is a Vec<u8> where bit N means code N is supported.
-    pub ev_bits: Vec<u8>,   // EV_SYN bit set = which event types supported
+    pub ev_bits: Vec<u8>, // EV_SYN bit set = which event types supported
     pub key_bits: Vec<u8>,  // EV_KEY capability bitmap
     pub rel_bits: Vec<u8>,  // EV_REL capability bitmap
     pub abs_bits: Vec<u8>,  // EV_ABS capability bitmap
@@ -366,8 +363,7 @@ impl InputMask {
             mask_type: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
             codes_size: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
             codes_ptr: u64::from_le_bytes([
-                buf[8], buf[9], buf[10], buf[11],
-                buf[12], buf[13], buf[14], buf[15],
+                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
             ]),
         }
     }
@@ -471,7 +467,7 @@ impl EvdevDevice {
     /// Get the capability bitmap for a given event type (Linux `handle_eviocgbit`).
     pub fn get_capability_bitmap(&self, ev_type: u16) -> &[u8] {
         match ev_type {
-            0 => &self.ev_bits,       // EV_SYN → which event types
+            0 => &self.ev_bits, // EV_SYN → which event types
             EV_KEY => &self.key_bits,
             EV_REL => &self.rel_bits,
             EV_ABS => &self.abs_bits,
@@ -488,7 +484,7 @@ impl EvdevDevice {
     /// Get the max code count for a given event type (Linux `evdev_get_mask_cnt`).
     pub fn get_mask_cnt(ev_type: u16) -> usize {
         match ev_type {
-            0 => 0x20,       // EV_CNT = EV_MAX + 1
+            0 => 0x20, // EV_CNT = EV_MAX + 1
             EV_KEY => KEY_MAX as usize + 1,
             EV_REL => REL_MAX as usize + 1,
             EV_ABS => ABS_MAX as usize + 1,
@@ -612,9 +608,7 @@ where
     F: FnOnce(&mut EvdevClient) -> R,
 {
     let mut clients = EVDEV_CLIENTS.lock();
-    let client = clients
-        .get_mut(client_id)
-        .ok_or("evdev client not found")?;
+    let client = clients.get_mut(client_id).ok_or("evdev client not found")?;
     Ok(f(client))
 }
 
@@ -650,7 +644,10 @@ const IOC_READ: u32 = 2;
 const EVDEV_IOC_TYPE: u32 = b'E' as u32;
 
 fn ioc(dir: u32, nr: u32, size: u32) -> u32 {
-    (dir << IOC_DIRSHIFT) | (EVDEV_IOC_TYPE << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT)
+    (dir << IOC_DIRSHIFT)
+        | (EVDEV_IOC_TYPE << IOC_TYPESHIFT)
+        | (nr << IOC_NRSHIFT)
+        | (size << IOC_SIZESHIFT)
 }
 
 fn ioc_nr(request: u32) -> u8 {
@@ -755,19 +752,38 @@ pub fn evdev_ioctl(client_id: usize, request: u32, arg: &mut [u8]) -> Result<usi
         0x06 => return with_device(client_device, |dev| put_string(arg, &dev.name)),
         0x07 => return with_device(client_device, |dev| put_string(arg, &dev.phys)),
         0x08 => return with_device(client_device, |dev| put_string(arg, &dev.uniq)),
-        0x09 => return with_device(client_device, |dev| put_bytes(&mut arg[..size], &dev.prop_bits)),
-        0x18 => return with_device(client_device, |dev| put_bytes(&mut arg[..size], &dev.key_state)),
-        0x19 => return with_device(client_device, |dev| put_bytes(&mut arg[..size], &dev.led_state)),
-        0x1a => return with_device(client_device, |dev| put_bytes(&mut arg[..size], &dev.snd_state)),
-        0x1b => return with_device(client_device, |dev| put_bytes(&mut arg[..size], &dev.sw_state)),
+        0x09 => {
+            return with_device(client_device, |dev| {
+                put_bytes(&mut arg[..size], &dev.prop_bits)
+            })
+        }
+        0x18 => {
+            return with_device(client_device, |dev| {
+                put_bytes(&mut arg[..size], &dev.key_state)
+            })
+        }
+        0x19 => {
+            return with_device(client_device, |dev| {
+                put_bytes(&mut arg[..size], &dev.led_state)
+            })
+        }
+        0x1a => {
+            return with_device(client_device, |dev| {
+                put_bytes(&mut arg[..size], &dev.snd_state)
+            })
+        }
+        0x1b => {
+            return with_device(client_device, |dev| {
+                put_bytes(&mut arg[..size], &dev.sw_state)
+            })
+        }
         0x90 => {
             let grab = get_i32(arg)? != 0;
             let mut clients = EVDEV_CLIENTS.lock();
             if grab
-                && clients
-                    .iter()
-                    .enumerate()
-                    .any(|(id, c)| id != client_id && c.device_idx == client_device && c.grabbed && !c.revoked)
+                && clients.iter().enumerate().any(|(id, c)| {
+                    id != client_id && c.device_idx == client_device && c.grabbed && !c.revoked
+                })
             {
                 return Err("evdev device already grabbed");
             }
@@ -788,19 +804,23 @@ pub fn evdev_ioctl(client_id: usize, request: u32, arg: &mut [u8]) -> Result<usi
         }
         0xa0 => {
             let clkid = get_i32(arg)? as u32;
-            return with_client_mut(client_id, |client| client.set_clk_type(clkid)).and_then(|r| r.map(|_| 0));
+            return with_client_mut(client_id, |client| client.set_clk_type(clkid))
+                .and_then(|r| r.map(|_| 0));
         }
         _ => {}
     }
 
     if (0x20..=0x20 + EV_MAX as u8).contains(&nr) {
         let ev_type = (nr - 0x20) as u16;
-        return with_device(client_device, |dev| put_bytes(&mut arg[..size], dev.get_capability_bitmap(ev_type)));
+        return with_device(client_device, |dev| {
+            put_bytes(&mut arg[..size], dev.get_capability_bitmap(ev_type))
+        });
     }
 
     if (0x40..=0x40 + ABS_MAX as u8).contains(&nr) {
         let code = (nr - 0x40) as usize;
-        return with_device(client_device, |dev| dev.absinfo[code].to_bytes()).map(|abs| put_bytes(arg, &abs));
+        return with_device(client_device, |dev| dev.absinfo[code].to_bytes())
+            .map(|abs| put_bytes(arg, &abs));
     }
 
     if (0xc0..=0xc0 + ABS_MAX as u8).contains(&nr) {
@@ -835,8 +855,8 @@ pub fn init_evdev_devices() {
         return;
     };
 
-    let has_keyboard = port1_available
-        && port1_device == crate::drivers::ps2_controller::Ps2DeviceType::Keyboard;
+    let has_keyboard =
+        port1_available && port1_device == crate::drivers::ps2_controller::Ps2DeviceType::Keyboard;
     let has_mouse = port2_available && is_ps2_mouse(port2_device);
 
     let (keyboard_registered, mouse_registered) = {

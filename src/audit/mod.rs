@@ -428,16 +428,25 @@ pub fn audit_watch_notify(path: &str, mask: u32) {
     }
     let hit = {
         let watches = WATCHES.read();
-        watches
-            .iter()
-            .any(|w| w.enabled && w.mask & mask != 0 && (path == w.path || path.starts_with(&w.path)))
+        watches.iter().any(|w| {
+            w.enabled && w.mask & mask != 0 && (path == w.path || path.starts_with(&w.path))
+        })
     };
     if !hit {
         return;
     }
     let (pid, uid, gid) = current_creds();
     let message = format!("watch path=\"{}\" mask={:#x}", path, mask);
-    store_record(AuditType::Path, pid, uid, gid, true, message, None, Some(path.to_string()));
+    store_record(
+        AuditType::Path,
+        pid,
+        uid,
+        gid,
+        true,
+        message,
+        None,
+        Some(path.to_string()),
+    );
 }
 
 fn store_record(

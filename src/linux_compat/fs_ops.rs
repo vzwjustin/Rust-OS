@@ -1032,8 +1032,15 @@ pub fn unshare(flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    crate::namespace::unshare(flags as u32);
-    Ok(0)
+    if flags & (CLONE_FILES | CLONE_FS) != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+
+    let ret = crate::namespace::unshare(flags as u32);
+    if ret < 0 {
+        return Err(LinuxError::from_errno(-ret));
+    }
+    Ok(ret)
 }
 
 /// setns - reassociate thread with a namespace

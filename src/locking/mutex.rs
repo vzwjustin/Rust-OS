@@ -133,8 +133,7 @@ impl<T> Mutex<T> {
         // Slow path: mark waiters and spin-wait (stub).
         // In a real kernel this would put the current task on `wait_list`
         // and call `schedule()`.
-        self.state
-            .fetch_or(MUTEX_STATE_WAITERS, Ordering::Relaxed);
+        self.state.fetch_or(MUTEX_STATE_WAITERS, Ordering::Relaxed);
 
         // Spin until the lock is free then grab it.
         // TODO: replace with proper sleep/wake when scheduler is available.

@@ -415,15 +415,33 @@ fn build_linux_initial_stack(
     let hwcap = {
         let features = crate::arch::cpu_features();
         let mut cap: u64 = 0;
-        if features.sse { cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE; }
-        if features.sse2 { cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE2; }
-        if features.mmx { cap |= crate::arch::x86::auxvec::HWCAP_X86_MMX; }
-        if features.fpu { cap |= crate::arch::x86::auxvec::HWCAP_X86_FPU; }
-        if features.tsc { cap |= crate::arch::x86::auxvec::HWCAP_X86_TSC; }
-        if features.cmov { cap |= crate::arch::x86::auxvec::HWCAP_X86_CMOV; }
-        if features.pat { cap |= crate::arch::x86::auxvec::HWCAP_X86_PAT; }
-        if features.clflush { cap |= crate::arch::x86::auxvec::HWCAP_X86_CLFLUSH; }
-        if features.fxsr { cap |= crate::arch::x86::auxvec::HWCAP_X86_FXSR; }
+        if features.sse {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE;
+        }
+        if features.sse2 {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE2;
+        }
+        if features.mmx {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_MMX;
+        }
+        if features.fpu {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_FPU;
+        }
+        if features.tsc {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_TSC;
+        }
+        if features.cmov {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_CMOV;
+        }
+        if features.pat {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_PAT;
+        }
+        if features.clflush {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_CLFLUSH;
+        }
+        if features.fxsr {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_FXSR;
+        }
         cap
     };
 
@@ -661,11 +679,7 @@ fn load_executable_from_vfs(
 
     let elf_loader = ElfLoader::new(true, true);
     let loaded = elf_loader.load_elf_binary(&binary_data, pid).map_err(|e| {
-        crate::serial_println!(
-            "exec: ELF load of {} failed: {:?}",
-            resolved.load_path,
-            e
-        );
+        crate::serial_println!("exec: ELF load of {} failed: {:?}", resolved.load_path, e);
         elf_error_to_linux(e)
     })?;
 
@@ -2091,6 +2105,9 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
     const PR_GET_DUMPABLE: i32 = 3;
     const PR_SET_PDEATHSIG: i32 = 1;
     const PR_GET_PDEATHSIG: i32 = 2;
+    const PR_SET_NO_NEW_PRIVS: i32 = 38;
+    const PR_GET_NO_NEW_PRIVS: i32 = 39;
+    const PR_GET_TID_ADDRESS: i32 = 40;
 
     match option {
         PR_SET_NAME => {
@@ -2169,6 +2186,42 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
             unsafe {
                 *sig_ptr = pcb.parent_death_signal as i32;
             }
+            Ok(0)
+        }
+        PR_SET_NO_NEW_PRIVS => {
+            if arg2 != 1 || _arg3 != 0 || _arg4 != 0 || _arg5 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let pid = process::current_pid();
+            let pm = process::get_process_manager();
+            pm.with_process_mut(pid, |pcb| {
+                pcb.no_new_privs = true;
+            })
+            .ok_or(LinuxError::ESRCH)?;
+            Ok(0)
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            if arg2 != 0 || _arg3 != 0 || _arg4 != 0 || _arg5 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let enabled = current_pcb()?.no_new_privs;
+            Ok(if enabled { 1 } else { 0 })
+        }
+        PR_GET_TID_ADDRESS => {
+            if _arg3 != 0 || _arg4 != 0 || _arg5 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let tid_addr_ptr = arg2;
+            if tid_addr_ptr == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+
+            let tid_addr = crate::linux_compat::thread_ops::clear_child_tid_address();
+            UserSpaceMemory::copy_to_user(tid_addr_ptr, &tid_addr.to_ne_bytes())
+                .map_err(|_| LinuxError::EFAULT)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -2323,9 +2376,20 @@ pub fn execveat(
     pathname: *const u8,
     argv: *const *const u8,
     envp: *const *const u8,
-    _flags: i32,
+    flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
+
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    const AT_EMPTY_PATH: i32 = 0x1000;
+    const VALID_EXECVEAT_FLAGS: i32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
+
+    if flags & !VALID_EXECVEAT_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if flags != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
 
     let path_str = c_str_to_string(pathname)?;
     if path_str.is_empty() {

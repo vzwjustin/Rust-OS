@@ -609,9 +609,8 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    // Must specify either MS_ASYNC or MS_SYNC
-    let sync_flags = flags & (ms::MS_ASYNC | ms::MS_SYNC);
-    if sync_flags == 0 || sync_flags == (ms::MS_ASYNC | ms::MS_SYNC) {
+    let valid_flags = ms::MS_ASYNC | ms::MS_INVALIDATE | ms::MS_SYNC;
+    if flags & !valid_flags != 0 || (flags & ms::MS_ASYNC != 0 && flags & ms::MS_SYNC != 0) {
         return Err(LinuxError::EINVAL);
     }
 
@@ -626,7 +625,7 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let aligned_length = (length + 4095) & !4095;
+    let aligned_length = length.checked_add(4095).ok_or(LinuxError::ENOMEM)? & !4095;
 
     // Synchronize mapped pages with backing file
     // MS_SYNC: Synchronous write - wait for write to complete
@@ -662,7 +661,12 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
             let reg_start = region.start.as_u64() as usize;
             let reg_end = region.end.as_u64() as usize;
             let span_start = core::cmp::max(reg_start, addr_val) & !0xFFF;
-            let span_end = core::cmp::min(reg_end, addr_val + aligned_length);
+            let span_end = core::cmp::min(
+                reg_end,
+                addr_val
+                    .checked_add(aligned_length)
+                    .ok_or(LinuxError::ENOMEM)?,
+            );
 
             // File offset corresponding to span_start within this region.
             let file_off_base = region.file_offset + (span_start.saturating_sub(reg_start));
@@ -806,7 +810,7 @@ pub fn mlockall(flags: i32) -> LinuxResult<i32> {
     const MCL_ONFAULT: i32 = 4; // Lock on page fault
 
     let valid_flags = MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT;
-    if flags & !valid_flags != 0 {
+    if flags == 0 || flags & !valid_flags != 0 || flags == MCL_ONFAULT {
         return Err(LinuxError::EINVAL);
     }
 
@@ -898,28 +902,45 @@ pub fn mremap(
 ) -> LinuxResult<*mut u8> {
     inc_ops();
 
-    if old_addr.is_null() || old_size == 0 {
+    if old_addr.is_null() || old_size == 0 || new_size == 0 {
         return Err(LinuxError::EINVAL);
     }
 
     const MREMAP_MAYMOVE: i32 = 1;
     const MREMAP_FIXED: i32 = 2;
+    const MREMAP_DONTUNMAP: i32 = 4;
 
-    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED) != 0 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    // If MREMAP_FIXED, must also have MREMAP_FIXED
-    if (flags & MREMAP_FIXED) != 0 && (flags & MREMAP_MAYMOVE) == 0 {
+    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 {
         return Err(LinuxError::EINVAL);
     }
 
     let old_addr_val = old_addr as usize;
     let new_addr_val = new_addr as usize;
 
+    if old_addr_val & 0xFFF != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let has_target_addr = (flags & (MREMAP_FIXED | MREMAP_DONTUNMAP)) != 0;
+    if has_target_addr {
+        if (flags & MREMAP_MAYMOVE) == 0 {
+            return Err(LinuxError::EINVAL);
+        }
+        if new_addr_val == 0 || new_addr_val & 0xFFF != 0 {
+            return Err(LinuxError::EINVAL);
+        }
+    }
+
+    if (flags & MREMAP_DONTUNMAP) != 0 {
+        if old_size != new_size {
+            return Err(LinuxError::EINVAL);
+        }
+        return Err(LinuxError::ENOTSUP);
+    }
+
     // Align sizes to page boundaries
-    let aligned_old_size = (old_size + 4095) & !4095;
-    let aligned_new_size = (new_size + 4095) & !4095;
+    let aligned_old_size = old_size.checked_add(4095).ok_or(LinuxError::EINVAL)? & !4095;
+    let aligned_new_size = new_size.checked_add(4095).ok_or(LinuxError::EINVAL)? & !4095;
 
     // Case 1: Shrinking the mapping
     if aligned_new_size < aligned_old_size {
@@ -938,13 +959,6 @@ pub fn mremap(
     // Case 3: Expanding the mapping
     if (flags & MREMAP_FIXED) != 0 {
         // Move to fixed address
-        if new_addr_val == 0 {
-            return Err(LinuxError::EINVAL);
-        }
-        if new_addr_val & 0xFFF != 0 {
-            return Err(LinuxError::EINVAL);
-        }
-
         // Allocate at new location
         let result = vm_mmap(
             new_addr_val,
@@ -1405,6 +1419,34 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
 pub fn memfd_create(name: *const u8, flags: u32) -> LinuxResult<Fd> {
     inc_ops();
 
+    const MFD_CLOEXEC: u32 = 0x0001;
+    const MFD_ALLOW_SEALING: u32 = 0x0002;
+    const MFD_HUGETLB: u32 = 0x0004;
+    const MFD_NOEXEC_SEAL: u32 = 0x0008;
+    const MFD_EXEC: u32 = 0x0010;
+    const MFD_HUGE_SHIFT: u32 = 26;
+    const MFD_HUGE_MASK: u32 = 0x3f;
+    const MFD_ALL_FLAGS: u32 =
+        MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXEC_SEAL | MFD_EXEC;
+    let huge_flags = MFD_HUGE_MASK << MFD_HUGE_SHIFT;
+
+    if flags & MFD_HUGETLB == 0 {
+        if flags & !MFD_ALL_FLAGS != 0 {
+            return Err(LinuxError::EINVAL);
+        }
+    } else if flags & !(MFD_ALL_FLAGS | huge_flags) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    if flags & MFD_EXEC != 0 && flags & MFD_NOEXEC_SEAL != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let unsupported_flags = MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXEC_SEAL | MFD_EXEC;
+    if flags & unsupported_flags != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+
     let name_str = c_str_to_string(name)?;
 
     // Generate a unique filename using an atomic counter
@@ -1420,8 +1462,8 @@ pub fn memfd_create(name: *const u8, flags: u32) -> LinuxResult<Fd> {
         Ok(fd) => {
             // Optionally unlink so it's anonymous
             let _ = vfs::vfs_unlink(&path);
-            // MFD_CLOEXEC (0x0001): set close-on-exec on the fd.
-            if (flags & 0x0001) != 0 {
+            // MFD_CLOEXEC: set close-on-exec on the fd.
+            if (flags & MFD_CLOEXEC) != 0 {
                 let _ = vfs::vfs_set_fd_flags(fd, vfs::OpenFlags::CLOEXEC);
             }
             Ok(fd)

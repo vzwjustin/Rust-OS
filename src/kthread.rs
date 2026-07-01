@@ -91,7 +91,11 @@ impl KThread {
 
     /// Return the name as a `&str`, stripping any trailing NUL bytes.
     pub fn name_str(&self) -> &str {
-        let end = self.name.iter().position(|&b| b == 0).unwrap_or(TASK_COMM_LEN);
+        let end = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(TASK_COMM_LEN);
         core::str::from_utf8(&self.name[..end]).unwrap_or("<invalid>")
     }
 
@@ -144,7 +148,12 @@ impl KThreadCreateInfo {
         let bytes = name.as_bytes();
         let copy_len = bytes.len().min(TASK_COMM_LEN - 1);
         name_buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        KThreadCreateInfo { threadfn, data, cpu, name: name_buf }
+        KThreadCreateInfo {
+            threadfn,
+            data,
+            cpu,
+            name: name_buf,
+        }
     }
 }
 
@@ -153,8 +162,7 @@ impl KThreadCreateInfo {
 // ---------------------------------------------------------------------------
 
 /// The pending-create queue consumed by kthreadd.
-static KTHREAD_CREATE_QUEUE: Mutex<VecDeque<KThreadCreateInfo>> =
-    Mutex::new(VecDeque::new());
+static KTHREAD_CREATE_QUEUE: Mutex<VecDeque<KThreadCreateInfo>> = Mutex::new(VecDeque::new());
 
 /// Set to `true` once kthreadd has been fully initialised.
 static KTHREADD_READY: AtomicBool = AtomicBool::new(false);
@@ -165,8 +173,7 @@ static NEXT_TID: AtomicU32 = AtomicU32::new(2); // 1 = init, 2 = kthreadd
 
 /// Registry of live kthreads so that `kthread_stop` / `kthread_park` can
 /// locate them by TID.
-static KTHREAD_REGISTRY: Mutex<VecDeque<(u32, Arc<KThread>)>> =
-    Mutex::new(VecDeque::new());
+static KTHREAD_REGISTRY: Mutex<VecDeque<(u32, Arc<KThread>)>> = Mutex::new(VecDeque::new());
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -205,7 +212,10 @@ fn unregister_kthread(tid: u32) {
 fn spawn_kthread_stub(info: KThreadCreateInfo) -> Result<u32, i32> {
     let tid = alloc_tid();
     let name_bytes = &info.name;
-    let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(TASK_COMM_LEN);
+    let end = name_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(TASK_COMM_LEN);
     let name_str = core::str::from_utf8(&name_bytes[..end]).unwrap_or("kthread");
 
     let kt = Arc::new(KThread::new(info.threadfn, info.data, name_str));
@@ -231,22 +241,14 @@ fn spawn_kthread_stub(info: KThreadCreateInfo) -> Result<u32, i32> {
 ///
 /// # Returns
 /// `Ok(tid)` on success, `Err(errno)` on failure.
-pub fn kthread_create(
-    threadfn: fn(*mut u8) -> i32,
-    data: *mut u8,
-    name: &str,
-) -> Result<u32, i32> {
+pub fn kthread_create(threadfn: fn(*mut u8) -> i32, data: *mut u8, name: &str) -> Result<u32, i32> {
     kthread_create_on_cpu(threadfn, data, u32::MAX, name)
 }
 
 /// Create and immediately wake (run) a new kernel thread.
 ///
 /// Equivalent to the `kthread_run()` macro in Linux.
-pub fn kthread_run(
-    threadfn: fn(*mut u8) -> i32,
-    data: *mut u8,
-    name: &str,
-) -> Result<u32, i32> {
+pub fn kthread_run(threadfn: fn(*mut u8) -> i32, data: *mut u8, name: &str) -> Result<u32, i32> {
     let tid = kthread_create(threadfn, data, name)?;
     kthread_wake(tid);
     Ok(tid)
@@ -607,8 +609,8 @@ impl KThreadWorker {
     /// Flush all pending and delayed work, blocking until the queue is empty.
     pub fn flush(&self) {
         loop {
-            let is_empty = self.work_list.lock().is_empty()
-                && self.delayed_work_list.lock().is_empty();
+            let is_empty =
+                self.work_list.lock().is_empty() && self.delayed_work_list.lock().is_empty();
             if is_empty {
                 break;
             }
@@ -683,10 +685,7 @@ pub fn kthread_worker_fn(worker: &KThreadWorker, kthread: &KThread) -> i32 {
 ///
 /// # Safety
 /// `worker` must remain valid for the lifetime of the created thread.
-pub fn kthread_create_worker(
-    worker: &'static KThreadWorker,
-    name: &str,
-) -> Result<u32, i32> {
+pub fn kthread_create_worker(worker: &'static KThreadWorker, name: &str) -> Result<u32, i32> {
     // We need a bare function pointer, so we use a trampoline.
     fn trampoline(data: *mut u8) -> i32 {
         // SAFETY: caller guarantees the pointer is valid.
@@ -715,7 +714,9 @@ pub fn kthread_destroy_worker(worker: &'static KThreadWorker, tid: u32) {
 mod tests {
     use super::*;
 
-    fn dummy_fn(_data: *mut u8) -> i32 { 0 }
+    fn dummy_fn(_data: *mut u8) -> i32 {
+        0
+    }
     fn noop_work(_work: &KThreadWork) {}
 
     #[test]

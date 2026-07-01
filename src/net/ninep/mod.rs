@@ -5,8 +5,14 @@ use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Msg9p {
-    Tversion { msize: u32, version: alloc::string::String },
-    Rversion { msize: u32, version: alloc::string::String },
+    Tversion {
+        msize: u32,
+        version: alloc::string::String,
+    },
+    Rversion {
+        msize: u32,
+        version: alloc::string::String,
+    },
 }
 
 pub fn encode_msg(msg: &Msg9p, out: &mut Vec<u8>) {

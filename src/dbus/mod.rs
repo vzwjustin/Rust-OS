@@ -1468,7 +1468,8 @@ static KERNEL_SHELL_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::At
 static KERNEL_READY_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static KERNEL_NOTIF_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static KERNEL_SESSION_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static KERNEL_SCREENSAVER_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static KERNEL_SCREENSAVER_CONN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
 
 /// Next notification ID for org.freedesktop.Notifications.Notify
 static NEXT_NOTIF_ID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
@@ -2444,18 +2445,27 @@ fn dispatch_session_service(
                 unmarshaler.parse_body(signature).ok()?
             };
             // Notify args: app_name:s, replaces_id:u, app_icon:s, summary:s, body:s, actions:a{ss}, hints:a{sv}, expire_timeout:i
-            let app_name = body.get(0).and_then(|v| match v {
-                Value::String(s) => Some(s.as_str()),
-                _ => None,
-            }).unwrap_or("Unknown");
-            let summary = body.get(3).and_then(|v| match v {
-                Value::String(s) => Some(s.as_str()),
-                _ => None,
-            }).unwrap_or("");
-            let notif_body = body.get(4).and_then(|v| match v {
-                Value::String(s) => Some(s.as_str()),
-                _ => None,
-            }).unwrap_or("");
+            let app_name = body
+                .get(0)
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("Unknown");
+            let summary = body
+                .get(3)
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            let notif_body = body
+                .get(4)
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
 
             crate::desktop::push_notification(app_name, summary, notif_body);
 

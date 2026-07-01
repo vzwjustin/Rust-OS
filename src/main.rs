@@ -35,14 +35,14 @@ unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
 mod intrinsics;
 
 // Linux rust/kernel/ ports (memory management + I/O abstractions)
-mod page;       // page constants, Page, PageRange, BorrowedPage
-mod uaccess;    // UserPtr, UserSlice, copy_from/to_user
-mod iov;        // IoVec, IovIter, import_iovec
+mod dma; // DmaCoherent, dma_sync_*, ioremap, DmaPool
+mod io; // MMIO r/w, port I/O, memory barriers, IoMem, IoRegister
+mod iov; // IoVec, IovIter, import_iovec
+mod kalloc; // AllocFlags, GFP_*, kmalloc/kfree/kzalloc/krealloc/vmalloc
+mod linux_rust;
+mod page; // page constants, Page, PageRange, BorrowedPage
 mod scatterlist; // ScatterList, SgTable, DmaDirection
-mod io;         // MMIO r/w, port I/O, memory barriers, IoMem, IoRegister
-mod dma;        // DmaCoherent, dma_sync_*, ioremap, DmaPool
-mod kalloc;     // AllocFlags, GFP_*, kmalloc/kfree/kzalloc/krealloc/vmalloc
-mod linux_rust; // Linux rust/kernel/ utility ports (sizes, bits, ioctl, bitmap, bitfield, etc.)
+mod uaccess; // UserPtr, UserSlice, copy_from/to_user // Linux rust/kernel/ utility ports (sizes, bits, ioctl, bitmap, bitfield, etc.)
 
 // Include VGA buffer module for better output
 mod vga_buffer;
@@ -1250,7 +1250,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             }
         }
         unsafe {
-            early_serial_write_str("RustOS: GLib/GNOME smoke checks deferred to userspace PID 1\r\n");
+            early_serial_write_str(
+                "RustOS: GLib/GNOME smoke checks deferred to userspace PID 1\r\n",
+            );
         }
         // Early cgroup init — root cgroup must exist before the scheduler
         // creates PID 1 so processes can be assigned to a cgroup.
@@ -1897,8 +1899,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // desktop.  Enter a minimal compositor/idle loop that services
             // the userspace process, forwards input to Wayland clients,
             // and renders their surfaces without drawing a kernel desktop.
-            crate::serial_println!("Boot: entering userspace init idle loop");
-            userspace_init_idle_loop()
+            crate::serial_println!("Boot: entering userspace session loop");
+            userspace_session_loop()
         } else if use_graphics_desktop && desktop_result.window_manager_ready {
             crate::serial_println!(
                 "desktop: {}x{}x{} gpu={}",

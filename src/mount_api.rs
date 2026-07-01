@@ -29,6 +29,8 @@ pub const FSCONFIG_RECONFIGURE: u32 = 7;
 // ── fsmount flags ───────────────────────────────────────────────────────
 
 pub const FSMOUNT_CLOEXEC: u32 = 0x00000001;
+pub const FSMOUNT_NAMESPACE: u32 = 0x00000002;
+pub const FSOPEN_CLOEXEC: u32 = 0x00000001;
 
 // ── move_mount flags ────────────────────────────────────────────────────
 
@@ -38,11 +40,23 @@ pub const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x00000004;
 pub const MOVE_MOUNT_T_SYMLINKS: u32 = 0x00000010;
 pub const MOVE_MOUNT_T_AUTOMOUNTS: u32 = 0x00000020;
 pub const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x00000040;
+pub const MOVE_MOUNT_SET_GROUP: u32 = 0x00000100;
+pub const MOVE_MOUNT_BENEATH: u32 = 0x00000200;
+pub const MOVE_MOUNT_MASK: u32 = 0x00000377;
 
 // ── open_tree flags ─────────────────────────────────────────────────────
 
 pub const OPEN_TREE_CLONE: u32 = 1;
+pub const OPEN_TREE_NAMESPACE: u32 = 1 << 1;
 pub const OPEN_TREE_CLOEXEC: u32 = 0x80000; // O_CLOEXEC
+pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+pub const AT_NO_AUTOMOUNT: u32 = 0x800;
+pub const AT_EMPTY_PATH: u32 = 0x1000;
+pub const AT_RECURSIVE: u32 = 0x8000;
+pub const FSPICK_CLOEXEC: u32 = 0x00000001;
+pub const FSPICK_SYMLINK_NOFOLLOW: u32 = 0x00000002;
+pub const FSPICK_NO_AUTOMOUNT: u32 = 0x00000004;
+pub const FSPICK_EMPTY_PATH: u32 = 0x00000008;
 
 // ── mount setattr flags ─────────────────────────────────────────────────
 
@@ -54,6 +68,12 @@ pub const MOUNT_ATTR_NOATIME: u64 = 0x00000010;
 pub const MOUNT_ATTR_NODIRATIME: u64 = 0x00000020;
 pub const MOUNT_ATTR_RELATIME: u64 = 0x00000040;
 pub const MOUNT_ATTR_NOSYMFOLLOW: u64 = 0x00000080;
+pub const MOUNT_ATTR_ATIME: u64 = 0x00000070;
+pub const MOUNT_ATTR_IDMAP: u64 = 0x00100000;
+pub const MS_UNBINDABLE: u64 = 1 << 17;
+pub const MS_PRIVATE: u64 = 1 << 18;
+pub const MS_SLAVE: u64 = 1 << 19;
+pub const MS_SHARED: u64 = 1 << 20;
 
 // ── Mount context state ─────────────────────────────────────────────────
 
@@ -153,6 +173,9 @@ pub fn fsopen(fs_type: *const u8, flags: u32) -> i32 {
     if fs_type.is_null() {
         return -14; // EFAULT
     }
+    if flags & !FSOPEN_CLOEXEC != 0 {
+        return -22; // EINVAL
+    }
 
     let mut len = 0;
     while unsafe { *fs_type.add(len) } != 0 {
@@ -176,7 +199,7 @@ pub fn fsopen(fs_type: *const u8, flags: u32) -> i32 {
     FS_CONTEXTS.write().insert(id, Mutex::new(ctx));
 
     let mut fd_flags: u32 = crate::vfs::OpenFlags::RDWR;
-    if flags & FSMOUNT_CLOEXEC != 0 {
+    if flags & FSOPEN_CLOEXEC != 0 {
         fd_flags |= crate::vfs::OpenFlags::CLOEXEC;
     }
 
@@ -275,7 +298,23 @@ pub fn fsconfig(fd: i32, cmd: u32, key: *const u8, value: *const u8, _aux: i32) 
 /// `attr_flags` are mount attributes (MOUNT_ATTR_*).
 ///
 /// Returns a mount fd on success, negative errno on failure.
-pub fn fsmount(fd: i32, _flags: u32, attr_flags: u32) -> i32 {
+pub fn fsmount(fd: i32, flags: u32, attr_flags: u32) -> i32 {
+    if flags & !(FSMOUNT_CLOEXEC | FSMOUNT_NAMESPACE) != 0 {
+        return -22; // EINVAL
+    }
+    if flags & FSMOUNT_NAMESPACE != 0 {
+        return -95; // ENOTSUP
+    }
+    let valid_attr_flags = (MOUNT_ATTR_RDONLY
+        | MOUNT_ATTR_NOSUID
+        | MOUNT_ATTR_NODEV
+        | MOUNT_ATTR_NOEXEC
+        | MOUNT_ATTR_ATIME
+        | MOUNT_ATTR_NOSYMFOLLOW) as u32;
+    if attr_flags & !valid_attr_flags != 0 {
+        return -22; // EINVAL
+    }
+
     let id = match crate::linux_compat::special_fd::get_fs_context_id(fd) {
         Some(id) => id,
         None => return -9, // EBADF
@@ -293,8 +332,11 @@ pub fn fsmount(fd: i32, _flags: u32, attr_flags: u32) -> i32 {
 
     // Create a mount fd — this represents a detached mount object
     // It will be attached to the tree via move_mount
-    let mount_fd =
-        crate::linux_compat::special_fd::register_mount_object(id, crate::vfs::OpenFlags::RDWR);
+    let mut fd_flags = crate::vfs::OpenFlags::RDWR;
+    if flags & FSMOUNT_CLOEXEC != 0 {
+        fd_flags |= crate::vfs::OpenFlags::CLOEXEC;
+    }
+    let mount_fd = crate::linux_compat::special_fd::register_mount_object(id, fd_flags);
     if mount_fd < 0 {
         return -23; // ENFILE
     }
@@ -312,6 +354,11 @@ pub fn fsmount(fd: i32, _flags: u32, attr_flags: u32) -> i32 {
 pub fn fspick(path: *const u8, flags: u32) -> i32 {
     if path.is_null() {
         return -14;
+    }
+    const VALID_FSPICK_FLAGS: u32 =
+        FSPICK_CLOEXEC | FSPICK_SYMLINK_NOFOLLOW | FSPICK_NO_AUTOMOUNT | FSPICK_EMPTY_PATH;
+    if flags & !VALID_FSPICK_FLAGS != 0 {
+        return -22;
     }
 
     let mut len = 0;
@@ -335,8 +382,7 @@ pub fn fspick(path: *const u8, flags: u32) -> i32 {
     FS_CONTEXTS.write().insert(id, Mutex::new(ctx));
 
     let mut fd_flags: u32 = crate::vfs::OpenFlags::RDWR;
-    if flags & 0x80000 != 0 {
-        // O_CLOEXEC
+    if flags & FSPICK_CLOEXEC != 0 {
         fd_flags |= crate::vfs::OpenFlags::CLOEXEC;
     }
 
@@ -364,10 +410,21 @@ pub fn move_mount(
     _from_path: *const u8,
     _to_dfd: i32,
     to_path: *const u8,
-    _flags: u32,
+    flags: u32,
 ) -> i32 {
     if to_path.is_null() {
         return -14;
+    }
+    if flags & !MOVE_MOUNT_MASK != 0 {
+        return -22;
+    }
+    if flags & (MOVE_MOUNT_BENEATH | MOVE_MOUNT_SET_GROUP)
+        == (MOVE_MOUNT_BENEATH | MOVE_MOUNT_SET_GROUP)
+    {
+        return -22;
+    }
+    if flags & (MOVE_MOUNT_BENEATH | MOVE_MOUNT_SET_GROUP) != 0 {
+        return -95;
     }
 
     let mut to_len = 0;
@@ -443,6 +500,22 @@ pub fn open_tree(_dfd: i32, path: *const u8, flags: u32) -> i32 {
     if path.is_null() {
         return -14;
     }
+    const VALID_OPEN_TREE_FLAGS: u32 = AT_EMPTY_PATH
+        | AT_NO_AUTOMOUNT
+        | AT_RECURSIVE
+        | AT_SYMLINK_NOFOLLOW
+        | OPEN_TREE_CLONE
+        | OPEN_TREE_CLOEXEC
+        | OPEN_TREE_NAMESPACE;
+    if flags & !VALID_OPEN_TREE_FLAGS != 0 {
+        return -22;
+    }
+    if flags & (AT_RECURSIVE | OPEN_TREE_CLONE | OPEN_TREE_NAMESPACE) == AT_RECURSIVE {
+        return -22;
+    }
+    if flags & OPEN_TREE_NAMESPACE != 0 {
+        return -95;
+    }
 
     let mut len = 0;
     while unsafe { *path.add(len) } != 0 {
@@ -459,8 +532,11 @@ pub fn open_tree(_dfd: i32, path: *const u8, flags: u32) -> i32 {
     }
 
     // Create a mount object fd
-    let mount_fd =
-        crate::linux_compat::special_fd::register_mount_object(0, crate::vfs::OpenFlags::RDWR);
+    let mut fd_flags = crate::vfs::OpenFlags::RDWR;
+    if flags & OPEN_TREE_CLOEXEC != 0 {
+        fd_flags |= crate::vfs::OpenFlags::CLOEXEC;
+    }
+    let mount_fd = crate::linux_compat::special_fd::register_mount_object(0, fd_flags);
     if mount_fd < 0 {
         return -23;
     }
@@ -483,9 +559,14 @@ pub fn open_tree(_dfd: i32, path: *const u8, flags: u32) -> i32 {
 /// `size` is the size of the attr struct.
 ///
 /// Returns 0 on success, negative errno on failure.
-pub fn mount_setattr(_dfd: i32, path: *const u8, _flags: u32, attr: u64, size: u64) -> i32 {
+pub fn mount_setattr(_dfd: i32, path: *const u8, flags: u32, attr: u64, size: u64) -> i32 {
     if path.is_null() {
         return -14;
+    }
+    const VALID_MOUNT_SETATTR_FLAGS: u32 =
+        AT_EMPTY_PATH | AT_RECURSIVE | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT;
+    if flags & !VALID_MOUNT_SETATTR_FLAGS != 0 {
+        return -22;
     }
 
     let mut len = 0;
@@ -508,6 +589,24 @@ pub fn mount_setattr(_dfd: i32, path: *const u8, _flags: u32, attr: u64, size: u
     }
 
     let mount_attr = unsafe { &*(attr as *const MountAttr) };
+    const VALID_MOUNT_ATTR_FLAGS: u64 = MOUNT_ATTR_RDONLY
+        | MOUNT_ATTR_NOSUID
+        | MOUNT_ATTR_NODEV
+        | MOUNT_ATTR_NOEXEC
+        | MOUNT_ATTR_ATIME
+        | MOUNT_ATTR_NOSYMFOLLOW
+        | MOUNT_ATTR_IDMAP;
+    const VALID_PROPAGATION_FLAGS: u64 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
+
+    if (mount_attr.attr_set | mount_attr.attr_clr) & !VALID_MOUNT_ATTR_FLAGS != 0 {
+        return -22;
+    }
+    if mount_attr.propagation & !VALID_PROPAGATION_FLAGS != 0 {
+        return -22;
+    }
+    if (mount_attr.propagation & VALID_PROPAGATION_FLAGS).count_ones() > 1 {
+        return -22;
+    }
 
     // Apply the attribute changes to the VFS mount point.
     match crate::fs::vfs().set_mount_flags(&path_str, mount_attr.attr_set, mount_attr.attr_clr) {

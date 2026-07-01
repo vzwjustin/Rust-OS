@@ -137,13 +137,11 @@ impl Work {
     }
 
     fn set_running(&self) {
-        self.state
-            .fetch_or(WORK_RUNNING, Ordering::AcqRel);
+        self.state.fetch_or(WORK_RUNNING, Ordering::AcqRel);
     }
 
     fn clear_running(&self) {
-        self.state
-            .fetch_and(!WORK_RUNNING, Ordering::AcqRel);
+        self.state.fetch_and(!WORK_RUNNING, Ordering::AcqRel);
     }
 }
 
@@ -571,7 +569,10 @@ pub fn queue_delayed_work(
         dwork.work.data,
     )));
     without_interrupts(|| {
-        wq.delayed.lock().push(DelayedEntry { due_us, work: work_arc });
+        wq.delayed.lock().push(DelayedEntry {
+            due_us,
+            work: work_arc,
+        });
     });
     // Also register with the time subsystem for an early wake.
     crate::time::schedule_timer(delay_us, delayed_work_timer_fire);
@@ -649,7 +650,9 @@ pub fn cancel_work_sync(work: &Arc<Mutex<Work>>) -> bool {
             break; // bail to avoid hard lockup
         }
     }
-    work.lock().state.fetch_and(!WORK_CANCELING, Ordering::Release);
+    work.lock()
+        .state
+        .fetch_and(!WORK_CANCELING, Ordering::Release);
     cancelled
 }
 
@@ -748,9 +751,8 @@ pub fn keep_working(pool: &Mutex<WorkerPool>) -> bool {
 /// Returns the total number of work items executed.
 pub fn run_workqueue() -> usize {
     // Tick delayed items in all registered queues first.
-    let wqs: Vec<Arc<Workqueue>> = without_interrupts(|| {
-        WQ_REGISTRY.lock().iter().cloned().collect()
-    });
+    let wqs: Vec<Arc<Workqueue>> =
+        without_interrupts(|| WQ_REGISTRY.lock().iter().cloned().collect());
 
     let mut total = 0usize;
     for wq in &wqs {
@@ -813,9 +815,8 @@ pub struct WorkqueueStats {
 
 /// Collect statistics from all registered workqueues.
 pub fn workqueue_stats() -> Vec<WorkqueueStats> {
-    let wqs: Vec<Arc<Workqueue>> = without_interrupts(|| {
-        WQ_REGISTRY.lock().iter().cloned().collect()
-    });
+    let wqs: Vec<Arc<Workqueue>> =
+        without_interrupts(|| WQ_REGISTRY.lock().iter().cloned().collect());
 
     wqs.iter()
         .map(|wq| {

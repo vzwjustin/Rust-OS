@@ -82,7 +82,11 @@ impl Semaphore {
         if self
             .count
             .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                if c > 0 { Some(c - 1) } else { None }
+                if c > 0 {
+                    Some(c - 1)
+                } else {
+                    None
+                }
             })
             .is_ok()
         {
@@ -92,7 +96,10 @@ impl Semaphore {
         // Slow path: queue and spin-wait.
         {
             let mut wl = self.wait_list.lock();
-            wl.push_back(SemWaiter { task_id: 0, woken: false });
+            wl.push_back(SemWaiter {
+                task_id: 0,
+                woken: false,
+            });
         }
 
         // TODO: call schedule() here instead of spinning.
@@ -101,7 +108,11 @@ impl Semaphore {
             if self
                 .count
                 .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                    if c > 0 { Some(c - 1) } else { None }
+                    if c > 0 {
+                        Some(c - 1)
+                    } else {
+                        None
+                    }
                 })
                 .is_ok()
             {
@@ -120,7 +131,11 @@ impl Semaphore {
     pub fn down_trylock(&self) -> bool {
         self.count
             .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                if c > 0 { Some(c - 1) } else { None }
+                if c > 0 {
+                    Some(c - 1)
+                } else {
+                    None
+                }
             })
             .is_ok()
     }
@@ -152,7 +167,11 @@ impl Semaphore {
             if self
                 .count
                 .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                    if c > 0 { Some(c - 1) } else { None }
+                    if c > 0 {
+                        Some(c - 1)
+                    } else {
+                        None
+                    }
                 })
                 .is_ok()
             {

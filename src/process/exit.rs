@@ -116,8 +116,8 @@ pub fn exit_mm(pid: Pid) {
     let pm = crate::process::get_process_manager();
     pm.with_process_mut(pid, |pcb| {
         // Zero out the virtual memory descriptor so future accesses fault.
-        pcb.memory.vm_size    = 0;
-        pcb.memory.heap_size  = 0;
+        pcb.memory.vm_size = 0;
+        pcb.memory.heap_size = 0;
         pcb.memory.stack_size = 0;
         // TODO: walk VMAs, unmap pages, drop page-table structures.
     });
@@ -194,7 +194,7 @@ pub fn release_task(pid: Pid) {
 /// This function does not return.  The caller must ensure no kernel stack
 /// variables require cleanup after this point.
 pub fn do_exit(code: i32) -> ! {
-    let pm  = crate::process::get_process_manager();
+    let pm = crate::process::get_process_manager();
     let pid = pm.current_process();
 
     // ── Tear down subsystems ────────────────────────────────────────────────
@@ -226,8 +226,11 @@ pub fn do_exit(code: i32) -> ! {
     if let Some(pcb) = pm.get_process(pid) {
         if let Some(ppid) = pcb.parent_pid {
             // Send SIGCHLD to the parent.
-            let _ = crate::process::ipc::get_ipc_manager()
-                .send_signal(ppid, crate::process::ipc::Signal::SIGCHLD, pid);
+            let _ = crate::process::ipc::get_ipc_manager().send_signal(
+                ppid,
+                crate::process::ipc::Signal::SIGCHLD,
+                pid,
+            );
         }
     }
 
@@ -258,7 +261,7 @@ pub fn do_exit(code: i32) -> ! {
 /// `ProcessControlBlock` does not yet have a `tgid` field, we fall back to
 /// exiting only the current process.
 pub fn do_group_exit(code: i32) -> ! {
-    let pm  = crate::process::get_process_manager();
+    let pm = crate::process::get_process_manager();
     let pid = pm.current_process();
 
     // TODO: once PCB gains a `tgid` field, iterate all processes with
@@ -278,10 +281,7 @@ pub fn do_group_exit(code: i32) -> ! {
 ///
 /// Returns `Ok(WaitResult)` on success, `Err(-ECHILD)` if the target is not
 /// a zombie child of the caller.
-pub fn wait_task_zombie(
-    child_pid: Pid,
-    options: u32,
-) -> Result<WaitResult, i32> {
+pub fn wait_task_zombie(child_pid: Pid, options: u32) -> Result<WaitResult, i32> {
     const ECHILD: i32 = -10;
 
     let pm = crate::process::get_process_manager();
@@ -293,14 +293,17 @@ pub fn wait_task_zombie(
     }
 
     let exit_code = child.exit_status.unwrap_or(0);
-    let wstatus   = encode_wstatus_exit(exit_code);
+    let wstatus = encode_wstatus_exit(exit_code);
 
     if options & WNOWAIT == 0 {
         // Actually reap: remove the zombie from the table.
         let _ = pm.terminate_process(child_pid, exit_code);
     }
 
-    Ok(WaitResult { pid: child_pid, wstatus })
+    Ok(WaitResult {
+        pid: child_pid,
+        wstatus,
+    })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -319,11 +322,7 @@ pub fn wait_task_zombie(
 ///
 /// If no qualifying zombie exists and `WNOHANG` is set, returns `Ok(None)`.
 /// If no children exist at all, returns `Err(-ECHILD)`.
-pub fn do_wait(
-    parent_pid: Pid,
-    pid_filter: i64,
-    options: u32,
-) -> Result<Option<WaitResult>, i32> {
+pub fn do_wait(parent_pid: Pid, pid_filter: i64, options: u32) -> Result<Option<WaitResult>, i32> {
     const ECHILD: i32 = -10;
 
     let wo = WaitOptions::from_raw(options);
@@ -335,24 +334,27 @@ pub fn do_wait(
     // Use the ProcessManager's built-in zombie-finder.
     let zombie = pm.find_zombie_child(parent_pid, |pcb| {
         match pid_filter {
-            -1    => true,                             // any child
-            0     => pcb.pgid == caller_pgid,          // same pgrp as caller
-            n if n > 0 => pcb.pid == n as Pid,        // specific PID
-            n     => pcb.pgid == (-n) as u32,          // specific pgrp
+            -1 => true,                        // any child
+            0 => pcb.pgid == caller_pgid,      // same pgrp as caller
+            n if n > 0 => pcb.pid == n as Pid, // specific PID
+            n => pcb.pgid == (-n) as u32,      // specific pgrp
         }
     });
 
     if let Some(child_pcb) = zombie {
-        let child_pid  = child_pcb.pid;
-        let exit_code  = child_pcb.exit_status.unwrap_or(0);
-        let wstatus    = encode_wstatus_exit(exit_code);
+        let child_pid = child_pcb.pid;
+        let exit_code = child_pcb.exit_status.unwrap_or(0);
+        let wstatus = encode_wstatus_exit(exit_code);
 
         if !wo.no_wait {
             // Reap the zombie.
             let _ = pm.terminate_process(child_pid, exit_code);
         }
 
-        return Ok(Some(WaitResult { pid: child_pid, wstatus }));
+        return Ok(Some(WaitResult {
+            pid: child_pid,
+            wstatus,
+        }));
     }
 
     // No zombie found.
@@ -405,7 +407,7 @@ pub fn sys_wait4(
             result.pid as i64
         }
         Ok(None) => 0, // WNOHANG, no child ready
-        Err(e)   => e as i64,
+        Err(e) => e as i64,
     }
 }
 

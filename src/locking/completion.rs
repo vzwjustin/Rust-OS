@@ -81,13 +81,15 @@ impl Completion {
         let mut wq = self.wait.lock();
 
         // Increment done (cap at COMPLETION_ALL_DONE - 1 to avoid wrap).
-        self.done.fetch_update(Ordering::Release, Ordering::Relaxed, |d| {
-            if d == COMPLETION_ALL_DONE {
-                Some(d) // already complete_all'd; leave sentinel
-            } else {
-                Some(d.saturating_add(1))
-            }
-        }).ok();
+        self.done
+            .fetch_update(Ordering::Release, Ordering::Relaxed, |d| {
+                if d == COMPLETION_ALL_DONE {
+                    Some(d) // already complete_all'd; leave sentinel
+                } else {
+                    Some(d.saturating_add(1))
+                }
+            })
+            .ok();
 
         // Wake one waiter.
         if let Some(w) = wq.front_mut() {
@@ -132,7 +134,10 @@ impl Completion {
         // Slow path: enqueue and spin-wait.
         {
             let mut wq = self.wait.lock();
-            wq.push_back(CompWaiter { task_id: 0, woken: false });
+            wq.push_back(CompWaiter {
+                task_id: 0,
+                woken: false,
+            });
         }
 
         // TODO: call schedule() here.

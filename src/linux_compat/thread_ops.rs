@@ -21,6 +21,12 @@ const MSR_FS_BASE: u32 = crate::arch::x86::msr::MSR_FS_BASE;
 const MSR_GS_BASE: u32 = crate::arch::x86::msr::MSR_GS_BASE;
 
 static CLEAR_CHILD_TID: AtomicU64 = AtomicU64::new(0);
+static MEMBARRIER_REGISTRATIONS: AtomicI32 = AtomicI32::new(0);
+
+/// Return the current clear-child-TID userspace address.
+pub fn clear_child_tid_address() -> u64 {
+    CLEAR_CHILD_TID.load(Ordering::SeqCst)
+}
 
 /// Per-thread FS/GS base addresses keyed by tid.
 static TLS_FS_BASE: RwLock<BTreeMap<Pid, u64>> = RwLock::new(BTreeMap::new());
@@ -909,23 +915,46 @@ pub fn exit_group(status: i32) -> ! {
 // ============================================================================
 
 /// membarrier - issue memory barriers on set of threads
-pub fn membarrier(cmd: i32, _flags: i32) -> LinuxResult<i32> {
+pub fn membarrier(cmd: i32, flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const MEMBARRIER_CMD_QUERY: i32 = 0;
-    const MEMBARRIER_CMD_GLOBAL: i32 = 1;
-    const MEMBARRIER_CMD_PRIVATE_EXPEDITED: i32 = 2;
+    const MEMBARRIER_CMD_GLOBAL: i32 = 1 << 0;
+    const MEMBARRIER_CMD_GLOBAL_EXPEDITED: i32 = 1 << 1;
+    const MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED: i32 = 1 << 2;
+    const MEMBARRIER_CMD_PRIVATE_EXPEDITED: i32 = 1 << 3;
+    const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED: i32 = 1 << 4;
+    const MEMBARRIER_CMD_GET_REGISTRATIONS: i32 = 1 << 9;
+    const MEMBARRIER_SUPPORTED: i32 = MEMBARRIER_CMD_GLOBAL
+        | MEMBARRIER_CMD_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_GET_REGISTRATIONS;
 
     match cmd {
-        MEMBARRIER_CMD_QUERY => Ok(MEMBARRIER_CMD_GLOBAL | MEMBARRIER_CMD_PRIVATE_EXPEDITED),
-        MEMBARRIER_CMD_GLOBAL => {
+        MEMBARRIER_CMD_QUERY => Ok(MEMBARRIER_SUPPORTED),
+        MEMBARRIER_CMD_GET_REGISTRATIONS => {
+            if flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            Ok(MEMBARRIER_REGISTRATIONS.load(Ordering::SeqCst))
+        }
+        MEMBARRIER_CMD_GLOBAL
+        | MEMBARRIER_CMD_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
+            if flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
             core::sync::atomic::fence(Ordering::SeqCst);
             core::sync::atomic::compiler_fence(Ordering::SeqCst);
             Ok(0)
         }
-        MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
-            core::sync::atomic::fence(Ordering::SeqCst);
-            core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED => {
+            if flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            MEMBARRIER_REGISTRATIONS.fetch_or(cmd, Ordering::SeqCst);
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),

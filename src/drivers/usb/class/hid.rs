@@ -93,16 +93,21 @@ pub fn bind(dev: &EnumeratedDevice) -> Option<HidBootDevice> {
         if iface.descriptor.interface_subclass != 0x01 {
             continue;
         }
-        let ep = iface.endpoints.iter().find(|e| e.is_in() && e.transfer_type() == 3)?;
+        let ep = iface
+            .endpoints
+            .iter()
+            .find(|e| e.is_in() && e.transfer_type() == 3)?;
         return Some(HidBootDevice {
             slot: dev.slot,
             interface_number: iface.descriptor.interface_number,
             interface_protocol: iface.descriptor.interface_protocol,
             interrupt_in_ep: ep.endpoint_address,
-            report_len: ep.max_packet_size.max(match iface.descriptor.interface_protocol {
-                HID_PROTOCOL_MOUSE => 4,
-                _ => 8,
-            }),
+            report_len: ep
+                .max_packet_size
+                .max(match iface.descriptor.interface_protocol {
+                    HID_PROTOCOL_MOUSE => 4,
+                    _ => 8,
+                }),
         });
     }
     None

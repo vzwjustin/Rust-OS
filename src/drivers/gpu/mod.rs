@@ -794,8 +794,12 @@ fn sw_dumb_create(
         return Err("dumb_create: zero dimension");
     }
     let handle = DUMB_HANDLE_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let pitch = width.checked_mul(bpp / 8).ok_or("dumb_create: pitch overflow")?;
-    let size = (pitch as u64).checked_mul(height as u64).ok_or("dumb_create: size overflow")?;
+    let pitch = width
+        .checked_mul(bpp / 8)
+        .ok_or("dumb_create: pitch overflow")?;
+    let size = (pitch as u64)
+        .checked_mul(height as u64)
+        .ok_or("dumb_create: size overflow")?;
     if size > (isize::MAX as u64) {
         return Err("dumb_create: size too large for allocation");
     }

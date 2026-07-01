@@ -109,7 +109,7 @@ impl Page {
     /// - The page must be mapped and writable.
     pub unsafe fn copy_from_user_slice(&self, offset: usize, src: &[u8]) -> Result<(), i32> {
         if offset + src.len() > PAGE_SIZE {
-            return Err(crate::EINVAL);
+            return Err(EINVAL);
         }
         unsafe {
             ptr::copy_nonoverlapping(src.as_ptr(), self.virt_addr().add(offset), src.len());
@@ -121,7 +121,7 @@ impl Page {
     pub unsafe fn read_raw(&self, dst: &mut [u8], offset: usize) -> Result<(), i32> {
         let len = dst.len();
         if offset + len > PAGE_SIZE {
-            return Err(crate::EINVAL);
+            return Err(EINVAL);
         }
         unsafe {
             ptr::copy_nonoverlapping(self.virt_addr().add(offset), dst.as_mut_ptr(), len);
@@ -177,7 +177,10 @@ impl PageRange {
 
     /// Iterate over pages in the range.
     pub fn iter(&self) -> PageRangeIter<'_> {
-        PageRangeIter { range: self, idx: 0 }
+        PageRangeIter {
+            range: self,
+            idx: 0,
+        }
     }
 }
 

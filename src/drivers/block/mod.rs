@@ -411,7 +411,10 @@ pub fn init() -> Result<(), &'static str> {
         );
     }
 
-    crate::serial_println!("block: subsystem ready ({} hardware device(s))", device_count());
+    crate::serial_println!(
+        "block: subsystem ready ({} hardware device(s))",
+        device_count()
+    );
 
     Ok(())
 }

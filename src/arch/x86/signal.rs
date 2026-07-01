@@ -46,15 +46,15 @@ pub const UC_STRICT_RESTORE_SS: u64 = 0x4;
 #[repr(C)]
 pub struct StackT {
     /// Base address of the alternate signal stack.
-    pub ss_sp:    u64,
+    pub ss_sp: u64,
     /// Flags: SS_ONSTACK | SS_DISABLE | SS_AUTODISARM.
     pub ss_flags: i32,
     /// Size of the alternate signal stack.
-    pub ss_size:  u64,
+    pub ss_size: u64,
 }
 
-pub const SS_ONSTACK:   i32 = 1;
-pub const SS_DISABLE:   i32 = 2;
+pub const SS_ONSTACK: i32 = 1;
+pub const SS_DISABLE: i32 = 2;
 pub const SS_AUTODISARM: i32 = 1 << 31;
 
 // ---------------------------------------------------------------------------
@@ -70,17 +70,17 @@ pub struct XmmReg(pub [u64; 2]);
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(64))]
 pub struct FpState {
-    pub cwd:       u16,
-    pub swd:       u16,
-    pub twd:       u16,
-    pub fop:       u16,
-    pub rip:       u64,
-    pub rdp:       u64,
-    pub mxcsr:     u32,
+    pub cwd: u16,
+    pub swd: u16,
+    pub twd: u16,
+    pub fop: u16,
+    pub rip: u64,
+    pub rdp: u64,
+    pub mxcsr: u32,
     pub mxcr_mask: u32,
-    pub st_space:  [u32; 32],    // 8 FP regs × 4 u32
-    pub xmm_space: [u32; 64],    // 16 XMM regs × 4 u32
-    _padding:       [u32; 12],
+    pub st_space: [u32; 32],  // 8 FP regs × 4 u32
+    pub xmm_space: [u32; 64], // 16 XMM regs × 4 u32
+    _padding: [u32; 12],
 }
 
 // ---------------------------------------------------------------------------
@@ -92,34 +92,34 @@ pub struct FpState {
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct SigContext {
-    pub r8:      u64,
-    pub r9:      u64,
-    pub r10:     u64,
-    pub r11:     u64,
-    pub r12:     u64,
-    pub r13:     u64,
-    pub r14:     u64,
-    pub r15:     u64,
-    pub rdi:     u64,
-    pub rsi:     u64,
-    pub rbp:     u64,
-    pub rbx:     u64,
-    pub rdx:     u64,
-    pub rax:     u64,
-    pub rcx:     u64,
-    pub rsp:     u64,
-    pub rip:     u64,
-    pub eflags:  u64,
-    pub cs:      u16,
-    pub gs:      u16,
-    pub fs:      u16,
-    pub ss:      u16,
-    pub err:     u64,
-    pub trapno:  u64,
-    pub oldmask: u64,   // compat: low 32 bits of blocked signal mask
-    pub cr2:     u64,   // faulting address for SIGSEGV
-    pub fpstate: u64,   // pointer to FpState (nullable)
-    _reserved:   [u64; 8],
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub rdx: u64,
+    pub rax: u64,
+    pub rcx: u64,
+    pub rsp: u64,
+    pub rip: u64,
+    pub eflags: u64,
+    pub cs: u16,
+    pub gs: u16,
+    pub fs: u16,
+    pub ss: u16,
+    pub err: u64,
+    pub trapno: u64,
+    pub oldmask: u64, // compat: low 32 bits of blocked signal mask
+    pub cr2: u64,     // faulting address for SIGSEGV
+    pub fpstate: u64, // pointer to FpState (nullable)
+    _reserved: [u64; 8],
 }
 
 // ---------------------------------------------------------------------------
@@ -130,11 +130,11 @@ pub struct SigContext {
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct UContext {
-    pub uc_flags:    u64,
-    pub uc_link:     u64,          // pointer to next context (nullable)
-    pub uc_stack:    StackT,
+    pub uc_flags: u64,
+    pub uc_link: u64, // pointer to next context (nullable)
+    pub uc_stack: StackT,
     pub uc_mcontext: SigContext,
-    pub uc_sigmask:  u64,          // low 64-bit signal mask (matches SigSet)
+    pub uc_sigmask: u64, // low 64-bit signal mask (matches SigSet)
 }
 
 // ---------------------------------------------------------------------------
@@ -149,8 +149,8 @@ pub struct UContext {
 #[repr(C)]
 pub struct RtSigFrame {
     /// Pointer to `pretcode` field (used as return address by sa_restorer).
-    pub pretcode:   u64,
-    pub uc:         UContext,
+    pub pretcode: u64,
+    pub uc: UContext,
     // SigInfo follows in the ABI but we store a pointer here for clarity
     pub siginfo_ptr: u64,
 }

@@ -290,11 +290,13 @@ pub fn launch_client() -> Result<(), &'static str> {
         vec![Arg::UInt(1)],
     ));
 
-    // Step 8: wl_shm.create_pool — create an SHM pool with a top bar buffer
-    let (fb_w, _fb_h) = crate::graphics::get_screen_dimensions().unwrap_or((800, 600));
+    // Step 8: wl_shm.create_pool — create an SHM pool covering the full screen
+    // (top bar + desktop background + bottom dock), not just the top bar.
+    let (fb_w, fb_h) = crate::graphics::get_screen_dimensions().unwrap_or((800, 600));
     let bar_height = 32usize;
+    let dock_height = 56usize;
     let bar_stride = fb_w * 4;
-    let pool_size = (bar_stride * bar_height) as i32;
+    let pool_size = (bar_stride * fb_h) as i32;
 
     let pool_id = alloc_obj();
     let create_pool = Message::new(
@@ -313,15 +315,23 @@ pub fn launch_client() -> Result<(), &'static str> {
             Arg::NewId(buffer_id),       // buffer_id
             Arg::Int(0),                 // offset
             Arg::Int(fb_w as i32),       // width
-            Arg::Int(bar_height as i32), // height
+            Arg::Int(fb_h as i32),       // height
             Arg::Int(bar_stride as i32), // stride
             Arg::UInt(wayland::formats::XRGB8888),
         ],
     );
     let _ = send_message(&create_buffer);
 
-    // Step 8: Fill the SHM pool data with a GNOME-style top bar
-    {
+    // Step 8: Fill the SHM pool data with a GNOME-style desktop:
+    // top bar, desktop background, and a bottom dock.
+    //
+    // This holds the Compositor write lock for a long pixel-fill loop. If a
+    // timer interrupt preempts us while the lock is held, the scheduler can
+    // switch to another context that also wants this lock and spins forever
+    // (the original holder never resumes to release it) — the same
+    // single-core IRQ/lock-ordering deadlock class fixed elsewhere this
+    // session. Disable interrupts for the whole critical section.
+    crate::interrupts::without_interrupts(|| -> Result<(), &'static str> {
         let mut comp = wayland::compositor_mut();
         let client_id = server::pipe_client_id(MUTTER_PIPE)
             .ok_or("Mutter: client not found after wire setup")?;
@@ -390,8 +400,66 @@ pub fn launch_client() -> Result<(), &'static str> {
                     }
                 }
             }
+
+            // Desktop background — fill everything between the top bar and
+            // the bottom dock with a flat GNOME-style wallpaper color.
+            let desktop_top = bar_height;
+            let desktop_bottom = fb_h.saturating_sub(dock_height);
+            for y in desktop_top..desktop_bottom {
+                for x in 0..fb_w {
+                    let offset = (y * bar_stride + x * 4) as usize;
+                    if offset + 4 <= pool.data.len() {
+                        pool.data[offset] = 53;
+                        pool.data[offset + 1] = 28;
+                        pool.data[offset + 2] = 79;
+                        pool.data[offset + 3] = 0xFF;
+                    }
+                }
+            }
+
+            // Bottom dock bar (Ubuntu-style dark dock background)
+            for y in desktop_bottom..fb_h {
+                for x in 0..fb_w {
+                    let offset = (y * bar_stride + x * 4) as usize;
+                    if offset + 4 <= pool.data.len() {
+                        pool.data[offset] = 18;
+                        pool.data[offset + 1] = 16;
+                        pool.data[offset + 2] = 20;
+                        pool.data[offset + 3] = 0xFF;
+                    }
+                }
+            }
+
+            // Dock launcher icons (evenly spaced colored squares)
+            let icon_colors: [(u8, u8, u8); 5] = [
+                (233, 84, 32),  // Files (orange)
+                (53, 132, 228), // Browser (blue)
+                (38, 162, 105), // Terminal (green)
+                (192, 28, 40),  // Settings (red)
+                (163, 71, 186), // Activities (purple)
+            ];
+            let icon_size = 36usize;
+            let icon_gap = 16usize;
+            let icons_total_w = icon_colors.len() * icon_size + (icon_colors.len() - 1) * icon_gap;
+            let icon_start_x = fb_w.saturating_sub(icons_total_w) / 2;
+            let icon_y = desktop_bottom + (dock_height.saturating_sub(icon_size)) / 2;
+            for (i, (r, g, b)) in icon_colors.iter().enumerate() {
+                let icon_x = icon_start_x + i * (icon_size + icon_gap);
+                for y in icon_y..(icon_y + icon_size).min(fb_h) {
+                    for x in icon_x..(icon_x + icon_size).min(fb_w) {
+                        let offset = (y * bar_stride + x * 4) as usize;
+                        if offset + 4 <= pool.data.len() {
+                            pool.data[offset] = *r;
+                            pool.data[offset + 1] = *g;
+                            pool.data[offset + 2] = *b;
+                            pool.data[offset + 3] = 0xFF;
+                        }
+                    }
+                }
+            }
         }
-    }
+        Ok(())
+    })?;
 
     // Step 9: wl_surface.attach — attach the buffer to the surface
     let attach = Message::new(
@@ -413,7 +481,7 @@ pub fn launch_client() -> Result<(), &'static str> {
             Arg::Int(0),
             Arg::Int(0),
             Arg::Int(fb_w as i32),
-            Arg::Int(bar_height as i32),
+            Arg::Int(fb_h as i32),
         ],
     );
     let _ = send_message(&damage);

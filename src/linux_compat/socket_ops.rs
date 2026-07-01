@@ -1251,18 +1251,23 @@ pub fn epoll_wait(
 pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
     inc_ops();
 
+    const SOCK_TYPE_MASK: i32 = 0xF;
+    if (sock_type & !SOCK_TYPE_MASK) & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     // Validate domain
     match domain {
         1 | 2 | 10 | 16 | 17 | 18 => {}
         _ => return Err(LinuxError::EINVAL),
     }
-    match sock_type & 0xFF {
+    match sock_type & SOCK_TYPE_MASK {
         1 | 2 | 3 | 5 => {}
         _ => return Err(LinuxError::EINVAL),
     }
 
     // Map to network stack types
-    let net_sock_type = match sock_type & 0xFF {
+    let net_sock_type = match sock_type & SOCK_TYPE_MASK {
         1 => SocketType::Stream,   // SOCK_STREAM
         2 => SocketType::Datagram, // SOCK_DGRAM
         3 => SocketType::Raw,      // SOCK_RAW
@@ -1272,7 +1277,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
 
     // Map protocol
     let net_proto = match protocol {
-        0 => match sock_type & 0xFF {
+        0 => match sock_type & SOCK_TYPE_MASK {
             1 => Protocol::TCP,
             2 => Protocol::UDP,
             3 => Protocol::ICMP,
@@ -1315,7 +1320,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
     }
 
     // AF_INET SOCK_RAW
-    if (sock_type & 0xFF) == 3 && domain == 2 {
+    if (sock_type & SOCK_TYPE_MASK) == 3 && domain == 2 {
         let raw_proto = if protocol == 0 { 0u8 } else { protocol as u8 };
         let socket_id = raw::create_raw_socket(raw_proto).map_err(net_err_to_linux)?;
         let inode = vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOMEM)?;
@@ -1497,6 +1502,10 @@ pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult
 pub fn accept4(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
+    if flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let new_fd = accept(sockfd, addr, addrlen)?;
 
     // Apply SOCK_NONBLOCK and SOCK_CLOEXEC flags to the new fd.
@@ -1522,6 +1531,11 @@ pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> 
 
     if sv.is_null() {
         return Err(LinuxError::EFAULT);
+    }
+
+    const SOCK_TYPE_MASK: i32 = 0xF;
+    if (sock_type & !SOCK_TYPE_MASK) & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
     }
 
     // Only AF_UNIX (1) and AF_LOCAL (1) supported

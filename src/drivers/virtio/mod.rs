@@ -549,19 +549,39 @@ impl VirtioTransport {
     /// Read device features
     pub fn read_device_features(&self) -> u64 {
         // Select feature word 0
-        write_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE_SELECT, 0);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::DEVICE_FEATURE_SELECT,
+            0,
+        );
         let lo = read_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE);
         // Select feature word 1
-        write_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE_SELECT, 1);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::DEVICE_FEATURE_SELECT,
+            1,
+        );
         let hi = read_cap_mmio(self.common_base, common_cfg_offset::DEVICE_FEATURE);
         ((hi as u64) << 32) | (lo as u64)
     }
 
     /// Write driver features (negotiated)
     pub fn write_driver_features(&self, features: u64) {
-        write_cap_mmio(self.common_base, common_cfg_offset::DRIVER_FEATURE_SELECT, 0);
-        write_cap_mmio(self.common_base, common_cfg_offset::DRIVER_FEATURE, features as u32);
-        write_cap_mmio(self.common_base, common_cfg_offset::DRIVER_FEATURE_SELECT, 1);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::DRIVER_FEATURE_SELECT,
+            0,
+        );
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::DRIVER_FEATURE,
+            features as u32,
+        );
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::DRIVER_FEATURE_SELECT,
+            1,
+        );
         write_cap_mmio(
             self.common_base,
             common_cfg_offset::DRIVER_FEATURE,
@@ -593,7 +613,11 @@ impl VirtioTransport {
     /// Configure a virtqueue's memory addresses in the device
     pub fn setup_queue(&self, queue: &VirtQueue) {
         // Write descriptor address
-        write_cap_mmio(self.common_base, common_cfg_offset::QUEUE_DESC, queue.desc_phys as u32);
+        write_cap_mmio(
+            self.common_base,
+            common_cfg_offset::QUEUE_DESC,
+            queue.desc_phys as u32,
+        );
         write_cap_mmio(
             self.common_base,
             common_cfg_offset::QUEUE_DESC + 4,

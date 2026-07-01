@@ -47,7 +47,7 @@ pub const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
 /// Clear child TID in child's memory on exit.
 pub const CLONE_CHILD_CLEARTID: u64 = 0x0020_0000;
 /// Store child TID in child's memory.
-pub const CLONE_CHILD_SETTID: u64 = 0x0200_0000;
+pub const CLONE_CHILD_SETTID: u64 = 0x0100_0000;
 /// Create a new cgroup namespace.
 pub const CLONE_NEWCGROUP: u64 = 0x0200_0000;
 /// Create a new UTS namespace.
@@ -126,16 +126,11 @@ pub struct ForkRegs {
 ///
 /// `CLONE_SETTLS` is handled by the arch_prctl / TLS subsystem after the
 /// child is scheduled; we do not touch segment registers here.
-pub fn copy_thread(
-    child: &mut ProcessControlBlock,
-    regs: &ForkRegs,
-    stack: u64,
-    flags: u64,
-) {
+pub fn copy_thread(child: &mut ProcessControlBlock, regs: &ForkRegs, stack: u64, flags: u64) {
     let ctx = &mut child.context;
 
-    ctx.rip    = regs.rip;
-    ctx.rsp    = if stack != 0 { stack } else { regs.rsp };
+    ctx.rip = regs.rip;
+    ctx.rsp = if stack != 0 { stack } else { regs.rsp };
     ctx.rflags = regs.rflags | 0x200; // always enable interrupts in child
 
     // Child returns 0 from fork/clone.
@@ -146,8 +141,8 @@ pub fn copy_thread(
     ctx.rsi = regs.rsi;
     ctx.rdi = regs.rdi;
     ctx.rbp = regs.rbp;
-    ctx.r8  = regs.r8;
-    ctx.r9  = regs.r9;
+    ctx.r8 = regs.r8;
+    ctx.r9 = regs.r9;
     ctx.r10 = regs.r10;
     ctx.r11 = regs.r11;
     ctx.r12 = regs.r12;
@@ -195,7 +190,7 @@ pub fn copy_mm(flags: u64, child: &mut ProcessControlBlock, parent: &ProcessCont
 /// Otherwise → independent copy (close-on-exec is handled at exec time).
 pub fn copy_files(flags: u64, child: &mut ProcessControlBlock, parent: &ProcessControlBlock) {
     // Both fd_table (VFS) and file_descriptors (legacy) are copied.
-    child.fd_table        = parent.fd_table.clone();
+    child.fd_table = parent.fd_table.clone();
     child.file_descriptors = parent.file_descriptors.clone();
 
     if flags & CLONE_FILES != 0 {
@@ -260,12 +255,12 @@ pub fn copy_namespaces(
 ) -> Result<(), i32> {
     // TODO: wire namespace handles into ProcessControlBlock and call:
     //   crate::namespace::copy_namespaces(flags, parent_ns) -> child_ns
-    let _new_pid_ns  = flags & CLONE_NEWPID  != 0;
-    let _new_net_ns  = flags & CLONE_NEWNET  != 0;
-    let _new_mnt_ns  = flags & CLONE_NEWNS   != 0;
+    let _new_pid_ns = flags & CLONE_NEWPID != 0;
+    let _new_net_ns = flags & CLONE_NEWNET != 0;
+    let _new_mnt_ns = flags & CLONE_NEWNS != 0;
     let _new_user_ns = flags & CLONE_NEWUSER != 0;
-    let _new_uts_ns  = flags & CLONE_NEWUTS  != 0;
-    let _new_ipc_ns  = flags & CLONE_NEWIPC  != 0;
+    let _new_uts_ns = flags & CLONE_NEWUTS != 0;
+    let _new_ipc_ns = flags & CLONE_NEWIPC != 0;
     Ok(())
 }
 
@@ -337,9 +332,7 @@ pub fn copy_process(
         copy_files(flags, child, &parent_snap);
         copy_sighand(flags, child, &parent_snap);
         copy_signal(flags, child, &parent_snap);
-        // Namespace errors are ignored here; a production kernel would undo
-        // the allocation and return EINVAL.
-        let _ = copy_namespaces(flags, child, &parent_snap);
+        crate::namespace::clone_ns(parent_pid, child_pid, flags);
 
         // ── 4. CPU context ──────────────────────────────────────────────────
         copy_thread(child, regs, stack, flags);
