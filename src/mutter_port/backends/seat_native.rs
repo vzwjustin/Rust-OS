@@ -1,6 +1,22 @@
 //! Seat Native — ported from GNOME Mutter
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-seat-native.h
+//! Manages a native seat for input device handling and keyboard layout configuration.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-seat-native.h
 
-// TODO: Extract struct definitions from C header
-// TODO: Add type definitions and implementations
+use alloc::string::String;
+
+/// Native seat for input device handling.
+pub struct MetaSeatNative;
+
+impl MetaSeatNative {
+    pub fn new() -> Self {
+        MetaSeatNative
+    }
+}
+
+impl Default for MetaSeatNative {
+    fn default() -> Self {
+        Self::new()
+    }
+}
