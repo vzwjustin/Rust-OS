@@ -16,7 +16,6 @@ pub mod wait;
 use crate::process::{self, Pid, Priority, ProcessState};
 use alloc::{collections::VecDeque, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use lazy_static::lazy_static;
 use spin::Mutex;
 
 /// Process ID type
@@ -146,14 +145,14 @@ impl Default for CpuState {
     }
 }
 
-/// Per-CPU scheduler state
+/// Per-CPU scheduler state stub (kept for API compatibility).
 #[derive(Debug)]
 pub struct CpuScheduler {
     /// CPU ID
     pub cpu_id: CpuId,
     /// Currently running process
     pub current_process: Option<Pid>,
-    /// Ready queues for each priority level
+    /// Ready queues for each priority level (unused; scheduling is delegated).
     pub ready_queues: [VecDeque<Pid>; Priority::count()],
     /// Time slice remaining for current process (in microseconds)
     pub time_slice_remaining: u64,
@@ -167,7 +166,7 @@ pub struct CpuScheduler {
 
 impl CpuScheduler {
     /// Create a new CPU scheduler stub
-    pub const fn new(cpu_id: CpuId) -> Self {
+    pub fn new(cpu_id: CpuId) -> Self {
         Self {
             cpu_id,
             current_process: None,
@@ -194,6 +193,25 @@ impl CpuScheduler {
     pub fn process_count(&self) -> usize {
         process::get_process_manager().process_count()
     }
+}
+
+/// Scheduler statistics
+#[derive(Debug, Clone)]
+pub struct SchedulerStats {
+    pub total_processes: usize,
+    pub ready_processes: usize,
+    pub running_processes: usize,
+    pub blocked_processes: usize,
+    pub sleeping_processes: usize,
+    pub terminated_processes: usize,
+    pub creating_processes: usize,
+    pub realtime_processes: usize,
+    pub high_priority_processes: usize,
+    pub normal_priority_processes: usize,
+    pub low_priority_processes: usize,
+    pub idle_priority_processes: usize,
+    pub cpu_utilizations: Vec<u8>,
+    pub uptime_seconds: u64,
 }
 
 /// Global scheduler state — delegates to the canonical process manager.
@@ -298,30 +316,9 @@ impl GlobalScheduler {
     }
 }
 
-/// Scheduler statistics
-#[derive(Debug, Clone)]
-pub struct SchedulerStats {
-    pub total_processes: usize,
-    pub ready_processes: usize,
-    pub running_processes: usize,
-    pub blocked_processes: usize,
-    pub sleeping_processes: usize,
-    pub terminated_processes: usize,
-    pub creating_processes: usize,
-    pub realtime_processes: usize,
-    pub high_priority_processes: usize,
-    pub normal_priority_processes: usize,
-    pub low_priority_processes: usize,
-    pub idle_priority_processes: usize,
-    pub cpu_utilizations: Vec<u8>,
-    pub uptime_seconds: u64,
-}
-
 static GLOBAL_SCHEDULER: GlobalScheduler = GlobalScheduler::new();
 
-lazy_static! {
-    static ref CURRENT_CPU_SCHEDULER: Mutex<CpuScheduler> = Mutex::new(CpuScheduler::new(0));
-}
+static CURRENT_CPU_SCHEDULER: Mutex<CpuScheduler> = Mutex::new(CpuScheduler::new(0));
 
 /// Initialize the scheduler subsystem
 pub fn init() -> Result<(), &'static str> {
@@ -363,7 +360,6 @@ pub fn schedule() -> Option<Pid> {
     let next_pid = GLOBAL_SCHEDULER.schedule(cpu_id);
 
     // Update thread manager with the main thread of the scheduled process
-    // For simplicity, we assume each process has a main thread with TID = PID
     if let Some(pid) = next_pid {
         let thread_manager = crate::process::thread::get_thread_manager();
         thread_manager.set_current_thread(pid);
@@ -383,12 +379,12 @@ pub fn get_scheduler_stats() -> SchedulerStats {
     GLOBAL_SCHEDULER.get_stats()
 }
 
-/// Get current CPU ID (production implementation)
+/// Get current CPU ID
 fn get_current_cpu_id() -> CpuId {
     crate::smp::current_cpu()
 }
 
-/// Get system time in microseconds (production implementation)
+/// Get system time in microseconds
 fn get_system_time() -> u64 {
     crate::time::uptime_us()
 }
@@ -401,7 +397,6 @@ pub unsafe extern "C" fn context_switch(old_state: *mut CpuState, new_state: *co
     naked_asm!(
         r#"
         // Save current CPU state to old_state (RDI)
-        // General purpose registers
         mov [rdi + 0x00], rax
         mov [rdi + 0x08], rbx
         mov [rdi + 0x10], rcx
@@ -443,7 +438,6 @@ pub unsafe extern "C" fn context_switch(old_state: *mut CpuState, new_state: *co
         mov [rdi + 0xB8], rax
 
         // Load new CPU state from new_state (RSI)
-        // Restore general purpose registers
         mov rax, [rsi + 0x00]
         mov rbx, [rsi + 0x08]
         mov rcx, [rsi + 0x10]
@@ -490,7 +484,6 @@ pub unsafe extern "C" fn context_switch(old_state: *mut CpuState, new_state: *co
 pub unsafe fn save_fpu_state(fpu_state: *mut FpuState) {
     use core::arch::asm;
 
-    // Check if SSE is supported (assume it is for modern x86_64)
     asm!(
         "fxsave [{}]",
         in(reg) fpu_state,
@@ -502,7 +495,6 @@ pub unsafe fn save_fpu_state(fpu_state: *mut FpuState) {
 pub unsafe fn restore_fpu_state(fpu_state: *const FpuState) {
     use core::arch::asm;
 
-    // Check if SSE is supported (assume it is for modern x86_64)
     asm!(
         "fxrstor [{}]",
         in(reg) fpu_state,
@@ -514,16 +506,13 @@ pub unsafe fn restore_fpu_state(fpu_state: *const FpuState) {
 pub unsafe fn init_fpu() {
     use core::arch::asm;
 
-    // Initialize FPU
     asm!("finit", options(nostack, preserves_flags));
 
-    // Enable SSE and FXSAVE/FXRSTOR
     let mut cr4: u64;
     asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
     cr4 |= (1 << 9) | (1 << 10); // OSFXSR and OSXMMEXCPT
     asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
 
-    // Clear task switched flag
     asm!("clts", options(nostack, preserves_flags));
 }
 
@@ -534,13 +523,8 @@ pub unsafe fn context_switch_with_fpu(
     new_cpu_state: *const CpuState,
     new_fpu_state: *const FpuState,
 ) {
-    // Save current FPU state
     save_fpu_state(old_fpu_state);
-
-    // Perform CPU context switch
     context_switch(old_cpu_state, new_cpu_state);
-
-    // Restore new FPU state
     restore_fpu_state(new_fpu_state);
 }
 
@@ -556,7 +540,7 @@ pub fn get_process_affinity(pid: Pid) -> Option<u64> {
         .map(|pcb| pcb.sched_info.cpu_affinity)
 }
 
-/// Force a process to migrate to a specific CPU (affinity is advisory; no-op here)
+/// Force a process to migrate to a specific CPU (no-op; affinity is advisory).
 pub fn migrate_process_to_cpu(_pid: Pid, _target_cpu: CpuId) -> Result<(), &'static str> {
     Ok(())
 }
@@ -582,25 +566,7 @@ pub fn get_scheduler() -> Option<&'static Mutex<CpuScheduler>> {
     Some(&CURRENT_CPU_SCHEDULER)
 }
 
-/// Update the priority of a process.
-///
-/// This function changes the priority of a process and moves it to the
-/// appropriate ready queue if the process is in the Ready state. This
-/// is a convenience wrapper around `set_process_priority` that silently
-/// ignores errors for cases where error handling is not needed.
-///
-/// # Arguments
-///
-/// * `pid` - The process ID of the process to update
-/// * `new_priority` - The new priority level to assign
-///
-/// # Note
-///
-/// This function does not return an error if the process is not found
-/// or if the priority change fails. Use `set_process_priority` if you
-/// need to handle such errors.
+/// Update the priority of a process (convenience wrapper)
 pub fn update_process_priority(pid: Pid, new_priority: Priority) {
-    // Delegate to the error-returning version, ignoring the result
-    // for backward compatibility with callers that don't handle errors
     let _ = set_process_priority(pid, new_priority);
 }

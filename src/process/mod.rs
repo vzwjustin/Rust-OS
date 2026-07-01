@@ -60,6 +60,24 @@ pub enum Priority {
     Idle = 4,
 }
 
+impl Priority {
+    /// Number of priority levels.
+    pub const fn count() -> usize {
+        5
+    }
+
+    /// Time slice duration in milliseconds for this priority.
+    pub fn time_slice_ms(&self) -> u64 {
+        match self {
+            Priority::RealTime => 100,
+            Priority::High => 50,
+            Priority::Normal => 20,
+            Priority::Low => 10,
+            Priority::Idle => 5,
+        }
+    }
+}
+
 impl Default for Priority {
     fn default() -> Self {
         Priority::Normal
@@ -823,6 +841,9 @@ impl ProcessManager {
             }
         }
 
+        // Create a security context for the new process (inherits from parent if provided).
+        let _ = crate::security::create_context(pid, parent_pid);
+
         // Initialize IPC state for new process
         let ipc_manager = ipc::get_ipc_manager();
         ipc_manager.init_process_signals(pid)?;
@@ -882,6 +903,9 @@ impl ProcessManager {
             let ipc_manager = ipc::get_ipc_manager();
             ipc_manager.init_process_signals(pid)?;
         }
+
+        // Create or refresh the security context for the adopted process.
+        let _ = crate::security::create_context(pid, parent_pid);
 
         Ok(())
     }
@@ -987,6 +1011,29 @@ impl ProcessManager {
     pub fn schedule(&self) -> Result<Option<Pid>, &'static str> {
         let mut scheduler = self.scheduler.lock();
         scheduler.schedule()
+    }
+
+    /// Add elapsed time to the current process's CPU time accounting.
+    pub fn tick_cpu_time(&self, elapsed_us: u64) {
+        let pid = self.current_process();
+        if pid == 0 {
+            return;
+        }
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.cpu_time += elapsed_us;
+        }
+    }
+
+    /// Set the CPU affinity mask for a process.
+    pub fn set_cpu_affinity(&self, pid: Pid, mask: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.sched_info.cpu_affinity = mask;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
     }
 
     /// Update current process
@@ -1348,6 +1395,11 @@ pub fn nice_to_priority(nice: i32) -> Priority {
 /// Global process manager instance
 static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
+/// Set to true once the process management system has been initialized.
+/// Guards against re-initialization when multiple subsystems call `process::init()`.
+static INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Set to true once the process subsystem (scheduler + processes) is fully initialized.
 /// The timer ISR checks this before calling the scheduler to avoid races during boot.
 pub static PROCESS_SUBSYSTEM_INITIALIZED: core::sync::atomic::AtomicBool =
@@ -1360,6 +1412,10 @@ pub fn get_process_manager() -> &'static ProcessManager {
 
 /// Initialize the process management system
 pub fn init() -> Result<(), &'static str> {
+    if INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+
     // Initialize core process management
     PROCESS_MANAGER.init()?;
 

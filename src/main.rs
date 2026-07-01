@@ -1147,23 +1147,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
         // Initialize process management and scheduler before filesystem/Linux init.
+        // process_manager::init() calls process::init() internally, so we do not need
+        // a separate process::init() call here.
         unsafe {
             early_serial_write_str("RustOS: Initializing process manager...\r\n");
-        }
-        match process::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Process manager initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Process manager init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-        // Initialize the dynamic linker (needed for ELF loading with shared libraries).
-        process::dynamic_linker::init_dynamic_linker();
-        unsafe {
-            early_serial_write_str("RustOS: Dynamic linker initialized\r\n");
         }
         match process_manager::init() {
             Ok(()) => {
@@ -1177,6 +1164,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 early_serial_write_str(e);
                 early_serial_write_str("\r\n");
             },
+        }
+        // Initialize the dynamic linker (needed for ELF loading with shared libraries).
+        process::dynamic_linker::init_dynamic_linker();
+        unsafe {
+            early_serial_write_str("RustOS: Dynamic linker initialized\r\n");
         }
         match glib::smoke_check_spawn() {
             Ok(()) => unsafe {
@@ -1200,12 +1192,25 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
         unsafe {
-            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+            early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
+        }
+        match security::init() {
+            Ok(()) => unsafe {
+                early_serial_write_str("RustOS: Security subsystem initialized\r\n");
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: Security init FAILED: ");
+                early_serial_write_str(e);
+                early_serial_write_str("\r\n");
+            },
         }
         // Early cgroup init — root cgroup must exist before the scheduler
         // creates PID 1 so processes can be assigned to a cgroup.
         // Mirrors Linux's cgroup_init_early() in start_kernel().
         cgroup::init_early();
+        unsafe {
+            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+        }
         match scheduler::init() {
             Ok(()) => unsafe {
                 early_serial_write_str("RustOS: Scheduler initialized\r\n");
@@ -1219,19 +1224,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Transition to SCHEDULING — scheduler is now running.
         // Mirrors Linux's rest_init() setting system_state = SYSTEM_SCHEDULING.
         kernel::set_system_state(kernel::SystemState::Scheduling);
-        unsafe {
-            early_serial_write_str("RustOS: Initializing security subsystem...\r\n");
-        }
-        match security::init() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Security subsystem initialized\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Security init FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
         // Initialize the secure key store (for cryptographic key storage).
         // Needs the security subsystem to be initialized first.
         match security::init_key_store() {
