@@ -26,6 +26,7 @@ pub struct MetaWindow {
     appears_focused: bool,
     maximized_horizontally: bool,
     maximized_vertically: bool,
+    minimized: bool,
     display: *mut core::ffi::c_void,
     workspace: *mut core::ffi::c_void,
     monitor: i32,
@@ -49,6 +50,7 @@ impl MetaWindow {
             appears_focused: false,
             maximized_horizontally: false,
             maximized_vertically: false,
+            minimized: false,
             display: core::ptr::null_mut(),
             workspace: core::ptr::null_mut(),
             monitor: 0,
@@ -145,9 +147,26 @@ impl MetaWindow {
         self.monitor
     }
 
-    /// Maximize or restore window
-    pub fn maximize(&mut self, _flags: MetaMaximizeFlags) {
-        // TODO: implement
+    /// Maximize the window in the directions named by `flags`.
+    pub fn maximize(&mut self, flags: MetaMaximizeFlags) {
+        let bits = flags as u32;
+        if bits & MetaMaximizeFlags::Horizontal as u32 != 0 {
+            self.maximized_horizontally = true;
+        }
+        if bits & MetaMaximizeFlags::Vertical as u32 != 0 {
+            self.maximized_vertically = true;
+        }
+    }
+
+    /// Unmaximize the window in the directions named by `flags`.
+    pub fn unmaximize(&mut self, flags: MetaMaximizeFlags) {
+        let bits = flags as u32;
+        if bits & MetaMaximizeFlags::Horizontal as u32 != 0 {
+            self.maximized_horizontally = false;
+        }
+        if bits & MetaMaximizeFlags::Vertical as u32 != 0 {
+            self.maximized_vertically = false;
+        }
     }
 
     /// Get maximize state
@@ -159,14 +178,24 @@ impl MetaWindow {
         self.maximized_horizontally
     }
 
+    /// Whether the window is maximized in both directions.
+    pub fn is_maximized(&self) -> bool {
+        self.maximized_horizontally && self.maximized_vertically
+    }
+
     /// Minimize window
     pub fn minimize(&mut self) {
-        // TODO: implement
+        self.minimized = true;
     }
 
     /// Unminimize window
     pub fn unminimize(&mut self) {
-        // TODO: implement
+        self.minimized = false;
+    }
+
+    /// Whether the window is currently minimized.
+    pub fn is_minimized(&self) -> bool {
+        self.minimized
     }
 
     /// Close window
@@ -237,5 +266,29 @@ mod tests {
         let r = MtkRectangle::new(1, 2, 3, 4);
         assert_eq!(w.client_rect_to_frame_rect(&r), r);
         assert_eq!(w.frame_rect_to_client_rect(&r), r);
+    }
+
+    #[test]
+    fn test_maximize_directions() {
+        let mut w = MetaWindow::new(MetaWindowType::Normal);
+        w.maximize(MetaMaximizeFlags::Horizontal);
+        assert!(w.is_maximized_horizontally() && !w.is_maximized_vertically());
+        assert!(!w.is_maximized());
+
+        w.maximize(MetaMaximizeFlags::Vertical);
+        assert!(w.is_maximized());
+
+        w.unmaximize(MetaMaximizeFlags::Both);
+        assert!(!w.is_maximized_horizontally() && !w.is_maximized_vertically());
+    }
+
+    #[test]
+    fn test_minimize_toggle() {
+        let mut w = MetaWindow::new(MetaWindowType::Normal);
+        assert!(!w.is_minimized());
+        w.minimize();
+        assert!(w.is_minimized());
+        w.unminimize();
+        assert!(!w.is_minimized());
     }
 }
