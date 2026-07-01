@@ -249,6 +249,12 @@ extern "C" fn syscall_handler_wrapper(frame: *const SyscallFrame) -> i64 {
 
     if matches!(f.rax, 60 | 231) {
         if let Some((rip, rsp)) = crate::user_sched::take_user_resume() {
+            crate::serial_println!(
+                "user_sched: fast-exit handoff syscall={} resume={:#x} rsp={:#x}",
+                f.rax,
+                rip,
+                rsp
+            );
             // SAFETY: `take_user_resume` only returns the bootstrap kernel entry and stack
             // armed by `user_sched` for the current one-shot user task. `jmp` is noreturn,
             // and the target is responsible for re-enabling interrupts before resuming the

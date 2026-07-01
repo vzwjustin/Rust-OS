@@ -174,6 +174,10 @@ extern "C" fn user_bootstrap_kernel_entry() {
     // here with the bootstrap stack. We finish the bootstrap, run any
     // registered post-exit hook, and jump to the kernel resume address
     // registered by `service_pending` before the user task started.
+    crate::serial_println!(
+        "user_sched: bootstrap kernel entry status={}",
+        last_child_exit_status()
+    );
     end_user_bootstrap();
 
     if let Some(hook) = AFTER_USER_HOOK.lock().take() {
@@ -182,6 +186,7 @@ extern "C" fn user_bootstrap_kernel_entry() {
 
     let resume = USER_KERNEL_RESUME.load(Ordering::Acquire);
     if resume != RESUME_NONE {
+        crate::serial_println!("user_sched: kernel resume jump {:#x}", resume);
         // SAFETY: `sti` followed by `jmp` atomically enables interrupts and
         // jumps to the resume address. The `sti` instruction executes before
         // any interrupt can be delivered (single-instruction window), and the
