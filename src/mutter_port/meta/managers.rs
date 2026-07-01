@@ -12,7 +12,10 @@ use crate::mutter_port::meta::workspace::MetaWorkspace;
 /// Manages idle detection and timeouts
 pub struct MetaIdleMonitor {
     idle_time_ms: u32,
-    watches: Vec<u32>,
+    /// Active watches as `(watch_id, timeout_ms)` pairs.
+    watches: Vec<(u32, u32)>,
+    /// Monotonic source of unique watch ids (0 is never handed out).
+    next_watch_id: u32,
 }
 
 impl MetaIdleMonitor {
@@ -21,6 +24,7 @@ impl MetaIdleMonitor {
         Self {
             idle_time_ms: 0,
             watches: Vec::new(),
+            next_watch_id: 1,
         }
     }
 
@@ -29,20 +33,27 @@ impl MetaIdleMonitor {
         self.idle_time_ms
     }
 
-    /// Add idle watch callback
-    pub fn add_watch(&mut self, _timeout_ms: u32) {
-        // TODO: implement
+    /// Register an idle watch that fires after `timeout_ms`; returns its id.
+    pub fn add_watch(&mut self, timeout_ms: u32) -> u32 {
+        let id = self.next_watch_id;
+        self.next_watch_id += 1;
+        self.watches.push((id, timeout_ms));
+        id
     }
 
-    /// Remove idle watch
-    pub fn remove_watch(&mut self, _watch_id: u32) {
-        // TODO: implement
+    /// Remove the idle watch with the given id (no-op if unknown).
+    pub fn remove_watch(&mut self, watch_id: u32) {
+        self.watches.retain(|&(id, _)| id != watch_id);
     }
 
-    /// Reset idle timer
+    /// Number of currently-registered watches.
+    pub fn watch_count(&self) -> usize {
+        self.watches.len()
+    }
+
+    /// Reset the idle timer to zero. Registered watches are kept.
     pub fn reset(&mut self) {
         self.idle_time_ms = 0;
-        // TODO: implement
     }
 }
 
@@ -237,6 +248,19 @@ mod tests {
         assert!(m.get_workspace_by_index(2).is_none());
         // active_index defaults to 0.
         assert_eq!(m.get_active_workspace().and_then(|w| w.get_name()), Some("one"));
+    }
+
+    #[test]
+    fn test_idle_monitor_watches() {
+        let mut m = MetaIdleMonitor::new();
+        let a = m.add_watch(1000);
+        let b = m.add_watch(2000);
+        assert_ne!(a, b);
+        assert_eq!(m.watch_count(), 2);
+        m.remove_watch(a);
+        assert_eq!(m.watch_count(), 1);
+        m.remove_watch(9999); // unknown id: no-op
+        assert_eq!(m.watch_count(), 1);
     }
 
     #[test]
