@@ -1,15 +1,31 @@
-//! Renderer Display Egl Private
+//! Renderer Display Egl Private — EGL renderer display from GNOME Mutter
 //!
-//! Native Rust implementation (no direct Mutter C counterpart)
+//! Wraps an EGL display for use with Cogl rendering.
+//! The actual EGL initialization and configuration is handled by EGL libraries.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-renderer-display-egl-private.h
 
-use alloc::string::String;
+use core::ffi::c_void;
 
-/// Renderer Display Egl Private
+/// Renderer Display Egl Private: EGL-based renderer display.
+/// Extends CoglDisplayEGL with Mutter-specific configuration.
+/// Note: EGL/Cogl rendering is left as TODO per no_std constraints.
 #[derive(Debug, Clone)]
 pub struct RendererDisplayEglPrivate {
-    // TODO: Define structure
+    /// Parent CoglDisplayEGL (opaque pointer)
+    pub cogl_display: *mut c_void,
 }
 
 impl RendererDisplayEglPrivate {
-    // TODO: Add methods
+    pub fn new() -> Self {
+        RendererDisplayEglPrivate {
+            cogl_display: core::ptr::null_mut(),
+        }
+    }
+}
+
+impl Default for RendererDisplayEglPrivate {
+    fn default() -> Self {
+        Self::new()
+    }
 }

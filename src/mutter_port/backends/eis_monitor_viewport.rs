@@ -5,15 +5,21 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-eis-monitor-viewport.h
 
+pub struct MetaLogicalMonitor {
+    // Opaque logical monitor type
+}
+
 /// MetaEisMonitorViewport — EIS viewport for a logical monitor.
 /// Bridges a logical monitor's geometry to the EIS coordinate space.
 pub struct MetaEisMonitorViewport {
-    // TODO: port fields from meta-eis-monitor-viewport.c
+    pub logical_monitor: *mut MetaLogicalMonitor,
 }
 
 impl MetaEisMonitorViewport {
     pub fn new() -> Self {
-        MetaEisMonitorViewport {}
+        MetaEisMonitorViewport {
+            logical_monitor: core::ptr::null_mut(),
+        }
     }
 }
 
