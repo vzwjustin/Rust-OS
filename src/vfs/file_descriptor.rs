@@ -34,6 +34,9 @@ pub enum FdKind {
     Userfaultfd(u32),
     MemfdSecret(u32),
     Namespace(u32),
+    /// POSIX message queue descriptor (mq_open). Inner value is the
+    /// queue id in `linux_compat::ipc_ops::MQ_QUEUES`.
+    MessageQueue(u32),
     /// /dev/console or /dev/tty
     TtyConsole,
     /// PTY master (/dev/ptmx)
@@ -71,6 +74,7 @@ impl FdKind {
             | (Self::Userfaultfd(a), Self::Userfaultfd(b))
             | (Self::MemfdSecret(a), Self::MemfdSecret(b))
             | (Self::Namespace(a), Self::Namespace(b))
+            | (Self::MessageQueue(a), Self::MessageQueue(b))
             | (Self::PtyMaster(a), Self::PtyMaster(b))
             | (Self::PtySlave(a), Self::PtySlave(b)) => a == b,
             (Self::TtyConsole, Self::TtyConsole) => true,

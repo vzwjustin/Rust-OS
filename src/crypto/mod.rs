@@ -5,10 +5,15 @@
 
 pub mod aes;
 pub mod algapi;
+pub mod asn1;
+pub mod bignum;
 pub mod gcm;
 pub mod hash;
 pub mod hkdf;
+pub mod pkcs7;
+pub mod rsa;
 pub mod sha256;
+pub mod x509;
 
 pub use algapi::{
     crypto_alg_count, crypto_lookup_alg, crypto_register_alg, AlgBase, AlgoType, CipherAlg,
