@@ -44,8 +44,8 @@ impl MetaWaylandXdgSession {
         id: u32,
     ) -> Self {
         MetaWaylandXdgSession {
-            session_state: Some(session_state),
-            wl_client: Some(wl_client),
+            session_state: if session_state.is_null() { None } else { Some(session_state) },
+            wl_client: if wl_client.is_null() { None } else { Some(wl_client) },
             id: Some(id.to_string()),
             state: XdgSessionState::INACTIVE,
             capabilities: 0,

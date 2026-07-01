@@ -64,7 +64,7 @@ pub struct MetaWaylandCursorShape {
 impl MetaWaylandCursorShape {
     pub fn new(compositor: *mut core::ffi::c_void) -> Self {
         MetaWaylandCursorShape {
-            compositor: Some(compositor),
+            compositor: if compositor.is_null() { None } else { Some(compositor) },
         }
     }
 }

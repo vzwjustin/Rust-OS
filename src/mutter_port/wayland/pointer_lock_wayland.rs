@@ -38,7 +38,7 @@ impl MetaPointerLockWayland {
     pub fn new(confinement: *mut core::ffi::c_void) -> Self {
         MetaPointerLockWayland {
             state: PointerLockState::PENDING,
-            confinement: Some(confinement),
+            confinement: if confinement.is_null() { None } else { Some(confinement) },
             surface: None,
             cursor_visible: true,
         }

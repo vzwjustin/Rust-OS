@@ -24,9 +24,9 @@ pub struct MetaWaylandTabletPadRing {
 
 impl MetaWaylandTabletPadRing {
     /// Create a new ring for a tablet pad.
-    pub fn new(_pad: *mut core::ffi::c_void) -> Self {
+    pub fn new(pad: *mut core::ffi::c_void) -> Self {
         MetaWaylandTabletPadRing {
-            pad: core::ptr::null_mut(),
+            pad,
             group: core::ptr::null_mut(),
             resource_list: Vec::new(),
             focus_resource_list: Vec::new(),

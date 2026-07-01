@@ -69,7 +69,7 @@ pub struct MetaWaylandTextInput {
 impl MetaWaylandTextInput {
     pub fn new(seat: *mut core::ffi::c_void) -> Self {
         MetaWaylandTextInput {
-            seat: Some(seat),
+            seat: if seat.is_null() { None } else { Some(seat) },
             focus_surface: None,
             state: TextInputState::UNFOCUSED,
             content_hint: TEXT_INPUT_HINT_NONE,
@@ -80,8 +80,8 @@ impl MetaWaylandTextInput {
     }
 
     pub fn set_focus(&mut self, surface: Option<*mut core::ffi::c_void>) {
-        self.focus_surface = surface;
-        if surface.is_some() {
+        self.focus_surface = surface.filter(|&p| !p.is_null());
+        if self.focus_surface.is_some() {
             self.state = TextInputState::FOCUSED;
         } else {
             self.state = TextInputState::UNFOCUSED;

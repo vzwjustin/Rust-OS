@@ -34,7 +34,7 @@ impl MetaWaylandTabletPadStrip {
     /// TODO: port logic from meta_wayland_tablet_pad_strip_new
     pub fn new(_pad: *mut core::ffi::c_void) -> Self {
         MetaWaylandTabletPadStrip {
-            pad: Some(_pad),
+            pad: if _pad.is_null() { None } else { Some(_pad) },
             group: None,
             resource_list: None,
             focus_resource_list: None,

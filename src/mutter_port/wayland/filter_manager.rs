@@ -53,7 +53,7 @@ pub struct MetaWaylandFilterManager {
 impl MetaWaylandFilterManager {
     pub fn new(compositor: *mut core::ffi::c_void) -> Self {
         MetaWaylandFilterManager {
-            compositor: Some(compositor),
+            compositor: if compositor.is_null() { None } else { Some(compositor) },
             filters: Vec::new(),
         }
     }
