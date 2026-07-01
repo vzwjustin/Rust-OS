@@ -869,10 +869,12 @@ impl ProcessManager {
         })?;
 
         // Create a security context for the new process (inherits from parent if provided).
-        let _ = crate::security::create_context(pid, parent_pid);
-
-        // Create a security context for the new process (inherits from parent if provided).
-        let _ = crate::security::create_context(pid, parent_pid);
+        // Do not hard-fail process creation: the boot path creates early processes before
+        // `security::init()` installs PID 0's context, so a missing context here is expected
+        // during early boot and a warning is the right level.
+        if let Err(e) = crate::security::create_context(pid, parent_pid) {
+            crate::serial_println!("Warning: failed to create security context for PID {}: {}", pid, e);
+        }
 
         // Initialize IPC state for new process
         let ipc_manager = ipc::get_ipc_manager();
@@ -934,8 +936,16 @@ impl ProcessManager {
             ipc_manager.init_process_signals(pid)?;
         }
 
-        // Create or refresh the security context for the adopted process.
-        let _ = crate::security::create_context(pid, parent_pid);
+        // Create a security context for the adopted process only when one does not already
+        // exist. This path can re-enter an existing PID (`is_new == false`, e.g. exec into an
+        // already-running process); unconditionally calling `create_context` would OVERWRITE
+        // the existing context and silently drop/regain privileges. Preserve any existing
+        // context and only create one for genuinely new processes (or if it is somehow absent).
+        if crate::security::get_context(pid).is_none() {
+            if let Err(e) = crate::security::create_context(pid, parent_pid) {
+                crate::serial_println!("Warning: failed to create security context for PID {}: {}", pid, e);
+            }
+        }
 
         Ok(())
     }
