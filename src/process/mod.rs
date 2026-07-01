@@ -871,6 +871,9 @@ impl ProcessManager {
         // Create a security context for the new process (inherits from parent if provided).
         let _ = crate::security::create_context(pid, parent_pid);
 
+        // Create a security context for the new process (inherits from parent if provided).
+        let _ = crate::security::create_context(pid, parent_pid);
+
         // Initialize IPC state for new process
         let ipc_manager = ipc::get_ipc_manager();
         ipc_manager.init_process_signals(pid)?;
