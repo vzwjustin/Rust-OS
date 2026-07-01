@@ -3,9 +3,8 @@
 //!
 //! Mirrors `kernel/locking/mutex.c`.  The owner field encodes the task
 //! pointer in the high bits and flag bits in the low bits, exactly as
-//! Linux does.  Actual sleep/wake is stubbed with a spin-wait loop;
-//! real integration requires calling into the scheduler's wait-queue
-//! infrastructure (`schedule()` + `wake_up()`).
+//! Linux does.  Contended acquisition yields the CPU to the scheduler
+//! via `crate::scheduler::yield_cpu()`.
 
 #![allow(dead_code)]
 
@@ -57,9 +56,8 @@ struct WaiterNode {
 /// A Linux-style sleeping mutex protecting a value of type `T`.
 ///
 /// Unlike `spin::Mutex`, this mutex is intended for contexts where the
-/// lock may be held for a long time and spinning would waste CPU.  In
-/// the current stub implementation the "sleep" degrades to a busy-wait;
-/// see the `TODO` comments for scheduler integration points.
+/// lock may be held for a long time and spinning would waste CPU.  The
+/// slow path yields the CPU via `scheduler::yield_cpu()` when contended.
 pub struct Mutex<T> {
     /// Encodes lock state in the low bits and (eventually) owner task
     /// pointer in the high bits, matching Linux's `atomic_long_t owner`.
@@ -115,9 +113,8 @@ impl<T> Mutex<T> {
 
     /// Acquire the mutex, blocking until it is available.
     ///
-    /// **TODO (scheduler integration)**: replace the spin-wait loop with
-    /// `prepare_to_wait()` + `schedule()` + `finish_wait()` once the
-    /// kernel has a proper wait-queue implementation.
+    /// In the contended case this yields the CPU to the scheduler rather
+    /// than spin-waiting, matching Linux's sleeping mutex behaviour.
     pub fn lock(&self) -> MutexGuard<'_, T> {
         lockdep::acquire(
             current_task_id(),
@@ -130,15 +127,18 @@ impl<T> Mutex<T> {
             return MutexGuard { lock: self };
         }
 
-        // Slow path: mark waiters and spin-wait (stub).
-        // In a real kernel this would put the current task on `wait_list`
-        // and call `schedule()`.
+        // Slow path: enqueue waiter, mark waiters flag, and yield-wait.
+        {
+            let mut wl = self.wait_list.lock();
+            wl.push_back(WaiterNode {
+                task_id: current_task_id(),
+                woken: false,
+            });
+        }
         self.state.fetch_or(MUTEX_STATE_WAITERS, Ordering::Relaxed);
 
-        // Spin until the lock is free then grab it.
-        // TODO: replace with proper sleep/wake when scheduler is available.
         loop {
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
 
             if self
                 .state
@@ -150,6 +150,12 @@ impl<T> Mutex<T> {
                 )
                 .is_ok()
             {
+                // Remove ourselves from the wait list.
+                let tid = current_task_id();
+                let mut wl = self.wait_list.lock();
+                if let Some(pos) = wl.iter().position(|w| w.task_id == tid) {
+                    wl.remove(pos);
+                }
                 return MutexGuard { lock: self };
             }
         }
@@ -186,9 +192,11 @@ impl<T> Mutex<T> {
         let prev = self.state.swap(MUTEX_STATE_UNLOCKED, Ordering::Release);
 
         if prev & MUTEX_STATE_WAITERS != 0 {
-            // TODO: wake one waiter from wait_list via scheduler.
-            // For now the spinning looper will naturally see the unlock.
-            let _ = self.wait_list.lock().pop_front();
+            // Wake one waiter by unblocking its process.
+            if let Some(waiter) = self.wait_list.lock().pop_front() {
+                let pm = crate::process::get_process_manager();
+                let _ = pm.unblock_process(waiter.task_id as u32);
+            }
         }
     }
 }

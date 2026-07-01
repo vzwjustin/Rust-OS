@@ -13,8 +13,8 @@
 //! - `done == u32::MAX`: completed "all" – waiters don't decrement
 //!   (mirrors `COMPLETION_INITIALIZER_ONSTACK` / `complete_all()`).
 //!
-//! **Scheduler integration note**: `wait()` spins in the stub.
-//! Replace with `add_wait_queue()` + `schedule()` + `remove_wait_queue()`.
+//! **Scheduler integration**: `wait()` yields the CPU via
+//! `scheduler::yield_cpu()` while waiting for completion.
 
 #![allow(dead_code)]
 
@@ -94,7 +94,9 @@ impl Completion {
         // Wake one waiter.
         if let Some(w) = wq.front_mut() {
             w.woken = true;
-            // TODO: wake_up_process(w.task_id) via scheduler.
+            // Unblock the waiter's process via the scheduler.
+            let pm = crate::process::get_process_manager();
+            let _ = pm.unblock_process(w.task_id as u32);
         }
         // Remove the woken waiter (or it will be cleaned up in wait()).
         wq.pop_front();
@@ -108,9 +110,11 @@ impl Completion {
     pub fn complete_all(&self) {
         let mut wq = self.wait.lock();
         self.done.store(COMPLETION_ALL_DONE, Ordering::Release);
-        // TODO: wake all tasks in wq via scheduler.
+        // Wake all tasks in wq via scheduler.
+        let pm = crate::process::get_process_manager();
         for w in wq.iter_mut() {
             w.woken = true;
+            let _ = pm.unblock_process(w.task_id as u32);
         }
         wq.clear();
     }
@@ -124,25 +128,25 @@ impl Completion {
     /// If `done == COMPLETION_ALL_DONE`, returns immediately without
     /// modifying `done`.  Otherwise decrements `done` by 1.
     ///
-    /// **TODO**: replace spin-wait with `schedule()`.
+    /// Yields the CPU to the scheduler in the contended case.
     pub fn wait(&self) {
         // Fast path: already done.
         if self.check_done_and_consume() {
             return;
         }
 
-        // Slow path: enqueue and spin-wait.
+        // Slow path: enqueue and yield-wait.
+        let current_pid = crate::process::get_process_manager().current_process() as usize;
         {
             let mut wq = self.wait.lock();
             wq.push_back(CompWaiter {
-                task_id: 0,
+                task_id: current_pid,
                 woken: false,
             });
         }
 
-        // TODO: call schedule() here.
         loop {
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
             if self.check_done_and_consume() {
                 return;
             }
@@ -153,24 +157,24 @@ impl Completion {
     ///
     /// Returns `true` if the completion was signalled before the
     /// timeout, `false` if the timeout expired.
-    ///
-    /// **TODO**: replace spin-budget with real timer infrastructure.
+    /// Uses the kernel uptime timer and yields the CPU while waiting.
     pub fn wait_timeout(&self, timeout_jiffies: u64) -> bool {
         if self.check_done_and_consume() {
             return true;
         }
 
-        let mut budget = timeout_jiffies.saturating_mul(1_000_000);
+        let start = crate::time::uptime_ms();
+        let timeout_ms = timeout_jiffies * 10; // 1 jiffy ≈ 10ms (HZ=100)
 
         loop {
             if self.check_done_and_consume() {
                 return true;
             }
-            if budget == 0 {
+            let elapsed = crate::time::uptime_ms() - start;
+            if elapsed >= timeout_ms {
                 return false;
             }
-            budget -= 1;
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
         }
     }
 

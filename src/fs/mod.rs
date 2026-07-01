@@ -10,16 +10,40 @@
 pub mod btrfs;
 pub mod buffer;
 pub mod cifs;
+pub mod configfs;
+pub mod cramfs;
+pub mod debugfs;
 pub mod devfs;
+pub mod devpts;
+pub mod efivarfs;
+pub mod exfat;
+pub mod exportfs;
+pub mod ext2;
 pub mod ext4;
 pub mod f2fs;
 pub mod fat32;
+pub mod fuse;
+pub mod gfs2;
+pub mod hugetlbfs;
+pub mod iomap;
 pub mod isofs;
+pub mod jbd2;
+pub mod jfs;
+pub mod kernfs;
 pub mod nfs_client;
 pub mod nfsd;
+pub mod nls;
+pub mod ntfs3;
+pub mod ocfs2;
 pub mod overlayfs;
+pub mod proc;
 pub mod ramfs;
+pub mod romfs;
+pub mod smb;
+pub mod squashfs;
 pub mod sysfs;
+pub mod udf;
+pub mod unicode;
 pub mod vfs;
 pub mod xfs;
 
@@ -71,6 +95,18 @@ pub enum FileSystemType {
     Cifs,
     /// hugetlbfs (2 MiB page pool)
     HugetlbFs,
+    /// SquashFS read-only filesystem
+    SquashFs,
+    /// NTFS3 filesystem
+    Ntfs3,
+    /// exFAT filesystem
+    ExFat,
+    /// SMB network filesystem
+    Smb,
+    /// UDF optical media filesystem
+    Udf,
+    /// ROMFS read-only filesystem
+    RomFs,
 }
 
 impl fmt::Display for FileSystemType {
@@ -89,6 +125,12 @@ impl fmt::Display for FileSystemType {
             FileSystemType::Xfs => write!(f, "xfs"),
             FileSystemType::Cifs => write!(f, "cifs"),
             FileSystemType::HugetlbFs => write!(f, "hugetlbfs"),
+            FileSystemType::SquashFs => write!(f, "squashfs"),
+            FileSystemType::Ntfs3 => write!(f, "ntfs3"),
+            FileSystemType::ExFat => write!(f, "exfat"),
+            FileSystemType::Smb => write!(f, "smb"),
+            FileSystemType::Udf => write!(f, "udf"),
+            FileSystemType::RomFs => write!(f, "romfs"),
         }
     }
 }

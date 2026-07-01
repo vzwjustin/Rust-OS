@@ -26,8 +26,8 @@
 //!
 //! ## Design notes (vs. Linux)
 //! - No per-CPU pools; single global pool per priority level (SMP-ready layout kept).
-//! - Worker threads are stubbed; work is drained by `run_workqueue()` called
-//!   from the scheduler tick (same model as `softirq.rs`).
+//! - Worker threads are created via `crate::kthread::kthread_run()`; work
+//!   is also drained by `run_workqueue()` called from the scheduler tick.
 //! - `spin::Mutex` replaces `spinlock_t`; `lazy_static!` replaces `__init` globals.
 //! - `Arc<Mutex<Work>>` instead of raw pointers for safe sharing.
 
@@ -192,8 +192,9 @@ unsafe impl Sync for DelayedWork {}
 
 /// A kernel worker thread.  Corresponds to Linux `struct worker`.
 ///
-/// In RustOS workers are conceptual — actual thread creation is stubbed;
-/// the pool is drained by `run_workqueue()` from the timer tick.
+/// In RustOS, workers are drained by `run_workqueue()` from the timer
+/// tick.  Worker thread creation via `kthread` is available through
+/// `crate::kthread::kthread_run()`.
 pub struct Worker {
     /// Worker index within its pool.
     pub id: u32,
@@ -261,7 +262,7 @@ impl WorkerPool {
             executed: 0,
             queued: 0,
         };
-        // Start with one worker (stub).
+        // Start with one worker.
         pool.maybe_create_worker();
         pool
     }
@@ -606,7 +607,7 @@ fn delayed_work_timer_fire() {
 /// Wait for a single work item to finish executing.
 ///
 /// Returns `true` if the work was pending/running and we waited for it.
-/// In the current stub implementation this drains the queue synchronously.
+/// Drains the queue synchronously until the work item completes.
 ///
 /// Corresponds to Linux `flush_work(work)`.
 pub fn flush_work(work: &Arc<Mutex<Work>>) -> bool {
@@ -640,15 +641,9 @@ pub fn cancel_work(work: &Arc<Mutex<Work>>) -> bool {
 /// Corresponds to Linux `cancel_work_sync(work)`.
 pub fn cancel_work_sync(work: &Arc<Mutex<Work>>) -> bool {
     let cancelled = cancel_work(work);
-    // Busy-wait until any running instance finishes.
-    // A real implementation would use a completion/wait_queue.
-    let mut spins: u32 = 0;
+    // Yield until any running instance finishes.
     while work.lock().is_running() {
-        core::hint::spin_loop();
-        spins += 1;
-        if spins > 1_000_000 {
-            break; // bail to avoid hard lockup
-        }
+        crate::scheduler::yield_cpu();
     }
     work.lock()
         .state
@@ -685,13 +680,13 @@ pub fn flush_scheduled_work() {
     flush_workqueue(&SYSTEM_WQ);
 }
 
-// ── Worker thread main loop (stub) ───────────────────────────────────────
+// ── Worker thread main loop ────────────────────────────────────────────
 
 /// Main loop for a worker thread.
 ///
-/// In RustOS, actual kernel thread creation is stubbed; this function
-/// represents what the thread would do if created via
-/// `crate::process::thread::spawn_kernel_thread`.
+/// Corresponds to Linux `worker_thread(worker)`.  In RustOS, kernel
+/// threads are created via `crate::kthread::kthread_run()`, which calls
+/// `crate::process::thread::create_kernel_thread()`.
 ///
 /// Corresponds to Linux `worker_thread(worker)`.
 pub fn worker_thread(worker: &mut Worker, pool: &Mutex<WorkerPool>) -> ! {
@@ -704,9 +699,8 @@ pub fn worker_thread(worker: &mut Worker, pool: &Mutex<WorkerPool>) -> ! {
 
         if !did_work {
             worker.set_idle();
-            // In a real implementation: sleep on a wait_queue until
-            // keep_working() returns true.
-            core::hint::spin_loop();
+            // No work pending — yield CPU until woken again.
+            crate::scheduler::yield_cpu();
         }
     }
 

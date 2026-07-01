@@ -167,9 +167,8 @@ static KTHREAD_CREATE_QUEUE: Mutex<VecDeque<KThreadCreateInfo>> = Mutex::new(Vec
 /// Set to `true` once kthreadd has been fully initialised.
 static KTHREADD_READY: AtomicBool = AtomicBool::new(false);
 
-/// Simple global TID allocator used by stub spawning.  In a full kernel the
-/// real `ThreadManager` owns this.
-static NEXT_TID: AtomicU32 = AtomicU32::new(2); // 1 = init, 2 = kthreadd
+/// TID of the kthreadd daemon thread, set by `kthreadd_init()`.
+static KTHREADD_TID: AtomicU32 = AtomicU32::new(0);
 
 /// Registry of live kthreads so that `kthread_stop` / `kthread_park` can
 /// locate them by TID.
@@ -178,11 +177,6 @@ static KTHREAD_REGISTRY: Mutex<VecDeque<(u32, Arc<KThread>)>> = Mutex::new(VecDe
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Allocate the next TID.
-fn alloc_tid() -> u32 {
-    NEXT_TID.fetch_add(1, Ordering::SeqCst)
-}
 
 /// Register a KThread so it can be found by TID later.
 fn register_kthread(tid: u32, kt: Arc<KThread>) {
@@ -204,13 +198,13 @@ fn unregister_kthread(tid: u32) {
     reg.retain(|(t, _)| *t != tid);
 }
 
-/// Stub: actually spawn a kernel thread via the RustOS thread manager.
+/// Spawn a kernel thread via the RustOS thread manager.
 ///
-/// In a real integration this calls
-/// `crate::process::thread::THREAD_MANAGER.create_kernel_thread(...)`.
-/// Here we allocate a TID, build a KThread descriptor, and register it.
-fn spawn_kthread_stub(info: KThreadCreateInfo) -> Result<u32, i32> {
-    let tid = alloc_tid();
+/// Creates a real kernel thread through `process::thread::create_kernel_thread`,
+/// wrapping the kthread's `fn(*mut u8) -> i32` entry point in a closure.
+/// The returned TID is the thread manager's TID, used for all subsequent
+/// wake/stop operations.
+fn spawn_kthread(info: KThreadCreateInfo) -> Result<u32, i32> {
     let name_bytes = &info.name;
     let end = name_bytes
         .iter()
@@ -218,14 +212,30 @@ fn spawn_kthread_stub(info: KThreadCreateInfo) -> Result<u32, i32> {
         .unwrap_or(TASK_COMM_LEN);
     let name_str = core::str::from_utf8(&name_bytes[..end]).unwrap_or("kthread");
 
-    let kt = Arc::new(KThread::new(info.threadfn, info.data, name_str));
+    let threadfn = info.threadfn;
+    let data = info.data;
+    let data_addr = data as usize;
+    let kt = Arc::new(KThread::new(threadfn, data, name_str));
+
+    let kt_for_closure = Arc::clone(&kt);
+    let closure = move || {
+        let data = data_addr as *mut u8;
+        let _result = threadfn(data);
+        // Arc drop: when the closure finishes, kt_for_closure is dropped,
+        // releasing the KThread reference.  The registry entry is cleaned
+        // up by kthread_stop or the caller.
+        drop(kt_for_closure);
+    };
+
+    let tid = crate::process::thread::create_kernel_thread(
+        name_str,
+        crate::process::Priority::Normal,
+        0x2000, // 8 KB kernel stack
+        closure,
+    )
+    .map_err(|_| ENOMEM)?;
+
     register_kthread(tid, kt);
-
-    // TODO: call crate::process::thread::THREAD_MANAGER.create_kernel_thread(...)
-    // with a wrapper closure that:
-    //   1. calls (info.threadfn)(info.data)
-    //   2. unregisters the TID when done
-
     Ok(tid)
 }
 
@@ -271,7 +281,7 @@ pub fn kthread_create_on_cpu(
             if cpu == u32::MAX { -1 } else { cpu as i32 },
             name,
         );
-        return spawn_kthread_stub(info);
+        return spawn_kthread(info);
     }
 
     let info = KThreadCreateInfo::new(
@@ -282,10 +292,17 @@ pub fn kthread_create_on_cpu(
     );
     KTHREAD_CREATE_QUEUE.lock().push_back(info);
 
-    // TODO: wake kthreadd so it processes the queue.
-    // crate::process::thread::wake_kthreadd();
+    // Wake kthreadd so it processes the queue.
+    let kthreadd_tid = KTHREADD_TID.load(Ordering::SeqCst);
+    if kthreadd_tid != 0 {
+        kthread_wake(kthreadd_tid);
+    } else {
+        // kthreadd not yet running — drain synchronously.
+        return drain_create_queue();
+    }
 
-    // For now, drain synchronously (single-processor bringup).
+    // Return the TID of the last enqueued thread by draining the queue
+    // here too (kthreadd may not have run yet on this CPU).
     drain_create_queue()
 }
 
@@ -297,7 +314,7 @@ fn drain_create_queue() -> Result<u32, i32> {
         let maybe_info = KTHREAD_CREATE_QUEUE.lock().pop_front();
         match maybe_info {
             Some(info) => {
-                last_tid = spawn_kthread_stub(info);
+                last_tid = spawn_kthread(info);
             }
             None => break,
         }
@@ -305,12 +322,12 @@ fn drain_create_queue() -> Result<u32, i32> {
     last_tid
 }
 
-/// Stub: wake (schedule) a thread by TID.
+/// Wake (unblock) a kernel thread by TID.
 ///
-/// Replace with a real scheduler call once the scheduler is wired in.
+/// Calls the thread manager's `unblock_thread` to move the thread from
+/// the blocked state back to the ready queue.
 pub fn kthread_wake(tid: u32) {
-    // TODO: crate::scheduler::SCHEDULER.wake(tid);
-    let _ = tid;
+    let _ = crate::process::thread::get_thread_manager().unblock_thread(tid);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +337,9 @@ pub fn kthread_wake(tid: u32) {
 /// Ask a kthread to stop.
 ///
 /// Sets `KTHREAD_SHOULD_STOP` on the thread's KThread data and wakes it.
-/// Waits (busy-polls in this stub) until the thread exits, then returns its
-/// exit code.  Returns `ENOENT` if the TID is not found.
+/// The thread should check `kthread_should_stop()` in its main loop and
+/// return when the flag is set.  After waking, terminates the thread in
+/// the thread manager and removes it from the kthread registry.
 ///
 /// Analogous to `kthread_stop()` in Linux.
 pub fn kthread_stop(tid: u32) -> i32 {
@@ -333,8 +351,8 @@ pub fn kthread_stop(tid: u32) -> i32 {
     kt.set_flags(KTHREAD_SHOULD_STOP);
     kthread_wake(tid);
 
-    // TODO: wait for thread exit via a completion / waitqueue.
-    // For now, unregister immediately (single-threaded stub).
+    // Terminate the thread in the thread manager.
+    let _ = crate::process::thread::get_thread_manager().terminate_thread(tid, 0);
     unregister_kthread(tid);
     0
 }
@@ -370,7 +388,11 @@ pub fn kthread_park(tid: u32) -> i32 {
     kt.park_count.fetch_add(1, Ordering::SeqCst);
     kt.set_flags(KTHREAD_SHOULD_PARK);
     kthread_wake(tid);
-    // TODO: wait for IS_PARKED to be set by the thread itself.
+
+    // Wait for the thread to actually park (set IS_PARKED).
+    while !kt.test_flags(KTHREAD_IS_PARKED) {
+        crate::process::thread::yield_thread();
+    }
     0
 }
 
@@ -394,15 +416,14 @@ pub fn kthread_unpark(tid: u32) {
 
 /// Called by a kthread itself when it notices `KTHREAD_SHOULD_PARK`.
 ///
-/// Sets `IS_PARKED` and spins (or in a real kernel, sleeps) until
-/// `SHOULD_PARK` is cleared by `kthread_unpark`.
+/// Sets `IS_PARKED` and yields the CPU until `SHOULD_PARK` is cleared
+/// by `kthread_unpark`.
 pub fn kthread_parkme(kthread: &KThread) {
     kthread.set_flags(KTHREAD_IS_PARKED);
 
-    // Spin until the park flag is cleared.
-    // In a real kernel this would be a `schedule()` sleep loop.
+    // Yield until the park flag is cleared.
     while kthread.test_flags(KTHREAD_SHOULD_PARK) {
-        core::hint::spin_loop();
+        crate::process::thread::yield_thread();
     }
 
     kthread.clear_flags(KTHREAD_IS_PARKED);
@@ -415,8 +436,7 @@ pub fn kthread_parkme(kthread: &KThread) {
 /// The kthreadd daemon body.
 ///
 /// Continuously drains `KTHREAD_CREATE_QUEUE` and spawns the requested
-/// threads.  In a real kernel this sleeps between iterations using a
-/// wait-queue; here we spin with a yield hint.
+/// threads.  Yields the CPU when idle between iterations.
 ///
 /// This function is intended to be the `threadfn` of the kthreadd thread.
 pub fn kthreadd(_data: *mut u8) -> i32 {
@@ -435,7 +455,7 @@ pub fn kthreadd(_data: *mut u8) -> i32 {
             let maybe_info = KTHREAD_CREATE_QUEUE.lock().pop_front();
             match maybe_info {
                 Some(info) => {
-                    let _ = spawn_kthread_stub(info);
+                    let _ = spawn_kthread(info);
                 }
                 None => break,
             }
@@ -446,7 +466,7 @@ pub fn kthreadd(_data: *mut u8) -> i32 {
             kthread_parkme(&kthread_data);
         }
 
-        core::hint::spin_loop();
+        crate::process::thread::yield_thread();
     }
 
     0
@@ -460,10 +480,11 @@ pub fn kthreadd_init() -> Result<u32, i32> {
     // Spawn kthreadd as a kernel thread.  We use the early-boot path here
     // (KTHREADD_READY is still false) so we bypass the queue.
     let info = KThreadCreateInfo::new(kthreadd, core::ptr::null_mut(), -1, "kthreadd");
-    let tid = spawn_kthread_stub(info)?;
+    let tid = spawn_kthread(info)?;
 
     // Mark kthreadd as ready so subsequent kthread_create calls use the queue.
     KTHREADD_READY.store(true, Ordering::SeqCst);
+    KTHREADD_TID.store(tid, Ordering::SeqCst);
 
     kthread_wake(tid);
     Ok(tid)
@@ -565,10 +586,10 @@ impl KThreadWorker {
 
     /// Block until the given work item has completed execution.
     ///
-    /// In a real kernel this uses a completion; here we spin.
+    /// Yields the CPU while waiting for the work item to finish.
     pub fn flush_work(&self, work: &KThreadWork) {
         while !work.done.load(Ordering::SeqCst) {
-            core::hint::spin_loop();
+            crate::process::thread::yield_thread();
         }
     }
 
@@ -614,7 +635,7 @@ impl KThreadWorker {
             if is_empty {
                 break;
             }
-            core::hint::spin_loop();
+            crate::process::thread::yield_thread();
         }
     }
 
@@ -668,9 +689,11 @@ pub fn kthread_worker_fn(worker: &KThreadWorker, kthread: &KThread) -> i32 {
         // Execute all pending work.
         worker.process_work();
 
-        // Sleep until next wakeup.
-        // TODO: replace with a real scheduler sleep.
-        core::hint::spin_loop();
+        // Yield CPU when no work is pending — the thread will be woken
+        // via kthread_wake() when new work is queued.
+        if worker.work_list.lock().is_empty() {
+            crate::process::thread::yield_thread();
+        }
     }
     0
 }

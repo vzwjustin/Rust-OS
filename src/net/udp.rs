@@ -526,10 +526,15 @@ impl UdpManager {
             return Err(NetworkError::InvalidArgument);
         }
 
-        // Check binding permissions
+        // Check binding permissions for privileged ports (< 1024).
         if local_port < 1024 {
-            // Privileged port - would need capability check in full implementation
-            // For now, allow all binds
+            let pm = crate::process::get_process_manager();
+            let current_pid = pm.current_process();
+            if let Some(pcb) = pm.get_process(current_pid) {
+                if pcb.uid != 0 {
+                    return Err(NetworkError::PermissionDenied);
+                }
+            }
         }
 
         let mut sockets = self.sockets.write();

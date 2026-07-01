@@ -401,6 +401,11 @@ pub fn launch_client() -> Result<(), &'static str> {
                 }
             }
 
+            crate::serial_println!(
+                "mutter: bar drawn, pool.data.len()={} expected={}",
+                pool.data.len(),
+                bar_stride * fb_h
+            );
             // Desktop background — fill everything between the top bar and
             // the bottom dock with a flat GNOME-style wallpaper color.
             let desktop_top = bar_height;
@@ -417,8 +422,12 @@ pub fn launch_client() -> Result<(), &'static str> {
                 }
             }
 
+            crate::serial_println!("mutter: background fill done");
             // Bottom dock bar (Ubuntu-style dark dock background)
             for y in desktop_bottom..fb_h {
+                if y % 10 == 0 {
+                    crate::serial_println!("mutter: dock row y={}", y);
+                }
                 for x in 0..fb_w {
                     let offset = (y * bar_stride + x * 4) as usize;
                     if offset + 4 <= pool.data.len() {
@@ -430,6 +439,7 @@ pub fn launch_client() -> Result<(), &'static str> {
                 }
             }
 
+            crate::serial_println!("mutter: dock fill done");
             // Dock launcher icons (evenly spaced colored squares)
             let icon_colors: [(u8, u8, u8); 5] = [
                 (233, 84, 32),  // Files (orange)
@@ -457,9 +467,11 @@ pub fn launch_client() -> Result<(), &'static str> {
                     }
                 }
             }
+            crate::serial_println!("mutter: icons fill done");
         }
         Ok(())
     })?;
+    crate::serial_println!("mutter: SHM fill block exited");
 
     // Step 9: wl_surface.attach — attach the buffer to the surface
     let attach = Message::new(

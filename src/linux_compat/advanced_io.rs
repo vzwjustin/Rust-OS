@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::vfs;
 
 fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
@@ -1019,7 +1020,7 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
     }
 
     if count < 24 {
-        return Ok(0);
+        return Err(LinuxError::EINVAL);
     }
 
     let (entries, cookie) = vfs::vfs_readdir_fd(fd).map_err(vfs_error_to_linux)?;
@@ -1036,18 +1037,16 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
         }
 
         let d_type = inode_type_to_d_type(entry.inode_type);
-        unsafe {
-            let base = dirp.add(written as usize);
-            *(base as *mut u64) = entry.ino;
-            *(base.add(8) as *mut i64) = (index + 1) as i64;
-            *(base.add(16) as *mut u16) = reclen;
-            *base.add(18) = d_type;
-            let name_ptr = base.add(19);
-            for (i, &b) in name_bytes.iter().enumerate() {
-                *name_ptr.add(i) = b;
-            }
-            *name_ptr.add(name_bytes.len()) = 0;
-        }
+        let mut record = alloc::vec::Vec::new();
+        record.resize(reclen as usize, 0);
+        record[0..8].copy_from_slice(&entry.ino.to_ne_bytes());
+        record[8..16].copy_from_slice(&((index + 1) as i64).to_ne_bytes());
+        record[16..18].copy_from_slice(&reclen.to_ne_bytes());
+        record[18] = d_type;
+        record[19..19 + name_bytes.len()].copy_from_slice(name_bytes);
+
+        let dst = unsafe { dirp.add(written as usize) };
+        UserSpaceMemory::copy_to_user(dst as u64, &record).map_err(|_| LinuxError::EFAULT)?;
 
         written += reclen as u32;
         index += 1;

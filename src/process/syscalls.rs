@@ -201,8 +201,11 @@ impl SyscallDispatcher {
             SyscallNumber::PkgList => self.sys_pkg_list(args),
             SyscallNumber::PkgUpdate => self.sys_pkg_update(args),
             SyscallNumber::PkgUpgrade => self.sys_pkg_upgrade(args),
-            // ── Additional syscalls wired to linux_compat or simple stubs ──
-            SyscallNumber::SchedYield => SyscallResult::Success(0),
+            // ── Additional syscalls wired to linux_compat or scheduler ──
+            SyscallNumber::SchedYield => {
+                crate::scheduler::yield_cpu();
+                SyscallResult::Success(0)
+            }
             SyscallNumber::Getuid => self.sys_getuid(process_manager, current_pid),
             SyscallNumber::Getgid => self.sys_getgid(process_manager, current_pid),
             SyscallNumber::Geteuid => self.sys_getuid(process_manager, current_pid),

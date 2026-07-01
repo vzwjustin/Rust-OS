@@ -8,6 +8,7 @@
 //! blending from the start color to the end color per-pixel.
 
 use crate::graphics::framebuffer::{self, Color, Rect};
+use crate::mutter_port::clutter::easing::{easing_for_mode, AnimationMode};
 
 /// Total crossfade duration in seconds (matches upstream default).
 const DEFAULT_DURATION_MS: u64 = 750;
@@ -26,6 +27,13 @@ pub struct BgCrossfade {
     started: bool,
     finished: bool,
     last_frame_time: u64,
+    /// Easing curve applied to the linear progress before blending.
+    /// Defaults to `EaseInOutCubic` for a smooth, natural fade (the
+    /// upstream `gnome-bg-crossfade` uses a linear blend, but the
+    /// Mutter/Clutter animation framework applies easing to all
+    /// transitions; `EaseInOutCubic` is the Clutter default for
+    /// background-class animations).
+    easing_mode: AnimationMode,
 }
 
 impl BgCrossfade {
@@ -42,6 +50,7 @@ impl BgCrossfade {
             started: false,
             finished: false,
             last_frame_time: 0,
+            easing_mode: AnimationMode::EaseInOutCubic,
         }
     }
 
@@ -104,11 +113,28 @@ impl BgCrossfade {
         self.last_frame_time = now;
 
         // Calculate progress (0.0 to 1.0)
-        let progress = if self.total_duration_ms > 0 {
+        let linear_progress = if self.total_duration_ms > 0 {
             (elapsed as f64 / self.total_duration_ms as f64).clamp(0.0, 1.0)
         } else {
             1.0
         };
+        // Apply the easing curve (e.g. EaseInOutCubic) to the linear
+        // progress for a smoother, more natural fade. The easing
+        // function takes (t, d) where t is elapsed and d is total
+        // duration; we pass the raw elapsed/duration so the easing
+        // curve's acceleration/deceleration profile is applied
+        // correctly.
+        let progress =
+            if self.total_duration_ms > 0 && linear_progress > 0.0 && linear_progress < 1.0 {
+                easing_for_mode(
+                    self.easing_mode,
+                    elapsed as f64,
+                    self.total_duration_ms as f64,
+                )
+                .clamp(0.0, 1.0)
+            } else {
+                linear_progress
+            };
 
         if progress >= 1.0 {
             // Final frame — paint the end color solid
@@ -131,6 +157,13 @@ impl BgCrossfade {
     pub fn set_duration_ms(&mut self, ms: u64) {
         self.total_duration_ms = ms;
     }
+
+    /// Set the easing curve applied to the fade progress. Default is
+    /// `EaseInOutCubic`; use `Linear` for the original upstream
+    /// behavior (no acceleration/deceleration).
+    pub fn set_easing_mode(&mut self, mode: AnimationMode) {
+        self.easing_mode = mode;
+    }
 }
 
 /// Linear interpolation between two colors.
@@ -139,7 +172,14 @@ fn blend_color(start: Color, end: Color, t: f64) -> Color {
     let lerp = |a: u8, b: u8| -> u8 {
         let a = a as f64;
         let b = b as f64;
-        (a + (b - a) * t + 0.5).clamp(0.0, 255.0) as u8
+        let v = a + (b - a) * t;
+        if v < 0.0 {
+            0
+        } else if v > 255.0 {
+            255
+        } else {
+            (v + 0.5) as u8
+        }
     };
     Color::rgb(
         lerp(start.r, end.r),

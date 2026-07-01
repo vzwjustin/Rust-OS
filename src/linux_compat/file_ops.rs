@@ -125,26 +125,37 @@ fn stat_dev(vfs_stat: &vfs::Stat) -> u64 {
     }
 }
 
-fn populate_linux_stat(statbuf: *mut Stat, vfs_stat: &vfs::Stat) {
-    unsafe {
-        *statbuf = Stat::new();
-        (*statbuf).st_dev = stat_dev(vfs_stat);
-        (*statbuf).st_ino = vfs_stat.ino;
-        (*statbuf).st_mode = vfs_stat.mode;
-        (*statbuf).st_nlink = vfs_stat.nlink as u64;
-        (*statbuf).st_uid = vfs_stat.uid;
-        (*statbuf).st_gid = vfs_stat.gid;
-        (*statbuf).st_rdev = match vfs_stat.inode_type {
-            InodeType::CharDevice | InodeType::BlockDevice => vfs_stat.rdev,
-            _ => 0,
-        };
-        (*statbuf).st_size = vfs_stat.size as Off;
-        (*statbuf).st_blksize = 4096;
-        (*statbuf).st_blocks = ((vfs_stat.size + 511) / 512) as i64;
-        (*statbuf).st_atime = vfs_stat.atime as Time;
-        (*statbuf).st_mtime = vfs_stat.mtime as Time;
-        (*statbuf).st_ctime = vfs_stat.ctime as Time;
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
     }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn populate_linux_stat(statbuf: *mut Stat, vfs_stat: &vfs::Stat) -> LinuxResult<()> {
+    let mut stat = Stat::new();
+    stat.st_dev = stat_dev(vfs_stat);
+    stat.st_ino = vfs_stat.ino;
+    stat.st_mode = vfs_stat.mode;
+    stat.st_nlink = vfs_stat.nlink as u64;
+    stat.st_uid = vfs_stat.uid;
+    stat.st_gid = vfs_stat.gid;
+    stat.st_rdev = match vfs_stat.inode_type {
+        InodeType::CharDevice | InodeType::BlockDevice => vfs_stat.rdev,
+        _ => 0,
+    };
+    stat.st_size = vfs_stat.size as Off;
+    stat.st_blksize = 4096;
+    stat.st_blocks = ((vfs_stat.size + 511) / 512) as i64;
+    stat.st_atime = vfs_stat.atime as Time;
+    stat.st_mtime = vfs_stat.mtime as Time;
+    stat.st_ctime = vfs_stat.ctime as Time;
+
+    copy_struct_to_user(statbuf, &stat)
 }
 
 fn check_access_permissions(
@@ -534,7 +545,7 @@ pub fn fstat(fd: Fd, statbuf: *mut Stat) -> LinuxResult<i32> {
     // Get actual file status from VFS
     match vfs::vfs_fstat(fd) {
         Ok(vfs_stat) => {
-            populate_linux_stat(statbuf, &vfs_stat);
+            populate_linux_stat(statbuf, &vfs_stat)?;
             Ok(0)
         }
         Err(_) => Err(LinuxError::EBADF),
@@ -554,7 +565,7 @@ pub fn stat(path: *const u8, statbuf: *mut Stat) -> LinuxResult<i32> {
 
     match vfs::vfs_stat(&resolved) {
         Ok(vfs_stat) => {
-            populate_linux_stat(statbuf, &vfs_stat);
+            populate_linux_stat(statbuf, &vfs_stat)?;
             Ok(0)
         }
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -621,7 +632,7 @@ pub fn newfstatat(
 
         return match stat_result {
             Ok(vfs_stat) => {
-                populate_linux_stat(statbuf, &vfs_stat);
+                populate_linux_stat(statbuf, &vfs_stat)?;
                 Ok(0)
             }
             Err(e) => Err(vfs_error_to_linux(e)),
@@ -640,7 +651,7 @@ pub fn newfstatat(
 
     match stat_result {
         Ok(vfs_stat) => {
-            populate_linux_stat(statbuf, &vfs_stat);
+            populate_linux_stat(statbuf, &vfs_stat)?;
             Ok(0)
         }
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -1060,18 +1071,19 @@ pub fn getdents(fd: Fd, dirp: *mut Dirent, count: usize) -> LinuxResult<isize> {
             InodeType::Socket => 12,
         };
 
-        unsafe {
-            let dent = &mut *(dirp.add(written) as *mut Dirent);
-            dent.d_ino = entry.ino as Ino;
-            dent.d_off = (index + 1) as Off;
-            dent.d_reclen = reclen;
-            dent.d_type = d_type;
-            let name_len = core::cmp::min(name_bytes.len(), 255);
-            dent.d_name[..name_len].copy_from_slice(&name_bytes[..name_len]);
-            if name_len < 256 {
-                dent.d_name[name_len] = 0;
-            }
+        let mut dent = unsafe { core::mem::MaybeUninit::<Dirent>::zeroed().assume_init() };
+        dent.d_ino = entry.ino as Ino;
+        dent.d_off = (index + 1) as Off;
+        dent.d_reclen = reclen;
+        dent.d_type = d_type;
+        let name_len = core::cmp::min(name_bytes.len(), 255);
+        dent.d_name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+        if name_len < 256 {
+            dent.d_name[name_len] = 0;
         }
+
+        let dst = unsafe { dirp.add(written) as *mut Dirent };
+        copy_struct_to_user(dst, &dent)?;
 
         written += reclen as usize;
         index += 1;
@@ -1339,57 +1351,56 @@ fn validate_openat2_how(how: &OpenHow) -> LinuxResult<()> {
     Ok(())
 }
 
-fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) {
-    unsafe {
-        core::ptr::write_bytes(statxbuf, 0, 1);
-        let s = &mut *statxbuf;
-        s.stx_mask = 0x7ff; // STATX_BASIC_STATS
-        s.stx_blksize = 4096;
-        s.stx_nlink = vfs_stat.nlink;
-        s.stx_uid = vfs_stat.uid;
-        s.stx_gid = vfs_stat.gid;
-        s.stx_mode = vfs_stat.mode as u16;
-        s.stx_ino = vfs_stat.ino;
-        s.stx_size = vfs_stat.size;
-        s.stx_blocks = ((vfs_stat.size + 511) / 512) as u64;
+fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) -> LinuxResult<()> {
+    let mut statx = unsafe { core::mem::MaybeUninit::<Statx>::zeroed().assume_init() };
+    let s = &mut statx;
+    s.stx_mask = 0x7ff; // STATX_BASIC_STATS
+    s.stx_blksize = 4096;
+    s.stx_nlink = vfs_stat.nlink;
+    s.stx_uid = vfs_stat.uid;
+    s.stx_gid = vfs_stat.gid;
+    s.stx_mode = vfs_stat.mode as u16;
+    s.stx_ino = vfs_stat.ino;
+    s.stx_size = vfs_stat.size;
+    s.stx_blocks = ((vfs_stat.size + 511) / 512) as u64;
 
-        // Device IDs: stx_dev for the containing device, stx_rdev for
-        // the file itself if it's a char/block device.
-        let dev = stat_dev(vfs_stat);
-        s.stx_dev_major = ((dev >> 8) & 0xfff) as u32;
-        s.stx_dev_minor = (dev & 0xff) as u32;
-        match vfs_stat.inode_type {
-            InodeType::CharDevice | InodeType::BlockDevice => {
-                s.stx_rdev_major = ((vfs_stat.rdev >> 8) & 0xfff) as u32;
-                s.stx_rdev_minor = (vfs_stat.rdev & 0xff) as u32;
-            }
-            _ => {
-                s.stx_rdev_major = 0;
-                s.stx_rdev_minor = 0;
-            }
+    // Device IDs: stx_dev for the containing device, stx_rdev for
+    // the file itself if it's a char/block device.
+    let dev = stat_dev(vfs_stat);
+    s.stx_dev_major = ((dev >> 8) & 0xfff) as u32;
+    s.stx_dev_minor = (dev & 0xff) as u32;
+    match vfs_stat.inode_type {
+        InodeType::CharDevice | InodeType::BlockDevice => {
+            s.stx_rdev_major = ((vfs_stat.rdev >> 8) & 0xfff) as u32;
+            s.stx_rdev_minor = (vfs_stat.rdev & 0xff) as u32;
         }
-
-        s.stx_atime = StatxTimestamp {
-            tv_sec: vfs_stat.atime as i64,
-            tv_nsec: 0,
-            __reserved: 0,
-        };
-        s.stx_mtime = StatxTimestamp {
-            tv_sec: vfs_stat.mtime as i64,
-            tv_nsec: 0,
-            __reserved: 0,
-        };
-        s.stx_ctime = StatxTimestamp {
-            tv_sec: vfs_stat.ctime as i64,
-            tv_nsec: 0,
-            __reserved: 0,
-        };
-        s.stx_btime = StatxTimestamp {
-            tv_sec: vfs_stat.ctime as i64,
-            tv_nsec: 0,
-            __reserved: 0,
-        };
+        _ => {
+            s.stx_rdev_major = 0;
+            s.stx_rdev_minor = 0;
+        }
     }
+
+    s.stx_atime = StatxTimestamp {
+        tv_sec: vfs_stat.atime as i64,
+        tv_nsec: 0,
+        __reserved: 0,
+    };
+    s.stx_mtime = StatxTimestamp {
+        tv_sec: vfs_stat.mtime as i64,
+        tv_nsec: 0,
+        __reserved: 0,
+    };
+    s.stx_ctime = StatxTimestamp {
+        tv_sec: vfs_stat.ctime as i64,
+        tv_nsec: 0,
+        __reserved: 0,
+    };
+    s.stx_btime = StatxTimestamp {
+        tv_sec: vfs_stat.ctime as i64,
+        tv_nsec: 0,
+        __reserved: 0,
+    };
+    copy_struct_to_user(statxbuf, &statx)
 }
 
 /// statx - get detailed file status relative to directory fd
@@ -1439,7 +1450,7 @@ pub fn statx(
                 .ok_or(LinuxError::ESRCH)?;
             match vfs::vfs_stat(&cwd) {
                 Ok(vfs_stat) => {
-                    populate_statx(&vfs_stat, statxbuf);
+                    populate_statx(&vfs_stat, statxbuf)?;
                     return Ok(0);
                 }
                 Err(e) => return Err(vfs_error_to_linux(e)),
@@ -1447,7 +1458,7 @@ pub fn statx(
         } else {
             match vfs::vfs_fstat(dirfd) {
                 Ok(vfs_stat) => {
-                    populate_statx(&vfs_stat, statxbuf);
+                    populate_statx(&vfs_stat, statxbuf)?;
                     return Ok(0);
                 }
                 Err(e) => return Err(vfs_error_to_linux(e)),
@@ -1462,7 +1473,7 @@ pub fn statx(
                 .ok_or(LinuxError::ESRCH)?;
             match vfs::vfs_stat(&cwd) {
                 Ok(vfs_stat) => {
-                    populate_statx(&vfs_stat, statxbuf);
+                    populate_statx(&vfs_stat, statxbuf)?;
                     return Ok(0);
                 }
                 Err(e) => return Err(vfs_error_to_linux(e)),
@@ -1470,7 +1481,7 @@ pub fn statx(
         } else {
             match vfs::vfs_fstat(dirfd) {
                 Ok(vfs_stat) => {
-                    populate_statx(&vfs_stat, statxbuf);
+                    populate_statx(&vfs_stat, statxbuf)?;
                     return Ok(0);
                 }
                 Err(e) => return Err(vfs_error_to_linux(e)),
@@ -1488,7 +1499,7 @@ pub fn statx(
 
     match stat_result {
         Ok(vfs_stat) => {
-            populate_statx(&vfs_stat, statxbuf);
+            populate_statx(&vfs_stat, statxbuf)?;
             Ok(0)
         }
         Err(e) => Err(vfs_error_to_linux(e)),

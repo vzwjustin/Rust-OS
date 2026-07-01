@@ -119,6 +119,9 @@ pub struct CpuContext {
     pub fs: u16,
     pub gs: u16,
     pub ss: u16,
+
+    // TLS base address (FS_BASE MSR on x86_64)
+    pub fs_base: u64,
 }
 
 impl Default for CpuContext {
@@ -148,6 +151,7 @@ impl Default for CpuContext {
             fs: 0x10,
             gs: 0x10,
             ss: 0x10,
+            fs_base: 0,
         }
     }
 }
@@ -323,6 +327,8 @@ pub struct ProcessControlBlock {
     pub alarm_interval: u64,
     /// Saved syscall info for restart_syscall (syscall number + args)
     pub restart_info: Option<(u64, [u64; 6])>,
+    /// Address to clear and futex-wake on thread exit (set by CLONE_CHILD_CLEARTID)
+    pub clear_child_tid: u64,
 }
 
 /// File descriptor information
@@ -653,6 +659,7 @@ impl ProcessControlBlock {
             alarm_deadline: 0,
             alarm_interval: 0,
             restart_info: None,
+            clear_child_tid: 0,
         };
 
         // Set process name
@@ -1064,6 +1071,63 @@ impl ProcessManager {
         let mut processes = self.processes.write();
         if let Some(pcb) = processes.get_mut(&pid) {
             pcb.sched_info.cpu_affinity = mask;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Set the FS_BASE (TLS pointer) for a process.
+    pub fn set_fs_base(&self, pid: Pid, base: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.context.fs_base = base;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Set supplementary group IDs for a process.
+    pub fn set_supplementary_groups(
+        &self,
+        pid: Pid,
+        groups: alloc::vec::Vec<u32>,
+    ) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.supplementary_groups = groups;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Get supplementary group IDs for a process.
+    pub fn get_supplementary_groups(&self, pid: Pid) -> Result<alloc::vec::Vec<u32>, &'static str> {
+        let processes = self.processes.read();
+        processes
+            .get(&pid)
+            .map(|pcb| pcb.supplementary_groups.clone())
+            .ok_or("Process not found")
+    }
+
+    /// Set the clear_child_tid address for a process (CLONE_CHILD_CLEARTID).
+    pub fn set_clear_child_tid(&self, pid: Pid, addr: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.clear_child_tid = addr;
+            Ok(())
+        } else {
+            Err("Process not found")
+        }
+    }
+
+    /// Override the child's stack pointer (clone with new stack).
+    pub fn set_child_stack(&self, pid: Pid, sp: u64) -> Result<(), &'static str> {
+        let mut processes = self.processes.write();
+        if let Some(pcb) = processes.get_mut(&pid) {
+            pcb.context.rsp = sp;
             Ok(())
         } else {
             Err("Process not found")

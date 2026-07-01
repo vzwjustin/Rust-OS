@@ -235,6 +235,8 @@ pub struct GPUMemoryManager {
     /// Size in bytes of the GPU-coherent memory window starting at
     /// `gpu_memory_base`. 0 means the window is unconfigured.
     pub gpu_memory_size: u64,
+    /// Host-side GPU allocations tracked for cleanup.
+    pub host_allocations: BTreeMap<u64, GPUHostAllocation>,
 }
 
 impl GPUMemoryManager {
@@ -284,6 +286,7 @@ impl GPUMemoryManager {
             compaction_enabled: true,
             gpu_memory_base: 0,
             gpu_memory_size: 0,
+            host_allocations: BTreeMap::new(),
         }
     }
 
@@ -464,7 +467,7 @@ impl GPUMemoryManager {
         };
 
         let allocation_id = self.allocate(size, 4096, flags)?; // 4KB alignment for DMA
-        let allocation = self.allocations.get(&allocation_id).unwrap();
+        let gpu_address = self.allocations.get(&allocation_id).unwrap().gpu_address;
 
         // Allocate host memory
         let cpu_address = self.allocate_host_memory(size)?;
@@ -475,7 +478,7 @@ impl GPUMemoryManager {
         let dma_buffer = DMABuffer {
             id: dma_id,
             cpu_address,
-            gpu_address: allocation.gpu_address,
+            gpu_address,
             size,
             direction,
             coherent: true,
@@ -854,7 +857,7 @@ impl GPUMemoryManager {
         page_flags
     }
 
-    fn allocate_host_memory(&self, size: usize) -> Result<NonNull<u8>, &'static str> {
+    fn allocate_host_memory(&mut self, size: usize) -> Result<NonNull<u8>, &'static str> {
         // Production implementation using actual memory allocation with GPU coherency
 
         // Calculate number of pages needed (align to page boundary)
@@ -1400,15 +1403,9 @@ impl GPUMemoryManager {
     }
 
     /// Track allocation for cleanup
-    fn track_allocation(&self, alloc_info: GPUHostAllocation) -> Result<(), &'static str> {
-        // In production, this would store allocation info in a data structure
-        // For now, just log the allocation
-        crate::println!(
-            "GPU {} allocated {} bytes at virtual address 0x{:016X}",
-            self.gpu_id,
-            alloc_info.size,
-            alloc_info.virt_addr
-        );
+    fn track_allocation(&mut self, alloc_info: GPUHostAllocation) -> Result<(), &'static str> {
+        let virt_addr = alloc_info.virt_addr;
+        self.host_allocations.insert(virt_addr, alloc_info);
         Ok(())
     }
 
@@ -1449,7 +1446,7 @@ impl GPUMemoryManager {
         crate::memory::unmap_page(virt_addr as usize)
     }
 
-    fn free_host_memory(&self, ptr: NonNull<u8>, size: usize) -> Result<(), &'static str> {
+    fn free_host_memory(&mut self, ptr: NonNull<u8>, size: usize) -> Result<(), &'static str> {
         // Production implementation for freeing GPU host memory
         let virt_addr = ptr.as_ptr() as u64;
 
@@ -1464,9 +1461,12 @@ impl GPUMemoryManager {
             }
         }
 
-        // In a full implementation, we would look up the allocation in our tracker
-        // and free the corresponding physical frames. For now, we rely on the
-        // memory manager to handle frame deallocation during page unmapping.
+        // Remove from the host allocations tracker and free physical frames.
+        if let Some(alloc) = self.host_allocations.remove(&virt_addr) {
+            // Physical frames are freed by the memory manager during unmap_page.
+            // We just drop the tracked allocation info here.
+            drop(alloc);
+        }
 
         self.stats
             .total_deallocations

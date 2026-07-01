@@ -159,6 +159,33 @@ impl Background {
             }
         }
     }
+
+    /// Begin a crossfade from the current solid color to a new solid
+    /// color. Returns a `BgCrossfade` that the caller should `tick()`
+    /// each frame until `is_finished()`; the background's color is
+    /// updated to `new_color` when the crossfade completes.
+    ///
+    /// This mirrors the upstream `gnome_bg_crossfade_start()` pattern:
+    /// when the GSettings background key changes, GNOME creates a
+    /// crossfade from the old surface to the new one. Here we operate
+    /// on solid colors directly via the framebuffer.
+    ///
+    /// For gradient backgrounds, only the primary color is crossfaded
+    /// (the secondary stays fixed); a full gradient crossfade would
+    /// need per-pixel blending which is too slow for 60 FPS on the
+    /// kernel framebuffer without GPU acceleration.
+    pub fn crossfade_to(
+        &self,
+        new_color: Color,
+        width: usize,
+        height: usize,
+    ) -> super::bg_crossfade::BgCrossfade {
+        let mut fade = super::bg_crossfade::BgCrossfade::new(width, height);
+        fade.set_start_color(self.primary);
+        fade.set_end_color(new_color);
+        fade.start();
+        fade
+    }
 }
 
 /// Draw a vertical gradient (top→bottom) across the full screen.
@@ -216,9 +243,14 @@ fn draw_horizontal_gradient_rect(rect: Rect, left: Color, right: Color) {
 /// Linear blend between two colors.
 fn blend(a: Color, b: Color, t: f64) -> Color {
     let lerp = |x: u8, y: u8| -> u8 {
-        (x as f64 + (y as f64 - x as f64) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
+        let v = x as f64 + (y as f64 - x as f64) * t;
+        if v < 0.0 {
+            0
+        } else if v > 255.0 {
+            255
+        } else {
+            (v + 0.5) as u8
+        }
     };
     Color::rgb(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
 }

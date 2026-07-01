@@ -166,7 +166,9 @@ mod gnome;
 mod gnome_overlay;
 mod installer;
 mod mutter;
-// Include GNOME foundation subsystems
+mod mutter_bridge;
+mod mutter_port; // TEMP: build-verification only // bridges framebuffer::Rect <-> mutter_port::mtk::Rectangle
+                 // Include GNOME foundation subsystems
 mod dbus;
 mod user_sched;
 mod wayland;
@@ -766,6 +768,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         // Parse UEFI runtime services if firmware left a discoverable system table.
         efi::init_from_boot_info(boot_info);
+        efi::init();
         kernel::mark_subsystem_ready("efi");
 
         match memory::init_memory_management(
@@ -855,6 +858,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize GDT and interrupts
         boot_ui::update_substage(4, "Configuring GDT and IDT...");
         gdt::init();
+        gdt::init_interrupt_stacks();
         kernel::mark_subsystem_ready("gdt");
         interrupts::init();
         kernel::mark_subsystem_ready("interrupts");
@@ -1263,6 +1267,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         match scheduler::init() {
             Ok(()) => {
+                scheduler::load_balance::init_run_queues(smp::cpu_count());
                 kernel::mark_subsystem_ready("scheduler");
                 unsafe {
                     early_serial_write_str("RustOS: Scheduler initialized\r\n");
@@ -1355,6 +1360,23 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize SoftIRQ and workqueue subsystem
         softirq::init();
         kernel::mark_subsystem_ready("softirq");
+        workqueue::init();
+        kernel::mark_subsystem_ready("workqueue");
+
+        // Start the kthreadd daemon (Linux PID 2 equivalent).
+        // Must run after scheduler::init() and process::init() so that
+        // create_kernel_thread is available.  kthreadd processes the
+        // kthread_create_queue for deferred kernel-thread creation.
+        match kthread::kthreadd_init() {
+            Ok(tid) => unsafe {
+                early_serial_write_str("RustOS: kthreadd daemon started\r\n");
+                let _ = tid;
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: kthreadd init FAILED\r\n");
+                let _ = e;
+            },
+        }
 
         // NUMA policy backend and RCU (RCU uses RCU softirq)
         numa::init();

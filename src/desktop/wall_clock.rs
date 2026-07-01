@@ -103,6 +103,7 @@ impl WallClock {
 
     /// Check if the clock needs updating based on the current time.
     /// Returns true if the displayed string would change.
+    /// Also returns true if the system clock has changed discontinuously.
     pub fn needs_update(&self) -> bool {
         let now = crate::time::system_time();
         if self.config.show_seconds || self.config.force_seconds {
@@ -110,6 +111,12 @@ impl WallClock {
         } else {
             now / 60 != self.last_update_second / 60
         }
+    }
+
+    /// Check if the system clock has jumped discontinuously since the last
+    /// call.  Uses `datetime_source::detect_clock_change()`.
+    pub fn clock_changed(&self) -> bool {
+        super::datetime_source::detect_clock_change()
     }
 
     /// Refresh the clock string from the current system time.
@@ -128,8 +135,9 @@ impl WallClock {
     }
 
     /// Update only if needed (returns true if updated).
+    /// Also updates if the system clock has changed discontinuously.
     pub fn update_if_needed(&mut self) -> bool {
-        if self.needs_update() {
+        if self.needs_update() || self.clock_changed() {
             self.update();
             true
         } else {

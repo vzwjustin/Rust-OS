@@ -7,7 +7,6 @@
 //! The upstream uses DBus to communicate with Mutter's IdleMonitor.  We
 //! implement the idle tracking directly in the kernel using uptime timestamps.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -42,14 +41,16 @@ enum WatchKind {
     UserActive,
 }
 
+/// Callback function type for idle/active watches.
+pub type IdleCallback = fn(u32);
+
 /// A single idle/active watch entry.
 struct Watch {
     id: u32,
     kind: WatchKind,
     timeout_msec: u64,
     fired: bool,
-    /// Callback function pointer.
-    callback: Box<dyn Fn(u32)>,
+    callback: IdleCallback,
 }
 
 /// Idle monitor — manages idle and user-active watches.
@@ -67,10 +68,7 @@ impl IdleMonitor {
 
     /// Add an idle watch — fires `callback(watch_id)` when the user has been
     /// idle for `interval_msec` milliseconds.  Returns a watch ID.
-    pub fn add_idle_watch<F>(&mut self, interval_msec: u64, callback: F) -> u32
-    where
-        F: Fn(u32) + 'static,
-    {
+    pub fn add_idle_watch(&mut self, interval_msec: u64, callback: IdleCallback) -> u32 {
         assert!(interval_msec > 0, "idle watch interval must be > 0");
         let id = NEXT_WATCH_ID.fetch_add(1, Ordering::Relaxed);
         self.watches.push(Watch {
@@ -78,24 +76,21 @@ impl IdleMonitor {
             kind: WatchKind::Idle,
             timeout_msec: interval_msec,
             fired: false,
-            callback: Box::new(callback),
+            callback,
         });
         id
     }
 
     /// Add a user-active watch — fires `callback(watch_id)` once when the user
     /// becomes active after being idle.  Returns a watch ID.
-    pub fn add_user_active_watch<F>(&mut self, callback: F) -> u32
-    where
-        F: Fn(u32) + 'static,
-    {
+    pub fn add_user_active_watch(&mut self, callback: IdleCallback) -> u32 {
         let id = NEXT_WATCH_ID.fetch_add(1, Ordering::Relaxed);
         self.watches.push(Watch {
             id,
             kind: WatchKind::UserActive,
             timeout_msec: 0,
             fired: false,
-            callback: Box::new(callback),
+            callback,
         });
         id
     }
@@ -118,7 +113,7 @@ impl IdleMonitor {
 
         // We need to be careful: callbacks may modify the watch list.
         // Collect fired watch IDs first, then invoke callbacks.
-        let mut to_fire: Vec<(u32, WatchKind)> = Vec::new();
+        let mut to_fire: Vec<(u32, IdleCallback)> = Vec::new();
 
         for w in &self.watches {
             if w.fired {
@@ -127,22 +122,19 @@ impl IdleMonitor {
             match w.kind {
                 WatchKind::Idle => {
                     if idle >= w.timeout_msec {
-                        to_fire.push((w.id, WatchKind::Idle));
+                        to_fire.push((w.id, w.callback));
                     }
                 }
                 WatchKind::UserActive => {
-                    // Fire if the last input was very recent (within last 500ms)
-                    // and we haven't fired yet.
                     let last = LAST_INPUT_TIME.load(Ordering::Relaxed);
                     if last > 0 && now.saturating_sub(last) < 500 {
-                        to_fire.push((w.id, WatchKind::UserActive));
+                        to_fire.push((w.id, w.callback));
                     }
                 }
             }
         }
 
-        // Mark as fired and invoke callbacks
-        for (id, kind) in &to_fire {
+        for (id, _) in &to_fire {
             for w in &mut self.watches {
                 if w.id == *id {
                     w.fired = true;
@@ -151,20 +143,8 @@ impl IdleMonitor {
             }
         }
 
-        for (id, _) in &to_fire {
-            // Find the callback and invoke it
-            // We need to find the watch, clone the callback reference, and call it
-            // Since Box<dyn Fn> is not Clone, we call it directly
-            let mut found_idx = None;
-            for (i, w) in self.watches.iter().enumerate() {
-                if w.id == *id {
-                    found_idx = Some(i);
-                    break;
-                }
-            }
-            if let Some(idx) = found_idx {
-                (self.watches[idx].callback)(*id);
-            }
+        for (id, cb) in &to_fire {
+            cb(*id);
         }
 
         // Remove one-shot user-active watches that have fired
@@ -210,9 +190,11 @@ mod tests {
         assert!(idle < 100);
     }
 
+    fn dummy_cb(_id: u32) {}
+
     fn test_add_remove_watch() {
         let mut monitor = IdleMonitor::new();
-        let id = monitor.add_idle_watch(5000, |_| {});
+        let id = monitor.add_idle_watch(5000, dummy_cb);
         assert_eq!(monitor.watch_count(), 1);
         monitor.remove_watch(id);
         assert_eq!(monitor.watch_count(), 0);

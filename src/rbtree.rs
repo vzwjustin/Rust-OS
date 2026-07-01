@@ -372,40 +372,19 @@ impl<K: Ord, V> RBTree<K, V> {
         let has_right = zn.right.is_some();
 
         if has_left && has_right {
-            // Replace z with in-order successor (min of right subtree)
+            // Replace z with in-order successor (min of right subtree).
+            // Swap z's key/value with successor's key/value in-place, then
+            // remove the successor node (which now holds z's original data).
             let succ = unsafe { Self::minimum(zn.right.unwrap()) };
-            // Swap keys+values logically by copying into z's fields
-            // Actually: splice successor out, put its key/value in z's slot
-            // Easiest: remove successor first, then replace z's key/value
-            let succ_val = unsafe { self.remove_node(succ) };
-            // Now z still has its old key but we need to update key too
-            // We'll take z's value and key out via Box::from_raw
-            let z_box = unsafe { Box::from_raw(z.as_ptr()) };
-            self.len += 1; // remove_node decremented; we'll fix below
-            // Put successor's key/value into a fresh node at z's position
-            // ... actually the simplest correct approach: re-insert with succ key
-            // But we can't easily because key may not be Clone.
-            // Instead: mutate key in-place (requires unsafe).
-            // We already did remove_node(succ) which took succ out.
-            // So now we just need to replace z's slot with the succ value.
-            // Use a trick: reconstruct z with succ value
-            // We have z_box.key available.  Actually we want to put
-            // (z_box.key, succ_val) back... but succ had succ.key.
-            // This approach is getting tangled.  Use the classic "copy data" route:
-            // Since K may not be Copy, we need a different strategy.
-            // STRATEGY: we store the successor's key into z, then unlink succ.
-            // We can do this because z's key is no longer needed (z will hold succ's key).
-            // This requires moving succ.key into z's key — doable with ptr::write.
-            // But we already turned z into a Box... so:
-            // Just insert new node with succ key/value, drop z_box
-            // (without decrementing len since we'll redo accounting)
-            let _ = z_box; // drop z's memory
-            self.len -= 1; // net effect: one removal (succ was already removed)
-            return succ_val; // return z's value would be wrong...
-            // Actually we want to return z's original value and the successor moved into z.
-            // This is the limitation of a single-pass approach.
-            // For now: return succ_val and accept that z's old value is leaked (temporary, not ideal).
-            // TODO: fix with a proper swap
+            // Swap key and value between z and succ in-place.
+            unsafe {
+                let z_ptr = z.as_ptr();
+                let s_ptr = succ.as_ptr();
+                core::mem::swap(&mut z_ptr.key, &mut s_ptr.key);
+                core::mem::swap(&mut z_ptr.value, &mut s_ptr.value);
+            }
+            // Now succ holds z's original key/value; remove it.
+            return unsafe { self.remove_node(succ) };
         }
 
         // z has at most one child

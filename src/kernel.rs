@@ -194,6 +194,7 @@ pub fn init() -> Result<(), &'static str> {
     register_subsystem("dbus", 70, &["linux_integration"]);
     register_subsystem("wayland", 71, &["dbus", "graphics"]);
     register_subsystem("desktop", 72, &["wayland"]);
+    register_subsystem("workqueue", 73, &["softirq"]);
 
     crate::notifier::init();
     update_subsystem_state("notifier", SubsystemState::Ready)?;

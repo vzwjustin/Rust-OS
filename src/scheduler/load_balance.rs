@@ -432,18 +432,42 @@ pub fn rebalance_domains(this_cpu: u32, idle: CpuIdleType, now_ns: u64, domain: 
 
 /// Entry point called from the per-CPU timer tick.
 ///
-/// Mirrors Linux `trigger_load_balance()` (core.c).
-///
-/// On a real SMP kernel this raises a soft-IRQ (`SCHED_SOFTIRQ`) that defers
-/// `rebalance_domains` to a safe context.  Here we call it directly since the
-/// RustOS IRQ model does not yet have soft-IRQs.
+/// Mirrors Linux `trigger_load_balance()` (core.c).  Raises `SCHED_SOFTIRQ`
+/// so that `rebalance_domains` runs in a deferred soft-IRQ context rather
+/// than inline in the timer tick.
 pub fn trigger_load_balance(
     this_cpu: u32,
     idle: CpuIdleType,
     now_ns: u64,
     domain: &mut SchedDomain,
 ) {
-    rebalance_domains(this_cpu, idle, now_ns, domain);
+    // Store parameters for the softirq handler to pick up.
+    LB_PARAMS.lock().get_or_insert_with(|| LbParams {
+        cpu: this_cpu,
+        idle,
+        now_ns,
+    });
+    crate::softirq::raise_softirq(crate::softirq::SCHED_SOFTIRQ);
+}
+
+/// Parameters for the deferred load-balance softirq handler.
+struct LbParams {
+    cpu: u32,
+    idle: CpuIdleType,
+    now_ns: u64,
+}
+
+static LB_PARAMS: spin::Mutex<Option<LbParams>> = spin::Mutex::new(None);
+
+/// Softirq handler for `SCHED_SOFTIRQ` — runs `rebalance_domains` in a
+/// deferred context.  Registered during scheduler init.
+pub fn sched_softirq_action() {
+    let params = LB_PARAMS.lock().take();
+    if let Some(p) = params {
+        let num_cpus = crate::smp::cpu_count();
+        let mut domain = SchedDomain::flat_smp(num_cpus);
+        rebalance_domains(p.cpu, p.idle, p.now_ns, &mut domain);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

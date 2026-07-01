@@ -40,6 +40,30 @@ fn inc_ops() {
     PROCESS_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
+    if src.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(unsafe { value.assume_init() })
+}
+
 /// Get current process PCB or return error
 fn current_pcb() -> LinuxResult<process::ProcessControlBlock> {
     let pid = process::current_pid();
@@ -960,13 +984,11 @@ pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> 
             .ok_or(LinuxError::ESRCH)?;
         let matches = wait_child_matches(pid, caller_pgid);
         if let Some(child) = process_mgr.find_zombie_child(parent_pid, &matches) {
-            unsafe {
-                *rusage = pcb_to_rusage(&child);
-            }
+            let child_rusage = pcb_to_rusage(&child);
+            copy_struct_to_user(rusage, &child_rusage)?;
         } else {
-            unsafe {
-                core::ptr::write_bytes(rusage, 0, 1);
-            }
+            let zero_rusage = unsafe { core::mem::MaybeUninit::<Rusage>::zeroed().assume_init() };
+            copy_struct_to_user(rusage, &zero_rusage)?;
         }
     }
 
@@ -1268,16 +1290,14 @@ pub fn getresuid(ruid: *mut Uid, euid: *mut Uid, suid: *mut Uid) -> LinuxResult<
 
     let pcb = current_pcb()?;
 
-    unsafe {
-        if !ruid.is_null() {
-            *ruid = pcb.uid;
-        }
-        if !euid.is_null() {
-            *euid = pcb.euid;
-        }
-        if !suid.is_null() {
-            *suid = pcb.suid;
-        }
+    if !ruid.is_null() {
+        copy_struct_to_user(ruid, &pcb.uid)?;
+    }
+    if !euid.is_null() {
+        copy_struct_to_user(euid, &pcb.euid)?;
+    }
+    if !suid.is_null() {
+        copy_struct_to_user(suid, &pcb.suid)?;
     }
 
     Ok(0)
@@ -1331,16 +1351,14 @@ pub fn getresgid(rgid: *mut Gid, egid: *mut Gid, sgid: *mut Gid) -> LinuxResult<
 
     let pcb = current_pcb()?;
 
-    unsafe {
-        if !rgid.is_null() {
-            *rgid = pcb.gid;
-        }
-        if !egid.is_null() {
-            *egid = pcb.egid;
-        }
-        if !sgid.is_null() {
-            *sgid = pcb.sgid;
-        }
+    if !rgid.is_null() {
+        copy_struct_to_user(rgid, &pcb.gid)?;
+    }
+    if !egid.is_null() {
+        copy_struct_to_user(egid, &pcb.egid)?;
+    }
+    if !sgid.is_null() {
+        copy_struct_to_user(sgid, &pcb.sgid)?;
     }
 
     Ok(0)
@@ -1408,11 +1426,13 @@ pub fn getgroups(size: i32, list: *mut u32) -> LinuxResult<i32> {
     }
 
     if !list.is_null() {
-        for (i, &gid) in groups.iter().enumerate() {
-            unsafe {
-                *list.add(i) = gid;
-            }
-        }
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                groups.as_ptr().cast::<u8>(),
+                groups.len() * core::mem::size_of::<u32>(),
+            )
+        };
+        UserSpaceMemory::copy_to_user(list as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     }
 
     Ok(groups.len() as i32)
@@ -1437,9 +1457,14 @@ pub fn setgroups(size: i32, list: *const u32) -> LinuxResult<i32> {
     let size = size as usize;
     let mut groups = alloc::vec::Vec::with_capacity(size);
     if !list.is_null() {
-        for i in 0..size {
-            groups.push(unsafe { *list.add(i) });
-        }
+        groups.resize(size, 0);
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                groups.as_mut_ptr().cast::<u8>(),
+                size * core::mem::size_of::<u32>(),
+            )
+        };
+        UserSpaceMemory::copy_from_user(list as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     }
 
     let pid = process::current_pid();
@@ -2067,23 +2092,20 @@ pub fn getrusage(who: i32, usage: *mut Rusage) -> LinuxResult<i32> {
     match who {
         RUSAGE_SELF => {
             let pcb = current_pcb()?;
-            unsafe {
-                *usage = pcb_to_rusage(&pcb);
-            }
+            let rusage = pcb_to_rusage(&pcb);
+            copy_struct_to_user(usage, &rusage)?;
             Ok(0)
         }
         RUSAGE_CHILDREN => {
             let pcb = current_pcb()?;
-            unsafe {
-                *usage = pcb_children_rusage(&pcb);
-            }
+            let rusage = pcb_children_rusage(&pcb);
+            copy_struct_to_user(usage, &rusage)?;
             Ok(0)
         }
         RUSAGE_THREAD => {
             let pcb = current_pcb()?;
-            unsafe {
-                *usage = pcb_to_rusage(&pcb);
-            }
+            let rusage = pcb_to_rusage(&pcb);
+            copy_struct_to_user(usage, &rusage)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),

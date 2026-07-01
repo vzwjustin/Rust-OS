@@ -12,8 +12,8 @@
 //!  count  < -1  : write locked + waiters (or: -1 - waiter_count)
 //! ```
 //!
-//! The actual sleep/wake is stubbed with spin-wait loops.  Real
-//! integration requires calling into the scheduler's wait-queue layer.
+//! The sleep/wake paths yield the CPU via `scheduler::yield_cpu()` when
+//! contended, allowing other threads to run until the lock is released.
 
 #![allow(dead_code)]
 
@@ -128,27 +128,28 @@ impl<T> RwSemaphore<T> {
 
     /// Acquire a shared read lock, blocking until available.
     ///
-    /// **TODO**: replace spin-wait with `schedule()` / `wake_up()` calls.
+    /// Yields the CPU to the scheduler in the contended case.
     pub fn read(&self) -> ReadGuard<'_, T> {
         if self.try_acquire_read_fast() {
             return ReadGuard { lock: self };
         }
 
-        // Slow path: queue as a reader and spin-wait.
+        // Slow path: queue as a reader and yield-wait.
+        let current_pid = crate::process::get_process_manager().current_process() as usize;
         {
             let mut wl = self.wait_list.lock();
             wl.push_back(RwWaiter {
                 kind: RwWaiterKind::Reader,
-                task_id: 0,
+                task_id: current_pid,
             });
         }
 
         loop {
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
             if self.try_acquire_read_fast() {
-                // Remove our slot from the wait list (best-effort).
+                // Remove our slot from the wait list.
                 let mut wl = self.wait_list.lock();
-                if let Some(pos) = wl.iter().position(|w| w.kind == RwWaiterKind::Reader) {
+                if let Some(pos) = wl.iter().position(|w| w.task_id == current_pid) {
                     wl.remove(pos);
                 }
                 return ReadGuard { lock: self };
@@ -167,7 +168,7 @@ impl<T> RwSemaphore<T> {
 
     /// Acquire an exclusive write lock, blocking until available.
     ///
-    /// **TODO**: replace spin-wait with `schedule()` / `wake_up()` calls.
+    /// Yields the CPU to the scheduler in the contended case.
     pub fn write(&self) -> WriteGuard<'_, T> {
         if self.try_acquire_write_fast() {
             return WriteGuard { lock: self };
@@ -177,11 +178,11 @@ impl<T> RwSemaphore<T> {
         self.count.fetch_sub(1, Ordering::Relaxed);
 
         loop {
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
             // Try to CAS from 0 to -1.  We first undo our waiter bias.
             let cur = self.count.load(Ordering::Relaxed);
             if cur == -1 {
-                // Currently write-locked; keep spinning.
+                // Currently write-locked; keep waiting.
                 continue;
             }
             if cur <= 0 {
@@ -220,8 +221,8 @@ impl<T> RwSemaphore<T> {
         let lock = guard.lock;
         // Transition -1 -> +1 (write locked -> one reader).
         lock.count.store(RWSEM_READER_BIAS, Ordering::Release);
-        // Wake any queued readers.
-        // TODO: wake readers from wait_list.
+        // Yield to allow queued readers to acquire.
+        crate::scheduler::yield_cpu();
         core::mem::forget(guard); // prevent Drop from running
         ReadGuard { lock }
     }
@@ -233,18 +234,24 @@ impl<T> RwSemaphore<T> {
     fn release_read(&self) {
         let prev = self.count.fetch_sub(RWSEM_READER_BIAS, Ordering::Release);
         if prev == RWSEM_READER_BIAS {
-            // Last reader released; wake a queued writer if any.
-            // TODO: proper wake via scheduler.
-            let _ = self.wait_list.lock().pop_front();
+            // Last reader released; wake a queued waiter.
+            if let Some(waiter) = self.wait_list.lock().pop_front() {
+                let pm = crate::process::get_process_manager();
+                let _ = pm.unblock_process(waiter.task_id as u32);
+            }
+            crate::scheduler::yield_cpu();
         }
     }
 
     fn release_write(&self) {
         self.owner.store(0, Ordering::Relaxed);
         self.count.store(RWSEM_UNLOCKED_VALUE, Ordering::Release);
-        // Wake next waiter.
-        // TODO: proper wake via scheduler.
-        let _ = self.wait_list.lock().pop_front();
+        // Wake a queued waiter.
+        if let Some(waiter) = self.wait_list.lock().pop_front() {
+            let pm = crate::process::get_process_manager();
+            let _ = pm.unblock_process(waiter.task_id as u32);
+        }
+        crate::scheduler::yield_cpu();
     }
 }
 
