@@ -123,7 +123,11 @@ impl SyscallDispatcher {
             for (i, &v) in args.iter().enumerate().take(6) {
                 args6[i] = v;
             }
-            if let Err(errno) = crate::seccomp::check_syscall(syscall_number as i32, &args6) {
+            if let Err(errno) = crate::seccomp::check_syscall(
+                process_manager.current_process(),
+                syscall_number as i32,
+                &args6,
+            ) {
                 // errno is already negative (e.g. -31 for SIGSYS); return as u64.
                 return Ok(errno as i64 as u64);
             }
@@ -197,8 +201,11 @@ impl SyscallDispatcher {
             SyscallNumber::PkgList => self.sys_pkg_list(args),
             SyscallNumber::PkgUpdate => self.sys_pkg_update(args),
             SyscallNumber::PkgUpgrade => self.sys_pkg_upgrade(args),
-            // ── Additional syscalls wired to linux_compat or simple stubs ──
-            SyscallNumber::SchedYield => SyscallResult::Success(0),
+            // ── Additional syscalls wired to linux_compat or scheduler ──
+            SyscallNumber::SchedYield => {
+                crate::scheduler::yield_cpu();
+                SyscallResult::Success(0)
+            }
             SyscallNumber::Getuid => self.sys_getuid(process_manager, current_pid),
             SyscallNumber::Getgid => self.sys_getgid(process_manager, current_pid),
             SyscallNumber::Geteuid => self.sys_getuid(process_manager, current_pid),
@@ -302,7 +309,8 @@ impl SyscallDispatcher {
                 ))
             }
             SyscallNumber::Seccomp => {
-                let ret = crate::seccomp::seccomp_set_mode(
+                let ret = crate::seccomp::sys_seccomp(
+                    process_manager.current_process(),
                     args.first().copied().unwrap_or(0) as u32,
                     args.get(1).copied().unwrap_or(0) as u32,
                     args.get(2).copied().unwrap_or(0) as *const u8,
@@ -607,24 +615,19 @@ impl SyscallDispatcher {
     ) -> SyscallResult {
         let wait_pid = args.get(0).map(|&p| p as i32).unwrap_or(-1);
 
-        // Get current process
-        let _current_process = match process_manager.get_process(current_pid) {
-            Some(p) => p,
-            None => return SyscallResult::Error(SyscallError::ProcessNotFound),
-        };
+        if process_manager.get_process(current_pid).is_none() {
+            return SyscallResult::Error(SyscallError::ProcessNotFound);
+        }
 
-        // Find child processes
         let children: Vec<Pid> = process_manager
             .processes
             .read()
             .iter()
             .filter_map(|(pid, pcb)| {
-                if pcb.parent_pid == Some(current_pid) {
-                    if wait_pid == -1 || wait_pid == *pid as i32 {
-                        Some(*pid)
-                    } else {
-                        None
-                    }
+                if pcb.parent_pid == Some(current_pid)
+                    && (wait_pid == -1 || wait_pid == *pid as i32)
+                {
+                    Some(*pid)
                 } else {
                     None
                 }
@@ -635,25 +638,22 @@ impl SyscallDispatcher {
             return SyscallResult::Error(SyscallError::NoChildProcess);
         }
 
-        // Check for any terminated children
         for child_pid in children {
             if let Some(child) = process_manager.get_process(child_pid) {
-                if matches!(child.state, ProcessState::Terminated) {
-                    // Reap the child process
-                    let exit_code = child.exit_code.unwrap_or(0);
+                if matches!(child.state, ProcessState::Zombie | ProcessState::Terminated) {
+                    let exit_code = child.exit_status.or(child.exit_code).unwrap_or(0);
                     process_manager.processes.write().remove(&child_pid);
-                    return SyscallResult::Success(((child_pid as u64) << 32) | (exit_code as u64));
+                    return SyscallResult::Success(
+                        ((child_pid as u64) << 32) | ((exit_code as u32) as u64),
+                    );
                 }
             }
         }
 
-        // Block current process until a child terminates
-        if let Err(_) = process_manager.block_process(current_pid) {
-            return SyscallResult::Error(SyscallError::ProcessNotFound);
+        match process_manager.block_process(current_pid) {
+            Ok(()) => SyscallResult::Success(0),
+            Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
         }
-
-        // Return would happen after unblocking when child terminates
-        SyscallResult::Success(0)
     }
 
     /// sys_getpid - Get process ID
@@ -1139,8 +1139,7 @@ impl SyscallDispatcher {
 
         let new_brk = args.get(0).copied().unwrap_or(0);
 
-        // Get current process
-        let mut process = match process_manager.get_process(current_pid) {
+        let process = match process_manager.get_process(current_pid) {
             Some(pcb) => pcb,
             None => return SyscallResult::Error(SyscallError::ProcessNotFound),
         };
@@ -1148,20 +1147,16 @@ impl SyscallDispatcher {
         let current_heap_end = process.memory.heap_start + process.memory.heap_size;
 
         if new_brk == 0 {
-            // Return current break
             return SyscallResult::Success(current_heap_end);
         }
 
-        // Validate new break address
         if new_brk < process.memory.heap_start {
             return SyscallResult::Error(SyscallError::InvalidArgument);
         }
 
         if new_brk > current_heap_end {
-            // Expand heap
             let expansion_size = new_brk - current_heap_end;
 
-            // Limit heap expansion to prevent abuse (max 1GB heap)
             if process.memory.heap_size + expansion_size > 1024 * 1024 * 1024 {
                 return SyscallResult::Error(SyscallError::OutOfMemory);
             }
@@ -1169,48 +1164,36 @@ impl SyscallDispatcher {
             let aligned_size =
                 ((expansion_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
 
-            let protection = MemoryProtection {
-                readable: true,
-                writable: true,
-                executable: false,
-                user_accessible: true,
-                cache_disabled: false,
-                write_through: false,
-                copy_on_write: false,
-                guard_page: false,
-            };
+            let protection = MemoryProtection::USER_DATA;
 
             match allocate_memory(
                 aligned_size as usize,
                 MemoryRegionType::UserHeap,
                 protection,
             ) {
-                Ok(_) => {
-                    // Update process heap size
-                    process.memory.heap_size += expansion_size;
-                    SyscallResult::Success(new_brk)
-                }
+                Ok(_) => match process_manager.with_process_mut(current_pid, |p| {
+                    p.memory.heap_size += expansion_size;
+                }) {
+                    Some(()) => SyscallResult::Success(new_brk),
+                    None => SyscallResult::Error(SyscallError::ProcessNotFound),
+                },
                 Err(_) => SyscallResult::Error(SyscallError::OutOfMemory),
             }
         } else if new_brk < current_heap_end {
-            // Shrink heap
             let shrink_size = current_heap_end - new_brk;
-            let aligned_size =
-                ((shrink_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
-
-            // Calculate the address to deallocate from
-            let dealloc_start = current_heap_end - aligned_size;
+            let dealloc_start =
+                ((new_brk + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
 
             match deallocate_memory(x86_64::VirtAddr::new(dealloc_start)) {
-                Ok(()) => {
-                    // Update process heap size
-                    process.memory.heap_size -= shrink_size;
-                    SyscallResult::Success(new_brk)
-                }
+                Ok(_) => match process_manager.with_process_mut(current_pid, |p| {
+                    p.memory.heap_size = p.memory.heap_size.saturating_sub(shrink_size);
+                }) {
+                    Some(()) => SyscallResult::Success(new_brk),
+                    None => SyscallResult::Error(SyscallError::ProcessNotFound),
+                },
                 Err(_) => SyscallResult::Error(SyscallError::InvalidArgument),
             }
         } else {
-            // No change
             SyscallResult::Success(current_heap_end)
         }
     }
@@ -1336,22 +1319,15 @@ impl SyscallDispatcher {
         let signal = args.get(0).copied().unwrap_or(0) as u32;
         let handler = args.get(1).copied().unwrap_or(0);
 
-        // Get process and set signal handler
-        if let Some(mut process) = process_manager.get_process(current_pid) {
-            // Validate signal number (1-31 are standard signals)
-            if signal == 0 || signal > 31 {
-                return SyscallResult::Error(SyscallError::InvalidArgument);
-            }
+        if signal == 0 || signal > 31 {
+            return SyscallResult::Error(SyscallError::InvalidArgument);
+        }
 
-            // Store signal handler in process control block
-            if !process.signal_handlers.contains_key(&signal) {
-                process.signal_handlers = BTreeMap::new();
-            }
+        match process_manager.with_process_mut(current_pid, |process| {
             process.signal_handlers.insert(signal, handler);
-
-            SyscallResult::Success(0)
-        } else {
-            SyscallResult::Error(SyscallError::ProcessNotFound)
+        }) {
+            Some(()) => SyscallResult::Success(0),
+            None => SyscallResult::Error(SyscallError::ProcessNotFound),
         }
     }
 
@@ -1365,83 +1341,99 @@ impl SyscallDispatcher {
         let target_pid = args.get(0).copied().unwrap_or(0) as Pid;
         let signal = args.get(1).copied().unwrap_or(0) as u32;
 
-        // Simple implementation: signal 9 (SIGKILL) terminates process
+        if signal == 0 {
+            return if process_manager.get_process(target_pid).is_some() {
+                SyscallResult::Success(0)
+            } else {
+                SyscallResult::Error(SyscallError::ProcessNotFound)
+            };
+        }
+
         if signal == 9 {
-            match process_manager.terminate_process(target_pid, -1) {
+            return match process_manager.terminate_process(target_pid, -1) {
                 Ok(()) => SyscallResult::Success(0),
                 Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
-            }
-        } else if signal == 15 {
-            // SIGTERM
-            // Request process termination
-            if let Some(mut target) = process_manager.get_process(target_pid) {
-                // Check if process has a signal handler for SIGTERM
-                if let Some(&_handler) = target.signal_handlers.get(&15) {
-                    // Queue signal for delivery
+            };
+        }
+
+        if signal == 15 {
+            let handled = process_manager.with_process_mut(target_pid, |target| {
+                if target.signal_handlers.get(&15).is_some() {
                     target.pending_signals.push(signal);
+                    true
+                } else {
+                    false
+                }
+            });
+            return match handled {
+                Some(true) => {
+                    if let Some(target) = process_manager.get_process(target_pid) {
+                        if matches!(target.state, ProcessState::Sleeping) {
+                            process_manager.unblock_process(target_pid).ok();
+                        }
+                    }
+                    SyscallResult::Success(0)
+                }
+                Some(false) => match process_manager.terminate_process(target_pid, 0) {
+                    Ok(()) => SyscallResult::Success(0),
+                    Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
+                },
+                None => SyscallResult::Error(SyscallError::ProcessNotFound),
+            };
+        }
+
+        if signal == 2 {
+            let handled = process_manager.with_process_mut(target_pid, |target| {
+                if target.signal_handlers.get(&2).is_some() {
+                    target.pending_signals.push(signal);
+                    true
+                } else {
+                    false
+                }
+            });
+            return match handled {
+                Some(true) => {
+                    if let Some(target) = process_manager.get_process(target_pid) {
+                        if matches!(target.state, ProcessState::Sleeping) {
+                            process_manager.unblock_process(target_pid).ok();
+                        }
+                    }
+                    SyscallResult::Success(0)
+                }
+                Some(false) => match process_manager.terminate_process(target_pid, 130) {
+                    Ok(()) => SyscallResult::Success(0),
+                    Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
+                },
+                None => SyscallResult::Error(SyscallError::ProcessNotFound),
+            };
+        }
+
+        if signal == 19 {
+            return match process_manager.block_process(target_pid) {
+                Ok(()) => SyscallResult::Success(0),
+                Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
+            };
+        }
+
+        if signal == 18 {
+            return match process_manager.unblock_process(target_pid) {
+                Ok(()) => SyscallResult::Success(0),
+                Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
+            };
+        }
+
+        match process_manager.with_process_mut(target_pid, |target| {
+            target.pending_signals.push(signal);
+        }) {
+            Some(()) => {
+                if let Some(target) = process_manager.get_process(target_pid) {
                     if matches!(target.state, ProcessState::Sleeping) {
-                        // Wake up sleeping process to handle signal
                         process_manager.unblock_process(target_pid).ok();
                     }
-                    SyscallResult::Success(0)
-                } else {
-                    // Default action: terminate process
-                    match process_manager.terminate_process(target_pid, 0) {
-                        Ok(()) => SyscallResult::Success(0),
-                        Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
-                    }
                 }
-            } else {
-                SyscallResult::Error(SyscallError::ProcessNotFound)
+                SyscallResult::Success(0)
             }
-        } else if signal == 2 {
-            // SIGINT
-            // Interrupt signal (Ctrl+C)
-            if let Some(mut target) = process_manager.get_process(target_pid) {
-                if let Some(&_handler) = target.signal_handlers.get(&2) {
-                    target.pending_signals.push(signal);
-                    if matches!(target.state, ProcessState::Sleeping) {
-                        process_manager.unblock_process(target_pid).ok();
-                    }
-                    SyscallResult::Success(0)
-                } else {
-                    // Default action: terminate
-                    match process_manager.terminate_process(target_pid, 130) {
-                        // 128 + signal number
-                        Ok(()) => SyscallResult::Success(0),
-                        Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
-                    }
-                }
-            } else {
-                SyscallResult::Error(SyscallError::ProcessNotFound)
-            }
-        } else if signal == 19 {
-            // SIGSTOP
-            // Stop process
-            match process_manager.block_process(target_pid) {
-                Ok(()) => SyscallResult::Success(0),
-                Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
-            }
-        } else if signal == 18 {
-            // SIGCONT
-            // Continue process
-            match process_manager.unblock_process(target_pid) {
-                Ok(()) => SyscallResult::Success(0),
-                Err(_) => SyscallResult::Error(SyscallError::ProcessNotFound),
-            }
-        } else {
-            // For other signals, just queue them if handler exists
-            if let Some(mut target) = process_manager.get_process(target_pid) {
-                if target.signal_handlers.contains_key(&signal) {
-                    target.pending_signals.push(signal);
-                    SyscallResult::Success(0)
-                } else {
-                    // No handler, ignore signal
-                    SyscallResult::Success(0)
-                }
-            } else {
-                SyscallResult::Error(SyscallError::ProcessNotFound)
-            }
+            None => SyscallResult::Error(SyscallError::ProcessNotFound),
         }
     }
 

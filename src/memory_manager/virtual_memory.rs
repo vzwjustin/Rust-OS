@@ -135,11 +135,8 @@ impl VirtualMemoryManager {
 
         // Check for overlaps if fixed mapping
         if flags.fixed {
-            // In fixed mode, unmap any existing mappings (Linux behavior)
-            // For simplicity, we'll just check and fail for now
-            if self.find_region_at(start_addr).is_some() {
-                return Err(VmError::AlreadyMapped);
-            }
+            // In fixed mode, unmap any existing mappings (Linux behavior).
+            let _ = self.munmap(start_addr.as_u64() as usize, aligned_length);
         }
 
         // Create memory region

@@ -28,11 +28,10 @@
 //! - Waiters are kept in a `BTreeMap<priority, task_id>` so the
 //!   highest-priority waiter is always at the end (max key).
 //!
-//! **Scheduler integration note**: `lock()` still spins on the fast/slow
-//! acquire loop rather than fully sleeping — see the `TODO` near
-//! `lock_with_task` — but priority boosting and waiter wakeup now call
-//! the real scheduler (`set_process_priority`, `unblock_process`)
-//! instead of being stubs.
+//! **Scheduler integration**: `lock()` yields the CPU via
+//! `scheduler::yield_cpu()` in the slow path, and priority boosting and
+//! waiter wakeup call the real scheduler (`set_process_priority`,
+//! `unblock_process`).
 
 #![allow(dead_code)]
 
@@ -250,7 +249,7 @@ impl<T> RtMutex<T> {
     /// If the calling task has a higher priority than the current owner,
     /// the owner's priority is boosted (priority inheritance).
     ///
-    /// **TODO**: replace spin-wait with `schedule()` / `wake_up_q()`.
+    /// The slow path yields the CPU via `scheduler::yield_cpu()`.
     pub fn lock(&self) -> RtMutexGuard<'_, T> {
         self.lock_with_task(Arc::new(Task::new(0, 0)))
     }
@@ -286,10 +285,10 @@ impl<T> RtMutex<T> {
             self.rt_mutex_adjust_prio(max_prio);
         }
 
-        // Spin until we acquire.
-        // TODO: call schedule() here instead of spinning; see module docs.
+        // Yield until we acquire — the priority-boosting above ensures
+        // the owner runs at our priority so it releases quickly.
         loop {
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
             if self
                 .owner
                 .compare_exchange(0, task_id, Ordering::Acquire, Ordering::Relaxed)

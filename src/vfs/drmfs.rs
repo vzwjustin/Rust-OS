@@ -195,26 +195,16 @@ impl DrmInode {
             | DRM_IOCTL_MODE_DIRTYFB
             | DRM_IOCTL_MODE_CREATE_DUMB
             | DRM_IOCTL_MODE_MAP_DUMB
-            | DRM_IOCTL_MODE_DESTROY_DUMB => {
-                // These ioctls require reading/writing structured data from
-                // the user pointer. The actual dispatch happens through the
-                // linux_compat ioctl handler which can access user memory.
-                // Here we just validate the DRM layer is available.
-                if drm_compat::get_drm_compat().is_some() {
-                    Ok(0)
-                } else {
-                    Err("DRM not initialized")
-                }
-            }
+            | DRM_IOCTL_MODE_DESTROY_DUMB => Err("DRM ioctl not supported"),
             DRM_IOCTL_SET_VERSION | DRM_IOCTL_MODESET_CTL => Ok(0),
             DRM_IOCTL_GET_UNIQUE => Ok(0),
             DRM_IOCTL_GET_CLIENT => Ok(0),
             DRM_IOCTL_GET_STATS => Ok(0),
             DRM_IOCTL_SET_MASTER => Ok(0),
             DRM_IOCTL_DROP_MASTER => Ok(0),
-            DRM_IOCTL_GEM_CLOSE => Ok(0),
-            DRM_IOCTL_GEM_FLINK => Ok(0),
-            DRM_IOCTL_GEM_OPEN => Ok(0),
+            DRM_IOCTL_GEM_CLOSE => Err("DRM ioctl not supported"),
+            DRM_IOCTL_GEM_FLINK => Err("DRM ioctl not supported"),
+            DRM_IOCTL_GEM_OPEN => Err("DRM ioctl not supported"),
             DRM_IOCTL_WAIT_VBLANK => {
                 if let Some(drm) = drm_compat::get_drm_compat() {
                     let crtc_id = 0u32;
@@ -224,41 +214,29 @@ impl DrmInode {
                     Err("DRM not initialized")
                 }
             }
-            DRM_IOCTL_MODE_GETPLANE | DRM_IOCTL_MODE_SETPLANE => {
-                if drm_compat::get_drm_compat().is_some() {
-                    Ok(0)
-                } else {
-                    Err("DRM not initialized")
-                }
-            }
+            DRM_IOCTL_MODE_GETPLANE | DRM_IOCTL_MODE_SETPLANE => Err("DRM ioctl not supported"),
             DRM_IOCTL_MODE_ADDFB2 | DRM_IOCTL_MODE_GETFB2 | DRM_IOCTL_MODE_CLOSEFB => {
-                if drm_compat::get_drm_compat().is_some() {
-                    Ok(0)
-                } else {
-                    Err("DRM not initialized")
-                }
+                Err("DRM ioctl not supported")
             }
-            DRM_IOCTL_MODE_CURSOR2 => Ok(0),
-            DRM_IOCTL_MODE_ATOMIC => {
-                if drm_compat::get_drm_compat().is_some() {
-                    Ok(0)
-                } else {
-                    Err("DRM not initialized")
-                }
-            }
+            DRM_IOCTL_MODE_CURSOR2 => Err("DRM ioctl not supported"),
+            DRM_IOCTL_MODE_ATOMIC => Err("DRM ioctl not supported"),
             DRM_IOCTL_MODE_OBJ_GETPROPERTIES | DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
-                if drm_compat::get_drm_compat().is_some() {
-                    Ok(0)
-                } else {
-                    Err("DRM not initialized")
-                }
+                Err("DRM ioctl not supported")
             }
-            DRM_IOCTL_MODE_CREATEPROPBLOB | DRM_IOCTL_MODE_DESTROYPROPBLOB => Ok(0),
-            DRM_IOCTL_SYNCOBJ_CREATE | DRM_IOCTL_SYNCOBJ_DESTROY => Ok(0),
-            DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD | DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE => Ok(0),
-            DRM_IOCTL_SYNCOBJ_TRANSFER => Ok(0),
-            DRM_IOCTL_SYNCOBJ_WAIT | DRM_IOCTL_SYNCOBJ_RESET | DRM_IOCTL_SYNCOBJ_SIGNAL => Ok(0),
-            DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT | DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL => Ok(0),
+            DRM_IOCTL_MODE_CREATEPROPBLOB | DRM_IOCTL_MODE_DESTROYPROPBLOB => {
+                Err("DRM ioctl not supported")
+            }
+            DRM_IOCTL_SYNCOBJ_CREATE | DRM_IOCTL_SYNCOBJ_DESTROY => Err("DRM ioctl not supported"),
+            DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD | DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE => {
+                Err("DRM ioctl not supported")
+            }
+            DRM_IOCTL_SYNCOBJ_TRANSFER => Err("DRM ioctl not supported"),
+            DRM_IOCTL_SYNCOBJ_WAIT | DRM_IOCTL_SYNCOBJ_RESET | DRM_IOCTL_SYNCOBJ_SIGNAL => {
+                Err("DRM ioctl not supported")
+            }
+            DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT | DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL => {
+                Err("DRM ioctl not supported")
+            }
             DRM_IOCTL_SET_CLIENT_NAME => Ok(0),
             _ => {
                 // Unknown DRM ioctl

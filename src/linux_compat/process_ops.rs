@@ -40,6 +40,30 @@ fn inc_ops() {
     PROCESS_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
+    if src.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(unsafe { value.assume_init() })
+}
+
 /// Get current process PCB or return error
 fn current_pcb() -> LinuxResult<process::ProcessControlBlock> {
     let pid = process::current_pid();
@@ -415,15 +439,33 @@ fn build_linux_initial_stack(
     let hwcap = {
         let features = crate::arch::cpu_features();
         let mut cap: u64 = 0;
-        if features.sse { cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE; }
-        if features.sse2 { cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE2; }
-        if features.mmx { cap |= crate::arch::x86::auxvec::HWCAP_X86_MMX; }
-        if features.fpu { cap |= crate::arch::x86::auxvec::HWCAP_X86_FPU; }
-        if features.tsc { cap |= crate::arch::x86::auxvec::HWCAP_X86_TSC; }
-        if features.cmov { cap |= crate::arch::x86::auxvec::HWCAP_X86_CMOV; }
-        if features.pat { cap |= crate::arch::x86::auxvec::HWCAP_X86_PAT; }
-        if features.clflush { cap |= crate::arch::x86::auxvec::HWCAP_X86_CLFLUSH; }
-        if features.fxsr { cap |= crate::arch::x86::auxvec::HWCAP_X86_FXSR; }
+        if features.sse {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE;
+        }
+        if features.sse2 {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_SSE2;
+        }
+        if features.mmx {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_MMX;
+        }
+        if features.fpu {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_FPU;
+        }
+        if features.tsc {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_TSC;
+        }
+        if features.cmov {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_CMOV;
+        }
+        if features.pat {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_PAT;
+        }
+        if features.clflush {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_CLFLUSH;
+        }
+        if features.fxsr {
+            cap |= crate::arch::x86::auxvec::HWCAP_X86_FXSR;
+        }
         cap
     };
 
@@ -661,11 +703,7 @@ fn load_executable_from_vfs(
 
     let elf_loader = ElfLoader::new(true, true);
     let loaded = elf_loader.load_elf_binary(&binary_data, pid).map_err(|e| {
-        crate::serial_println!(
-            "exec: ELF load of {} failed: {:?}",
-            resolved.load_path,
-            e
-        );
+        crate::serial_println!("exec: ELF load of {} failed: {:?}", resolved.load_path, e);
         elf_error_to_linux(e)
     })?;
 
@@ -946,13 +984,11 @@ pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> 
             .ok_or(LinuxError::ESRCH)?;
         let matches = wait_child_matches(pid, caller_pgid);
         if let Some(child) = process_mgr.find_zombie_child(parent_pid, &matches) {
-            unsafe {
-                *rusage = pcb_to_rusage(&child);
-            }
+            let child_rusage = pcb_to_rusage(&child);
+            copy_struct_to_user(rusage, &child_rusage)?;
         } else {
-            unsafe {
-                core::ptr::write_bytes(rusage, 0, 1);
-            }
+            let zero_rusage = unsafe { core::mem::MaybeUninit::<Rusage>::zeroed().assume_init() };
+            copy_struct_to_user(rusage, &zero_rusage)?;
         }
     }
 
@@ -1254,16 +1290,14 @@ pub fn getresuid(ruid: *mut Uid, euid: *mut Uid, suid: *mut Uid) -> LinuxResult<
 
     let pcb = current_pcb()?;
 
-    unsafe {
-        if !ruid.is_null() {
-            *ruid = pcb.uid;
-        }
-        if !euid.is_null() {
-            *euid = pcb.euid;
-        }
-        if !suid.is_null() {
-            *suid = pcb.suid;
-        }
+    if !ruid.is_null() {
+        copy_struct_to_user(ruid, &pcb.uid)?;
+    }
+    if !euid.is_null() {
+        copy_struct_to_user(euid, &pcb.euid)?;
+    }
+    if !suid.is_null() {
+        copy_struct_to_user(suid, &pcb.suid)?;
     }
 
     Ok(0)
@@ -1317,16 +1351,14 @@ pub fn getresgid(rgid: *mut Gid, egid: *mut Gid, sgid: *mut Gid) -> LinuxResult<
 
     let pcb = current_pcb()?;
 
-    unsafe {
-        if !rgid.is_null() {
-            *rgid = pcb.gid;
-        }
-        if !egid.is_null() {
-            *egid = pcb.egid;
-        }
-        if !sgid.is_null() {
-            *sgid = pcb.sgid;
-        }
+    if !rgid.is_null() {
+        copy_struct_to_user(rgid, &pcb.gid)?;
+    }
+    if !egid.is_null() {
+        copy_struct_to_user(egid, &pcb.egid)?;
+    }
+    if !sgid.is_null() {
+        copy_struct_to_user(sgid, &pcb.sgid)?;
     }
 
     Ok(0)
@@ -1394,11 +1426,13 @@ pub fn getgroups(size: i32, list: *mut u32) -> LinuxResult<i32> {
     }
 
     if !list.is_null() {
-        for (i, &gid) in groups.iter().enumerate() {
-            unsafe {
-                *list.add(i) = gid;
-            }
-        }
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                groups.as_ptr().cast::<u8>(),
+                groups.len() * core::mem::size_of::<u32>(),
+            )
+        };
+        UserSpaceMemory::copy_to_user(list as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     }
 
     Ok(groups.len() as i32)
@@ -1423,9 +1457,14 @@ pub fn setgroups(size: i32, list: *const u32) -> LinuxResult<i32> {
     let size = size as usize;
     let mut groups = alloc::vec::Vec::with_capacity(size);
     if !list.is_null() {
-        for i in 0..size {
-            groups.push(unsafe { *list.add(i) });
-        }
+        groups.resize(size, 0);
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                groups.as_mut_ptr().cast::<u8>(),
+                size * core::mem::size_of::<u32>(),
+            )
+        };
+        UserSpaceMemory::copy_from_user(list as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     }
 
     let pid = process::current_pid();
@@ -2053,23 +2092,20 @@ pub fn getrusage(who: i32, usage: *mut Rusage) -> LinuxResult<i32> {
     match who {
         RUSAGE_SELF => {
             let pcb = current_pcb()?;
-            unsafe {
-                *usage = pcb_to_rusage(&pcb);
-            }
+            let rusage = pcb_to_rusage(&pcb);
+            copy_struct_to_user(usage, &rusage)?;
             Ok(0)
         }
         RUSAGE_CHILDREN => {
             let pcb = current_pcb()?;
-            unsafe {
-                *usage = pcb_children_rusage(&pcb);
-            }
+            let rusage = pcb_children_rusage(&pcb);
+            copy_struct_to_user(usage, &rusage)?;
             Ok(0)
         }
         RUSAGE_THREAD => {
             let pcb = current_pcb()?;
-            unsafe {
-                *usage = pcb_to_rusage(&pcb);
-            }
+            let rusage = pcb_to_rusage(&pcb);
+            copy_struct_to_user(usage, &rusage)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -2091,6 +2127,9 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
     const PR_GET_DUMPABLE: i32 = 3;
     const PR_SET_PDEATHSIG: i32 = 1;
     const PR_GET_PDEATHSIG: i32 = 2;
+    const PR_SET_NO_NEW_PRIVS: i32 = 38;
+    const PR_GET_NO_NEW_PRIVS: i32 = 39;
+    const PR_GET_TID_ADDRESS: i32 = 40;
 
     match option {
         PR_SET_NAME => {
@@ -2169,6 +2208,42 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
             unsafe {
                 *sig_ptr = pcb.parent_death_signal as i32;
             }
+            Ok(0)
+        }
+        PR_SET_NO_NEW_PRIVS => {
+            if arg2 != 1 || _arg3 != 0 || _arg4 != 0 || _arg5 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let pid = process::current_pid();
+            let pm = process::get_process_manager();
+            pm.with_process_mut(pid, |pcb| {
+                pcb.no_new_privs = true;
+            })
+            .ok_or(LinuxError::ESRCH)?;
+            Ok(0)
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            if arg2 != 0 || _arg3 != 0 || _arg4 != 0 || _arg5 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let enabled = current_pcb()?.no_new_privs;
+            Ok(if enabled { 1 } else { 0 })
+        }
+        PR_GET_TID_ADDRESS => {
+            if _arg3 != 0 || _arg4 != 0 || _arg5 != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+
+            let tid_addr_ptr = arg2;
+            if tid_addr_ptr == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+
+            let tid_addr = crate::linux_compat::thread_ops::clear_child_tid_address();
+            UserSpaceMemory::copy_to_user(tid_addr_ptr, &tid_addr.to_ne_bytes())
+                .map_err(|_| LinuxError::EFAULT)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -2323,9 +2398,20 @@ pub fn execveat(
     pathname: *const u8,
     argv: *const *const u8,
     envp: *const *const u8,
-    _flags: i32,
+    flags: i32,
 ) -> LinuxResult<i32> {
     inc_ops();
+
+    const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    const AT_EMPTY_PATH: i32 = 0x1000;
+    const VALID_EXECVEAT_FLAGS: i32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
+
+    if flags & !VALID_EXECVEAT_FLAGS != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    if flags != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
 
     let path_str = c_str_to_string(pathname)?;
     if path_str.is_empty() {

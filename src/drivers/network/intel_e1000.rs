@@ -3,7 +3,9 @@
 //! Driver for Intel 82540/82541/82542/82543/82544/82545/82546/82547/82571/82572/82573/82574/82575/82576
 //! and other Intel Gigabit Ethernet controllers (E1000 and E1000E series).
 
-use super::{EnhancedNetworkStats, ExtendedNetworkCapabilities, LinkStatus, PowerState, WakeOnLanConfig};
+use super::{
+    EnhancedNetworkStats, ExtendedNetworkCapabilities, LinkStatus, PowerState, WakeOnLanConfig,
+};
 use crate::net::{MacAddress, NetworkError};
 use alloc::boxed::Box;
 use alloc::format;

@@ -13,7 +13,17 @@ use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process::{self, ProcessState};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserStackT {
+    sp: u64,
+    flags: i32,
+    _pad: i32,
+    size: u64,
+}
 
 lazy_static! {
     static ref SIGNAL_MASKS: Mutex<BTreeMap<u32, AtomicU64>> = Mutex::new(BTreeMap::new());
@@ -220,6 +230,30 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     SIGNAL_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
+    if src.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(unsafe { value.assume_init() })
 }
 
 /// Signal action constants
@@ -431,50 +465,50 @@ pub fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> LinuxResult<i32> {
     if !old_ss.is_null() {
         let stacks = SIGNAL_STACKS.lock();
         let stack = stacks.get(&pid).copied().unwrap_or_default();
-        unsafe {
-            let out = old_ss as *mut u64;
-            *out = stack.sp;
-            *(old_ss.add(8) as *mut i32) = if stack.flags & SS_DISABLE != 0 {
+        let out = UserStackT {
+            sp: stack.sp,
+            flags: if stack.flags & SS_DISABLE != 0 {
                 SS_DISABLE
             } else if stack.size > 0 {
                 0
             } else {
                 SS_DISABLE
-            };
-            *(old_ss.add(16) as *mut u64) = stack.size;
-        }
+            },
+            _pad: 0,
+            size: stack.size,
+        };
+        copy_struct_to_user(old_ss as *mut UserStackT, &out)?;
     }
 
     if !ss.is_null() {
-        unsafe {
-            let input_sp = *(ss as *const u64);
-            let input_flags = *(ss.add(8) as *const i32);
-            let input_size = *(ss.add(16) as *const u64);
+        let input = copy_struct_from_user(ss as *const UserStackT)?;
+        let input_sp = input.sp;
+        let input_flags = input.flags;
+        let input_size = input.size;
 
-            if input_flags & SS_DISABLE != 0 {
-                let mut stacks = SIGNAL_STACKS.lock();
-                stacks.insert(
-                    pid,
-                    SignalStack {
-                        sp: 0,
-                        flags: SS_DISABLE,
-                        size: 0,
-                    },
-                );
-            } else {
-                if input_sp == 0 || input_size < 2048 {
-                    return Err(LinuxError::ENOMEM);
-                }
-                let mut stacks = SIGNAL_STACKS.lock();
-                stacks.insert(
-                    pid,
-                    SignalStack {
-                        sp: input_sp,
-                        flags: input_flags & !SS_ONSTACK,
-                        size: input_size,
-                    },
-                );
+        if input_flags & SS_DISABLE != 0 {
+            let mut stacks = SIGNAL_STACKS.lock();
+            stacks.insert(
+                pid,
+                SignalStack {
+                    sp: 0,
+                    flags: SS_DISABLE,
+                    size: 0,
+                },
+            );
+        } else {
+            if input_sp == 0 || input_size < 2048 {
+                return Err(LinuxError::ENOMEM);
             }
+            let mut stacks = SIGNAL_STACKS.lock();
+            stacks.insert(
+                pid,
+                SignalStack {
+                    sp: input_sp,
+                    flags: input_flags & !SS_ONSTACK,
+                    size: input_size,
+                },
+            );
         }
     }
 

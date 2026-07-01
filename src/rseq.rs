@@ -19,6 +19,7 @@ const RSEQ_ALIGN: u64 = 32;
 const RSEQ_FLAG_UNREGISTER: u32 = 1 << 0;
 const RSEQ_FLAG_SLICE_EXT_DEFAULT_ON: u32 = 1 << 1;
 const VALID_FLAGS: u32 = RSEQ_FLAG_UNREGISTER | RSEQ_FLAG_SLICE_EXT_DEFAULT_ON;
+const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
 
 const CPU_ID_START_OFF: u64 = 0;
 const CPU_ID_OFF: u64 = 4;
@@ -64,8 +65,8 @@ fn validate(ptr: u64, len: u32, flags: u32) -> LinuxResult<()> {
 }
 
 fn publish(reg: RseqRegistration, flags: u32) -> LinuxResult<()> {
-    write_u32(reg.ptr + CPU_ID_START_OFF, 0)?;
-    write_u32(reg.ptr + CPU_ID_OFF, 0)?;
+    write_u32(reg.ptr + CPU_ID_START_OFF, RSEQ_CPU_ID_UNINITIALIZED)?;
+    write_u32(reg.ptr + CPU_ID_OFF, RSEQ_CPU_ID_UNINITIALIZED)?;
     write_u64(reg.ptr + RSEQ_CS_OFF, 0)?;
     write_u32(reg.ptr + FLAGS_OFF, flags & RSEQ_FLAG_SLICE_EXT_DEFAULT_ON)?;
     write_u32(reg.ptr + NODE_ID_OFF, 0)?;

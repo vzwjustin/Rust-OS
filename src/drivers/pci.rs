@@ -756,9 +756,8 @@ impl PciBus {
                 }
                 self.write_config_dword(address, offset, raw_low)?;
 
-                resources[i] = Self::decode_bar_resource(
-                    i as u8, raw_low, raw_high, mask_low, mask_high,
-                );
+                resources[i] =
+                    Self::decode_bar_resource(i as u8, raw_low, raw_high, mask_low, mask_high);
                 i += if is_mem64 { 2 } else { 1 };
             }
             Ok(resources)
@@ -798,7 +797,11 @@ impl PciBus {
             let id = self.read_config_byte(address, ptr)?;
             let next = self.read_config_byte(address, ptr.wrapping_add(1))? & !0x03;
             if id != 0 && id != 0xFF {
-                capabilities.push(PciCapability { id, offset: ptr, next });
+                capabilities.push(PciCapability {
+                    id,
+                    offset: ptr,
+                    next,
+                });
             }
             if next < 0x40 || next == ptr {
                 break;
@@ -859,7 +862,11 @@ impl PciBus {
         Ok((msi, msix))
     }
 
-    fn read_bridge_info(&self, address: PciAddress, header_type: u8) -> PciResult<Option<PciBridgeInfo>> {
+    fn read_bridge_info(
+        &self,
+        address: PciAddress,
+        header_type: u8,
+    ) -> PciResult<Option<PciBridgeInfo>> {
         if (header_type & 0x7F) != PCI_HEADER_TYPE_BRIDGE {
             return Ok(None);
         }
@@ -883,7 +890,10 @@ impl PciBus {
         let io_base = (io_base_upper << 16) | (((io_base_low & 0xF0) as u64) << 8);
         let io_limit = (io_limit_upper << 16) | (((io_limit_low & 0xF0) as u64) << 8) | 0x0FFF;
         let io_window = if io_base <= io_limit {
-            Some(PciBridgeWindow { base: io_base, limit: io_limit })
+            Some(PciBridgeWindow {
+                base: io_base,
+                limit: io_limit,
+            })
         } else {
             None
         };
@@ -893,7 +903,10 @@ impl PciBus {
         let mem_base = ((mem_base_reg & 0xFFF0) as u64) << 16;
         let mem_limit = (((mem_limit_reg & 0xFFF0) as u64) << 16) | 0x000F_FFFF;
         let memory_window = if mem_base <= mem_limit {
-            Some(PciBridgeWindow { base: mem_base, limit: mem_limit })
+            Some(PciBridgeWindow {
+                base: mem_base,
+                limit: mem_limit,
+            })
         } else {
             None
         };
@@ -912,11 +925,13 @@ impl PciBus {
             0
         };
         let pref_base = (pref_base_upper << 32) | (((pref_base_reg & 0xFFF0) as u64) << 16);
-        let pref_limit = (pref_limit_upper << 32)
-            | (((pref_limit_reg & 0xFFF0) as u64) << 16)
-            | 0x000F_FFFF;
+        let pref_limit =
+            (pref_limit_upper << 32) | (((pref_limit_reg & 0xFFF0) as u64) << 16) | 0x000F_FFFF;
         let prefetchable_memory_window = if pref_base <= pref_limit {
-            Some(PciBridgeWindow { base: pref_base, limit: pref_limit })
+            Some(PciBridgeWindow {
+                base: pref_base,
+                limit: pref_limit,
+            })
         } else {
             None
         };

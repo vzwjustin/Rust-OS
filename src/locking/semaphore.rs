@@ -10,9 +10,9 @@
 //! codes matching Linux errno values (-EINTR, -ETIME) so callers can
 //! be ported mechanically.
 //!
-//! **Scheduler integration note**: `down()` and friends spin-wait in
-//! the stub.  Replace the `spin_loop()` paths with proper
-//! `prepare_to_wait()` / `schedule()` / `finish_wait()` calls.
+//! **Scheduler integration**: `down()` and friends yield the CPU via
+//! `scheduler::yield_cpu()` when the count is zero, allowing other threads
+//! to run until the semaphore is released.
 
 #![allow(dead_code)]
 
@@ -75,39 +75,52 @@ impl Semaphore {
 
     /// Decrement the semaphore, blocking until a permit is available.
     ///
-    /// Mirrors `down()`.  **TODO**: replace spin-wait with
-    /// `schedule()` when the scheduler supports it.
+    /// Mirrors `down()`.  Yields the CPU to the scheduler in the
+    /// contended case rather than spin-waiting.
     pub fn down(&self) {
         // Fast path.
         if self
             .count
             .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                if c > 0 { Some(c - 1) } else { None }
+                if c > 0 {
+                    Some(c - 1)
+                } else {
+                    None
+                }
             })
             .is_ok()
         {
             return;
         }
 
-        // Slow path: queue and spin-wait.
+        // Slow path: queue and yield-wait.
+        let current_pid = crate::process::get_process_manager().current_process() as usize;
         {
             let mut wl = self.wait_list.lock();
-            wl.push_back(SemWaiter { task_id: 0, woken: false });
+            wl.push_back(SemWaiter {
+                task_id: current_pid,
+                woken: false,
+            });
         }
 
-        // TODO: call schedule() here instead of spinning.
         loop {
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
             if self
                 .count
                 .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                    if c > 0 { Some(c - 1) } else { None }
+                    if c > 0 {
+                        Some(c - 1)
+                    } else {
+                        None
+                    }
                 })
                 .is_ok()
             {
                 // Remove our wait entry.
                 let mut wl = self.wait_list.lock();
-                wl.pop_front();
+                if let Some(pos) = wl.iter().position(|w| w.task_id == current_pid) {
+                    wl.remove(pos);
+                }
                 return;
             }
         }
@@ -120,20 +133,30 @@ impl Semaphore {
     pub fn down_trylock(&self) -> bool {
         self.count
             .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                if c > 0 { Some(c - 1) } else { None }
+                if c > 0 {
+                    Some(c - 1)
+                } else {
+                    None
+                }
             })
             .is_ok()
     }
 
-    /// Decrement the semaphore, returning `-EINTR` if interrupted.
+    /// Decrement the semaphore, returning `-EINTR` if interrupted by a signal.
     ///
-    /// Mirrors `down_interruptible()`.
-    ///
-    /// **TODO**: hook into signal-pending check once signal delivery is
-    /// implemented.  Currently behaves identically to [`down`](Self::down)
-    /// and always returns `0`.
+    /// Mirrors `down_interruptible()`.  Checks the current process's
+    /// pending-signal queue before sleeping; if a signal is pending,
+    /// returns `-EINTR` without acquiring.
     pub fn down_interruptible(&self) -> i32 {
-        // TODO: check signal_pending(current) and return EINTR.
+        // Check for pending signals before sleeping.
+        let pm = crate::process::get_process_manager();
+        let pid = pm.current_process();
+        if let Some(pcb) = pm.get_process(pid) {
+            if !pcb.pending_signals.is_empty() {
+                return -4; // EINTR
+            }
+        }
+
         self.down();
         0
     }
@@ -141,29 +164,32 @@ impl Semaphore {
     /// Decrement the semaphore with a timeout given in jiffies.
     ///
     /// Returns `0` on success, [`ETIME`] if the timeout expires.
-    /// Mirrors `down_timeout()`.
-    ///
-    /// **TODO**: replace spin-count estimate with real timer infrastructure.
+    /// Mirrors `down_timeout()`.  Uses the kernel uptime timer for
+    /// timeout tracking and yields the CPU while waiting.
     pub fn down_timeout(&self, timeout_jiffies: u64) -> i32 {
-        // Rough spin budget: 1 jiffy ≈ 1_000_000 spin iterations (placeholder).
-        let mut budget = timeout_jiffies.saturating_mul(1_000_000);
+        let start = crate::time::uptime_ms();
+        let timeout_ms = timeout_jiffies * 10; // 1 jiffy ≈ 10ms (HZ=100)
 
         loop {
             if self
                 .count
                 .fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
-                    if c > 0 { Some(c - 1) } else { None }
+                    if c > 0 {
+                        Some(c - 1)
+                    } else {
+                        None
+                    }
                 })
                 .is_ok()
             {
                 return 0;
             }
 
-            if budget == 0 {
+            let elapsed = crate::time::uptime_ms() - start;
+            if elapsed >= timeout_ms {
                 return ETIME;
             }
-            budget -= 1;
-            core::hint::spin_loop();
+            crate::scheduler::yield_cpu();
         }
     }
 
@@ -175,15 +201,16 @@ impl Semaphore {
     ///
     /// Mirrors `up()`.  Safe to call from interrupt context.
     pub fn up(&self) {
-        // If there are waiters, wake the first one instead of incrementing.
+        // If there are waiters, wake the first one.
         let mut wl = self.wait_list.lock();
         if let Some(waiter) = wl.front_mut() {
             waiter.woken = true;
-            // TODO: wake_up_process(waiter.task) via scheduler.
-            // The spinning loop in down() will see count > 0 after we drop
-            // the wait_list lock, but we need the count increment so it
-            // can actually take the permit.
+            let task_id = waiter.task_id;
             self.count.fetch_add(1, Ordering::Release);
+            drop(wl);
+            // Unblock the waiter's process via the scheduler.
+            let pm = crate::process::get_process_manager();
+            let _ = pm.unblock_process(task_id as u32);
             return;
         }
         drop(wl);

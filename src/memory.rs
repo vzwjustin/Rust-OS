@@ -2116,59 +2116,73 @@ impl MemoryManager {
     }
 
     /// Map a virtual memory region to physical frames
+    ///
+    /// Runs with interrupts disabled: this holds `page_table_manager` and
+    /// `frame_allocator` across the mapping loop, and the timer ISR can run
+    /// softirqs/workqueues (e.g. deferred driver probing) that take the same
+    /// locks. Without this, a timer tick landing mid-loop self-deadlocks the
+    /// CPU on the held spinlock (observed as exec of a new process hanging
+    /// forever with no fault, e.g. during userspace PID 1 ELF loading).
     pub fn map_region(&self, region: &mut VirtualMemoryRegion) -> Result<(), MemoryError> {
-        let mut page_table_manager = self.page_table_manager.lock();
-        let mut frame_allocator = self.frame_allocator.lock();
+        crate::interrupts::without_interrupts(|| {
+            let mut page_table_manager = self.page_table_manager.lock();
+            let mut frame_allocator = self.frame_allocator.lock();
 
-        let flags = region.protection.to_page_table_flags();
-        let mut first_frame = None;
+            let flags = region.protection.to_page_table_flags();
+            let mut first_frame = None;
 
-        for page in region.pages() {
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or(MemoryError::OutOfMemory)?;
+            for page in region.pages() {
+                let frame = frame_allocator
+                    .allocate_frame()
+                    .ok_or(MemoryError::OutOfMemory)?;
 
-            if first_frame.is_none() {
-                first_frame = Some(frame.start_address());
-            }
-
-            // Initialize page content if needed
-            if matches!(
-                region.region_type,
-                MemoryRegionType::UserStack | MemoryRegionType::UserHeap
-            ) {
-                unsafe {
-                    let page_ptr = (self.physical_memory_offset + frame.start_address().as_u64())
-                        .as_mut_ptr::<u8>();
-                    core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
+                if first_frame.is_none() {
+                    first_frame = Some(frame.start_address());
                 }
+
+                // Initialize page content if needed
+                if matches!(
+                    region.region_type,
+                    MemoryRegionType::UserStack | MemoryRegionType::UserHeap
+                ) {
+                    unsafe {
+                        let page_ptr = (self.physical_memory_offset
+                            + frame.start_address().as_u64())
+                        .as_mut_ptr::<u8>();
+                        core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
+                    }
+                }
+
+                page_table_manager
+                    .map_page(page, frame, flags, &mut *frame_allocator)
+                    .map_err(|_| MemoryError::MappingFailed)?;
             }
 
-            page_table_manager
-                .map_page(page, frame, flags, &mut *frame_allocator)
-                .map_err(|_| MemoryError::MappingFailed)?;
-        }
-
-        region.mapped = true;
-        region.physical_start = first_frame;
-        Ok(())
+            region.mapped = true;
+            region.physical_start = first_frame;
+            Ok(())
+        })
     }
 
     /// Unmap a virtual memory region
+    ///
+    /// See [`Self::map_region`] for why this must run with interrupts disabled.
     pub fn unmap_region(&self, region: &mut VirtualMemoryRegion) -> Result<(), MemoryError> {
-        let mut page_table_manager = self.page_table_manager.lock();
-        let mut frame_allocator = self.frame_allocator.lock();
+        crate::interrupts::without_interrupts(|| {
+            let mut page_table_manager = self.page_table_manager.lock();
+            let mut frame_allocator = self.frame_allocator.lock();
 
-        for page in region.pages() {
-            if let Some(frame) = page_table_manager.unmap_page(page) {
-                let zone = MemoryZone::from_address(frame.start_address());
-                frame_allocator.deallocate_frame(frame, zone);
+            for page in region.pages() {
+                if let Some(frame) = page_table_manager.unmap_page(page) {
+                    let zone = MemoryZone::from_address(frame.start_address());
+                    frame_allocator.deallocate_frame(frame, zone);
+                }
             }
-        }
 
-        region.mapped = false;
-        region.physical_start = None;
-        Ok(())
+            region.mapped = false;
+            region.physical_start = None;
+            Ok(())
+        })
     }
 
     /// Add a virtual memory region to management

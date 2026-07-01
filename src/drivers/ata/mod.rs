@@ -242,6 +242,9 @@ pub fn software_ata_ops() -> AtaPortOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("ata: subsystem ready ({} hardware port(s))", ATA_PORTS.read().len());
+    crate::serial_println!(
+        "ata: subsystem ready ({} hardware port(s))",
+        ATA_PORTS.read().len()
+    );
     Ok(())
 }

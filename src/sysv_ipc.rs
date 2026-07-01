@@ -96,6 +96,8 @@ pub struct SemaphoreSet {
     pub perm: IpcPerm,
     pub ctime: u64,
     pub otime: u64,
+    /// PID of the last process to perform a semop on this set (GETPID).
+    pub last_pid: u32,
     /// PIDs waiting for semaphore values to change.
     /// Each entry records which sem_num and sem_op the waiter needs,
     /// plus an optional deadline in nanoseconds since boot (0 = no timeout).
@@ -196,6 +198,7 @@ pub fn semget(key: u32, nsems: i32, semflg: i32) -> i32 {
             },
             ctime: now,
             otime: 0,
+            last_pid: 0,
             waiters: Vec::new(),
         };
         SEM_SETS.write().insert(id, Mutex::new(set));
@@ -236,6 +239,7 @@ pub fn semget(key: u32, nsems: i32, semflg: i32) -> i32 {
         },
         ctime: now,
         otime: 0,
+        last_pid: 0,
         waiters: Vec::new(),
     };
     SEM_SETS.write().insert(id, Mutex::new(set));
@@ -425,6 +429,7 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
                 (set.sems[op.sem_num as usize] as i32 + op.sem_op as i32) as i16;
         }
         set.otime = crate::time::uptime_ns() / 1_000_000_000;
+        set.last_pid = crate::process::current_pid();
 
         // Wake any waiters that can now proceed
         wake_sem_waiters(&mut set);
@@ -483,11 +488,12 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
             }
             set.sems[semnum as usize] = arg as i16;
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
+            set.last_pid = crate::process::current_pid();
             wake_sem_waiters(&mut set);
             return 0;
         }
         GETPID => {
-            return 0; // No tracking
+            return set.last_pid as i32;
         }
         GETNCNT => {
             if semnum < 0 || semnum as usize >= set.sems.len() {
@@ -531,6 +537,7 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
                 set.sems[i] = unsafe { *arr.add(i) } as i16;
             }
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
+            set.last_pid = crate::process::current_pid();
             wake_sem_waiters(&mut set);
             return 0;
         }

@@ -462,7 +462,12 @@ impl SchedClass for RtSchedClass {
         if let Some(info) = rq.rt.task_info.get_mut(&pid) {
             info.on_rq = true;
         }
-        let prio = rq.rt.task_info.get(&pid).map(|i| i.prio as usize).unwrap_or(0);
+        let prio = rq
+            .rt
+            .task_info
+            .get(&pid)
+            .map(|i| i.prio as usize)
+            .unwrap_or(0);
         rq.rt.active.enqueue_head(pid, prio);
         rq.rt.nr_running += 1;
         rq.rt.update_highest_prio();

@@ -1,59 +1,48 @@
-//! Device-managed resources (devres).
+//! Device-managed resource helpers.
 //!
-//! Resources registered here are automatically released when the device is
-//! removed, mirroring Linux's `devm_*` family of helpers.
-//!
-//! Pure-Rust, no_std. No bindings:: calls.
-
-#![allow(dead_code, unused_variables)]
-
-extern crate alloc;
+//! This mirrors the useful lifecycle semantics from Linux `drivers/base/devres.c`:
+//! resources are associated with a device, explicit remove/destroy/release
+//! operations search the device list in reverse registration order, and device
+//! teardown releases remaining resources in reverse order.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::drivers::base::device::Device;
 
-// ── Global devres table ──────────────────────────────────────────────────────
-
-/// Type-erased cleanup callback stored in the devres table.
 trait DevresCleanup: Send {
-    /// Called when the associated device is released.
     fn release(&mut self);
 }
 
 struct DevresEntry {
-    /// Raw pointer to the device (not Arc, to avoid cycles; we clear on release).
     device_ptr: *const Device,
+    key: usize,
     cleanup: Box<dyn DevresCleanup>,
 }
 
-// SAFETY: DevresEntry is only accessed behind a Mutex.
+// SAFETY: entries are only accessed under DEVRES_TABLE. The raw pointer is used
+// only as a stable identity for the owning Arc<Device>, never dereferenced.
 unsafe impl Send for DevresEntry {}
 unsafe impl Sync for DevresEntry {}
 
 static DEVRES_TABLE: Mutex<Vec<DevresEntry>> = Mutex::new(Vec::new());
+static NEXT_DEVRES_KEY: AtomicUsize = AtomicUsize::new(1);
 
-// ── Devres<T> ────────────────────────────────────────────────────────────────
-
-/// A device-managed resource of type `T`.
+/// A typed device-managed resource.
 ///
-/// When dropped (or when [`devres_release_all`] is called for the owning
-/// device), the registered `cleanup` function is called with the inner `data`.
-pub struct Devres<T: Send> {
+/// The value is released by `cleanup` when the wrapper is dropped unless it was
+/// transferred out with [`Devres::forget`].
+pub struct Devres<T: Send + 'static> {
     device: Arc<Device>,
     data: Option<T>,
     cleanup: fn(T),
 }
 
 impl<T: Send + 'static> Devres<T> {
-    /// Wrap `data` as a device-managed resource, registering `cleanup` to be
-    /// called when the device is released.
-    ///
-    /// Returns `Ok(Devres<T>)` on success, `Err(-12)` (ENOMEM) on allocation
-    /// failure (currently infallible but matches Linux's API contract).
+    /// Create a device-managed wrapper for `data`.
     pub fn new(device: &Arc<Device>, data: T, cleanup: fn(T)) -> Result<Self, i32> {
         Ok(Self {
             device: device.clone(),
@@ -62,20 +51,22 @@ impl<T: Send + 'static> Devres<T> {
         })
     }
 
-    /// Borrow the inner resource.
+    /// Owning device.
+    pub fn device(&self) -> &Arc<Device> {
+        &self.device
+    }
+
+    /// Borrow the resource.
     pub fn data(&self) -> &T {
-        // Unwrap: None only after `forget()` which consumes self.
         self.data.as_ref().unwrap()
     }
 
-    /// Mutably borrow the inner resource.
+    /// Mutably borrow the resource.
     pub fn data_mut(&mut self) -> &mut T {
         self.data.as_mut().unwrap()
     }
 
-    /// Detach from the device-managed lifecycle and return the inner value.
-    ///
-    /// The cleanup function will NOT be called.  The caller takes ownership.
+    /// Detach the resource from device-managed cleanup.
     pub fn forget(mut self) -> T {
         self.data.take().unwrap()
     }
@@ -89,60 +80,111 @@ impl<T: Send + 'static> Drop for Devres<T> {
     }
 }
 
-// ── Device-level release ─────────────────────────────────────────────────────
+struct OneshotCleanup<F: FnOnce() + Send>(Option<F>);
 
-/// Release all devres entries registered for `device`.
-///
-/// This mirrors Linux's `devres_release_all()` which is called from
-/// `device_release()` / `driver_detach()`.
-///
-/// Note: Because [`Devres<T>`] calls its own cleanup on drop, this function
-/// is primarily useful for the global table if callers choose to register
-/// entries there directly via [`devres_register_raw`].
-pub fn devres_release_all(device: &Arc<Device>) {
-    let device_ptr = Arc::as_ptr(device);
-    let mut table = DEVRES_TABLE.lock();
-    // Drain entries belonging to this device, running their cleanup.
-    let mut i = 0;
-    while i < table.len() {
-        if table[i].device_ptr == device_ptr {
-            let mut entry = table.remove(i);
-            entry.cleanup.release();
-        } else {
-            i += 1;
-        }
-    }
-}
-
-// ── Raw registration (for non-generic callers) ───────────────────────────────
-
-/// A type-erased cleanup closure registered in the global table.
-struct RawCleanup(Box<dyn FnOnce() + Send>);
-
-impl DevresCleanup for RawCleanup {
+impl<F: FnOnce() + Send> DevresCleanup for OneshotCleanup<F> {
     fn release(&mut self) {
-        // We store as Option to allow take in FnOnce.
-        // Workaround: wrap in another layer.
-        // For simplicity, store as a closure pointer.
+        if let Some(cleanup) = self.0.take() {
+            cleanup();
+        }
     }
 }
 
-/// Register a raw cleanup callback for `device`.
+fn next_key() -> usize {
+    NEXT_DEVRES_KEY.fetch_add(1, Ordering::Relaxed)
+}
+
+fn device_ptr(device: &Arc<Device>) -> *const Device {
+    Arc::as_ptr(device)
+}
+
+fn find_entry_index(table: &[DevresEntry], owner: *const Device, key: usize) -> Option<usize> {
+    table
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, entry)| entry.device_ptr == owner && entry.key == key)
+        .map(|(idx, _)| idx)
+}
+
+/// Register a raw cleanup action for `device`.
 ///
-/// `cleanup` will be called (at most once) from [`devres_release_all`].
-pub fn devres_register_raw<F: FnOnce() + Send + 'static>(device: &Arc<Device>, cleanup: F) {
-    struct OneshotCleanup<F: FnOnce() + Send>(Option<F>);
-    impl<F: FnOnce() + Send> DevresCleanup for OneshotCleanup<F> {
-        fn release(&mut self) {
-            if let Some(f) = self.0.take() {
-                f();
-            }
+/// The returned key can later be passed to [`devres_find`], [`devres_remove`],
+/// [`devres_destroy`], or [`devres_release`].
+pub fn devres_register_raw<F>(device: &Arc<Device>, cleanup: F) -> usize
+where
+    F: FnOnce() + Send + 'static,
+{
+    let key = next_key();
+    devres_register_keyed_raw(device, key, cleanup);
+    key
+}
+
+/// Register a raw cleanup action using a caller-provided key.
+pub fn devres_register_keyed_raw<F>(device: &Arc<Device>, key: usize, cleanup: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    DEVRES_TABLE.lock().push(DevresEntry {
+        device_ptr: device_ptr(device),
+        key,
+        cleanup: Box::new(OneshotCleanup(Some(cleanup))),
+    });
+}
+
+/// Return true if `device` has a managed resource with `key`.
+pub fn devres_find(device: &Arc<Device>, key: usize) -> bool {
+    let owner = device_ptr(device);
+    let table = DEVRES_TABLE.lock();
+    find_entry_index(&table, owner, key).is_some()
+}
+
+/// Remove one matching resource without running its cleanup.
+pub fn devres_remove(device: &Arc<Device>, key: usize) -> bool {
+    let owner = device_ptr(device);
+    let mut table = DEVRES_TABLE.lock();
+    if let Some(idx) = find_entry_index(&table, owner, key) {
+        table.remove(idx);
+        true
+    } else {
+        false
+    }
+}
+
+/// Linux-style alias for removing a managed resource without releasing it.
+pub fn devres_destroy(device: &Arc<Device>, key: usize) -> bool {
+    devres_remove(device, key)
+}
+
+/// Remove one matching resource and run its cleanup.
+pub fn devres_release(device: &Arc<Device>, key: usize) -> bool {
+    let owner = device_ptr(device);
+    let mut table = DEVRES_TABLE.lock();
+    if let Some(idx) = find_entry_index(&table, owner, key) {
+        let mut entry = table.remove(idx);
+        entry.cleanup.release();
+        true
+    } else {
+        false
+    }
+}
+
+/// Release all registered resources for `device` in reverse registration order.
+pub fn release_devres(device: &Arc<Device>) {
+    let owner = device_ptr(device);
+    let mut table = DEVRES_TABLE.lock();
+
+    let mut idx = table.len();
+    while idx > 0 {
+        idx -= 1;
+        if table[idx].device_ptr == owner {
+            let mut entry = table.remove(idx);
+            entry.cleanup.release();
         }
     }
+}
 
-    let entry = DevresEntry {
-        device_ptr: Arc::as_ptr(device),
-        cleanup: Box::new(OneshotCleanup(Some(cleanup))),
-    };
-    DEVRES_TABLE.lock().push(entry);
+/// Compatibility wrapper used by the driver core re-export.
+pub fn devres_release_all(device: &Arc<Device>) {
+    release_devres(device);
 }

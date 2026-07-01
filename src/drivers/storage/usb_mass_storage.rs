@@ -636,8 +636,12 @@ impl UsbMassStorageDriver {
                 0, // Group number
                 0, // Control
             ];
-            let csw =
-                self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
+            let csw = self.execute_scsi_command(
+                &command,
+                data_length,
+                false,
+                Some(staging.as_mut_slice()),
+            )?;
             if !csw.is_success() {
                 return Err(StorageError::MediaError);
             }
@@ -655,8 +659,12 @@ impl UsbMassStorageDriver {
                 (block_count & 0xFF) as u8,
                 0, // Control
             ];
-            let csw =
-                self.execute_scsi_command(&command, data_length, false, Some(staging.as_mut_slice()))?;
+            let csw = self.execute_scsi_command(
+                &command,
+                data_length,
+                false,
+                Some(staging.as_mut_slice()),
+            )?;
             if !csw.is_success() {
                 return Err(StorageError::MediaError);
             }

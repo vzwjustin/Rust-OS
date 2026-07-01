@@ -24,6 +24,6 @@ pub mod update;
 pub use srcu::{srcu_read_lock, srcu_read_unlock, synchronize_srcu, SrcuIdx, SrcuStruct};
 pub use update::{
     call_rcu, callbacks_completed, callbacks_pending, get_state_synchronize_rcu, init,
-    poll_state_synchronize_rcu, rcu_note_context_switch, rcu_quiescent_state,
-    rcu_read_lock, rcu_read_lock_nesting, rcu_read_unlock, synchronize_rcu, RcuCallback,
+    poll_state_synchronize_rcu, rcu_note_context_switch, rcu_quiescent_state, rcu_read_lock,
+    rcu_read_lock_nesting, rcu_read_unlock, synchronize_rcu, RcuCallback,
 };

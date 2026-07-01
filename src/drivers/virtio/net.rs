@@ -241,9 +241,7 @@ impl VirtioNet {
         } else {
             tx_size.min(QUEUE_SIZE)
         };
-        let tx_notify_off = {
-            transport.selected_queue_notify_off()
-        };
+        let tx_notify_off = { transport.selected_queue_notify_off() };
         let tx_queue = VirtQueue::new(tx_size, tx_notify_off)?;
         transport.setup_queue(&tx_queue);
 
@@ -305,7 +303,9 @@ impl VirtioNet {
             return Err("virtio-net: empty packet");
         }
         let hdr_len = core::mem::size_of::<VirtioNetHdr>();
-        if data.len() > self.capabilities.max_mtu as usize + 14 || data.len() + hdr_len > PACKET_BUF_SIZE {
+        if data.len() > self.capabilities.max_mtu as usize + 14
+            || data.len() + hdr_len > PACKET_BUF_SIZE
+        {
             return Err("virtio-net: packet too large");
         }
 
@@ -523,7 +523,11 @@ impl NetworkDevice for VirtioNetDevice {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let virtio_caps = with_virtio_net(|net| net.capabilities()).unwrap_or_default();
-        let max_mtu = if virtio_caps.max_mtu == 0 { 1500 } else { virtio_caps.max_mtu };
+        let max_mtu = if virtio_caps.max_mtu == 0 {
+            1500
+        } else {
+            virtio_caps.max_mtu
+        };
         DeviceCapabilities {
             max_mtu,
             min_mtu: 68,

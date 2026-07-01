@@ -153,12 +153,22 @@ pub trait SchedClass: Send + Sync {
     /// Add `pid` to this class's run queue.
     ///
     /// Linux: `enqueue_task()`
-    fn enqueue_task(&self, rq: &mut crate::scheduler::load_balance::RunQueue, pid: Pid, flags: EnqueueFlags);
+    fn enqueue_task(
+        &self,
+        rq: &mut crate::scheduler::load_balance::RunQueue,
+        pid: Pid,
+        flags: EnqueueFlags,
+    );
 
     /// Remove `pid` from this class's run queue.
     ///
     /// Linux: `dequeue_task()`
-    fn dequeue_task(&self, rq: &mut crate::scheduler::load_balance::RunQueue, pid: Pid, flags: DequeueFlags);
+    fn dequeue_task(
+        &self,
+        rq: &mut crate::scheduler::load_balance::RunQueue,
+        pid: Pid,
+        flags: DequeueFlags,
+    );
 
     /// Called when the current task voluntarily yields the CPU.
     ///

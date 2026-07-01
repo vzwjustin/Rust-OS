@@ -75,6 +75,7 @@ PACKAGES="
     dbus-libs
     dbus-dev
     gsettings-desktop-schemas
+    gsettings-desktop-schemas-dev
     libffi
     libffi-dev
     pcre2
@@ -155,13 +156,16 @@ PACKAGES="
     atk
     atk-dev
     at-spi2-core
+    at-spi2-core-libs
     at-spi2-core-dev
     colord
     colord-dev
     lcms2
+    lcms2-plugins
     lcms2-dev
     libei
     libei-dev
+    libeis
     libdisplay-info
     libdisplay-info-dev
     libdrm
@@ -180,6 +184,11 @@ PACKAGES="
 
 fetch_package() {
     pkg=$1
+    if [ -f "$BUILD_DIR/${pkg}.apk" ]; then
+        echo "  Using cached ${pkg}.apk..."
+        tar xzf "$BUILD_DIR/${pkg}.apk" -C "$SYSROOT" 2>/dev/null || true
+        return 0
+    fi
     for repo in main community; do
         URL="$ALPINE_MIRROR/$ALPINE_VERSION/$repo/$ALPINE_ARCH/"
         # List directory and find matching package
@@ -208,7 +217,13 @@ echo "  Sysroot populated"
 
 # Create stub GCC compatibility files (musl doesn't need them, but clang looks for them)
 echo "  Creating GCC compatibility stubs..."
-LLVM_BIN="/opt/homebrew/opt/llvm/bin"
+if [ -f "/usr/bin/llvm-ar" ]; then
+    LLVM_BIN="/usr/bin"
+elif [ -d "/opt/homebrew/opt/llvm/bin" ]; then
+    LLVM_BIN="/opt/homebrew/opt/llvm/bin"
+else
+    LLVM_BIN="/usr/bin"
+fi
 "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/usr/lib/libgcc.a" 2>/dev/null || true
 "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/usr/lib/libgcc_s.a" 2>/dev/null || true
 "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/usr/lib/libintl.a" 2>/dev/null || true
@@ -234,44 +249,13 @@ Libs: -L${libdir}
 Cflags: -I${includedir}
 GLYCIN_EOF
 
-cat > "$SYSROOT/usr/lib/pkgconfig/gsettings-desktop-schemas.pc" << 'GDS_EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
+# Clean up stale gsettings-desktop-schemas stub if it exists
+rm -f "$SYSROOT/usr/lib/pkgconfig/gsettings-desktop-schemas.pc"
 
-Name: gsettings-desktop-schemas
-Description: GSettings desktop schemas (stub for cross-compile)
-Version: 47.1
-Cflags: -I${includedir}
-GDS_EOF
 
-# libei-1.0 and libeis-1.0 stubs (Alpine 3.21 has 1.3.0, Mutter needs >= 1.3.901)
-cat > "$SYSROOT/usr/lib/pkgconfig/libeis-1.0.pc" << 'LIBEIS_EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
-
-Name: libeis-1.0
-Description: libeis (stub for cross-compile)
-Version: 1.3.901
-Libs: -L${libdir} -leis-1.0
-Cflags: -I${includedir}
-LIBEIS_EOF
-
-cat > "$SYSROOT/usr/lib/pkgconfig/libei-1.0.pc" << 'LIBEI_EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
-
-Name: libei-1.0
-Description: libei (stub for cross-compile)
-Version: 1.3.901
-Libs: -L${libdir} -lei-1.0
-Cflags: -I${includedir}
-LIBEI_EOF
+# Clean up stale libei and libeis stubs if they exist
+rm -f "$SYSROOT/usr/lib/pkgconfig/libei-1.0.pc"
+rm -f "$SYSROOT/usr/lib/pkgconfig/libeis-1.0.pc"
 
 # --- Phase 3: Set up cross-compilation ---
 
@@ -287,7 +271,6 @@ EOF
 chmod +x "$BUILD_DIR/cross-pkg-config"
 
 # Create meson cross file
-LLVM_BIN="/opt/homebrew/opt/llvm/bin"
 cat > "$BUILD_DIR/mutter-cross.txt" << EOF
 [binaries]
 c = 'clang'
@@ -348,7 +331,7 @@ meson setup build-rustos \
     }
 
 echo "=== Phase 5: Building Mutter ==="
-JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 ninja -C build-rustos -j"$JOBS" 2>&1 || {
     echo "ERROR: ninja build failed."
     exit 1

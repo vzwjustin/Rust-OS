@@ -277,7 +277,9 @@ impl<T: Copy> IoRegister<T> {
     /// and the mapping must outlive `Self`.
     #[inline]
     pub unsafe fn new(addr: usize) -> Self {
-        IoRegister { ptr: addr as *mut T }
+        IoRegister {
+            ptr: addr as *mut T,
+        }
     }
 
     /// Volatile read of the register value.
@@ -333,7 +335,10 @@ impl IoMem {
     pub unsafe fn new(phys: u64, size: usize) -> Result<Self, i32> {
         // In early-boot identity-mapped mode phys == virt.
         // A real kernel would call ioremap() here.
-        Ok(IoMem { base: phys as *mut u8, size })
+        Ok(IoMem {
+            base: phys as *mut u8,
+            size,
+        })
     }
 
     /// Raw base pointer.
@@ -359,7 +364,10 @@ impl IoMem {
     /// `offset` must be within the mapping.
     #[inline]
     pub unsafe fn read_u8(&self, offset: usize) -> u8 {
-        unsafe { self.check_offset(offset, 1); ioread8(self.base.add(offset)) }
+        unsafe {
+            self.check_offset(offset, 1);
+            ioread8(self.base.add(offset))
+        }
     }
 
     /// Read a 16-bit word at `offset`.
@@ -368,7 +376,10 @@ impl IoMem {
     /// `offset` must be within the mapping and aligned to 2 bytes.
     #[inline]
     pub unsafe fn read_u16(&self, offset: usize) -> u16 {
-        unsafe { self.check_offset(offset, 2); ioread16(self.base.add(offset) as *const u16) }
+        unsafe {
+            self.check_offset(offset, 2);
+            ioread16(self.base.add(offset) as *const u16)
+        }
     }
 
     /// Read a 32-bit word at `offset`.
@@ -377,7 +388,10 @@ impl IoMem {
     /// `offset` must be within the mapping and aligned to 4 bytes.
     #[inline]
     pub unsafe fn read_u32(&self, offset: usize) -> u32 {
-        unsafe { self.check_offset(offset, 4); ioread32(self.base.add(offset) as *const u32) }
+        unsafe {
+            self.check_offset(offset, 4);
+            ioread32(self.base.add(offset) as *const u32)
+        }
     }
 
     /// Read a 64-bit word at `offset`.
@@ -386,7 +400,10 @@ impl IoMem {
     /// `offset` must be within the mapping and aligned to 8 bytes.
     #[inline]
     pub unsafe fn read_u64(&self, offset: usize) -> u64 {
-        unsafe { self.check_offset(offset, 8); ioread64(self.base.add(offset) as *const u64) }
+        unsafe {
+            self.check_offset(offset, 8);
+            ioread64(self.base.add(offset) as *const u64)
+        }
     }
 
     /// Write a byte at `offset`.
@@ -395,7 +412,10 @@ impl IoMem {
     /// `offset` must be within the mapping.
     #[inline]
     pub unsafe fn write_u8(&self, offset: usize, val: u8) {
-        unsafe { self.check_offset(offset, 1); iowrite8(val, self.base.add(offset)) }
+        unsafe {
+            self.check_offset(offset, 1);
+            iowrite8(val, self.base.add(offset))
+        }
     }
 
     /// Write a 16-bit word at `offset`.
@@ -404,7 +424,10 @@ impl IoMem {
     /// `offset` must be within the mapping and aligned to 2 bytes.
     #[inline]
     pub unsafe fn write_u16(&self, offset: usize, val: u16) {
-        unsafe { self.check_offset(offset, 2); iowrite16(val, self.base.add(offset) as *mut u16) }
+        unsafe {
+            self.check_offset(offset, 2);
+            iowrite16(val, self.base.add(offset) as *mut u16)
+        }
     }
 
     /// Write a 32-bit word at `offset`.
@@ -413,7 +436,10 @@ impl IoMem {
     /// `offset` must be within the mapping and aligned to 4 bytes.
     #[inline]
     pub unsafe fn write_u32(&self, offset: usize, val: u32) {
-        unsafe { self.check_offset(offset, 4); iowrite32(val, self.base.add(offset) as *mut u32) }
+        unsafe {
+            self.check_offset(offset, 4);
+            iowrite32(val, self.base.add(offset) as *mut u32)
+        }
     }
 
     /// Write a 64-bit word at `offset`.
@@ -422,6 +448,9 @@ impl IoMem {
     /// `offset` must be within the mapping and aligned to 8 bytes.
     #[inline]
     pub unsafe fn write_u64(&self, offset: usize, val: u64) {
-        unsafe { self.check_offset(offset, 8); iowrite64(val, self.base.add(offset) as *mut u64) }
+        unsafe {
+            self.check_offset(offset, 8);
+            iowrite64(val, self.base.add(offset) as *mut u64)
+        }
     }
 }

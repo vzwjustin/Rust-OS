@@ -134,6 +134,47 @@ pub struct DynamicInfo {
     /// Fini function address (DT_FINI)
     pub fini: Option<VirtAddr>,
 
+    /// Init function array (DT_INIT_ARRAY)
+    pub init_array: Option<VirtAddr>,
+    /// Size of init array in bytes (DT_INIT_ARRAYSZ)
+    pub init_arraysz: Option<usize>,
+
+    /// Fini function array (DT_FINI_ARRAY)
+    pub fini_array: Option<VirtAddr>,
+    /// Size of fini array in bytes (DT_FINI_ARRAYSZ)
+    pub fini_arraysz: Option<usize>,
+
+    /// Pre-init function array (DT_PREINIT_ARRAY)
+    pub preinit_array: Option<VirtAddr>,
+    /// Size of pre-init array in bytes (DT_PREINIT_ARRAYSZ)
+    pub preinit_arraysz: Option<usize>,
+
+    /// GNU hash table address (DT_GNU_HASH)
+    pub gnu_hash: Option<VirtAddr>,
+
+    /// Symbol version table (DT_VERSYM)
+    pub versym: Option<VirtAddr>,
+    /// Version definition table (DT_VERDEF)
+    pub verdef: Option<VirtAddr>,
+    /// Number of version definitions (DT_VERDEFNUM)
+    pub verdefnum: Option<usize>,
+    /// Version needed table (DT_VERNEED)
+    pub verneed: Option<VirtAddr>,
+    /// Number of version needed entries (DT_VERNEEDNUM)
+    pub verneednum: Option<usize>,
+
+    /// Dynamic flags (DT_FLAGS)
+    pub flags: Option<u64>,
+    /// Additional flags (DT_FLAGS_1)
+    pub flags_1: Option<u64>,
+
+    /// REL relocation table (DT_REL)
+    pub rel: Option<VirtAddr>,
+    /// Size of REL relocations (DT_RELSZ)
+    pub relsz: Option<usize>,
+    /// Size of REL entry (DT_RELENT)
+    pub relent: Option<usize>,
+
     /// Library search path from DT_RPATH (deprecated)
     pub rpath: Option<String>,
 
@@ -202,6 +243,68 @@ pub mod symbol_type {
     pub const STT_FILE: u8 = 4; // File name
 }
 
+// ── Symbol versioning structures ───────────────────────────────────────
+
+/// Version definition entry (Elf64_Verdef)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Elf64Verdef {
+    pub vd_version: u16, // Version of structure (1)
+    pub vd_flags: u16,   // Flags (VER_FLG_BASE, VER_FLG_WEAK)
+    pub vd_ndx: u16,     // Version index in versym table
+    pub vd_cnt: u16,     // Number of aux entries
+    pub vd_hash: u32,    // Hash of version string
+    pub vd_aux: u32,     // Offset to first Verdaux
+    pub vd_next: u32,    // Offset to next Verdef
+}
+
+/// Version definition auxiliary entry (Elf64_Verdaux)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Elf64Verdaux {
+    pub vda_name: u32, // String table offset of version name
+    pub vda_next: u32, // Offset to next Verdaux
+}
+
+/// Version needed entry (Elf64_Verneed)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Elf64Verneed {
+    pub vn_version: u16, // Version of structure (1)
+    pub vn_cnt: u16,     // Number of aux entries
+    pub vn_file: u32,    // String table offset of filename
+    pub vn_aux: u32,     // Offset to first Vernaux
+    pub vn_next: u32,    // Offset to next Verneed
+}
+
+/// Version needed auxiliary entry (Elf64_Vernaux)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Elf64Vernaux {
+    pub vna_hash: u32,  // Hash of version string
+    pub vna_flags: u16, // Flags
+    pub vna_other: u16, // Version index in versym table
+    pub vna_name: u32,  // String table offset of version name
+    pub vna_next: u32,  // Offset to next Vernaux
+}
+
+/// Version definition flags
+pub mod ver_flags {
+    pub const VER_FLG_BASE: u16 = 0x1;
+    pub const VER_FLG_WEAK: u16 = 0x2;
+    pub const VER_FLG_INFO: u16 = 0x4;
+}
+
+/// Special version indices
+pub mod ver_ndx {
+    pub const VER_NDX_LOCAL: u16 = 0;
+    pub const VER_NDX_GLOBAL: u16 = 1;
+}
+
+/// Mask for the version index in a versym entry (high bit is "hidden" flag)
+pub const VERSYM_HIDDEN_MASK: u16 = 0x8000;
+pub const VERSYM_VERSION_MASK: u16 = 0x7FFF;
+
 /// Dynamic section entry (Elf64_Dyn)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -216,7 +319,7 @@ pub mod dynamic_tags {
     pub const DT_NEEDED: i64 = 1; // Name of needed library
     pub const DT_PLTRELSZ: i64 = 2; // Size of PLT relocs
     pub const DT_PLTGOT: i64 = 3; // PLT/GOT address
-    pub const DT_HASH: i64 = 4; // Symbol hash table address
+    pub const DT_HASH: i64 = 4; // Symbol hash table address (SysV)
     pub const DT_STRTAB: i64 = 5; // String table address
     pub const DT_SYMTAB: i64 = 6; // Symbol table address
     pub const DT_RELA: i64 = 7; // Relocation table address
@@ -237,7 +340,39 @@ pub mod dynamic_tags {
     pub const DT_TEXTREL: i64 = 22; // Reloc might modify text segment
     pub const DT_JMPREL: i64 = 23; // PLT relocation entries
     pub const DT_BIND_NOW: i64 = 24; // Process all relocs before executing
+    pub const DT_INIT_ARRAY: i64 = 25; // Init function array
+    pub const DT_FINI_ARRAY: i64 = 26; // Fini function array
+    pub const DT_INIT_ARRAYSZ: i64 = 27; // Size of init array
+    pub const DT_FINI_ARRAYSZ: i64 = 28; // Size of fini array
     pub const DT_RUNPATH: i64 = 29; // Library search path
+    pub const DT_FLAGS: i64 = 30; // Dynamic flags
+    pub const DT_PREINIT_ARRAY: i64 = 32; // Pre-init function array
+    pub const DT_PREINIT_ARRAYSZ: i64 = 33; // Size of pre-init array
+    pub const DT_GNU_HASH: i64 = 0x6FFFFEF5; // GNU hash table address
+    pub const DT_VERSYM: i64 = 0x6FFFFFF0; // Symbol version table
+    pub const DT_VERDEF: i64 = 0x6FFFFFFC; // Version definition table
+    pub const DT_VERDEFNUM: i64 = 0x6FFFFFFD; // Number of version definitions
+    pub const DT_VERNEED: i64 = 0x6FFFFFFE; // Version needed table
+    pub const DT_VERNEEDNUM: i64 = 0x6FFFFFFF; // Number of version needed entries
+    pub const DT_FLAGS_1: i64 = 0x6FFFFFFB; // Additional flags
+}
+
+/// DT_FLAGS values
+pub mod dt_flags {
+    pub const DF_ORIGIN: u64 = 0x1;
+    pub const DF_SYMBOLIC: u64 = 0x2;
+    pub const DF_TEXTREL: u64 = 0x4;
+    pub const DF_BIND_NOW: u64 = 0x8;
+    pub const DF_STATIC_TLS: u64 = 0x10;
+}
+
+/// DT_FLAGS_1 values
+pub mod dt_flags_1 {
+    pub const DF_1_NOW: u64 = 0x1;
+    pub const DF_1_GLOBAL: u64 = 0x2;
+    pub const DF_1_NODELETE: u64 = 0x8;
+    pub const DF_1_NOOPEN: u64 = 0x40;
+    pub const DF_1_ORIGIN: u64 = 0x80;
 }
 
 /// Relocation types for x86_64
@@ -479,8 +614,59 @@ impl DynamicLinker {
             dynamic_tags::DT_RUNPATH => {
                 info.runpath = Some(format!("offset:{}", entry.d_val));
             }
+            dynamic_tags::DT_INIT_ARRAY => {
+                info.init_array = Some(VirtAddr::new(base.as_u64() + entry.d_val));
+            }
+            dynamic_tags::DT_INIT_ARRAYSZ => {
+                info.init_arraysz = Some(entry.d_val as usize);
+            }
+            dynamic_tags::DT_FINI_ARRAY => {
+                info.fini_array = Some(VirtAddr::new(base.as_u64() + entry.d_val));
+            }
+            dynamic_tags::DT_FINI_ARRAYSZ => {
+                info.fini_arraysz = Some(entry.d_val as usize);
+            }
+            dynamic_tags::DT_PREINIT_ARRAY => {
+                info.preinit_array = Some(VirtAddr::new(base.as_u64() + entry.d_val));
+            }
+            dynamic_tags::DT_PREINIT_ARRAYSZ => {
+                info.preinit_arraysz = Some(entry.d_val as usize);
+            }
+            dynamic_tags::DT_GNU_HASH => {
+                info.gnu_hash = Some(VirtAddr::new(entry.d_val));
+            }
+            dynamic_tags::DT_VERSYM => {
+                info.versym = Some(VirtAddr::new(entry.d_val));
+            }
+            dynamic_tags::DT_VERDEF => {
+                info.verdef = Some(VirtAddr::new(entry.d_val));
+            }
+            dynamic_tags::DT_VERDEFNUM => {
+                info.verdefnum = Some(entry.d_val as usize);
+            }
+            dynamic_tags::DT_VERNEED => {
+                info.verneed = Some(VirtAddr::new(entry.d_val));
+            }
+            dynamic_tags::DT_VERNEEDNUM => {
+                info.verneednum = Some(entry.d_val as usize);
+            }
+            dynamic_tags::DT_FLAGS => {
+                info.flags = Some(entry.d_val);
+            }
+            dynamic_tags::DT_FLAGS_1 => {
+                info.flags_1 = Some(entry.d_val);
+            }
+            dynamic_tags::DT_REL => {
+                info.rel = Some(VirtAddr::new(entry.d_val));
+            }
+            dynamic_tags::DT_RELSZ => {
+                info.relsz = Some(entry.d_val as usize);
+            }
+            dynamic_tags::DT_RELENT => {
+                info.relent = Some(entry.d_val as usize);
+            }
             _ => {
-                // Ignore other tags for now
+                // Ignore unrecognized tags
             }
         }
     }
@@ -775,6 +961,86 @@ impl DynamicLinker {
                         )));
                     }
                 }
+                relocation_types::R_X86_64_PC32 => {
+                    // PC-relative 32-bit: S + A - P
+                    let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
+                    if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        let value = (symbol_addr.as_u64() as i64 + reloc.addend
+                            - target.as_u64() as i64) as u32;
+                        unsafe {
+                            self.write_relocation_value_32(target, value)?;
+                        }
+                    } else {
+                        return Err(DynamicLinkerError::SymbolNotFound(format!(
+                            "symbol index {}",
+                            reloc.symbol
+                        )));
+                    }
+                }
+                relocation_types::R_X86_64_PLT32 => {
+                    // PLT-relative 32-bit: L + A - P (treated as PC32 for eager binding)
+                    let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
+                    if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        let value = (symbol_addr.as_u64() as i64 + reloc.addend
+                            - target.as_u64() as i64) as u32;
+                        unsafe {
+                            self.write_relocation_value_32(target, value)?;
+                        }
+                    } else {
+                        return Err(DynamicLinkerError::SymbolNotFound(format!(
+                            "symbol index {}",
+                            reloc.symbol
+                        )));
+                    }
+                }
+                relocation_types::R_X86_64_GOTPCREL => {
+                    // GOT-relative 32-bit: G + GOT + A - P
+                    // With eager binding, GOT entries are already resolved, so
+                    // we can compute the PC-relative offset to the GOT slot.
+                    let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
+                    if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        let value = (symbol_addr.as_u64() as i64 + reloc.addend
+                            - target.as_u64() as i64) as u32;
+                        unsafe {
+                            self.write_relocation_value_32(target, value)?;
+                        }
+                    } else {
+                        return Err(DynamicLinkerError::SymbolNotFound(format!(
+                            "symbol index {}",
+                            reloc.symbol
+                        )));
+                    }
+                }
+                relocation_types::R_X86_64_32 => {
+                    // Direct 32-bit zero-extended: S + A
+                    let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
+                    if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        let value = (symbol_addr.as_u64() as i64 + reloc.addend) as u32;
+                        unsafe {
+                            self.write_relocation_value_32(target, value)?;
+                        }
+                    } else {
+                        return Err(DynamicLinkerError::SymbolNotFound(format!(
+                            "symbol index {}",
+                            reloc.symbol
+                        )));
+                    }
+                }
+                relocation_types::R_X86_64_32S => {
+                    // Direct 32-bit sign-extended: S + A
+                    let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
+                    if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        let value = (symbol_addr.as_u64() as i64 + reloc.addend) as u32;
+                        unsafe {
+                            self.write_relocation_value_32(target, value)?;
+                        }
+                    } else {
+                        return Err(DynamicLinkerError::SymbolNotFound(format!(
+                            "symbol index {}",
+                            reloc.symbol
+                        )));
+                    }
+                }
                 _ => {
                     // Unsupported relocation type
                     return Err(DynamicLinkerError::UnsupportedRelocation(reloc.r_type));
@@ -837,10 +1103,23 @@ impl DynamicLinker {
         // Step 2: Resolve library names from string table
         self.resolve_library_names(binary_data, &mut dynamic_info)?;
 
+        // Expand $ORIGIN/$LIB/$PLATFORM in RPATH/RUNPATH if the binary
+        // requests it (DF_ORIGIN / DF_1_ORIGIN).
+        let origin = if needs_origin_expansion(&dynamic_info) {
+            // Derive the origin directory from the binary's base address path.
+            // In a real ld.so this is the directory of the containing file.
+            // We use the first search path as a fallback.
+            String::new()
+        } else {
+            String::new()
+        };
+
         if let Some(runpath) = dynamic_info.runpath.clone() {
-            self.add_runpath_entries(&runpath);
+            let expanded = expand_rpath_tokens(&runpath, &origin);
+            self.add_runpath_entries(&expanded);
         } else if let Some(rpath) = dynamic_info.rpath.clone() {
-            self.add_runpath_entries(&rpath);
+            let expanded = expand_rpath_tokens(&rpath, &origin);
+            self.add_runpath_entries(&expanded);
         }
 
         // Step 3: Load required dependencies
@@ -857,7 +1136,108 @@ impl DynamicLinker {
         // Step 6: Apply relocations
         self.apply_relocations(&relocations, base_address)?;
 
+        // Step 7: Call init functions (preinit, init, init_array)
+        self.call_init_functions(&dynamic_info)?;
+
         Ok(reloc_count)
+    }
+
+    /// Call pre-init, init, and init_array functions for a loaded object.
+    ///
+    /// In a real Linux dynamic linker, these are called after all relocations
+    /// have been applied. The order is:
+    /// 1. DT_PREINIT_ARRAY (only for the main executable, not shared libs)
+    /// 2. DT_INIT (legacy single init function)
+    /// 3. DT_INIT_ARRAY (array of constructor functions)
+    ///
+    /// Each function is called with (argc, argv, envp) for the main executable,
+    /// or with no arguments for shared libraries. In our kernel context we
+    /// pass null pointers since we don't have a full user-space argv/envp set.
+    fn call_init_functions(&self, info: &DynamicInfo) -> DynamicLinkerResult<()> {
+        // DT_PREINIT_ARRAY — only meaningful for the main executable.
+        if let (Some(array_addr), Some(array_sz)) = (info.preinit_array, info.preinit_arraysz) {
+            let count = array_sz / core::mem::size_of::<u64>();
+            for i in 0..count {
+                let entry_addr =
+                    array_addr.as_u64() + ((i as u64) * core::mem::size_of::<u64>() as u64);
+                let func_ptr = unsafe { core::ptr::read_volatile(entry_addr as *const u64) };
+                if func_ptr != 0 {
+                    // SAFETY: the function pointer comes from the binary's
+                    // init array and points to a valid constructor function.
+                    unsafe {
+                        let init_fn: extern "C" fn(i32, *const u8, *const u8) =
+                            core::mem::transmute(func_ptr);
+                        init_fn(0, core::ptr::null(), core::ptr::null());
+                    }
+                }
+            }
+        }
+
+        // DT_INIT — legacy single init function.
+        if let Some(init_addr) = info.init {
+            let func_ptr = init_addr.as_u64();
+            if func_ptr != 0 {
+                unsafe {
+                    let init_fn: extern "C" fn() = core::mem::transmute(func_ptr);
+                    init_fn();
+                }
+            }
+        }
+
+        // DT_INIT_ARRAY — array of constructor functions.
+        if let (Some(array_addr), Some(array_sz)) = (info.init_array, info.init_arraysz) {
+            let count = array_sz / core::mem::size_of::<u64>();
+            for i in 0..count {
+                let entry_addr =
+                    array_addr.as_u64() + ((i as u64) * core::mem::size_of::<u64>() as u64);
+                let func_ptr = unsafe { core::ptr::read_volatile(entry_addr as *const u64) };
+                if func_ptr != 0 {
+                    // SAFETY: the function pointer comes from the binary's
+                    // init array and points to a valid constructor function.
+                    unsafe {
+                        let init_fn: extern "C" fn() = core::mem::transmute(func_ptr);
+                        init_fn();
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Call fini and fini_array functions for a loaded object.
+    ///
+    /// Called when a library is unloaded or the process exits.
+    /// The order is the reverse of init:
+    /// 1. DT_FINI_ARRAY (in reverse order)
+    /// 2. DT_FINI (legacy single fini function)
+    pub fn call_fini_functions(&self, info: &DynamicInfo) {
+        // DT_FINI_ARRAY — in reverse order.
+        if let (Some(array_addr), Some(array_sz)) = (info.fini_array, info.fini_arraysz) {
+            let count = array_sz / core::mem::size_of::<u64>();
+            for i in (0..count).rev() {
+                let entry_addr =
+                    array_addr.as_u64() + ((i as u64) * core::mem::size_of::<u64>() as u64);
+                let func_ptr = unsafe { core::ptr::read_volatile(entry_addr as *const u64) };
+                if func_ptr != 0 {
+                    unsafe {
+                        let fini_fn: extern "C" fn() = core::mem::transmute(func_ptr);
+                        fini_fn();
+                    }
+                }
+            }
+        }
+
+        // DT_FINI — legacy single fini function.
+        if let Some(fini_addr) = info.fini {
+            let func_ptr = fini_addr.as_u64();
+            if func_ptr != 0 {
+                unsafe {
+                    let fini_fn: extern "C" fn() = core::mem::transmute(func_ptr);
+                    fini_fn();
+                }
+            }
+        }
     }
 
     /// Get linking statistics
@@ -1025,13 +1405,17 @@ impl DynamicLinker {
         let strtab = &binary_data[strtab_offset..strtab_offset + strtab_size];
 
         // Calculate number of symbols
-        // Symbol table ends where string table begins (common layout)
-        let sym_count = if strtab_offset > symtab_offset {
-            (strtab_offset - symtab_offset) / core::mem::size_of::<Elf64Symbol>()
-        } else {
-            // Fallback: parse until we run out of data or hit invalid entries
-            100 // Conservative estimate
-        };
+        // Prefer GNU hash table count if available, then SysV hash table,
+        // then fall back to the symtab-to-strtab layout heuristic.
+        let sym_count =
+            if let Some(gnu_count) = self.gnu_hash_symbol_count(binary_data, dynamic_info) {
+                gnu_count
+            } else if strtab_offset > symtab_offset {
+                (strtab_offset - symtab_offset) / core::mem::size_of::<Elf64Symbol>()
+            } else {
+                // Fallback: parse until we run out of data or hit invalid entries
+                100 // Conservative estimate
+            };
 
         let mut symbols = Vec::new();
 
@@ -1194,6 +1578,349 @@ impl DynamicLinker {
         }
     }
 
+    /// Compute the DJB2 (GNU ELF) hash of a symbol name.
+    ///
+    /// This is the hash function used by GNU hash tables (DT_GNU_HASH).
+    /// Algorithm: h = (h * 33) + c, starting with 5381.
+    fn gnu_elf_hash(name: &str) -> u32 {
+        let mut h: u32 = 5381;
+        for &b in name.as_bytes() {
+            h = h.wrapping_mul(33).wrapping_add(b as u32);
+        }
+        h
+    }
+
+    /// Look up a symbol by name using the GNU hash table (DT_GNU_HASH).
+    ///
+    /// Returns the symbol index in the symbol table if found.
+    /// The GNU hash table layout is:
+    ///   header: nbuckets(u32), symoffset(u32), bloom_size(u32), bloom_shift(u32)
+    ///   bloom:  bloom_size × u64 words
+    ///   buckets: nbuckets × u32
+    ///   chain:   starts at symoffset, one entry per symbol from symoffset onward
+    ///
+    /// Each chain entry has the low bit clear if it's the last entry in the bucket.
+    fn gnu_hash_lookup(&self, binary_data: &[u8], info: &DynamicInfo, name: &str) -> Option<u32> {
+        let gnu_hash_addr = info.gnu_hash?;
+        let strtab_addr = info.strtab?;
+        let symtab_addr = info.symtab?;
+
+        let hash_offset = gnu_hash_addr.as_u64() as usize;
+        if hash_offset + 16 > binary_data.len() {
+            return None;
+        }
+
+        let nbuckets = u32::from_le_bytes([
+            binary_data[hash_offset],
+            binary_data[hash_offset + 1],
+            binary_data[hash_offset + 2],
+            binary_data[hash_offset + 3],
+        ]);
+        let symoffset = u32::from_le_bytes([
+            binary_data[hash_offset + 4],
+            binary_data[hash_offset + 5],
+            binary_data[hash_offset + 6],
+            binary_data[hash_offset + 7],
+        ]);
+        let bloom_size = u32::from_le_bytes([
+            binary_data[hash_offset + 8],
+            binary_data[hash_offset + 9],
+            binary_data[hash_offset + 10],
+            binary_data[hash_offset + 11],
+        ]);
+        let bloom_shift = u32::from_le_bytes([
+            binary_data[hash_offset + 12],
+            binary_data[hash_offset + 13],
+            binary_data[hash_offset + 14],
+            binary_data[hash_offset + 15],
+        ]);
+
+        let bloom_offset = hash_offset + 16;
+        let buckets_offset = bloom_offset + (bloom_size as usize) * 8;
+        let chain_offset = buckets_offset + (nbuckets as usize) * 4;
+
+        if buckets_offset + (nbuckets as usize) * 4 > binary_data.len() {
+            return None;
+        }
+
+        let hash = Self::gnu_elf_hash(name);
+
+        // Bloom filter check
+        let bloom_idx = ((hash / 64) % bloom_size) as usize;
+        let bloom_word = u64::from_le_bytes([
+            binary_data[bloom_offset + bloom_idx * 8],
+            binary_data[bloom_offset + bloom_idx * 8 + 1],
+            binary_data[bloom_offset + bloom_idx * 8 + 2],
+            binary_data[bloom_offset + bloom_idx * 8 + 3],
+            binary_data[bloom_offset + bloom_idx * 8 + 4],
+            binary_data[bloom_offset + bloom_idx * 8 + 5],
+            binary_data[bloom_offset + bloom_idx * 8 + 6],
+            binary_data[bloom_offset + bloom_idx * 8 + 7],
+        ]);
+        let bloom_bit1 = 1u64 << (hash % 64);
+        let bloom_bit2 = 1u64 << ((hash >> bloom_shift) % 64);
+        if (bloom_word & (bloom_bit1 | bloom_bit2)) != (bloom_bit1 | bloom_bit2) {
+            return None;
+        }
+
+        // Bucket lookup
+        let bucket_idx = (hash % nbuckets) as usize;
+        let bucket_val = u32::from_le_bytes([
+            binary_data[buckets_offset + bucket_idx * 4],
+            binary_data[buckets_offset + bucket_idx * 4 + 1],
+            binary_data[buckets_offset + bucket_idx * 4 + 2],
+            binary_data[buckets_offset + bucket_idx * 4 + 3],
+        ]);
+
+        if bucket_val == 0 {
+            return None; // Empty bucket
+        }
+
+        // Walk the chain
+        let strtab_offset = strtab_addr.as_u64() as usize;
+        let symtab_offset = symtab_addr.as_u64() as usize;
+
+        let mut sym_idx = bucket_val;
+        loop {
+            let chain_entry_offset = chain_offset + (sym_idx - symoffset) as usize * 4;
+            if chain_entry_offset + 4 > binary_data.len() {
+                break;
+            }
+            let chain_hash = u32::from_le_bytes([
+                binary_data[chain_entry_offset],
+                binary_data[chain_entry_offset + 1],
+                binary_data[chain_entry_offset + 2],
+                binary_data[chain_entry_offset + 3],
+            ]);
+
+            // Check if hash matches (ignoring the low bit which is the "last in chain" flag)
+            if (chain_hash | 1) == (hash | 1) {
+                // Potential match — verify by comparing the actual symbol name
+                let sym_struct_offset =
+                    symtab_offset + sym_idx as usize * core::mem::size_of::<Elf64Symbol>();
+                if sym_struct_offset + core::mem::size_of::<Elf64Symbol>() <= binary_data.len() {
+                    let symbol = unsafe {
+                        core::ptr::read(
+                            binary_data[sym_struct_offset..].as_ptr() as *const Elf64Symbol
+                        )
+                    };
+                    let name_offset = strtab_offset + symbol.st_name as usize;
+                    if name_offset < binary_data.len() {
+                        let sym_name = Self::read_c_string_at(binary_data, name_offset);
+                        if sym_name == name {
+                            return Some(sym_idx);
+                        }
+                    }
+                }
+            }
+
+            // Check if this is the last entry in the chain
+            if chain_hash & 1 != 0 {
+                break;
+            }
+            sym_idx += 1;
+        }
+
+        None
+    }
+
+    /// Read a NUL-terminated C string from binary data at the given offset.
+    fn read_c_string_at(data: &[u8], offset: usize) -> &str {
+        let end = data[offset..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(data.len() - offset);
+        core::str::from_utf8(&data[offset..offset + end]).unwrap_or("")
+    }
+
+    /// Determine the number of symbols in the symbol table using the GNU hash table.
+    ///
+    /// The GNU hash table's chain section extends to the end of the symbol table.
+    /// We find the last non-empty bucket and walk its chain to find the last symbol index.
+    fn gnu_hash_symbol_count(&self, binary_data: &[u8], info: &DynamicInfo) -> Option<usize> {
+        let gnu_hash_addr = info.gnu_hash?;
+        let hash_offset = gnu_hash_addr.as_u64() as usize;
+        if hash_offset + 16 > binary_data.len() {
+            return None;
+        }
+
+        let nbuckets = u32::from_le_bytes([
+            binary_data[hash_offset],
+            binary_data[hash_offset + 1],
+            binary_data[hash_offset + 2],
+            binary_data[hash_offset + 3],
+        ]);
+        let symoffset = u32::from_le_bytes([
+            binary_data[hash_offset + 4],
+            binary_data[hash_offset + 5],
+            binary_data[hash_offset + 6],
+            binary_data[hash_offset + 7],
+        ]);
+        let bloom_size = u32::from_le_bytes([
+            binary_data[hash_offset + 8],
+            binary_data[hash_offset + 9],
+            binary_data[hash_offset + 10],
+            binary_data[hash_offset + 11],
+        ]);
+
+        let bloom_offset = hash_offset + 16;
+        let buckets_offset = bloom_offset + (bloom_size as usize) * 8;
+
+        if buckets_offset + (nbuckets as usize) * 4 > binary_data.len() {
+            return None;
+        }
+
+        // Find the maximum bucket value — the symbol count is at least that high
+        let mut max_bucket: u32 = 0;
+        for i in 0..nbuckets as usize {
+            let val = u32::from_le_bytes([
+                binary_data[buckets_offset + i * 4],
+                binary_data[buckets_offset + i * 4 + 1],
+                binary_data[buckets_offset + i * 4 + 2],
+                binary_data[buckets_offset + i * 4 + 3],
+            ]);
+            if val > max_bucket {
+                max_bucket = val;
+            }
+        }
+
+        if max_bucket == 0 {
+            return Some(symoffset as usize);
+        }
+
+        // Walk the chain from max_bucket to find the last symbol
+        let chain_offset = buckets_offset + (nbuckets as usize) * 4;
+        let mut sym_idx = max_bucket;
+        loop {
+            let chain_entry_offset = chain_offset + (sym_idx - symoffset) as usize * 4;
+            if chain_entry_offset + 4 > binary_data.len() {
+                break;
+            }
+            let chain_hash = u32::from_le_bytes([
+                binary_data[chain_entry_offset],
+                binary_data[chain_entry_offset + 1],
+                binary_data[chain_entry_offset + 2],
+                binary_data[chain_entry_offset + 3],
+            ]);
+            if chain_hash & 1 != 0 {
+                // Last in chain — sym_idx + 1 is the count
+                return Some(sym_idx as usize + 1);
+            }
+            sym_idx += 1;
+        }
+
+        Some(sym_idx as usize + 1)
+    }
+
+    /// Read the version string for a given symbol index from the version
+    /// definition table (DT_VERDEF).
+    ///
+    /// Returns the version string (e.g. "GLIBC_2.2.5") if versioning info
+    /// is present, or None if the binary has no version table.
+    fn get_version_name(
+        &self,
+        binary_data: &[u8],
+        info: &DynamicInfo,
+        sym_index: u32,
+    ) -> Option<String> {
+        let versym_addr = info.versym?;
+        let verdef_addr = info.verdef?;
+        let verdef_count = info.verdefnum?;
+        let strtab_addr = info.strtab?;
+        let strtab_size = info.strsz?;
+
+        let versym_offset = versym_addr.as_u64() as usize;
+        let verdef_offset = verdef_addr.as_u64() as usize;
+        let strtab_offset = strtab_addr.as_u64() as usize;
+
+        // Read the version index for this symbol
+        let versym_entry_offset = versym_offset + sym_index as usize * 2;
+        if versym_entry_offset + 2 > binary_data.len() {
+            return None;
+        }
+        let versym = u16::from_le_bytes([
+            binary_data[versym_entry_offset],
+            binary_data[versym_entry_offset + 1],
+        ]);
+        let version_idx = versym & VERSYM_VERSION_MASK;
+
+        if version_idx == ver_ndx::VER_NDX_LOCAL || version_idx == ver_ndx::VER_NDX_GLOBAL {
+            return None; // Unversioned or global — no specific version
+        }
+
+        // Walk the Verdef chain to find the entry with matching vd_ndx
+        let mut offset = verdef_offset;
+        for _ in 0..verdef_count {
+            if offset + core::mem::size_of::<Elf64Verdef>() > binary_data.len() {
+                break;
+            }
+            let verdef =
+                unsafe { core::ptr::read(binary_data[offset..].as_ptr() as *const Elf64Verdef) };
+            if verdef.vd_ndx == version_idx {
+                // Read the first Verdaux entry for the version name
+                let aux_offset = offset + verdef.vd_aux as usize;
+                if aux_offset + core::mem::size_of::<Elf64Verdaux>() > binary_data.len() {
+                    break;
+                }
+                let verdaux = unsafe {
+                    core::ptr::read(binary_data[aux_offset..].as_ptr() as *const Elf64Verdaux)
+                };
+                let name_offset = strtab_offset + verdaux.vda_name as usize;
+                if name_offset < binary_data.len() && name_offset + strtab_size <= binary_data.len()
+                {
+                    let name = Self::read_c_string_at(binary_data, name_offset);
+                    return Some(name.to_string());
+                }
+            }
+            if verdef.vd_next == 0 {
+                break;
+            }
+            offset += verdef.vd_next as usize;
+        }
+
+        None
+    }
+
+    /// Resolve a symbol by name and optional version using the GNU hash table.
+    ///
+    /// If `version` is provided, the symbol's version string (from DT_VERSYM/
+    /// DT_VERDEF) must match. If no version is provided, the default (highest)
+    /// version is accepted.
+    pub fn resolve_symbol_with_version(
+        &self,
+        binary_data: &[u8],
+        info: &DynamicInfo,
+        name: &str,
+        version: Option<&str>,
+    ) -> Option<(u32, VirtAddr)> {
+        // Try GNU hash lookup first
+        if let Some(sym_idx) = self.gnu_hash_lookup(binary_data, info, name) {
+            // Verify version if requested
+            if let Some(req_version) = version {
+                if let Some(sym_version) = self.get_version_name(binary_data, info, sym_idx) {
+                    if sym_version != req_version {
+                        return None; // Version mismatch
+                    }
+                } else {
+                    return None; // No version info but version was requested
+                }
+            }
+            // Get the symbol address
+            let symtab_offset = info.symtab?.as_u64() as usize;
+            let sym_struct_offset =
+                symtab_offset + sym_idx as usize * core::mem::size_of::<Elf64Symbol>();
+            if sym_struct_offset + core::mem::size_of::<Elf64Symbol>() <= binary_data.len() {
+                let symbol = unsafe {
+                    core::ptr::read(binary_data[sym_struct_offset..].as_ptr() as *const Elf64Symbol)
+                };
+                if symbol.is_defined() {
+                    return Some((sym_idx, VirtAddr::new(symbol.st_value)));
+                }
+            }
+        }
+        None
+    }
+
     /// Parse relocations from RELA section
     pub fn parse_relocations(
         &self,
@@ -1213,6 +1940,49 @@ impl DynamicLinker {
                 if let Some(reloc) = self.parse_single_relocation(binary_data, offset)? {
                     relocations.push(reloc);
                 }
+            }
+        }
+
+        // Parse REL relocations (DT_REL) — no addend field, addend is implicit
+        if let (Some(rel_addr), Some(rel_size)) = (dynamic_info.rel, dynamic_info.relsz) {
+            let rel_offset = rel_addr.as_u64() as usize;
+            let rel_entry_size = dynamic_info.relent.unwrap_or(16); // Elf64_Rel: r_offset(8) + r_info(8)
+            let rel_count = rel_size / rel_entry_size;
+
+            for i in 0..rel_count {
+                let offset = rel_offset + i * rel_entry_size;
+                if offset + 16 > binary_data.len() {
+                    break;
+                }
+                let r_offset = u64::from_le_bytes([
+                    binary_data[offset],
+                    binary_data[offset + 1],
+                    binary_data[offset + 2],
+                    binary_data[offset + 3],
+                    binary_data[offset + 4],
+                    binary_data[offset + 5],
+                    binary_data[offset + 6],
+                    binary_data[offset + 7],
+                ]);
+                let r_info = u64::from_le_bytes([
+                    binary_data[offset + 8],
+                    binary_data[offset + 9],
+                    binary_data[offset + 10],
+                    binary_data[offset + 11],
+                    binary_data[offset + 12],
+                    binary_data[offset + 13],
+                    binary_data[offset + 14],
+                    binary_data[offset + 15],
+                ]);
+                let r_type = (r_info & 0xFFFFFFFF) as u32;
+                let r_sym = (r_info >> 32) as u32;
+                // REL has no explicit addend — addend is stored at the relocation target
+                relocations.push(Relocation {
+                    offset: VirtAddr::new(r_offset),
+                    r_type,
+                    symbol: r_sym,
+                    addend: 0, // REL: addend must be read from target memory
+                });
             }
         }
 
@@ -1291,6 +2061,29 @@ impl DynamicLinker {
         .map_err(|_| DynamicLinkerError::InvalidAddress)?;
 
         let ptr = ptr_addr as *mut u64;
+        core::ptr::write_volatile(ptr, value);
+        Ok(())
+    }
+
+    /// Write a 32-bit relocation value to the target address.
+    ///
+    /// # Safety
+    /// This function writes to arbitrary memory addresses.
+    /// Caller must ensure the address is valid and writable.
+    unsafe fn write_relocation_value_32(
+        &self,
+        addr: VirtAddr,
+        value: u32,
+    ) -> DynamicLinkerResult<()> {
+        let ptr_addr = addr.as_u64();
+        crate::memory::user_space::UserSpaceMemory::validate_user_ptr(
+            ptr_addr,
+            core::mem::size_of::<u32>() as u64,
+            true,
+        )
+        .map_err(|_| DynamicLinkerError::InvalidAddress)?;
+
+        let ptr = ptr_addr as *mut u32;
         core::ptr::write_volatile(ptr, value);
         Ok(())
     }
@@ -1508,4 +2301,310 @@ pub fn link_binary_globally(
 pub fn get_dynamic_linker() -> Option<DynamicLinker> {
     let linker_guard = GLOBAL_DYNAMIC_LINKER.lock();
     (*linker_guard).clone()
+}
+
+// ── dlopen / dlsym / dlclose / dlerror API ─────────────────────────────
+
+/// Opaque handle returned by `dlopen`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DlHandle(pub u64);
+
+/// dlopen flags
+pub mod rtld {
+    pub const RTLD_LAZY: i32 = 0x1;
+    pub const RTLD_NOW: i32 = 0x2;
+    pub const RTLD_GLOBAL: i32 = 0x100;
+    pub const RTLD_LOCAL: i32 = 0x0;
+    pub const RTLD_NODELETE: i32 = 0x800;
+    pub const RTLD_NOLOAD: i32 = 0x4;
+}
+
+/// Global table of dlopen handles: handle → (library name, base address)
+static DL_HANDLES: spin::Mutex<alloc::collections::BTreeMap<u64, (String, VirtAddr)>> =
+    spin::Mutex::new(alloc::collections::BTreeMap::new());
+
+static NEXT_DL_HANDLE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// Thread-local error string for dlerror
+static DL_ERROR: spin::Mutex<Option<String>> = spin::Mutex::new(None);
+
+/// dlopen — load a shared library at runtime.
+///
+/// Loads the named shared object into the address space and returns an
+/// opaque handle. If the library is already loaded, returns the existing
+/// handle (with refcount semantics handled by the caller).
+///
+/// # Arguments
+/// * `filename` - Path to the shared library (e.g. "libc.so.6" or "/lib/libc.so.6")
+/// * `flags` - RTLD_LAZY, RTLD_NOW, RTLD_GLOBAL, RTLD_LOCAL, etc.
+///
+/// # Returns
+/// Handle on success, or 0 on failure (use `dlerror` for details).
+pub fn dlopen(filename: &str, flags: i32) -> u64 {
+    // Clear previous error
+    *DL_ERROR.lock() = None;
+
+    // RTLD_NOLOAD: don't load, just check if already loaded
+    if flags & rtld::RTLD_NOLOAD != 0 {
+        let handles = DL_HANDLES.lock();
+        for (_, (name, _)) in handles.iter() {
+            if name == filename {
+                // Return existing handle — find its key
+                for (key, (n, _)) in handles.iter() {
+                    if n == filename {
+                        return *key;
+                    }
+                }
+            }
+        }
+        if flags & rtld::RTLD_NOLOAD != 0 {
+            *DL_ERROR.lock() = Some(format!("Library {} not loaded", filename));
+            return 0;
+        }
+    }
+
+    // Try to load via the global dynamic linker
+    let mut linker = match get_dynamic_linker() {
+        Some(l) => l,
+        None => {
+            *DL_ERROR.lock() = Some(String::from("Dynamic linker not initialized"));
+            return 0;
+        }
+    };
+
+    // Load the library file
+    let lib_data = match linker.load_library_file(filename) {
+        Ok(data) => data,
+        Err(e) => {
+            *DL_ERROR.lock() = Some(format!("Failed to load {}: {:?}", filename, e));
+            return 0;
+        }
+    };
+
+    // Parse ELF headers and load segments via the ELF loader
+    let base_address = linker.next_base_address;
+    let loader = super::elf_loader::ElfLoader::new(false, true);
+    let (_load_base, _mapped_size, program_headers) =
+        match loader.load_shared_library(&lib_data, base_address) {
+            Ok(result) => result,
+            Err(e) => {
+                *DL_ERROR.lock() = Some(format!(
+                    "Failed to load ELF segments in {}: {:?}",
+                    filename, e
+                ));
+                return 0;
+            }
+        };
+
+    let next_base = base_address.as_u64()
+        + ((lib_data.len() + PAGE_SIZE - 1) / PAGE_SIZE) as u64 * PAGE_SIZE as u64;
+
+    // Link the binary (parse dynamic section, load deps, apply relocations, call init)
+    match linker.link_binary(&lib_data, &program_headers, base_address) {
+        Ok(_) => {}
+        Err(e) => {
+            *DL_ERROR.lock() = Some(format!("Failed to link {}: {:?}", filename, e));
+            return 0;
+        }
+    }
+
+    // Store the handle
+    let handle = NEXT_DL_HANDLE.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    DL_HANDLES
+        .lock()
+        .insert(handle, (filename.to_string(), base_address));
+
+    // Update the global linker state (advance next_base_address)
+    linker.next_base_address = VirtAddr::new(next_base);
+    *GLOBAL_DYNAMIC_LINKER.lock() = Some(linker);
+
+    handle
+}
+
+/// dlsym — look up a symbol in a loaded shared library.
+///
+/// # Arguments
+/// * `handle` - Handle from dlopen, or 0 for RTLD_DEFAULT (search all loaded libs)
+/// * `symbol` - Symbol name to look up
+///
+/// # Returns
+/// Symbol address on success, or 0 on failure (use `dlerror` for details).
+pub fn dlsym(handle: u64, symbol: &str) -> u64 {
+    *DL_ERROR.lock() = None;
+
+    if handle == 0 {
+        // RTLD_DEFAULT: search global symbol table
+        if let Some(linker) = get_dynamic_linker() {
+            if let Some(addr) = linker.resolve_symbol(symbol) {
+                return addr.as_u64();
+            }
+        }
+        *DL_ERROR.lock() = Some(format!("Symbol '{}' not found", symbol));
+        return 0;
+    }
+
+    // Look up in the specific library
+    let handles = DL_HANDLES.lock();
+    if let Some((_name, _base)) = handles.get(&handle) {
+        // Search global symbol table (all symbols from all loaded libs are there)
+        drop(handles);
+        if let Some(linker) = get_dynamic_linker() {
+            if let Some(addr) = linker.resolve_symbol(symbol) {
+                return addr.as_u64();
+            }
+        }
+        *DL_ERROR.lock() = Some(format!(
+            "Symbol '{}' not found in handle {}",
+            symbol, handle
+        ));
+        0
+    } else {
+        drop(handles);
+        *DL_ERROR.lock() = Some(format!("Invalid handle {}", handle));
+        0
+    }
+}
+
+/// dlclose — close a shared library handle.
+///
+/// Calls fini functions and removes the handle from the handle table.
+/// The library's memory is not actually unmapped (matching Linux behavior
+/// where dlclose may not immediately unload).
+///
+/// # Returns
+/// 0 on success, -1 on error.
+pub fn dlclose(handle: u64) -> i32 {
+    *DL_ERROR.lock() = None;
+
+    let mut handles = DL_HANDLES.lock();
+    if let Some((name, base)) = handles.remove(&handle) {
+        // Call fini functions if we can find the dynamic info
+        if let Some(mut linker) = get_dynamic_linker() {
+            if let Some(lib) = linker.loaded_libraries.get(&name) {
+                linker.call_fini_functions(&lib.dynamic_info);
+            }
+            *GLOBAL_DYNAMIC_LINKER.lock() = Some(linker);
+        }
+        let _ = base;
+        0
+    } else {
+        *DL_ERROR.lock() = Some(format!("Invalid handle {}", handle));
+        -1
+    }
+}
+
+/// dlerror — return the last error message from dlopen/dlsym/dlclose.
+///
+/// Returns the error string and clears the error state.
+/// Returns None if no error has occurred since the last call.
+pub fn dlerror() -> Option<String> {
+    let mut err = DL_ERROR.lock();
+    err.take()
+}
+
+/// dl_iterate_phdr — iterate over loaded shared objects.
+///
+/// Calls the callback for each loaded library with its load address,
+/// name, and segment information. The callback receives:
+/// * `info` - PhdrInfo with load address, name, and phdr count
+/// * `size` - Size of the info structure
+/// * `data` - User-provided data pointer
+///
+/// Returns the callback's return value from the last call, or 0 if
+/// no libraries are loaded.
+pub struct PhdrInfo {
+    pub dlpi_addr: u64,
+    pub dlpi_name: String,
+    pub dlpi_phdr: *const u8,
+    pub dlpi_phnum: u16,
+}
+
+pub fn dl_iterate_phdr<F>(mut callback: F) -> i32
+where
+    F: FnMut(&PhdrInfo) -> i32,
+{
+    if let Some(linker) = get_dynamic_linker() {
+        for lib in linker.loaded_libraries.values() {
+            let info = PhdrInfo {
+                dlpi_addr: lib.base_address.as_u64(),
+                dlpi_name: lib.name.clone(),
+                dlpi_phdr: core::ptr::null(),
+                dlpi_phnum: 0,
+            };
+            let result = callback(&info);
+            if result != 0 {
+                return result;
+            }
+        }
+    }
+    0
+}
+
+// ── RPATH/RUNPATH $ORIGIN/$LIB/$PLATFORM expansion ─────────────────────
+
+/// Expand $ORIGIN, $LIB, $PLATFORM tokens in an RPATH or RUNPATH string.
+///
+/// - `$ORIGIN` → directory of the object containing the RPATH
+/// - `$LIB` → architecture-specific lib dir (e.g. "lib64" on x86_64)
+/// - `$PLATFORM` → platform name (e.g. "x86_64")
+pub fn expand_rpath_tokens(rpath: &str, origin: &str) -> String {
+    let lib_dir = if cfg!(target_arch = "x86_64") {
+        "lib64"
+    } else {
+        "lib"
+    };
+    let platform = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "unknown"
+    };
+
+    rpath
+        .replace("$ORIGIN", origin)
+        .replace("${ORIGIN}", origin)
+        .replace("$LIB", lib_dir)
+        .replace("${LIB}", lib_dir)
+        .replace("$PLATFORM", platform)
+        .replace("${PLATFORM}", platform)
+}
+
+// ── DT_FLAGS / DT_FLAGS_1 handling ─────────────────────────────────────
+
+/// Check if a binary requests eager binding (DF_BIND_NOW or DF_1_NOW).
+///
+/// RustOS always does eager binding, so this is always true, but this
+/// function allows checking the binary's intent for future compatibility.
+pub fn requests_eager_binding(info: &DynamicInfo) -> bool {
+    if let Some(flags) = info.flags {
+        if flags & dt_flags::DF_BIND_NOW != 0 {
+            return true;
+        }
+    }
+    if let Some(flags_1) = info.flags_1 {
+        if flags_1 & dt_flags_1::DF_1_NOW != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a binary is marked as non-deletable (DF_1_NODELETE).
+pub fn is_nodelete(info: &DynamicInfo) -> bool {
+    info.flags_1
+        .map(|f| f & dt_flags_1::DF_1_NODELETE != 0)
+        .unwrap_or(false)
+}
+
+/// Check if a binary is marked as non-openable via dlopen (DF_1_NOOPEN).
+pub fn is_noopen(info: &DynamicInfo) -> bool {
+    info.flags_1
+        .map(|f| f & dt_flags_1::DF_1_NOOPEN != 0)
+        .unwrap_or(false)
+}
+
+/// Check if a binary requires $ORIGIN expansion (DF_ORIGIN or DF_1_ORIGIN).
+pub fn needs_origin_expansion(info: &DynamicInfo) -> bool {
+    let flags = info.flags.unwrap_or(0);
+    let flags_1 = info.flags_1.unwrap_or(0);
+    (flags & dt_flags::DF_ORIGIN != 0) || (flags_1 & dt_flags_1::DF_1_ORIGIN != 0)
 }

@@ -19,6 +19,9 @@ use crate::vfs::{self, FdKind};
 static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 const MAX_SOCKET_RW_CHUNK: usize = 64 * 1024;
 const MAX_SOCKET_IOV: usize = 1024;
+const LINUX_MSGHDR_SIZE: usize = 56;
+const LINUX_MMSGHDR_SIZE: usize = 64;
+const LINUX_MMSGHDR_MSG_LEN_OFFSET: usize = LINUX_MSGHDR_SIZE;
 
 // Linux socket message flags (from <linux/socket.h>)
 /// Send data without routing table lookup (no-op in our stack)
@@ -137,6 +140,17 @@ pub fn get_operation_count() -> u64 {
 /// Increment operation counter
 fn inc_ops() {
     SOCKET_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
 }
 
 /// Map a network error to a Linux error code.
@@ -1251,18 +1265,23 @@ pub fn epoll_wait(
 pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
     inc_ops();
 
+    const SOCK_TYPE_MASK: i32 = 0xF;
+    if (sock_type & !SOCK_TYPE_MASK) & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     // Validate domain
     match domain {
         1 | 2 | 10 | 16 | 17 | 18 => {}
         _ => return Err(LinuxError::EINVAL),
     }
-    match sock_type & 0xFF {
+    match sock_type & SOCK_TYPE_MASK {
         1 | 2 | 3 | 5 => {}
         _ => return Err(LinuxError::EINVAL),
     }
 
     // Map to network stack types
-    let net_sock_type = match sock_type & 0xFF {
+    let net_sock_type = match sock_type & SOCK_TYPE_MASK {
         1 => SocketType::Stream,   // SOCK_STREAM
         2 => SocketType::Datagram, // SOCK_DGRAM
         3 => SocketType::Raw,      // SOCK_RAW
@@ -1272,7 +1291,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
 
     // Map protocol
     let net_proto = match protocol {
-        0 => match sock_type & 0xFF {
+        0 => match sock_type & SOCK_TYPE_MASK {
             1 => Protocol::TCP,
             2 => Protocol::UDP,
             3 => Protocol::ICMP,
@@ -1315,7 +1334,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> LinuxResult<Fd> {
     }
 
     // AF_INET SOCK_RAW
-    if (sock_type & 0xFF) == 3 && domain == 2 {
+    if (sock_type & SOCK_TYPE_MASK) == 3 && domain == 2 {
         let raw_proto = if protocol == 0 { 0u8 } else { protocol as u8 };
         let socket_id = raw::create_raw_socket(raw_proto).map_err(net_err_to_linux)?;
         let inode = vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOMEM)?;
@@ -1497,6 +1516,10 @@ pub fn accept(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32) -> LinuxResult
 pub fn accept4(sockfd: Fd, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> LinuxResult<Fd> {
     inc_ops();
 
+    if flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let new_fd = accept(sockfd, addr, addrlen)?;
 
     // Apply SOCK_NONBLOCK and SOCK_CLOEXEC flags to the new fd.
@@ -1524,6 +1547,11 @@ pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> 
         return Err(LinuxError::EFAULT);
     }
 
+    const SOCK_TYPE_MASK: i32 = 0xF;
+    if (sock_type & !SOCK_TYPE_MASK) & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     // Only AF_UNIX (1) and AF_LOCAL (1) supported
     if domain != 1 {
         return Err(LinuxError::EAFNOSUPPORT);
@@ -1535,10 +1563,14 @@ pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> 
     )
     .map_err(unix_err)?;
 
-    unsafe {
-        *sv = fd0;
-        *sv.offset(1) = fd1;
-    }
+    let fds = [fd0, fd1];
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            fds.as_ptr().cast::<u8>(),
+            fds.len() * core::mem::size_of::<i32>(),
+        )
+    };
+    UserSpaceMemory::copy_to_user(sv as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     Ok(0)
 }
 
@@ -1550,17 +1582,16 @@ pub fn sendmmsg(sockfd: Fd, msgvec: *mut u8, vlen: u32, flags: i32) -> LinuxResu
         return Err(LinuxError::EBADF);
     }
 
-    // Each mmsghdr is 32 bytes: { struct msghdr msg_hdr, unsigned int msg_len }
+    // Linux x86_64 mmsghdr is msghdr (56 bytes), msg_len (u32), then padding.
     // Process up to vlen messages
     let mut sent = 0i32;
     for i in 0..vlen {
-        let msg_ptr = unsafe { msgvec.add((i as usize) * 32) };
+        let msg_ptr = unsafe { msgvec.add((i as usize) * LINUX_MMSGHDR_SIZE) };
         match sendmsg(sockfd, msg_ptr, flags) {
             Ok(n) => {
-                // Store msg_len in the last 4 bytes of mmsghdr
-                unsafe {
-                    *(msg_ptr.add(24) as *mut u32) = n as u32;
-                }
+                let msg_len = n as u32;
+                let len_ptr = unsafe { msg_ptr.add(LINUX_MMSGHDR_MSG_LEN_OFFSET) as *mut u32 };
+                copy_struct_to_user(len_ptr, &msg_len)?;
                 sent += 1;
             }
             Err(_) => break,
@@ -1587,12 +1618,12 @@ pub fn recvmmsg(
 
     let mut received = 0i32;
     for i in 0..vlen {
-        let msg_ptr = unsafe { msgvec.add((i as usize) * 32) };
+        let msg_ptr = unsafe { msgvec.add((i as usize) * LINUX_MMSGHDR_SIZE) };
         match recvmsg(sockfd, msg_ptr, flags) {
             Ok(n) => {
-                unsafe {
-                    *(msg_ptr.add(24) as *mut u32) = n as u32;
-                }
+                let msg_len = n as u32;
+                let len_ptr = unsafe { msg_ptr.add(LINUX_MMSGHDR_MSG_LEN_OFFSET) as *mut u32 };
+                copy_struct_to_user(len_ptr, &msg_len)?;
                 received += 1;
                 if n == 0 {
                     break;

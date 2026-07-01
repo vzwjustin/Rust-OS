@@ -50,7 +50,7 @@ pub struct PlatformDriverOps {
     pub match_device: fn(name: &str) -> bool,
 }
 
-struct PlatformDriver {
+struct PlatformDriverEntry {
     id: u32,
     name: String,
     ops: PlatformDriverOps,
@@ -69,7 +69,7 @@ struct PlatformDevice {
 // ── Registry ────────────────────────────────────────────────────────────
 
 static PLATFORM_DEVICES: RwLock<BTreeMap<u32, PlatformDevice>> = RwLock::new(BTreeMap::new());
-static PLATFORM_DRIVERS: RwLock<BTreeMap<u32, PlatformDriver>> = RwLock::new(BTreeMap::new());
+static PLATFORM_DRIVERS: RwLock<BTreeMap<u32, PlatformDriverEntry>> = RwLock::new(BTreeMap::new());
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_DRIVER_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -101,7 +101,7 @@ pub fn register_driver(name: &str, ops: PlatformDriverOps) -> Result<u32, &'stat
     let id = NEXT_DRIVER_ID.fetch_add(1, Ordering::SeqCst);
     PLATFORM_DRIVERS.write().insert(
         id,
-        PlatformDriver {
+        PlatformDriverEntry {
             id,
             name: String::from(name),
             ops,

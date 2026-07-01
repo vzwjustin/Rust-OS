@@ -228,9 +228,15 @@ pub fn sysinfo(info: *mut SysInfo) -> LinuxResult<i32> {
         let mut si = SysInfo::zero();
 
         si.uptime = crate::time::uptime_ms() as i64 / 1000;
-        si.loads[0] = 0;
-        si.loads[1] = 0;
-        si.loads[2] = 0;
+
+        // Load averages: rough approximation from current run queue length.
+        // Linux stores these as fixed-point (tasks × 2^16). We use the
+        // current nr_running as an instantaneous sample.
+        let nr_running = crate::scheduler::load_balance::cpu_nr_running(0) as u64;
+        let load_fixed = (nr_running << 16) as u64;
+        si.loads[0] = load_fixed as u64;
+        si.loads[1] = load_fixed as u64;
+        si.loads[2] = load_fixed as u64;
 
         // Memory info from the basic memory subsystem
         if let Ok(stats) = crate::memory_basic::get_memory_stats() {

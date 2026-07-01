@@ -817,9 +817,7 @@ impl StorageDriver for IdeDriver {
         let end = start_sector
             .checked_add(sector_count as u64)
             .ok_or(StorageError::InvalidSector)?;
-        if self.capabilities.capacity_bytes != 0
-            && end > self.capabilities.capacity_bytes / 512
-        {
+        if self.capabilities.capacity_bytes != 0 && end > self.capabilities.capacity_bytes / 512 {
             return Err(StorageError::InvalidSector);
         }
 
@@ -870,9 +868,7 @@ impl StorageDriver for IdeDriver {
         let end = start_sector
             .checked_add(sector_count as u64)
             .ok_or(StorageError::InvalidSector)?;
-        if self.capabilities.capacity_bytes != 0
-            && end > self.capabilities.capacity_bytes / 512
-        {
+        if self.capabilities.capacity_bytes != 0 && end > self.capabilities.capacity_bytes / 512 {
             return Err(StorageError::InvalidSector);
         }
 

@@ -3,8 +3,8 @@
 //! Parses USB HID boot protocol keyboard reports and dispatches key events
 //! to the input manager. Supports device registration for multiple HID sources.
 
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, RwLock};
 

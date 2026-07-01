@@ -468,11 +468,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
     // EVIOCGVERSION: _IOR('E', 0x01, int)
     if nr == 0x01 && dir == 2 {
         let version: i32 = crate::drivers::input::evdev::EV_VERSION as i32;
-        crate::memory::user_space::UserSpaceMemory::copy_to_user(
-            argp,
-            &version.to_ne_bytes(),
-        )
-        .map_err(|_| LinuxError::EFAULT)?;
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &version.to_ne_bytes())
+            .map_err(|_| LinuxError::EFAULT)?;
         return Ok(0);
     }
 
@@ -503,12 +500,17 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
     if nr == 0x03 && dir == 2 {
         let (delay, period) = crate::drivers::input::evdev::with_device(device_idx, |dev| {
             (dev.rep_delay, dev.rep_period)
-        }).unwrap_or((250, 33));
+        })
+        .unwrap_or((250, 33));
         let rep: [u8; 8] = [
-            (delay & 0xFF) as u8, ((delay >> 8) & 0xFF) as u8,
-            (delay >> 16) as u8, (delay >> 24) as u8,
-            (period & 0xFF) as u8, ((period >> 8) & 0xFF) as u8,
-            (period >> 16) as u8, (period >> 24) as u8,
+            (delay & 0xFF) as u8,
+            ((delay >> 8) & 0xFF) as u8,
+            (delay >> 16) as u8,
+            (delay >> 24) as u8,
+            (period & 0xFF) as u8,
+            ((period >> 8) & 0xFF) as u8,
+            (period >> 16) as u8,
+            (period >> 24) as u8,
         ];
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &rep)
             .map_err(|_| LinuxError::EFAULT)?;
@@ -549,7 +551,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
             s.extend_from_slice(dev.name.as_bytes());
             s.push(0); // null terminator
             s
-        }).unwrap_or_else(|_| b"RustOS Input\0".to_vec());
+        })
+        .unwrap_or_else(|_| b"RustOS Input\0".to_vec());
         let len = core::cmp::min(size, name.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &name[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -563,7 +566,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
             s.extend_from_slice(dev.phys.as_bytes());
             s.push(0);
             s
-        }).unwrap_or_else(|_| b"isa0060/serio0/input0\0".to_vec());
+        })
+        .unwrap_or_else(|_| b"isa0060/serio0/input0\0".to_vec());
         let len = core::cmp::min(size, phys.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &phys[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -577,7 +581,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
             s.extend_from_slice(dev.uniq.as_bytes());
             s.push(0);
             s
-        }).unwrap_or_else(|_| b"\0".to_vec());
+        })
+        .unwrap_or_else(|_| b"\0".to_vec());
         let len = core::cmp::min(size, uniq.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &uniq[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -586,9 +591,9 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
 
     // EVIOCGPROP(len): _IOC(_IOC_READ, 'E', 0x09, len)
     if nr == 0x09 && dir == 2 {
-        let props = crate::drivers::input::evdev::with_device(device_idx, |dev| {
-            dev.prop_bits.clone()
-        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let props =
+            crate::drivers::input::evdev::with_device(device_idx, |dev| dev.prop_bits.clone())
+                .unwrap_or_else(|_| alloc::vec![0u8; 1]);
         let len = core::cmp::min(size, props.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &props[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -609,9 +614,9 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
 
     // EVIOCGKEY(len): _IOC(_IOC_READ, 'E', 0x18, len)
     if nr == 0x18 && dir == 2 {
-        let key_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
-            dev.key_state.clone()
-        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let key_state =
+            crate::drivers::input::evdev::with_device(device_idx, |dev| dev.key_state.clone())
+                .unwrap_or_else(|_| alloc::vec![0u8; 1]);
         let len = core::cmp::min(size, key_state.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &key_state[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -620,9 +625,9 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
 
     // EVIOCGLED(len): _IOC(_IOC_READ, 'E', 0x19, len)
     if nr == 0x19 && dir == 2 {
-        let led_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
-            dev.led_state.clone()
-        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let led_state =
+            crate::drivers::input::evdev::with_device(device_idx, |dev| dev.led_state.clone())
+                .unwrap_or_else(|_| alloc::vec![0u8; 1]);
         let len = core::cmp::min(size, led_state.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &led_state[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -631,9 +636,9 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
 
     // EVIOCGSND(len): _IOC(_IOC_READ, 'E', 0x1a, len)
     if nr == 0x1a && dir == 2 {
-        let snd_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
-            dev.snd_state.clone()
-        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let snd_state =
+            crate::drivers::input::evdev::with_device(device_idx, |dev| dev.snd_state.clone())
+                .unwrap_or_else(|_| alloc::vec![0u8; 1]);
         let len = core::cmp::min(size, snd_state.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &snd_state[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -642,9 +647,9 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
 
     // EVIOCGSW(len): _IOC(_IOC_READ, 'E', 0x1b, len)
     if nr == 0x1b && dir == 2 {
-        let sw_state = crate::drivers::input::evdev::with_device(device_idx, |dev| {
-            dev.sw_state.clone()
-        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        let sw_state =
+            crate::drivers::input::evdev::with_device(device_idx, |dev| dev.sw_state.clone())
+                .unwrap_or_else(|_| alloc::vec![0u8; 1]);
         let len = core::cmp::min(size, sw_state.len());
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &sw_state[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -657,7 +662,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
         let ev_type = (nr - 0x20) as u16;
         let bits = crate::drivers::input::evdev::with_device(device_idx, |dev| {
             dev.get_capability_bitmap(ev_type).to_vec()
-        }).unwrap_or_else(|_| {
+        })
+        .unwrap_or_else(|_| {
             // Fallback to static bitmap if evdev device not found
             evdev_capability_bitmap_fallback(ev_type, size)
         });
@@ -676,7 +682,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
             } else {
                 [0u8; 24]
             }
-        }).unwrap_or([0u8; 24]);
+        })
+        .unwrap_or([0u8; 24]);
         let len = core::cmp::min(size, 24);
         crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &abs_bytes[..len])
             .map_err(|_| LinuxError::EFAULT)?;
@@ -692,7 +699,9 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
             .map_err(|_| LinuxError::EFAULT)?;
         let info = crate::drivers::input::evdev::InputAbsInfo::from_bytes(&buf);
         let _ = crate::drivers::input::evdev::with_device_mut(device_idx, |dev| {
-            if (abs_code as usize) < dev.absinfo.len() && abs_code != crate::drivers::input::ABS_MT_SLOT {
+            if (abs_code as usize) < dev.absinfo.len()
+                && abs_code != crate::drivers::input::ABS_MT_SLOT
+            {
                 dev.absinfo[abs_code as usize] = info;
             }
         });
@@ -702,11 +711,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
     // EVIOCGEFFECTS: _IOR('E', 0x84, int)
     if nr == 0x84 && dir == 2 {
         let n_effects: i32 = 0;
-        crate::memory::user_space::UserSpaceMemory::copy_to_user(
-            argp,
-            &n_effects.to_ne_bytes(),
-        )
-        .map_err(|_| LinuxError::EFAULT)?;
+        crate::memory::user_space::UserSpaceMemory::copy_to_user(argp, &n_effects.to_ne_bytes())
+            .map_err(|_| LinuxError::EFAULT)?;
         return Ok(0);
     }
 
@@ -730,7 +736,8 @@ fn handle_evdev_ioctl(fd: Fd, req: u64, argp: u64) -> LinuxResult<i32> {
         // Return the capability bitmap for the requested type
         let bits = crate::drivers::input::evdev::with_device(device_idx, |dev| {
             dev.get_capability_bitmap(mask.mask_type as u16).to_vec()
-        }).unwrap_or_else(|_| alloc::vec![0u8; 1]);
+        })
+        .unwrap_or_else(|_| alloc::vec![0u8; 1]);
         let xfer_size = core::cmp::min(mask.codes_size as usize, bits.len());
         if mask.codes_ptr != 0 {
             crate::memory::user_space::UserSpaceMemory::copy_to_user(
@@ -924,9 +931,7 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
                 .map(|_| 0)
                 .map_err(|_| LinuxError::ENOTTY)
         }
-        req if is_evdev_ioctl(req) => {
-            handle_evdev_ioctl(fd, req, argp)
-        }
+        req if is_evdev_ioctl(req) => handle_evdev_ioctl(fd, req, argp),
         _ => Err(LinuxError::ENOTTY),
     }
 }

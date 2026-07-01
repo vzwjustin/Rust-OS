@@ -11,7 +11,10 @@ pub mod driver;
 
 pub use device::{BusType, Device, DevicePower, KobjType, SysfsAttr};
 pub use devres::{devres_register_raw, devres_release_all, Devres};
-pub use driver::{driver_count, find_driver, for_each_driver, DeviceId, Driver, DriverRegistration, PmState};
+pub use driver::{
+    driver_count as registered_driver_count, find_driver, for_each_driver, DeviceId, Driver,
+    DriverRegistration, PmState,
+};
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -33,8 +36,9 @@ pub enum ProbeState {
     Unbound,
 }
 
-/// A device in the unified device model (Linux `struct device`).
-pub struct Device {
+/// A probe/bind bookkeeping record for a device (legacy id-keyed model,
+/// distinct from the Linux-style [`device::Device`] re-exported above).
+pub struct DeviceRecord {
     pub id: u32,
     pub name: String,
     /// Parent device id, forming the device hierarchy (root devices have None).
@@ -109,7 +113,7 @@ pub struct Class {
 
 static BUSES: RwLock<BTreeMap<u32, Bus>> = RwLock::new(BTreeMap::new());
 static CLASSES: RwLock<BTreeMap<u32, Class>> = RwLock::new(BTreeMap::new());
-static DEVICES: RwLock<BTreeMap<u32, Device>> = RwLock::new(BTreeMap::new());
+static DEVICES: RwLock<BTreeMap<u32, DeviceRecord>> = RwLock::new(BTreeMap::new());
 static DRIVERS: RwLock<BTreeMap<u32, DeviceDriver>> = RwLock::new(BTreeMap::new());
 
 static NEXT_BUS_ID: AtomicU32 = AtomicU32::new(0);
@@ -185,7 +189,7 @@ fn register_device_with_probe(
     let id = NEXT_DEVICE_ID.fetch_add(1, Ordering::SeqCst);
     DEVICES.write().insert(
         id,
-        Device {
+        DeviceRecord {
             id,
             name: String::from(name),
             parent,

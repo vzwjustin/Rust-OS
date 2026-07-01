@@ -5,8 +5,9 @@
 //! mutexes, reader-writer semaphores, counting semaphores, priority-
 //! inheritance mutexes, and completion variables.
 //!
-//! All primitives are `#[no_std]` and use spin-wait stubs where a real
-//! scheduler integration would call `schedule()` / `wake_up()`.
+//! All primitives are `#[no_std]` and yield the CPU to the scheduler
+//! (`crate::scheduler::yield_cpu()`) in the contended case, matching
+//! Linux's sleeping lock behaviour.
 
 #![allow(dead_code)]
 
