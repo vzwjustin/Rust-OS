@@ -10,18 +10,17 @@
 /// Private KMS implementation marker
 pub struct MetaKmsPrivateType;
 
-/// Resource change notification types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum MetaKmsResourceChangeType {
-    /// No changes
-    None = 0,
-    /// Device added/removed
-    Device = 1,
-    /// Connector state changed
-    Connector = 2,
-    /// CRTC/mode changed
-    Crtc = 4,
-    /// Plane changed
-    Plane = 8,
-}
+/// Resource change notification types (bitmask). A type alias + consts (rather
+/// than an `enum`) so the values can be combined with bitwise OR.
+pub type MetaKmsResourceChangeType = u32;
+
+/// No changes
+pub const META_KMS_RESOURCE_CHANGE_TYPE_NONE: MetaKmsResourceChangeType = 0;
+/// Device added/removed
+pub const META_KMS_RESOURCE_CHANGE_TYPE_DEVICE: MetaKmsResourceChangeType = 1;
+/// Connector state changed
+pub const META_KMS_RESOURCE_CHANGE_TYPE_CONNECTOR: MetaKmsResourceChangeType = 2;
+/// CRTC/mode changed
+pub const META_KMS_RESOURCE_CHANGE_TYPE_CRTC: MetaKmsResourceChangeType = 4;
+/// Plane changed
+pub const META_KMS_RESOURCE_CHANGE_TYPE_PLANE: MetaKmsResourceChangeType = 8;

@@ -25,7 +25,7 @@ impl MetaLauncher {
     }
 
     /// Activate a virtual terminal.
-    pub fn activate_vt(&self, _vt: i8) -> Result<(), String> {
+    pub fn activate_vt(&self, _vt: u32) -> Result<(), String> {
         // TODO: D-Bus call to ActiveSession (vt, u)
         Ok(())
     }

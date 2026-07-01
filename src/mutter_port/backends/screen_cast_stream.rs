@@ -7,8 +7,9 @@
 
 use alloc::string::String;
 
-// Re-export MetaScreenCastFlag from parent module for stream flag tracking.
-pub use super::screen_cast::{MetaScreenCastFlag, META_SCREEN_CAST_FLAG_NONE,
+// Re-export the screen cast flag constants from the parent module for stream
+// flag tracking. (`screen_cast` exposes these as `u32` consts, not a named type.)
+pub use super::screen_cast::{META_SCREEN_CAST_FLAG_NONE,
                              META_SCREEN_CAST_FLAG_IS_RECORDING,
                              META_SCREEN_CAST_FLAG_IS_PLATFORM};
 

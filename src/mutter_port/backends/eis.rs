@@ -6,15 +6,14 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-eis.h
 
-/// EIS device type flags (bitmask).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum MetaEisDeviceTypes {
-    META_EIS_DEVICE_TYPE_NONE = 0,
-    META_EIS_DEVICE_TYPE_KEYBOARD = 1 << 0,
-    META_EIS_DEVICE_TYPE_POINTER = 1 << 1,
-    META_EIS_DEVICE_TYPE_TOUCHSCREEN = 1 << 2,
-}
+/// EIS device type flags (bitmask). A type alias + consts (rather than an
+/// `enum`) so the values can be combined with bitwise OR, matching upstream.
+pub type MetaEisDeviceTypes = u32;
+
+pub const META_EIS_DEVICE_TYPE_NONE: MetaEisDeviceTypes = 0;
+pub const META_EIS_DEVICE_TYPE_KEYBOARD: MetaEisDeviceTypes = 1 << 0;
+pub const META_EIS_DEVICE_TYPE_POINTER: MetaEisDeviceTypes = 1 << 1;
+pub const META_EIS_DEVICE_TYPE_TOUCHSCREEN: MetaEisDeviceTypes = 1 << 2;
 
 /// MetaEis — Root EIS object managing clients, viewports, and device state.
 /// Wraps libeis lifecycle and coordinates with MetaBackend.

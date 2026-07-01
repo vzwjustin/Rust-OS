@@ -5,6 +5,7 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-monitor-config-utils.h
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Monitor layout mode (side-by-side, stacked, etc.).

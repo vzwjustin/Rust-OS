@@ -5,16 +5,16 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-input-settings.c
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum MetaKeyboardA11yFlags {
-    META_KEYBOARD_A11Y_SLOWKEYS_ENABLED = 1 << 0,
-    META_KEYBOARD_A11Y_DEBOUNCE_ENABLED = 1 << 1,
-    META_KEYBOARD_A11Y_TIMEOUT_ENABLED = 1 << 2,
-    META_KEYBOARD_A11Y_MOUSEKEYS_ENABLED = 1 << 3,
-    META_KEYBOARD_A11Y_TOGGLE_ENABLED = 1 << 4,
-    META_KEYBOARD_A11Y_STICKY_KEYS_ENABLED = 1 << 5,
-}
+/// Keyboard accessibility flags (bitmask). A type alias + consts (rather than
+/// an `enum`) so the values can be combined with bitwise OR, matching upstream.
+pub type MetaKeyboardA11yFlags = u32;
+
+pub const META_KEYBOARD_A11Y_SLOWKEYS_ENABLED: MetaKeyboardA11yFlags = 1 << 0;
+pub const META_KEYBOARD_A11Y_DEBOUNCE_ENABLED: MetaKeyboardA11yFlags = 1 << 1;
+pub const META_KEYBOARD_A11Y_TIMEOUT_ENABLED: MetaKeyboardA11yFlags = 1 << 2;
+pub const META_KEYBOARD_A11Y_MOUSEKEYS_ENABLED: MetaKeyboardA11yFlags = 1 << 3;
+pub const META_KEYBOARD_A11Y_TOGGLE_ENABLED: MetaKeyboardA11yFlags = 1 << 4;
+pub const META_KEYBOARD_A11Y_STICKY_KEYS_ENABLED: MetaKeyboardA11yFlags = 1 << 5;
 
 /// Keyboard accessibility settings structure.
 #[derive(Debug, Clone)]

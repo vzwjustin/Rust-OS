@@ -1,23 +1,36 @@
 //! Kms Crtc Private — ported from GNOME Mutter
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-kms-crtc-private.h
+//! KMS CRTC properties and state management.
+//! Maps DRM property IDs to high-level CRTC configuration attributes.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-kms-crtc-private.h
 
 use alloc::string::String;
 
-/// MetaKmsCrtcProp
+/// KMS CRTC property identifiers.
+/// Maps kernel DRM properties to logical CRTC configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum MetaKmsCrtcProp {
-    META_KMS_CRTC_PROP_MODE_ID = 0,
-    META_KMS_CRTC_PROP_ACTIVE,
-    META_KMS_CRTC_PROP_DEGAMMA_LUT,
-    META_KMS_CRTC_PROP_DEGAMMA_LUT_SIZE,
-    META_KMS_CRTC_PROP_CTM,
-    META_KMS_CRTC_PROP_GAMMA_LUT,
-    META_KMS_CRTC_PROP_GAMMA_LUT_SIZE,
-    META_KMS_CRTC_PROP_VRR_ENABLED,
-    META_KMS_CRTC_N_PROPS,
+    /// Display mode blob ID.
+    MODE_ID = 0,
+    /// CRTC active state.
+    ACTIVE = 1,
+    /// Degamma LUT blob ID.
+    DEGAMMA_LUT = 2,
+    /// Degamma LUT entry count.
+    DEGAMMA_LUT_SIZE = 3,
+    /// Color transform matrix blob ID.
+    CTM = 4,
+    /// Gamma LUT blob ID.
+    GAMMA_LUT = 5,
+    /// Gamma LUT entry count.
+    GAMMA_LUT_SIZE = 6,
+    /// Variable refresh rate enabled.
+    VRR_ENABLED = 7,
+    /// Number of CRTC properties.
+    N_PROPS = 8,
 }
 
-// TODO: Extract struct definitions from C header
-// TODO: Add type definitions and implementations
+/// Number of CRTC properties.
+pub const META_KMS_CRTC_N_PROPS: u32 = 8;

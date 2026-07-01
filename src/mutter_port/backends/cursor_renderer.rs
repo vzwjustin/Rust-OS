@@ -49,10 +49,10 @@ impl MetaCursorRenderer {
         // TODO: Update sprite
     }
 
-    /// Calculate cursor rendering rectangle.
-    pub fn calculate_rect(&self) -> (u32, u32) {
+    /// Calculate cursor rendering rectangle as `(x, y, width, height)`.
+    pub fn calculate_rect(&self) -> (i32, i32, u32, u32) {
         // TODO: Use cursor dimensions and position
-        (0, 0)
+        (0, 0, 0, 0)
     }
 
     /// Check if cursor needs overlay rendering.

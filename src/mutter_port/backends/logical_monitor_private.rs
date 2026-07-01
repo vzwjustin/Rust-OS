@@ -39,6 +39,7 @@ pub struct MetaOutput;
 pub struct MetaCrtc;
 
 /// Opaque logical monitor ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetaLogicalMonitorId;
 
 /// Logical monitor configuration.
@@ -148,13 +149,11 @@ impl MetaLogicalMonitorId {
 
     /// Duplicate a logical monitor ID.
     pub fn dup(&self) -> MetaLogicalMonitorId {
-        // TODO: copy
-        MetaLogicalMonitorId
+        *self
     }
 
     /// Check if two IDs are equal.
-    pub fn equal(&self, _other: &MetaLogicalMonitorId) -> bool {
-        // TODO: compare
-        false
+    pub fn equal(&self, other: &MetaLogicalMonitorId) -> bool {
+        self == other
     }
 }

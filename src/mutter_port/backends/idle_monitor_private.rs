@@ -5,8 +5,15 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-idle-monitor-private.c
 
-/// Watch callback function type (opaque pointer in actual implementation).
-pub type MetaIdleMonitorWatchFunc = usize;
+/// Watch callback function type. Matches the upstream Mutter signature; the
+/// `Option` makes the null callback representable without an untyped sentinel.
+pub type MetaIdleMonitorWatchFunc = Option<
+    unsafe extern "C" fn(
+        monitor: *mut MetaIdleMonitor,
+        watch_id: u32,
+        user_data: *mut core::ffi::c_void,
+    ),
+>;
 
 /// A single idle time watch with callback and timeout.
 pub struct MetaIdleMonitorWatch {
@@ -24,7 +31,7 @@ impl MetaIdleMonitorWatch {
         MetaIdleMonitorWatch {
             monitor_id: 0,
             watch_id: id,
-            callback: 0,
+            callback: None,
             timeout_msec,
             idle_source_id: -1,
             inhibitable: true,
