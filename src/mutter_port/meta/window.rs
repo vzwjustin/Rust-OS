@@ -1,6 +1,7 @@
 //! Mutter window management
 //! Ported from meta/window.h
 
+use crate::mutter_port::meta::common::MetaFrameBorders;
 use crate::mutter_port::meta::enums::*;
 use crate::mutter_port::meta::types::*;
 use crate::mutter_port::mtk::MtkRectangle;
@@ -28,6 +29,8 @@ pub struct MetaWindow {
     display: *mut core::ffi::c_void,
     workspace: *mut core::ffi::c_void,
     monitor: i32,
+    /// Frame decoration border widths (visible + invisible = total).
+    frame_borders: MetaFrameBorders,
 }
 
 impl MetaWindow {
@@ -49,7 +52,13 @@ impl MetaWindow {
             display: core::ptr::null_mut(),
             workspace: core::ptr::null_mut(),
             monitor: 0,
+            frame_borders: MetaFrameBorders::default(),
         }
+    }
+
+    /// Set this window's frame decoration borders.
+    pub fn set_frame_borders(&mut self, borders: MetaFrameBorders) {
+        self.frame_borders = borders;
     }
 
     /// Check if window has input focus
@@ -88,15 +97,30 @@ impl MetaWindow {
     }
 
     /// Convert client-relative coordinates to frame-relative
-    pub fn client_rect_to_frame_rect(&self, _client_rect: &MtkRectangle) -> MtkRectangle {
-        // TODO: implement
-        MtkRectangle::default()
+    pub fn client_rect_to_frame_rect(&self, client_rect: &MtkRectangle) -> MtkRectangle {
+        // The frame rect surrounds the client rect by the total (visible +
+        // invisible) decoration borders on each side. Mirrors upstream
+        // meta_window_client_rect_to_frame_rect.
+        let b = &self.frame_borders.total;
+        MtkRectangle {
+            x: client_rect.x - b.left as i32,
+            y: client_rect.y - b.top as i32,
+            width: client_rect.width + (b.left + b.right) as i32,
+            height: client_rect.height + (b.top + b.bottom) as i32,
+        }
     }
 
     /// Convert frame-relative coordinates to client-relative
-    pub fn frame_rect_to_client_rect(&self, _frame_rect: &MtkRectangle) -> MtkRectangle {
-        // TODO: implement
-        MtkRectangle::default()
+    pub fn frame_rect_to_client_rect(&self, frame_rect: &MtkRectangle) -> MtkRectangle {
+        // Inverse of client_rect_to_frame_rect: shrink the frame rect by the
+        // total decoration borders to recover the client content rect.
+        let b = &self.frame_borders.total;
+        MtkRectangle {
+            x: frame_rect.x + b.left as i32,
+            y: frame_rect.y + b.top as i32,
+            width: frame_rect.width - (b.left + b.right) as i32,
+            height: frame_rect.height - (b.top + b.bottom) as i32,
+        }
     }
 
     /// Get the display this window belongs to
@@ -165,5 +189,53 @@ impl MetaWindow {
 impl Default for MetaWindow {
     fn default() -> Self {
         Self::new(MetaWindowType::Normal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mutter_port::meta::common::{MetaFrameBorder, MetaFrameBorders};
+
+    fn borders(l: i16, r: i16, t: i16, b: i16) -> MetaFrameBorders {
+        let total = MetaFrameBorder {
+            left: l,
+            right: r,
+            top: t,
+            bottom: b,
+        };
+        MetaFrameBorders {
+            visible: total,
+            invisible: MetaFrameBorder::default(),
+            total,
+        }
+    }
+
+    #[test]
+    fn test_client_to_frame_adds_borders() {
+        let mut w = MetaWindow::new(MetaWindowType::Normal);
+        w.set_frame_borders(borders(10, 5, 20, 8));
+        let client = MtkRectangle::new(100, 100, 640, 480);
+        let frame = w.client_rect_to_frame_rect(&client);
+        // x/y move out by left/top; size grows by left+right / top+bottom.
+        assert_eq!(frame, MtkRectangle::new(90, 80, 655, 508));
+    }
+
+    #[test]
+    fn test_frame_to_client_is_inverse() {
+        let mut w = MetaWindow::new(MetaWindowType::Normal);
+        w.set_frame_borders(borders(10, 5, 20, 8));
+        let client = MtkRectangle::new(100, 100, 640, 480);
+        let frame = w.client_rect_to_frame_rect(&client);
+        // Converting back recovers the original client rect.
+        assert_eq!(w.frame_rect_to_client_rect(&frame), client);
+    }
+
+    #[test]
+    fn test_zero_borders_is_identity() {
+        let w = MetaWindow::new(MetaWindowType::Normal);
+        let r = MtkRectangle::new(1, 2, 3, 4);
+        assert_eq!(w.client_rect_to_frame_rect(&r), r);
+        assert_eq!(w.frame_rect_to_client_rect(&r), r);
     }
 }
