@@ -11,12 +11,50 @@ use crate::scheduler::Pid;
 use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 pub mod abi;
 mod linux;
 
 /// Linux x86_64 syscall numbers (see `syscall/linux.rs`).
 pub use linux::SyscallNumber;
+
+/// Initialization state for the syscall entry interfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SyscallInitState {
+    /// No syscall setup has been attempted yet.
+    Uninitialized = 0,
+    /// A CPU is currently wiring the syscall entry path.
+    Initializing = 1,
+    /// INT 0x80 syscall entry has been wired and dependency checks passed.
+    Ready = 2,
+    /// The most recent setup attempt failed. A later boot phase may retry.
+    Failed = 3,
+}
+
+impl SyscallInitState {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Initializing,
+            2 => Self::Ready,
+            3 => Self::Failed,
+            _ => Self::Uninitialized,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Uninitialized => "uninitialized",
+            Self::Initializing => "initializing",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+static SYSCALL_INIT_STATE: AtomicU8 = AtomicU8::new(SyscallInitState::Uninitialized as u8);
+static INT80_ENTRY_READY: AtomicBool = AtomicBool::new(false);
 
 /// System call result type
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -183,13 +221,61 @@ static mut SYSCALL_STATS: SyscallStats = SyscallStats {
     calls_by_type: [0; 64],
 };
 
-/// Initialize the system call interface
+/// Initialize the system call interface.
+///
+/// The real INT 0x80 gate is installed when `crate::interrupts::init()` loads
+/// the IDT.  This function is still the syscall subsystem's boot boundary: it
+/// verifies that the required descriptor tables are live, records the entry path
+/// as ready, and makes repeated calls idempotent.
 pub fn init() -> Result<(), &'static str> {
-    // Set up system call interrupt handler (interrupt 0x80)
-    setup_syscall_interrupt();
+    match SYSCALL_INIT_STATE.compare_exchange(
+        SyscallInitState::Uninitialized as u8,
+        SyscallInitState::Initializing as u8,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {}
+        Err(state) if SyscallInitState::from_u8(state) == SyscallInitState::Ready => return Ok(()),
+        Err(state) if SyscallInitState::from_u8(state) == SyscallInitState::Failed => {
+            SYSCALL_INIT_STATE.store(SyscallInitState::Initializing as u8, Ordering::Release);
+        }
+        Err(_) => return Err("syscall initialization already in progress"),
+    }
 
-    // Production: syscall interface initialized
+    if let Err(error) = validate_init_dependencies(
+        crate::kernel::is_subsystem_ready("gdt"),
+        crate::kernel::is_subsystem_ready("interrupts"),
+    ) {
+        SYSCALL_INIT_STATE.store(SyscallInitState::Failed as u8, Ordering::Release);
+        return Err(error);
+    }
+
+    // Set up system call interrupt handler (interrupt 0x80).
+    setup_syscall_interrupt();
+    INT80_ENTRY_READY.store(true, Ordering::Release);
+    SYSCALL_INIT_STATE.store(SyscallInitState::Ready as u8, Ordering::Release);
+
     Ok(())
+}
+
+fn validate_init_dependencies(gdt_ready: bool, interrupts_ready: bool) -> Result<(), &'static str> {
+    if !gdt_ready {
+        return Err("GDT must be initialized before syscalls");
+    }
+    if !interrupts_ready {
+        return Err("interrupts must be initialized before syscalls");
+    }
+    Ok(())
+}
+
+/// Return the current syscall subsystem initialization state.
+pub fn init_state() -> SyscallInitState {
+    SyscallInitState::from_u8(SYSCALL_INIT_STATE.load(Ordering::Acquire))
+}
+
+/// Whether the INT 0x80 syscall entry path has passed boot-time validation.
+pub fn int80_entry_ready() -> bool {
+    INT80_ENTRY_READY.load(Ordering::Acquire)
 }
 
 /// Set up the system call interrupt handler.
@@ -1875,5 +1961,31 @@ pub mod userspace {
     /// Yield CPU to other processes
     pub fn yield_cpu() {
         syscall!(SyscallNumber::SchedYield as u64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_init_dependencies;
+
+    #[test_case]
+    fn syscall_init_rejects_missing_gdt() {
+        assert_eq!(
+            validate_init_dependencies(false, true),
+            Err("GDT must be initialized before syscalls")
+        );
+    }
+
+    #[test_case]
+    fn syscall_init_rejects_missing_interrupts() {
+        assert_eq!(
+            validate_init_dependencies(true, false),
+            Err("interrupts must be initialized before syscalls")
+        );
+    }
+
+    #[test_case]
+    fn syscall_init_accepts_ready_dependencies() {
+        assert_eq!(validate_init_dependencies(true, true), Ok(()));
     }
 }

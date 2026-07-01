@@ -899,13 +899,26 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize the INT 0x80 syscall interface (complements syscall_fast).
         match syscall::init() {
             Ok(()) => unsafe {
+                kernel::mark_subsystem_ready("syscall");
                 early_serial_write_str("RustOS: Syscall (INT 0x80) interface initialized\r\n");
             },
             Err(e) => unsafe {
+                kernel::mark_subsystem_failed("syscall");
                 early_serial_write_str("RustOS: Syscall init FAILED: ");
                 early_serial_write_str(e);
                 early_serial_write_str("\r\n");
             },
+        }
+        unsafe {
+            early_serial_write_str("RustOS: Syscall state=");
+            early_serial_write_str(syscall::init_state().as_str());
+            early_serial_write_str(" int80=");
+            early_serial_write_str(if syscall::int80_entry_ready() {
+                "ready"
+            } else {
+                "not-ready"
+            });
+            early_serial_write_str("\r\n");
         }
 
         // Initialize IRQ domain framework (hierarchical interrupt controller mapping).
