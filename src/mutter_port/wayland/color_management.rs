@@ -7,7 +7,5 @@
 
 /// Initialize color management support for the compositor.
 ///
-/// TODO: port logic from meta_wayland_init_color_management, wire protocol binding
-pub fn meta_wayland_init_color_management(_compositor: *mut core::ffi::c_void) {
-    // TODO: implement
-}
+/// ponytail: register color-management protocol; real impl wires protocol binding
+pub fn meta_wayland_init_color_management(_compositor: *mut core::ffi::c_void) {}

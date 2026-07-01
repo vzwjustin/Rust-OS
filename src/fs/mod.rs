@@ -107,6 +107,22 @@ pub enum FileSystemType {
     Udf,
     /// ROMFS read-only filesystem
     RomFs,
+    /// procfs virtual filesystem (process introspection)
+    Proc,
+    /// JBD2 journaling block-device layer
+    Jbd2,
+    /// iomap I/O mapping helper filesystem
+    Iomap,
+    /// CRAMFS compressed ROM filesystem
+    Cramfs,
+    /// debugfs debug filesystem
+    Debugfs,
+    /// GFS2 cluster filesystem
+    Gfs2,
+    /// autofs automount filesystem
+    AutoFs,
+    /// efivarfs EFI variable filesystem
+    Efivarfs,
 }
 
 impl fmt::Display for FileSystemType {
@@ -131,6 +147,14 @@ impl fmt::Display for FileSystemType {
             FileSystemType::Smb => write!(f, "smb"),
             FileSystemType::Udf => write!(f, "udf"),
             FileSystemType::RomFs => write!(f, "romfs"),
+            FileSystemType::Proc => write!(f, "proc"),
+            FileSystemType::Jbd2 => write!(f, "jbd2"),
+            FileSystemType::Iomap => write!(f, "iomap"),
+            FileSystemType::Cramfs => write!(f, "cramfs"),
+            FileSystemType::Debugfs => write!(f, "debugfs"),
+            FileSystemType::Gfs2 => write!(f, "gfs2"),
+            FileSystemType::AutoFs => write!(f, "autofs"),
+            FileSystemType::Efivarfs => write!(f, "efivarfs"),
         }
     }
 }
@@ -331,6 +355,10 @@ pub enum FsError {
     TooManySymlinks,
     /// Filename too long
     NameTooLong,
+    /// Path is invalid (empty, malformed, or out of bounds)
+    InvalidPath,
+    /// Operation requires a symbolic link but the target is not one
+    NotASymlink,
 }
 
 impl fmt::Display for FsError {
@@ -351,6 +379,8 @@ impl fmt::Display for FsError {
             FsError::CrossDevice => write!(f, "Cross-device link"),
             FsError::TooManySymlinks => write!(f, "Too many levels of symbolic links"),
             FsError::NameTooLong => write!(f, "File name too long"),
+            FsError::InvalidPath => write!(f, "Invalid path"),
+            FsError::NotASymlink => write!(f, "Not a symbolic link"),
         }
     }
 }

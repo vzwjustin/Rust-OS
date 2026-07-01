@@ -118,9 +118,7 @@ pub fn enter_idle_state(cpu: u32, state_idx: usize) -> u32 {
         "POLL" => 0,
         "C1" | "C1E" => {
             x86_64::instructions::interrupts::disable();
-            unsafe {
-                core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-            }
+            x86_64::instructions::hlt();
             x86_64::instructions::interrupts::enable();
             50
         }
@@ -129,9 +127,7 @@ pub fn enter_idle_state(cpu: u32, state_idx: usize) -> u32 {
             for _ in 0..100 {
                 core::hint::spin_loop();
             }
-            unsafe {
-                core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-            }
+            x86_64::instructions::hlt();
             x86_64::instructions::interrupts::enable();
             500
         }

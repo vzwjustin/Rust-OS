@@ -185,17 +185,13 @@ fn c_str_to_string(ptr: *const u8) -> String {
     if ptr.is_null() {
         return String::new();
     }
-    let mut len = 0usize;
-    unsafe {
-        while *ptr.add(len) != 0 {
-            len += 1;
-            if len > 4096 {
-                break;
-            }
-        }
+    const PATH_MAX: usize = 4096;
+    let mut buf = alloc::vec![0u8; PATH_MAX];
+    if UserSpaceMemory::copy_from_user(ptr as u64, &mut buf).is_err() {
+        return String::new();
     }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    String::from_utf8_lossy(bytes).into_owned()
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(PATH_MAX);
+    String::from_utf8_lossy(&buf[..len]).into_owned()
 }
 
 fn is_supported_at_path(dirfd: i32, path: &str) -> bool {
@@ -274,6 +270,8 @@ fn copy_from_user<T: Copy + Default>(addr: u64) -> LinuxResult<T> {
         return Err(LinuxError::EFAULT);
     }
     let mut value = T::default();
+    // SAFETY: `value` is a stack-local `Default` value and `T` is `Copy`; the
+    // pointer is valid for writes and the length is `size_of::<T>()`.
     let bytes = unsafe {
         core::slice::from_raw_parts_mut(
             (&mut value as *mut T) as *mut u8,
@@ -288,6 +286,8 @@ fn copy_to_user<T: Copy>(addr: u64, value: &T) -> LinuxResult<()> {
     if addr == 0 {
         return Err(LinuxError::EFAULT);
     }
+    // SAFETY: `value` is a `Copy` reference; the pointer is valid for reads
+    // and the length is `size_of::<T>()`.
     let bytes = unsafe {
         core::slice::from_raw_parts((value as *const T) as *const u8, core::mem::size_of::<T>())
     };
@@ -708,6 +708,7 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
                 }
                 let mut total = 0usize;
                 for i in 0..sqe.len as usize {
+                    // SAFETY: the iovec array pointer is valid for the specified count.
                     let iov = unsafe { &*iovs.add(i) };
                     if iov.iov_base.is_null() && iov.iov_len != 0 {
                         return -14;
@@ -744,6 +745,7 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
                 }
                 let mut total = 0usize;
                 for i in 0..sqe.len as usize {
+                    // SAFETY: the iovec array pointer is valid for the specified count.
                     let iov = unsafe { &*iovs.add(i) };
                     if iov.iov_base.is_null() && iov.iov_len != 0 {
                         return -14;
@@ -936,7 +938,9 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
                         stx_dio_offset_align: 0,
                         __spare3: [0; 12],
                     };
+                    // SAFETY: statxbuf is a validated user pointer with sufficient space for Statx.
                     unsafe {
+                        // SAFETY: statxbuf is a validated user pointer with at least size_of::<Statx>() bytes.
                         core::ptr::write(statxbuf as *mut Statx, stx);
                     }
                     0
@@ -1024,8 +1028,15 @@ fn execute_sqe(sqe: &IoUringSqe, ring: &IoUring, ring_id: u32) -> i32 {
             if sqe.addr == 0 {
                 return -14;
             }
-            let secs = unsafe { *(sqe.addr as *const u64) };
-            let nanos = unsafe { *((sqe.addr as *const u64).add(1)) };
+            let mut secs_buf = [0u8; 8];
+            let mut nanos_buf = [0u8; 8];
+            if UserSpaceMemory::copy_from_user(sqe.addr, &mut secs_buf).is_err()
+                || UserSpaceMemory::copy_from_user(sqe.addr + 8, &mut nanos_buf).is_err()
+            {
+                return -14;
+            }
+            let secs = u64::from_ne_bytes(secs_buf);
+            let nanos = u64::from_ne_bytes(nanos_buf);
             // Busy-wait approximation — use nanosleep
             let ts = linux_compat::TimeSpec {
                 tv_sec: secs as i64,

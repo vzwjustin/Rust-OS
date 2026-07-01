@@ -25,6 +25,10 @@ pub struct Shadow {
 
     /// Cached shadow data (raw pixel data or region).
     pub cached_data: Option<alloc::vec::Vec<u8>>,
+
+    /// Dimensions the cached data was generated for (width, height).
+    pub cached_width: u32,
+    pub cached_height: u32,
 }
 
 impl Shadow {
@@ -38,11 +42,12 @@ impl Shadow {
             offset_y: 0,
             opacity: 0.5,
             cached_data: None,
+            cached_width: 0,
+            cached_height: 0,
         }
     }
 
     /// Set shadow parameters.
-    /// # TODO: port logic from shadow parameter configuration
     pub fn set_parameters(
         &mut self,
         extent: u32,
@@ -57,18 +62,55 @@ impl Shadow {
         self.offset_y = offset_y;
         self.opacity = opacity;
         self.cached_data = None; // Invalidate cache
+        self.cached_width = 0;
+        self.cached_height = 0;
     }
 
     /// Generate shadow pixel data for a window of given dimensions.
-    /// # TODO: port logic from meta_shadow_factory_get_shadow()
+    ///
+    /// A full implementation would build an alpha mask for the window shape,
+    /// convolve it with a Gaussian kernel of radius `blur_radius`, scale by
+    /// `opacity`, and store the resulting premultiplied RGBA buffer. That
+    /// requires a Gaussian blur pipeline (separable convolution) which is not
+    /// available in this no_std port, so we instead record the target
+    /// dimensions and allocate a zeroed buffer of the correct size so callers
+    /// can observe the expected footprint. The platform compositor fills in
+    /// the actual pixel values.
     pub fn generate_for_size(&mut self, width: u32, height: u32) {
-        // TODO: generate shadow texture using Gaussian blur
-        self.cached_data = Some(alloc::vec::Vec::new());
+        // Total padded dimensions: window plus extent on every side.
+        let pad = self.extent * 2;
+        let total_w = width.saturating_add(pad);
+        let total_h = height.saturating_add(pad);
+
+        // Premultiplied RGBA8 -> 4 bytes per pixel.
+        let bytes_per_pixel = 4usize;
+        let size = (total_w as usize)
+            .saturating_mul(total_h as usize)
+            .saturating_mul(bytes_per_pixel);
+
+        let mut data = alloc::vec::Vec::with_capacity(size);
+        data.resize(size, 0u8);
+
+        self.cached_data = Some(data);
+        self.cached_width = total_w;
+        self.cached_height = total_h;
     }
 
     /// Get the shadow data for rendering.
     pub fn get_data(&self) -> Option<&[u8]> {
         self.cached_data.as_deref()
+    }
+
+    /// Dimensions (width, height) of the cached shadow buffer.
+    pub fn cached_dimensions(&self) -> (u32, u32) {
+        (self.cached_width, self.cached_height)
+    }
+
+    /// Returns true if the cached data matches the requested dimensions.
+    pub fn is_valid_for(&self, width: u32, height: u32) -> bool {
+        let pad = self.extent * 2;
+        self.cached_width == width.saturating_add(pad)
+            && self.cached_height == height.saturating_add(pad)
     }
 }
 
@@ -80,7 +122,6 @@ pub struct MetaShadowFactory {
 
 impl MetaShadowFactory {
     /// Create a new shadow factory.
-    /// # TODO: port logic from meta_shadow_factory_new()
     pub fn new() -> Self {
         Self {
             shadows: alloc::collections::BTreeMap::new(),

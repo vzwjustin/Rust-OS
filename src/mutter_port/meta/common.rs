@@ -2,6 +2,7 @@
 //! Ported from meta/common.h
 
 use crate::mutter_port::meta::enums::MetaButtonFunction;
+use crate::mutter_port::mtk::MtkRectangle;
 
 pub const MAX_BUTTONS_PER_CORNER: usize = 4;
 
@@ -57,4 +58,57 @@ pub const META_PRIORITY_BEFORE_REDRAW: i32 = -60; // G_PRIORITY_HIGH_IDLE + 40
 pub const META_PRIORITY_REDRAW: i32 = -50; // G_PRIORITY_HIGH_IDLE + 50
 pub const META_PRIORITY_PREFS_NOTIFY: i32 = -10; // G_PRIORITY_DEFAULT_IDLE + 10
 
-// TODO: port additional common types as needed
+/// Complete frame geometry for a decorated window.
+///
+/// Combines the three border measurements used by the window manager:
+/// - `border`: the visible decoration border widths (title bar + side bars).
+/// - `visible`: the rectangle of the visible frame area in screen space.
+/// - `total`: the full frame rectangle including invisible (extended)
+///   borders used for input region and shadow hit-testing.
+///
+/// Mirrors the upstream `MetaFrameGeometry` struct from `meta/common.h`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetaFrameGeometry {
+    /// Visible decoration border widths.
+    pub border: MetaFrameBorder,
+    /// Visible frame rectangle in screen coordinates.
+    pub visible: MtkRectangle,
+    /// Total frame rectangle (visible + invisible extended borders).
+    pub total: MtkRectangle,
+}
+
+impl MetaFrameGeometry {
+    /// Compute the total frame rectangle from the visible rectangle and
+    /// the invisible border widths. The total rect expands outward from
+    /// the visible rect by the invisible borders on each side.
+    pub fn from_visible(
+        visible: MtkRectangle,
+        visible_border: MetaFrameBorder,
+        invisible: MetaFrameBorder,
+    ) -> Self {
+        let total = MtkRectangle {
+            x: visible.x - invisible.left as i32,
+            y: visible.y - invisible.top as i32,
+            width: visible.width + (invisible.left + invisible.right) as i32,
+            height: visible.height + (invisible.top + invisible.bottom) as i32,
+        };
+        Self {
+            border: visible_border,
+            visible,
+            total,
+        }
+    }
+
+    /// The invisible border widths, derived as the difference between the
+    /// total and visible rectangles.
+    pub fn invisible_border(&self) -> MetaFrameBorder {
+        MetaFrameBorder {
+            left: (self.total.x - self.visible.x) as i16,
+            top: (self.total.y - self.visible.y) as i16,
+            right: ((self.total.width - self.visible.width) as i16)
+                - (self.total.x - self.visible.x) as i16,
+            bottom: ((self.total.height - self.visible.height) as i16)
+                - (self.total.y - self.visible.y) as i16,
+        }
+    }
+}

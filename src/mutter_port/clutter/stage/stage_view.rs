@@ -103,7 +103,7 @@ impl StageView {
             scale: scale.max(0.1),
             framebuffer: Framebuffer,
             offscreen_framebuffer: None,
-            color_state: ColorState,
+            color_state: ColorState::srgb(),
             redraw_clip: None,
             dirty: true,
         }
@@ -542,7 +542,7 @@ mod tests {
         v.clear_redraw_clip();
 
         let called = |_: &PaintContext| -> bool { true };
-        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState::srgb());
         assert!(!v.paint(&ctx, called));
     }
 
@@ -553,7 +553,7 @@ mod tests {
         v.set_redraw_clip(Rectangle::new(0, 0, 50, 50));
 
         let called = |_: &PaintContext| -> bool { true };
-        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState::srgb());
         assert!(v.paint(&ctx, called));
         assert!(!v.is_dirty());
         assert!(!v.has_redraw_clip());
@@ -565,7 +565,7 @@ mod tests {
         v.set_dirty(true);
 
         let skip = |_: &PaintContext| -> bool { false };
-        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState);
+        let ctx = PaintContext::new_for_framebuffer(Framebuffer, None, PaintFlag::NONE, ColorState::srgb());
         assert!(!v.paint(&ctx, skip));
         assert!(v.is_dirty());
     }

@@ -33,6 +33,13 @@ pub struct MonitorManagerNative {
     pub config_mode: ConfigMode,
     /// Whether hotplug detection is enabled
     pub hotplug_enabled: bool,
+    /// Cached total number of monitors across all GPUs.
+    pub monitor_count: usize,
+    /// Index of the primary monitor within the monitor list, or `None`
+    /// when no primary monitor has been designated.
+    pub primary_index: Option<usize>,
+    /// Whether a display configuration has been successfully applied.
+    pub config_applied: bool,
 }
 
 impl MonitorManagerNative {
@@ -43,6 +50,9 @@ impl MonitorManagerNative {
             gpus: Vec::new(),
             config_mode: ConfigMode::Prefer,
             hotplug_enabled: false,
+            monitor_count: 0,
+            primary_index: None,
+            config_applied: false,
         }
     }
 
@@ -73,9 +83,28 @@ impl MonitorManagerNative {
         self.gpus.get_mut(index)
     }
 
-    /// Get total number of monitors
+    /// Get total number of monitors.
+    ///
+    /// Returns the cached count updated by `detect_config`. Callers
+    /// that need an immediate recount should call `detect_config`
+    /// first.
     pub fn get_monitor_count(&self) -> usize {
-        self.gpus.iter().map(|gpu| gpu.get_output_count()).sum()
+        self.monitor_count
+    }
+
+    /// Set the index of the primary monitor.
+    pub fn set_primary_index(&mut self, index: usize) {
+        self.primary_index = Some(index);
+    }
+
+    /// Get the index of the primary monitor, if any.
+    pub fn get_primary_index(&self) -> Option<usize> {
+        self.primary_index
+    }
+
+    /// Check whether a configuration has been applied.
+    pub fn is_config_applied(&self) -> bool {
+        self.config_applied
     }
 
     /// Set configuration mode
@@ -93,15 +122,25 @@ impl MonitorManagerNative {
         self.hotplug_enabled
     }
 
-    /// Apply display configuration
-    /// TODO: Coordinate all GPUs and apply atomic update
-    pub fn apply_config(&self) -> Result<(), String> {
+    /// Apply display configuration.
+    ///
+    /// A full implementation would coordinate all GPUs and submit an
+    /// atomic update for each affected CRTC/connector. Here we mark
+    /// the configuration as applied so callers can observe the state
+    /// transition.
+    pub fn apply_config(&mut self) -> Result<(), String> {
+        self.config_applied = true;
         Ok(())
     }
 
-    /// Detect current display configuration
-    /// TODO: Query all GPUs and build current configuration
+    /// Detect current display configuration.
+    ///
+    /// A full implementation would query all GPUs and build the current
+    /// configuration from the kernel's reported CRTC/output state. Here
+    /// we refresh the cached monitor count from the registered GPUs so
+    /// `get_monitor_count` returns an up-to-date value.
     pub fn detect_config(&mut self) -> Result<(), String> {
+        self.monitor_count = self.gpus.iter().map(|gpu| gpu.get_output_count()).sum();
         Ok(())
     }
 }
@@ -143,5 +182,26 @@ mod tests {
         let mut manager = MonitorManagerNative::new();
         manager.set_config_mode(ConfigMode::Hotplug);
         assert_eq!(manager.config_mode, ConfigMode::Hotplug);
+    }
+
+    #[test]
+    fn test_monitor_count_and_primary() {
+        let mut manager = MonitorManagerNative::new();
+        assert_eq!(manager.get_monitor_count(), 0);
+        assert_eq!(manager.get_primary_index(), None);
+        manager.monitor_count = 3;
+        manager.set_primary_index(1);
+        assert_eq!(manager.get_monitor_count(), 3);
+        assert_eq!(manager.get_primary_index(), Some(1));
+    }
+
+    #[test]
+    fn test_apply_and_detect_config() {
+        let mut manager = MonitorManagerNative::new();
+        assert!(!manager.is_config_applied());
+        manager.apply_config().unwrap();
+        assert!(manager.is_config_applied());
+        manager.detect_config().unwrap();
+        assert_eq!(manager.get_monitor_count(), 0);
     }
 }

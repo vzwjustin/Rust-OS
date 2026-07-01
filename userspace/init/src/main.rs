@@ -35,26 +35,33 @@ unsafe fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     ret
 }
 
+/// Write `buf` to file descriptor `fd`. Returns the number of bytes written
+/// or a negative errno on failure.
 #[inline(always)]
-unsafe fn write(fd: u64, buf: &[u8]) -> i64 {
-    syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64)
+fn write(fd: u64, buf: &[u8]) -> i64 {
+    // SAFETY: syscall3 only touches registers; the buffer pointer/len are
+    // derived from a valid Rust slice so the kernel reads in-bounds memory.
+    unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64) }
 }
 
+/// Exit the process with status `code`. Never returns.
 #[inline(always)]
-unsafe fn exit(code: u64) -> ! {
-    asm!("int 0x80", in("rax") SYS_EXIT, in("rdi") code, options(noreturn, nostack));
+fn exit(code: u64) -> ! {
+    // SAFETY: the exit syscall never returns to the caller.
+    unsafe {
+        asm!("int 0x80", in("rax") SYS_EXIT, in("rdi") code, options(noreturn, nostack));
+    }
 }
 
 #[no_mangle]
 #[link_section = ".text._start"]
 pub extern "C" fn _start() -> ! {
-    unsafe {
-        write(1, b"[rustos-init] hello from Ring-3 PID 1 (native Rust, static ELF)\n");
-        exit(0);
-    }
+    write(1, b"[rustos-init] hello from Ring-3 PID 1 (native Rust, static ELF)\n");
+    exit(0);
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    unsafe { exit(101) }
+    write(2, b"[rustos-init] panic in PID 1\n");
+    exit(101)
 }

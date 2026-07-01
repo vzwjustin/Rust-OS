@@ -7,7 +7,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ const KBD_LED_SCROLL_LOCK: u8 = 0x01;
 const KBD_LED_NUM_LOCK: u8 = 0x02;
 const KBD_LED_CAPS_LOCK: u8 = 0x04;
 
-static mut KBD_LED_STATE: u8 = 0;
+static KBD_LED_STATE: AtomicU8 = AtomicU8::new(0);
 
 /// Write keyboard LED state via PS/2 controller.
 /// SAFETY: Performs raw I/O to PS/2 controller ports 0x60/0x64.
@@ -125,26 +125,24 @@ unsafe fn write_kbd_leds(led_state: u8) {
 }
 
 fn update_kbd_leds() {
-    let state = unsafe { KBD_LED_STATE };
+    let state = KBD_LED_STATE.load(Ordering::Relaxed);
     unsafe { write_kbd_leds(state) };
 }
 
 // ── Individual keyboard LED drivers ─────────────────────────────────────
 
 fn caps_lock_set(brightness: LedBrightness) -> Result<(), &'static str> {
-    unsafe {
-        if brightness > 0 {
-            KBD_LED_STATE |= KBD_LED_CAPS_LOCK;
-        } else {
-            KBD_LED_STATE &= !KBD_LED_CAPS_LOCK;
-        }
+    if brightness > 0 {
+        KBD_LED_STATE.fetch_or(KBD_LED_CAPS_LOCK, Ordering::Relaxed);
+    } else {
+        KBD_LED_STATE.fetch_and(!KBD_LED_CAPS_LOCK, Ordering::Relaxed);
     }
     update_kbd_leds();
     Ok(())
 }
 
 fn caps_lock_get() -> LedBrightness {
-    let state = unsafe { KBD_LED_STATE };
+    let state = KBD_LED_STATE.load(Ordering::Relaxed);
     if state & KBD_LED_CAPS_LOCK != 0 {
         255
     } else {
@@ -153,19 +151,17 @@ fn caps_lock_get() -> LedBrightness {
 }
 
 fn num_lock_set(brightness: LedBrightness) -> Result<(), &'static str> {
-    unsafe {
-        if brightness > 0 {
-            KBD_LED_STATE |= KBD_LED_NUM_LOCK;
-        } else {
-            KBD_LED_STATE &= !KBD_LED_NUM_LOCK;
-        }
+    if brightness > 0 {
+        KBD_LED_STATE.fetch_or(KBD_LED_NUM_LOCK, Ordering::Relaxed);
+    } else {
+        KBD_LED_STATE.fetch_and(!KBD_LED_NUM_LOCK, Ordering::Relaxed);
     }
     update_kbd_leds();
     Ok(())
 }
 
 fn num_lock_get() -> LedBrightness {
-    let state = unsafe { KBD_LED_STATE };
+    let state = KBD_LED_STATE.load(Ordering::Relaxed);
     if state & KBD_LED_NUM_LOCK != 0 {
         255
     } else {
@@ -174,19 +170,17 @@ fn num_lock_get() -> LedBrightness {
 }
 
 fn scroll_lock_set(brightness: LedBrightness) -> Result<(), &'static str> {
-    unsafe {
-        if brightness > 0 {
-            KBD_LED_STATE |= KBD_LED_SCROLL_LOCK;
-        } else {
-            KBD_LED_STATE &= !KBD_LED_SCROLL_LOCK;
-        }
+    if brightness > 0 {
+        KBD_LED_STATE.fetch_or(KBD_LED_SCROLL_LOCK, Ordering::Relaxed);
+    } else {
+        KBD_LED_STATE.fetch_and(!KBD_LED_SCROLL_LOCK, Ordering::Relaxed);
     }
     update_kbd_leds();
     Ok(())
 }
 
 fn scroll_lock_get() -> LedBrightness {
-    let state = unsafe { KBD_LED_STATE };
+    let state = KBD_LED_STATE.load(Ordering::Relaxed);
     if state & KBD_LED_SCROLL_LOCK != 0 {
         255
     } else {

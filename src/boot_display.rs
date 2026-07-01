@@ -246,9 +246,7 @@ pub fn show_welcome_message() {
 pub fn boot_delay() {
     // Simple delay loop
     for _ in 0..10_000_000 {
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
     }
 }
 
@@ -653,9 +651,7 @@ pub fn show_countdown(seconds: usize, message: &str) {
 
         // Delay for approximately 1 second
         for _ in 0..100_000_000 {
-            unsafe {
-                core::arch::asm!("nop");
-            }
+            core::hint::spin_loop();
         }
     }
     println!();

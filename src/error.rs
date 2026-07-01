@@ -341,9 +341,7 @@ impl ErrorRecoveryManager {
 
         // If we reach here, force halt
         loop {
-            unsafe {
-                core::arch::asm!("hlt");
-            }
+            x86_64::instructions::hlt();
         }
     }
 
@@ -750,6 +748,7 @@ pub fn init_error_handling() {
             // user page, writes it to swap storage, and frees the frame.
             crate::serial_println!("Memory recovery: attempting page swap-out");
             if let Some(mm) = crate::memory::get_memory_manager() {
+                let mm = &*mm;
                 match mm.swap_out_victim_page() {
                     Ok(()) => {
                         crate::serial_println!(

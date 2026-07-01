@@ -108,15 +108,21 @@ impl ShaderMatrix {
     /// Flattens the matrix into a slice (borrows the variant's data).
     pub fn as_slice(&self) -> &[f32] {
         match self {
-            ShaderMatrix::Matrix2x2(m) => unsafe {
-                core::slice::from_raw_parts(m as *const _ as *const f32, 4)
-            },
-            ShaderMatrix::Matrix3x3(m) => unsafe {
-                core::slice::from_raw_parts(m as *const _ as *const f32, 9)
-            },
-            ShaderMatrix::Matrix4x4(m) => unsafe {
-                core::slice::from_raw_parts(m as *const _ as *const f32, 16)
-            },
+            ShaderMatrix::Matrix2x2(m) => {
+                // SAFETY: `m` is a `&[f32; 4]` reference from the enum variant;
+                // the pointer is valid and the length is 4.
+                unsafe { core::slice::from_raw_parts(m as *const _ as *const f32, 4) }
+            }
+            ShaderMatrix::Matrix3x3(m) => {
+                // SAFETY: `m` is a `&[f32; 9]` reference from the enum variant;
+                // the pointer is valid and the length is 9.
+                unsafe { core::slice::from_raw_parts(m as *const _ as *const f32, 9) }
+            }
+            ShaderMatrix::Matrix4x4(m) => {
+                // SAFETY: `m` is a `&[f32; 16]` reference from the enum variant;
+                // the pointer is valid and the length is 16.
+                unsafe { core::slice::from_raw_parts(m as *const _ as *const f32, 16) }
+            }
         }
     }
 }

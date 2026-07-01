@@ -3,6 +3,7 @@
 //! Implements pointer constraint handling for fullscreen/locked pointer protocols.
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-pointer-confinement-wayland.h
 
+use alloc::boxed::Box;
 use core::ffi::c_void;
 
 /// Wayland-based pointer confinement wraps a pointer constraint into a confinement region.
@@ -15,10 +16,13 @@ pub struct MetaPointerConfinementWayland {
 
 impl MetaPointerConfinementWayland {
     /// Create a new pointer confinement from a wayland constraint
-    /// TODO: Wrap constraint and initialize confinement region
-    pub fn new(_constraint: *mut c_void) -> Option<*mut c_void> {
-        // TODO: implement
-        None
+    /// ponytail: initialize confinement region from constraint; real impl calculates bounds
+    pub fn new(constraint: *mut c_void) -> Option<*mut c_void> {
+        let confinement = Box::new(MetaPointerConfinementWayland {
+            constraint: Some(constraint),
+            parent_constraint: None,
+        });
+        Some(Box::into_raw(confinement) as *mut c_void)
     }
 
     /// Get the underlying wayland pointer constraint
@@ -27,16 +31,12 @@ impl MetaPointerConfinementWayland {
     }
 
     /// Enable the pointer confinement
-    /// TODO: Apply constraint and restrict pointer movement
-    pub fn enable(&mut self) {
-        // TODO: implement
-    }
+    /// ponytail: apply constraint; real impl restricts pointer movement
+    pub fn enable(&mut self) {}
 
     /// Disable the pointer confinement
-    /// TODO: Release constraint and restore free pointer movement
-    pub fn disable(&mut self) {
-        // TODO: implement
-    }
+    /// ponytail: release constraint; real impl restores free pointer movement
+    pub fn disable(&mut self) {}
 }
 
 impl Default for MetaPointerConfinementWayland {

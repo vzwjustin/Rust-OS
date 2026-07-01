@@ -4,8 +4,9 @@
 //! MetaBackend abstracts display server protocol (X11, Wayland).
 //! MetaContext is the top-level Mutter session container.
 
+use crate::mutter_port::meta::compositor::MetaCompositor;
+use crate::mutter_port::meta::display::MetaDisplay;
 use alloc::boxed::Box;
-use crate::mutter_port::meta::types::*;
 
 /// Backend abstraction (X11, Wayland, etc)
 pub struct MetaBackend {
@@ -13,6 +14,7 @@ pub struct MetaBackend {
     context: Option<Box<MetaContext>>,
     compositor: Option<Box<MetaCompositor>>,
     is_running: bool,
+    is_setup: bool,
 }
 
 impl MetaBackend {
@@ -23,6 +25,7 @@ impl MetaBackend {
             context: None,
             compositor: None,
             is_running: false,
+            is_setup: false,
         }
     }
 
@@ -46,16 +49,32 @@ impl MetaBackend {
         self.is_running
     }
 
-    /// Start the backend
-    pub fn start(&mut self) {
-        self.is_running = true;
-        // TODO: implement
+    /// Mark the backend as set up (ready to start).
+    pub fn set_setup(&mut self) {
+        self.is_setup = true;
     }
 
-    /// Stop the backend
+    /// Start the backend. Requires setup to have been called.
+    /// Initializes the display and compositor if not already present.
+    pub fn start(&mut self) {
+        if !self.is_setup {
+            return;
+        }
+        if self.display.is_none() {
+            self.display = Some(Box::new(MetaDisplay::new()));
+        }
+        if self.compositor.is_none() {
+            self.compositor = Some(Box::new(MetaCompositor::new()));
+        }
+        self.is_running = true;
+    }
+
+    /// Stop the backend. Marks as not running and disables the compositor.
     pub fn stop(&mut self) {
         self.is_running = false;
-        // TODO: implement
+        if let Some(ref mut comp) = self.compositor {
+            comp.set_enabled(false);
+        }
     }
 }
 
@@ -70,6 +89,7 @@ pub struct MetaContext {
     backend: Option<Box<MetaBackend>>,
     display: Option<Box<MetaDisplay>>,
     is_running: bool,
+    is_setup: bool,
 }
 
 impl MetaContext {
@@ -79,24 +99,43 @@ impl MetaContext {
             backend: None,
             display: None,
             is_running: false,
+            is_setup: false,
         }
     }
 
-    /// Initialize the context
+    /// Initialize the context. Creates the backend and display if not
+    /// already present, and marks the context as set up.
     pub fn setup(&mut self) {
-        // TODO: implement
+        if self.backend.is_none() {
+            self.backend = Some(Box::new(MetaBackend::new()));
+        }
+        if self.display.is_none() {
+            self.display = Some(Box::new(MetaDisplay::new()));
+        }
+        if let Some(ref mut backend) = self.backend {
+            backend.set_setup();
+        }
+        self.is_setup = true;
     }
 
-    /// Start the context main loop
+    /// Start the context main loop. Requires setup to have been called.
+    /// Starts the backend and marks the context as running.
     pub fn run(&mut self) {
+        if !self.is_setup {
+            return;
+        }
+        if let Some(ref mut backend) = self.backend {
+            backend.start();
+        }
         self.is_running = true;
-        // TODO: implement
     }
 
-    /// Stop the context main loop
+    /// Stop the context main loop. Stops the backend and marks as not running.
     pub fn stop(&mut self) {
         self.is_running = false;
-        // TODO: implement
+        if let Some(ref mut backend) = self.backend {
+            backend.stop();
+        }
     }
 
     /// Get the backend
@@ -120,4 +159,3 @@ impl Default for MetaContext {
         Self::new()
     }
 }
-

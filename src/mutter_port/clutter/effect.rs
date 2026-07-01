@@ -223,7 +223,7 @@ mod tests {
             Framebuffer,
             None,
             PaintFlag::NONE,
-            super::super::paint_context::ColorState,
+            super::super::paint_context::ColorState::srgb(),
         )
     }
 

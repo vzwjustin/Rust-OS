@@ -551,6 +551,8 @@ pub fn selftest_blk() -> Result<u64, &'static str> {
         reserved: 0,
         sector: 3,
     };
+    // SAFETY: `hdr` is a stack-local `Copy` struct; the pointer is valid
+    // and the length is `size_of::<BlkReqHdr>()`.
     let hdr_bytes = unsafe {
         core::slice::from_raw_parts(
             &hdr as *const BlkReqHdr as *const u8,
@@ -574,6 +576,8 @@ pub fn selftest_blk() -> Result<u64, &'static str> {
         reserved: 0,
         sector: 3,
     };
+    // SAFETY: `rhdr` is a stack-local `Copy` struct; the pointer is valid
+    // and the length is `size_of::<BlkReqHdr>()`.
     let rhdr_bytes = unsafe {
         core::slice::from_raw_parts(
             &rhdr as *const BlkReqHdr as *const u8,

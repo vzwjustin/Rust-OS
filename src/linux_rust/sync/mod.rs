@@ -40,6 +40,8 @@ impl LockClassKey {
     }
 }
 
+// SAFETY: LockClassKey contains only PhantomData, which is zero-sized and
+// has no thread affinity. It is a pure type-level marker for lockdep.
 unsafe impl Send for LockClassKey {}
 unsafe impl Sync for LockClassKey {}
 

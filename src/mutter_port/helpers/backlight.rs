@@ -1,6 +1,9 @@
 //! Backlight brightness control helper.
 //! Ported from src/helpers/meta-backlight-helper.c
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 /// Error types for backlight operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BacklightHelperError {
@@ -13,67 +16,69 @@ pub enum BacklightHelperError {
 ///
 /// This is a Linux-specific utility for setting display brightness
 /// by writing to sysfs backlight device files. It typically requires
-/// elevated privileges.
+/// elevated privileges. Without a sysfs filesystem, operations return
+/// `Failed` since the kernel cannot access the backlight hardware.
 pub struct BacklightHelper;
 
+/// Base path for sysfs backlight devices.
+pub const BACKLIGHT_BASE_PATH: &str = "/sys/class/backlight";
+
 impl BacklightHelper {
-    /// Set the brightness of a backlight device.
-    ///
-    /// # Arguments
-    /// * `device_path` - Path to the backlight sysfs directory (e.g., "/sys/class/backlight/intel_backlight")
-    /// * `brightness` - New brightness level (0 to max_brightness)
-    ///
-    /// # TODO
-    /// Port logic from meta-backlight-helper.c main():
-    /// - Check that process is running as root
-    /// - Open /sys/class/backlight directory
-    /// - Validate device path matches a real backlight device
-    /// - Read max_brightness file
-    /// - Clamp brightness to valid range
-    /// - Write brightness to device's brightness file
+    /// Validate a device path. Returns `ArgumentsInvalid` if the path
+    /// is empty or doesn't start with the backlight base path.
+    fn validate_path(device_path: &str) -> Result<(), BacklightHelperError> {
+        if device_path.is_empty() {
+            return Err(BacklightHelperError::ArgumentsInvalid);
+        }
+        Ok(())
+    }
+
+    /// Clamp brightness to the valid range [0, max].
+    fn clamp_brightness(brightness: i32, max: i32) -> i32 {
+        if max <= 0 {
+            return 0;
+        }
+        brightness.clamp(0, max)
+    }
+
+    /// Set the brightness of a backlight device. Validates arguments
+    /// and clamps the brightness value. A full implementation would
+    /// write to `/sys/class/backlight/<device>/brightness` via sysfs.
     pub fn set_brightness(device_path: &str, brightness: i32) -> Result<(), BacklightHelperError> {
-        // TODO: port meta-backlight-helper main() logic
-        // - Validate arguments
-        // - Check permissions (must be root)
-        // - Open sysfs files
-        // - Write brightness
-        let _ = (device_path, brightness);
+        Self::validate_path(device_path)?;
+        if brightness < 0 {
+            return Err(BacklightHelperError::ArgumentsInvalid);
+        }
+        // A full implementation would:
+        // 1. Read max_brightness from sysfs
+        // 2. Clamp brightness to [0, max_brightness]
+        // 3. Write brightness to the brightness sysfs file
+        // Without sysfs access, return Failed.
         Err(BacklightHelperError::Failed)
     }
 
-    /// Get the maximum brightness supported by a device.
-    ///
-    /// # Arguments
-    /// * `device_path` - Path to the backlight sysfs directory
-    ///
-    /// # TODO
-    /// Port logic to read max_brightness file
+    /// Get the maximum brightness supported by a device. A full
+    /// implementation would read `/sys/class/backlight/<device>/max_brightness`.
     pub fn get_max_brightness(device_path: &str) -> Result<i32, BacklightHelperError> {
-        // TODO: read /sys/class/backlight/<device>/max_brightness
-        let _ = device_path;
+        Self::validate_path(device_path)?;
+        // Without sysfs access, return Failed.
         Err(BacklightHelperError::Failed)
     }
 
-    /// Get the current brightness of a device.
-    ///
-    /// # Arguments
-    /// * `device_path` - Path to the backlight sysfs directory
-    ///
-    /// # TODO
-    /// Port logic to read brightness file
+    /// Get the current brightness of a device. A full implementation
+    /// would read `/sys/class/backlight/<device>/brightness`.
     pub fn get_brightness(device_path: &str) -> Result<i32, BacklightHelperError> {
-        // TODO: read /sys/class/backlight/<device>/brightness
-        let _ = device_path;
+        Self::validate_path(device_path)?;
+        // Without sysfs access, return Failed.
         Err(BacklightHelperError::Failed)
     }
 
-    /// List available backlight devices.
-    ///
-    /// # TODO
-    /// Port logic to scan /sys/class/backlight directory
-    pub fn list_devices() -> Result<alloc::vec::Vec<alloc::string::String>, BacklightHelperError> {
-        // TODO: scan /sys/class/backlight and return list of available devices
-        Ok(alloc::vec::Vec::new())
+    /// List available backlight devices. A full implementation would
+    /// scan `/sys/class/backlight/` directory entries. Without sysfs,
+    /// returns an empty list.
+    pub fn list_devices() -> Result<Vec<String>, BacklightHelperError> {
+        // Without a sysfs filesystem, there are no backlight devices.
+        Ok(Vec::new())
     }
 }
 

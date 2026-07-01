@@ -128,7 +128,8 @@ pub fn init() {
     for _ in 0..DEFAULT_POOL_PAGES {
         if let Some(phys) = memory::allocate_huge_frame() {
             unsafe {
-                let mm = crate::memory::get_memory_manager().expect("memory manager");
+                let mm_guard = crate::memory::get_memory_manager().expect("memory manager");
+                let mm = &*mm_guard;
                 let ptr = (mm.physical_memory_offset() + phys.as_u64()).as_mut_ptr::<u8>();
                 core::ptr::write_bytes(ptr, 0, HUGEPAGE_SIZE);
             }

@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -64,13 +64,13 @@ pub struct MtdPartition {
 
 // ── Software NOR flash (in-memory backing) ──────────────────────────────
 
-static mut SW_FLASH_DATA: Vec<u8> = Vec::new();
+static SW_FLASH_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 const SW_FLASH_SIZE: u64 = 8 * 1024 * 1024; // 8 MiB
 const SW_FLASH_ERASESIZE: u32 = 64 * 1024; // 64 KiB erase blocks
 const SW_FLASH_WRITESIZE: u32 = 1; // Byte-writeable (NOR)
 
 fn sw_read(offset: u64, buf: &mut [u8]) -> Result<usize, &'static str> {
-    let data = unsafe { &SW_FLASH_DATA };
+    let data = SW_FLASH_DATA.lock();
     let start = offset as usize;
     if start >= data.len() {
         return Err("MTD read offset out of range");
@@ -82,7 +82,7 @@ fn sw_read(offset: u64, buf: &mut [u8]) -> Result<usize, &'static str> {
 }
 
 fn sw_write(offset: u64, buf: &[u8]) -> Result<usize, &'static str> {
-    let data = unsafe { &mut SW_FLASH_DATA };
+    let mut data = SW_FLASH_DATA.lock();
     let start = offset as usize;
     if start + buf.len() > data.len() {
         return Err("MTD write extends beyond device");
@@ -95,7 +95,7 @@ fn sw_write(offset: u64, buf: &[u8]) -> Result<usize, &'static str> {
 }
 
 fn sw_erase(offset: u64, len: u64) -> Result<(), &'static str> {
-    let data = unsafe { &mut SW_FLASH_DATA };
+    let mut data = SW_FLASH_DATA.lock();
     let start = offset as usize;
     let end = (offset + len) as usize;
     if end > data.len() {
@@ -341,9 +341,7 @@ pub fn device_count() -> usize {
 /// Initialize MTD subsystem with software NOR flash.
 pub fn init() -> Result<(), &'static str> {
     if device_count() == 0 {
-        unsafe {
-            SW_FLASH_DATA = alloc::vec![0xFF; SW_FLASH_SIZE as usize];
-        }
+        *SW_FLASH_DATA.lock() = alloc::vec![0xFF; SW_FLASH_SIZE as usize];
         register_device(
             "software-nor-flash",
             MtdType::Nor,

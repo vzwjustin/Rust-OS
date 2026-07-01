@@ -37,7 +37,7 @@ pub struct InputMapper {
     pub backend: *mut MetaBackend,
     pub monitor_manager: *mut MetaMonitorManager,
     pub seat: *mut ClutterSeat,
-    pub input_devices: *mut core::ffi::c_void,  // GHashTable<ClutterInputDevice, MetaMapperInputInfo>
+    pub input_devices: *mut core::ffi::c_void, // GHashTable<ClutterInputDevice, MetaMapperInputInfo>
     pub output_devices: *mut core::ffi::c_void, // GHashTable<MetaLogicalMonitor, MetaMapperOutputInfo>
     pub dbus_name_id: u32,
 }

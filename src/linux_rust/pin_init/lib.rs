@@ -375,6 +375,8 @@ pub fn init_zeroed<T: Zeroable>() -> impl Init<T> {
 
 /// Create a `T` consisting of all zeroes.
 pub const fn zeroed<T: Zeroable>() -> T {
+    // SAFETY: The `Zeroable` trait guarantees that an all-zero bit pattern
+    // is a valid value of `T`.
     unsafe { core::mem::zeroed() }
 }
 
@@ -488,6 +490,8 @@ where
             let init = make_init(i);
             let ptr = unsafe { slot.add(i) };
             if let Err(e) = unsafe { init.__init(ptr) } {
+                // SAFETY: `slot` is a valid `*mut T` array and `i` is the
+                // number of initialized elements to drop.
                 unsafe { ptr::drop_in_place(ptr::slice_from_raw_parts_mut(slot, i)) };
                 return Err(e);
             }
@@ -510,6 +514,8 @@ where
             let init = make_init(i);
             let ptr = unsafe { slot.add(i) };
             if let Err(e) = unsafe { init.__pinned_init(ptr) } {
+                // SAFETY: `slot` is a valid `*mut T` array and `i` is the
+                // number of initialized elements to drop.
                 unsafe { ptr::drop_in_place(ptr::slice_from_raw_parts_mut(slot, i)) };
                 return Err(e);
             }

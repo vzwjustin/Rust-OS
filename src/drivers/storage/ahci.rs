@@ -1320,9 +1320,7 @@ impl AhciDriver {
             timeout -= 1;
             // Small delay to prevent busy waiting
             for _ in 0..1000 {
-                unsafe {
-                    core::arch::asm!("pause");
-                }
+                core::hint::spin_loop();
             }
         }
 
@@ -1439,7 +1437,8 @@ impl AhciDriver {
             use crate::memory::get_memory_manager;
             use x86_64::VirtAddr;
             let virt_addr = VirtAddr::new(dma_buf.virtual_addr() as u64);
-            let mm = get_memory_manager().ok_or(StorageError::HardwareError)?;
+            let mm_guard = get_memory_manager().ok_or(StorageError::HardwareError)?;
+            let mm = &*mm_guard;
             mm.translate_addr(virt_addr)
                 .ok_or(StorageError::HardwareError)?
                 .as_u64()

@@ -136,6 +136,8 @@ impl DrmInode {
             DRM_IOCTL_VERSION => {
                 let version = drm_compat::DRMIoctl::version();
                 let size = core::mem::size_of::<drm_compat::DRMVersion>();
+                // SAFETY: `version` is a stack-local `Copy` struct; casting to
+                // bytes is valid for `size_of::<DRMVersion>()` bytes.
                 let bytes =
                     unsafe { core::slice::from_raw_parts(&version as *const _ as *const u8, size) };
                 crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
@@ -153,34 +155,30 @@ impl DrmInode {
                     .map_err(|_| "Failed to copy DRM cap to userspace")?;
                 Ok(16)
             }
-            DRM_IOCTL_MODE_GETRESOURCES => {
-                if let Some(drm) = drm_compat::get_drm_compat() {
-                    let resources = drm_compat::DRMIoctl::get_resources(drm);
-                    let size = core::mem::size_of::<drm_compat::DRMResources>();
-                    let bytes = unsafe {
-                        core::slice::from_raw_parts(&resources as *const _ as *const u8, size)
-                    };
-                    crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
-                        .map_err(|_| "Failed to copy DRM resources to userspace")?;
-                    Ok(size)
-                } else {
-                    Err("DRM not initialized")
-                }
-            }
-            DRM_IOCTL_MODE_GETPLANERESOURCES => {
-                if let Some(drm) = drm_compat::get_drm_compat() {
-                    let resources = drm_compat::DRMIoctl::get_plane_resources(drm);
-                    let size = core::mem::size_of::<drm_compat::DRMPlaneResources>();
-                    let bytes = unsafe {
-                        core::slice::from_raw_parts(&resources as *const _ as *const u8, size)
-                    };
-                    crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
-                        .map_err(|_| "Failed to copy DRM plane resources to userspace")?;
-                    Ok(size)
-                } else {
-                    Err("DRM not initialized")
-                }
-            }
+            DRM_IOCTL_MODE_GETRESOURCES => drm_compat::with_drm_compat(|drm| {
+                let resources = drm_compat::DRMIoctl::get_resources(drm);
+                let size = core::mem::size_of::<drm_compat::DRMResources>();
+                // SAFETY: `resources` is a stack-local `Copy` struct.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(&resources as *const _ as *const u8, size)
+                };
+                crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
+                    .map_err(|_| "Failed to copy DRM resources to userspace")?;
+                Ok(size)
+            })
+            .unwrap_or(Err("DRM not initialized")),
+            DRM_IOCTL_MODE_GETPLANERESOURCES => drm_compat::with_drm_compat(|drm| {
+                let resources = drm_compat::DRMIoctl::get_plane_resources(drm);
+                let size = core::mem::size_of::<drm_compat::DRMPlaneResources>();
+                // SAFETY: `resources` is a stack-local `Copy` struct.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(&resources as *const _ as *const u8, size)
+                };
+                crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, bytes)
+                    .map_err(|_| "Failed to copy DRM plane resources to userspace")?;
+                Ok(size)
+            })
+            .unwrap_or(Err("DRM not initialized")),
             DRM_IOCTL_MODE_GETCRTC
             | DRM_IOCTL_MODE_SETCRTC
             | DRM_IOCTL_MODE_GETENCODER
@@ -205,15 +203,12 @@ impl DrmInode {
             DRM_IOCTL_GEM_CLOSE => Err("DRM ioctl not supported"),
             DRM_IOCTL_GEM_FLINK => Err("DRM ioctl not supported"),
             DRM_IOCTL_GEM_OPEN => Err("DRM ioctl not supported"),
-            DRM_IOCTL_WAIT_VBLANK => {
-                if let Some(drm) = drm_compat::get_drm_compat() {
-                    let crtc_id = 0u32;
-                    let _ = drm.wait_vblank(crtc_id, 0);
-                    Ok(0)
-                } else {
-                    Err("DRM not initialized")
-                }
-            }
+            DRM_IOCTL_WAIT_VBLANK => drm_compat::with_drm_compat(|drm| {
+                let crtc_id = 0u32;
+                let _ = drm.wait_vblank(crtc_id, 0);
+                0
+            })
+            .map_or(Err("DRM not initialized"), Ok),
             DRM_IOCTL_MODE_GETPLANE | DRM_IOCTL_MODE_SETPLANE => Err("DRM ioctl not supported"),
             DRM_IOCTL_MODE_ADDFB2 | DRM_IOCTL_MODE_GETFB2 | DRM_IOCTL_MODE_CLOSEFB => {
                 Err("DRM ioctl not supported")
@@ -467,9 +462,9 @@ pub fn install_drm_dev(dev_dir: &Arc<dyn InodeOps>) -> VfsResult<()> {
     drm_compat::init_drm_compat().map_err(|_| VfsError::IoError)?;
 
     // Register card0 in the DRM compat layer
-    if let Some(drm) = drm_compat::get_drm_compat() {
+    drm_compat::with_drm_compat(|drm| {
         let _ = drm.register_device(0, "rustos-drm");
-    }
+    });
 
     // Create /dev/dri/ directory
     let dri_dir = DrmDirInode::new(alloc_drm_ino());
@@ -513,7 +508,7 @@ pub fn smoke_check() -> Result<(), &'static str> {
     drm_compat::init_drm_compat()?;
 
     // Verify device registration
-    if let Some(drm) = drm_compat::get_drm_compat() {
+    let check: Result<(), &'static str> = drm_compat::with_drm_compat(|drm| {
         drm.register_device(0, "rustos-drm")?;
 
         // Verify resources are accessible
@@ -530,9 +525,10 @@ pub fn smoke_check() -> Result<(), &'static str> {
         if version.name != "rustos_drm" {
             return Err("DRM version name mismatch");
         }
-    } else {
-        return Err("Failed to get DRM compat layer");
-    }
+        Ok(())
+    })
+    .unwrap_or(Err("Failed to get DRM compat layer"));
+    check?;
 
     // Verify ioctl dispatch
     let result = dispatch_ioctl(DRM_IOCTL_VERSION, 0)?;

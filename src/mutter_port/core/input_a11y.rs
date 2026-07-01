@@ -186,28 +186,32 @@ impl MetaInputA11y {
             if !enabled {
                 self.sticky_state.clear();
             }
-            self.pending_notifications.push(A11yNotification::StickyKeysChanged);
+            self.pending_notifications
+                .push(A11yNotification::StickyKeysChanged);
         }
     }
 
     pub fn set_slow_keys(&mut self, enabled: bool) {
         if self.keyboard.slow_keys != enabled {
             self.keyboard.slow_keys = enabled;
-            self.pending_notifications.push(A11yNotification::SlowKeysChanged);
+            self.pending_notifications
+                .push(A11yNotification::SlowKeysChanged);
         }
     }
 
     pub fn set_bounce_keys(&mut self, enabled: bool) {
         if self.keyboard.bounce_keys != enabled {
             self.keyboard.bounce_keys = enabled;
-            self.pending_notifications.push(A11yNotification::BounceKeysChanged);
+            self.pending_notifications
+                .push(A11yNotification::BounceKeysChanged);
         }
     }
 
     pub fn set_mouse_keys(&mut self, enabled: bool) {
         if self.keyboard.mouse_keys != enabled {
             self.keyboard.mouse_keys = enabled;
-            self.pending_notifications.push(A11yNotification::MouseKeysChanged);
+            self.pending_notifications
+                .push(A11yNotification::MouseKeysChanged);
         }
     }
 
@@ -343,7 +347,8 @@ impl MetaInputA11y {
     pub fn set_onscreen_keyboard(&mut self, enabled: bool) {
         if self.onscreen_keyboard != enabled {
             self.onscreen_keyboard = enabled;
-            self.pending_notifications.push(A11yNotification::OnscreenKeyboardChanged);
+            self.pending_notifications
+                .push(A11yNotification::OnscreenKeyboardChanged);
         }
     }
 

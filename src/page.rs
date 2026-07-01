@@ -146,7 +146,8 @@ impl PageRange {
     /// `order` is the power-of-two order (Linux buddy allocator convention).
     /// Returns `None` if allocation fails.
     pub fn alloc(count: usize, order: u32) -> Option<Self> {
-        let mm = crate::memory::get_memory_manager()?;
+        let mm_guard = crate::memory::get_memory_manager()?;
+        let mm = &*mm_guard;
         // Allocate from the Normal zone for general-purpose pages.
         let zone = crate::memory::MemoryZone::Normal;
         let frame = mm.allocate_frame_in_zone(zone)?;
@@ -157,14 +158,12 @@ impl PageRange {
     /// Free the page range.
     pub fn free(self) {
         if let Some(mm) = crate::memory::get_memory_manager() {
+            let mm = &*mm;
             let zone = crate::memory::MemoryZone::Normal;
             // Reconstruct the PhysFrame from the start address.
-            // SAFETY: the start address came from a valid frame allocation.
-            let frame = unsafe {
-                x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
-                    self.start,
-                ))
-            };
+            let frame = x86_64::structures::paging::PhysFrame::containing_address(
+                x86_64::PhysAddr::new(self.start),
+            );
             mm.deallocate_frame(frame, zone);
         }
     }

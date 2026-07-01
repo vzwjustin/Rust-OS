@@ -260,7 +260,8 @@ impl SharedMemorySegment {
         // Allocate physical memory for the segment
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
 
         let mut protection = MemoryProtection::empty();
         if permissions.read {

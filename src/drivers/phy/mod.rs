@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -30,6 +30,7 @@ pub enum PhyType {
 }
 
 /// PHY mode (Linux `enum phy_mode`).
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhyMode {
     Invalid,
@@ -70,8 +71,8 @@ struct PhyProvider {
 
 // ── USB2 PHY ────────────────────────────────────────────────────────────
 
-static mut USB2_PHY_POWER: bool = false;
-static mut USB2_PHY_MODE: PhyMode = PhyMode::Host;
+static USB2_PHY_POWER: AtomicBool = AtomicBool::new(false);
+static USB2_PHY_MODE: AtomicU8 = AtomicU8::new(PhyMode::Host as u8);
 
 fn usb2_init() -> Result<(), &'static str> {
     Ok(())
@@ -81,38 +82,28 @@ fn usb2_exit() -> Result<(), &'static str> {
 }
 
 fn usb2_power_on() -> Result<(), &'static str> {
-    unsafe {
-        USB2_PHY_POWER = true;
-    }
+    USB2_PHY_POWER.store(true, Ordering::Relaxed);
     Ok(())
 }
 
 fn usb2_power_off() -> Result<(), &'static str> {
-    unsafe {
-        USB2_PHY_POWER = false;
-    }
+    USB2_PHY_POWER.store(false, Ordering::Relaxed);
     Ok(())
 }
 
 fn usb2_set_mode(mode: PhyMode) -> Result<(), &'static str> {
-    unsafe {
-        USB2_PHY_MODE = mode;
-    }
+    USB2_PHY_MODE.store(mode as u8, Ordering::Relaxed);
     Ok(())
 }
 
 fn usb2_reset() -> Result<(), &'static str> {
-    unsafe {
-        USB2_PHY_POWER = false;
-    }
+    USB2_PHY_POWER.store(false, Ordering::Relaxed);
     let mut i = 0u32;
     while i < 1000 {
         core::hint::spin_loop();
         i += 1;
     }
-    unsafe {
-        USB2_PHY_POWER = true;
-    }
+    USB2_PHY_POWER.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -140,7 +131,7 @@ pub static USB2_PHY_OPS: PhyOps = PhyOps {
 
 // ── PCIe PHY ────────────────────────────────────────────────────────────
 
-static mut PCIE_PHY_POWER: bool = false;
+static PCIE_PHY_POWER: AtomicBool = AtomicBool::new(false);
 
 fn pcie_init() -> Result<(), &'static str> {
     Ok(())
@@ -149,32 +140,24 @@ fn pcie_exit() -> Result<(), &'static str> {
     Ok(())
 }
 fn pcie_power_on() -> Result<(), &'static str> {
-    unsafe {
-        PCIE_PHY_POWER = true;
-    }
+    PCIE_PHY_POWER.store(true, Ordering::Relaxed);
     Ok(())
 }
 fn pcie_power_off() -> Result<(), &'static str> {
-    unsafe {
-        PCIE_PHY_POWER = false;
-    }
+    PCIE_PHY_POWER.store(false, Ordering::Relaxed);
     Ok(())
 }
 fn pcie_set_mode(_m: PhyMode) -> Result<(), &'static str> {
     Ok(())
 }
 fn pcie_reset() -> Result<(), &'static str> {
-    unsafe {
-        PCIE_PHY_POWER = false;
-    }
+    PCIE_PHY_POWER.store(false, Ordering::Relaxed);
     let mut i = 0u32;
     while i < 2000 {
         core::hint::spin_loop();
         i += 1;
     }
-    unsafe {
-        PCIE_PHY_POWER = true;
-    }
+    PCIE_PHY_POWER.store(true, Ordering::Relaxed);
     Ok(())
 }
 fn pcie_calibrate() -> Result<(), &'static str> {

@@ -21,9 +21,13 @@ use core::ops::{Deref, DerefMut};
 pub const MTK_EXPORT: &str = "pub";
 pub const MTK_INTERNAL: &str = "pub(crate)";
 pub const MTK_AVAILABLE_IN_ALL: u32 = 0;
-pub const fn mtk_available_in(_major: u32, _minor: u32) -> u32 { 0 }
+pub const fn mtk_available_in(_major: u32, _minor: u32) -> u32 {
+    0
+}
 pub const MTK_DEPRECATED: u32 = 0;
-pub const fn mtk_deprecated_for(_replacement: &str) -> u32 { 0 }
+pub const fn mtk_deprecated_for(_replacement: &str) -> u32 {
+    0
+}
 
 /// A scope-guard wrapper that calls a cleanup function when dropped.
 ///
@@ -42,7 +46,10 @@ impl<T, F: FnMut(*mut T)> AutoPtr<T, F> {
     ///
     /// The caller must ensure `value` is valid and `cleanup` safely handles it.
     pub unsafe fn new(value: *mut T, cleanup: F) -> Self {
-        AutoPtr { value, cleanup: Some(cleanup) }
+        AutoPtr {
+            value,
+            cleanup: Some(cleanup),
+        }
     }
 
     /// Releases ownership, returning the raw pointer and preventing cleanup on drop.
@@ -53,24 +60,32 @@ impl<T, F: FnMut(*mut T)> AutoPtr<T, F> {
         result
     }
 
-    pub fn as_ptr(&self) -> *mut T { self.value }
-    pub fn is_null(&self) -> bool { self.value.is_null() }
+    pub fn as_ptr(&self) -> *mut T {
+        self.value
+    }
+    pub fn is_null(&self) -> bool {
+        self.value.is_null()
+    }
 }
 
 impl<T, F: FnMut(*mut T)> Deref for AutoPtr<T, F> {
     type Target = *mut T;
-    fn deref(&self) -> &Self::Target { &self.value }
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }
 
 impl<T, F: FnMut(*mut T)> DerefMut for AutoPtr<T, F> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.value }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
 }
 
 impl<T, F: FnMut(*mut T)> Drop for AutoPtr<T, F> {
     fn drop(&mut self) {
         if let Some(mut cleanup) = self.cleanup.take() {
             // SAFETY: caller of `new` guaranteed cleanup safely handles value.
-            unsafe { cleanup(self.value); }
+            cleanup(self.value);
         }
     }
 }
@@ -86,7 +101,9 @@ mod tests {
     #[test]
     fn test_autoptr_calls_cleanup_on_drop() {
         static CALLED: Cell<bool> = Cell::new(false);
-        extern "C" fn cleanup(_ptr: *mut i32) { CALLED.set(true); }
+        extern "C" fn cleanup(_ptr: *mut i32) {
+            CALLED.set(true);
+        }
         let mut value: i32 = 42;
         // SAFETY: value is valid; cleanup only sets a flag.
         let autoptr = unsafe { AutoPtr::new(&mut value as *mut i32, cleanup) };
@@ -97,7 +114,9 @@ mod tests {
     #[test]
     fn test_autoptr_steal_prevents_cleanup() {
         static CALLED: Cell<bool> = Cell::new(false);
-        extern "C" fn cleanup(_ptr: *mut i32) { CALLED.set(true); }
+        extern "C" fn cleanup(_ptr: *mut i32) {
+            CALLED.set(true);
+        }
         let mut value: i32 = 42;
         // SAFETY: value is valid; cleanup only sets a flag.
         let mut autoptr = unsafe { AutoPtr::new(&mut value as *mut i32, cleanup) };

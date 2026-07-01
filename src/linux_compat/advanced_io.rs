@@ -12,6 +12,9 @@ use super::{LinuxError, LinuxResult};
 use crate::memory::user_space::UserSpaceMemory;
 use crate::vfs;
 
+const MAX_IO_CHUNK: usize = 64 * 1024;
+const MAX_IOV_COUNT: i32 = 1024;
+
 fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
     match err {
         crate::vfs::VfsError::NotFound => LinuxError::ENOENT,
@@ -35,7 +38,7 @@ fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
 }
 
 /// Helper to convert null-terminated C string to Rust string
-unsafe fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, LinuxError> {
+fn c_str_to_string(ptr: *const u8) -> Result<alloc::string::String, LinuxError> {
     if ptr.is_null() {
         return Err(LinuxError::EFAULT);
     }
@@ -92,23 +95,38 @@ fn copy_iov_from_user(iov: *const IoVec, index: i32) -> LinuxResult<IoVec> {
     let user_ptr = (iov as u64)
         .checked_add(offset as u64)
         .ok_or(LinuxError::EFAULT)?;
-    let mut entry = IoVec {
-        iov_base: core::ptr::null_mut(),
-        iov_len: 0,
-    };
-    let entry_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            (&mut entry as *mut IoVec).cast::<u8>(),
-            core::mem::size_of::<IoVec>(),
-        )
-    };
 
-    crate::memory::user_space::UserSpaceMemory::copy_from_user(user_ptr, entry_bytes)
+    const WORD_BYTES: usize = core::mem::size_of::<usize>();
+    const IOVEC_BYTES: usize = core::mem::size_of::<IoVec>();
+    let mut entry_bytes = [0u8; IOVEC_BYTES];
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(user_ptr, &mut entry_bytes)
         .map_err(|_| LinuxError::EFAULT)?;
-    Ok(entry)
+
+    let mut base_bytes = [0u8; WORD_BYTES];
+    base_bytes.copy_from_slice(&entry_bytes[..WORD_BYTES]);
+    let mut len_bytes = [0u8; WORD_BYTES];
+    len_bytes.copy_from_slice(&entry_bytes[WORD_BYTES..WORD_BYTES * 2]);
+
+    Ok(IoVec {
+        iov_base: usize::from_ne_bytes(base_bytes) as *mut u8,
+        iov_len: usize::from_ne_bytes(len_bytes),
+    })
+}
+
+fn copy_off_from_user(ptr: *const Off) -> LinuxResult<Off> {
+    let mut bytes = [0u8; core::mem::size_of::<Off>()];
+    UserSpaceMemory::copy_from_user(ptr as u64, &mut bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(Off::from_ne_bytes(bytes))
+}
+
+fn copy_off_to_user(ptr: *mut Off, value: Off) -> LinuxResult<()> {
+    UserSpaceMemory::copy_to_user(ptr as u64, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
 }
 
 fn copy_buffer_from_user(ptr: *const u8, len: usize) -> LinuxResult<alloc::vec::Vec<u8>> {
+    if len > MAX_IO_CHUNK {
+        return Err(LinuxError::EINVAL);
+    }
     let mut data = alloc::vec::Vec::new();
     data.resize(len, 0);
     crate::memory::user_space::UserSpaceMemory::copy_from_user(ptr as u64, &mut data)
@@ -119,6 +137,20 @@ fn copy_buffer_from_user(ptr: *const u8, len: usize) -> LinuxResult<alloc::vec::
 fn copy_buffer_to_user(ptr: *mut u8, data: &[u8]) -> LinuxResult<()> {
     crate::memory::user_space::UserSpaceMemory::copy_to_user(ptr as u64, data)
         .map_err(|_| LinuxError::EFAULT)
+}
+
+fn validate_iov_count(iovcnt: i32) -> LinuxResult<usize> {
+    if iovcnt <= 0 || iovcnt > MAX_IOV_COUNT {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(iovcnt as usize)
+}
+
+fn validate_io_len(len: usize) -> LinuxResult<usize> {
+    if len > MAX_IO_CHUNK {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(len)
 }
 
 // ============================================================================
@@ -141,6 +173,7 @@ pub fn pread(fd: Fd, buf: *mut u8, count: usize, offset: Off) -> LinuxResult<isi
         return Err(LinuxError::EINVAL);
     }
 
+    let count = validate_io_len(count)?;
     let mut buffer = alloc::vec::Vec::new();
     buffer.resize(count, 0);
 
@@ -167,6 +200,7 @@ pub fn pwrite(fd: Fd, buf: *const u8, count: usize, offset: Off) -> LinuxResult<
         return Err(LinuxError::EINVAL);
     }
 
+    let count = validate_io_len(count)?;
     let mut data = alloc::vec::Vec::new();
     data.resize(count, 0);
     crate::memory::user_space::UserSpaceMemory::copy_from_user(buf as u64, &mut data)
@@ -185,9 +219,10 @@ pub fn preadv(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResul
         return Err(LinuxError::EBADF);
     }
 
-    if iov.is_null() || iovcnt <= 0 {
+    if iov.is_null() {
         return Err(LinuxError::EINVAL);
     }
+    let iovcnt = validate_iov_count(iovcnt)?;
 
     if offset < 0 {
         return Err(LinuxError::EINVAL);
@@ -195,17 +230,18 @@ pub fn preadv(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResul
 
     let mut total = 0isize;
     let mut cur_offset = offset as u64;
-    for i in 0..iovcnt as isize {
+    for i in 0..iovcnt {
         let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
+        validate_io_len(iov.iov_len)?;
         let mut buf = alloc::vec::Vec::new();
         buf.resize(iov.iov_len, 0);
         let n = vfs::vfs_pread(fd, &mut buf, cur_offset).map_err(vfs_error_to_linux)?;
         copy_buffer_to_user(iov.iov_base, &buf[..n])?;
-        total += n as isize;
-        cur_offset += n as u64;
+        total = total.checked_add(n as isize).ok_or(LinuxError::EINVAL)?;
+        cur_offset = cur_offset.checked_add(n as u64).ok_or(LinuxError::EINVAL)?;
         if n < iov.iov_len {
             break;
         }
@@ -221,9 +257,10 @@ pub fn pwritev(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResu
         return Err(LinuxError::EBADF);
     }
 
-    if iov.is_null() || iovcnt <= 0 {
+    if iov.is_null() {
         return Err(LinuxError::EINVAL);
     }
+    let iovcnt = validate_iov_count(iovcnt)?;
 
     if offset < 0 {
         return Err(LinuxError::EINVAL);
@@ -231,15 +268,15 @@ pub fn pwritev(fd: Fd, iov: *const IoVec, iovcnt: i32, offset: Off) -> LinuxResu
 
     let mut total = 0isize;
     let mut cur_offset = offset as u64;
-    for i in 0..iovcnt as isize {
+    for i in 0..iovcnt {
         let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
         let data = copy_buffer_from_user(iov.iov_base, iov.iov_len)?;
         let n = vfs::vfs_pwrite(fd, &data, cur_offset).map_err(vfs_error_to_linux)?;
-        total += n as isize;
-        cur_offset += n as u64;
+        total = total.checked_add(n as isize).ok_or(LinuxError::EINVAL)?;
+        cur_offset = cur_offset.checked_add(n as u64).ok_or(LinuxError::EINVAL)?;
         if n < iov.iov_len {
             break;
         }
@@ -361,21 +398,23 @@ pub fn readv(fd: Fd, iov: *const IoVec, iovcnt: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EBADF);
     }
 
-    if iov.is_null() || iovcnt <= 0 {
+    if iov.is_null() {
         return Err(LinuxError::EINVAL);
     }
+    let iovcnt = validate_iov_count(iovcnt)?;
 
     let mut total = 0isize;
-    for i in 0..iovcnt as isize {
+    for i in 0..iovcnt {
         let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
+        validate_io_len(iov.iov_len)?;
         let mut buf = alloc::vec::Vec::new();
         buf.resize(iov.iov_len, 0);
         let n = vfs::vfs_read(fd, &mut buf).map_err(vfs_error_to_linux)?;
         copy_buffer_to_user(iov.iov_base, &buf[..n])?;
-        total += n as isize;
+        total = total.checked_add(n as isize).ok_or(LinuxError::EINVAL)?;
         if n < iov.iov_len {
             break;
         }
@@ -391,19 +430,20 @@ pub fn writev(fd: Fd, iov: *const IoVec, iovcnt: i32) -> LinuxResult<isize> {
         return Err(LinuxError::EBADF);
     }
 
-    if iov.is_null() || iovcnt <= 0 {
+    if iov.is_null() {
         return Err(LinuxError::EINVAL);
     }
+    let iovcnt = validate_iov_count(iovcnt)?;
 
     let mut total: isize = 0;
-    for i in 0..iovcnt as isize {
+    for i in 0..iovcnt {
         let iov = copy_iov_from_user(iov, i as i32)?;
         if iov.iov_len == 0 {
             continue;
         }
         let data = copy_buffer_from_user(iov.iov_base, iov.iov_len)?;
         let n = vfs::vfs_write(fd, &data).map_err(vfs_error_to_linux)?;
-        total += n as isize;
+        total = total.checked_add(n as isize).ok_or(LinuxError::EINVAL)?;
         if n < iov.iov_len {
             break;
         }
@@ -429,7 +469,7 @@ pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxR
     let mut cur_offset = if offset.is_null() {
         0u64
     } else {
-        let o: Off = unsafe { *offset };
+        let o = copy_off_from_user(offset)?;
         o as u64
     };
 
@@ -445,11 +485,13 @@ pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxR
             break;
         }
         let written = vfs::vfs_write(out_fd, &buf[..n]).map_err(vfs_error_to_linux)?;
-        total += written;
+        total = total.checked_add(written).ok_or(LinuxError::EINVAL)?;
         if !offset.is_null() {
             // Advance only by bytes actually transferred, not bytes read, or a
             // short write would skip unwritten input and corrupt *offset.
-            cur_offset += written as u64;
+            cur_offset = cur_offset
+                .checked_add(written as u64)
+                .ok_or(LinuxError::EINVAL)?;
         }
         if written < n {
             // Output could not accept the whole chunk; stop so the input offset
@@ -462,9 +504,7 @@ pub fn sendfile(out_fd: Fd, in_fd: Fd, offset: *mut Off, count: usize) -> LinuxR
     }
 
     if !offset.is_null() {
-        unsafe {
-            *offset = cur_offset as Off;
-        }
+        copy_off_to_user(offset, cur_offset as Off)?;
     }
     Ok(total as isize)
 }
@@ -501,12 +541,12 @@ pub fn splice(
     let mut in_off = if off_in.is_null() {
         None
     } else {
-        Some(unsafe { *off_in } as u64)
+        Some(copy_off_from_user(off_in)? as u64)
     };
     let mut out_off = if off_out.is_null() {
         None
     } else {
-        Some(unsafe { *off_out } as u64)
+        Some(copy_off_from_user(off_out)? as u64)
     };
 
     while total < len {
@@ -522,12 +562,12 @@ pub fn splice(
             Some(o) => vfs::vfs_pwrite(fd_out, &buf[..n], o).map_err(vfs_error_to_linux)?,
             None => vfs::vfs_write(fd_out, &buf[..n]).map_err(vfs_error_to_linux)?,
         };
-        total += written;
+        total = total.checked_add(written).ok_or(LinuxError::EINVAL)?;
         if let Some(ref mut o) = in_off {
-            *o += n as u64;
+            *o = (*o).checked_add(n as u64).ok_or(LinuxError::EINVAL)?;
         }
         if let Some(ref mut o) = out_off {
-            *o += written as u64;
+            *o = (*o).checked_add(written as u64).ok_or(LinuxError::EINVAL)?;
         }
         if n < to_read {
             break;
@@ -535,14 +575,10 @@ pub fn splice(
     }
 
     if !off_in.is_null() {
-        unsafe {
-            *off_in = in_off.unwrap_or(0) as Off;
-        }
+        copy_off_to_user(off_in, in_off.unwrap_or(0) as Off)?;
     }
     if !off_out.is_null() {
-        unsafe {
-            *off_out = out_off.unwrap_or(0) as Off;
-        }
+        copy_off_to_user(off_out, out_off.unwrap_or(0) as Off)?;
     }
     Ok(total as isize)
 }
@@ -566,7 +602,7 @@ pub fn tee(fd_in: Fd, fd_out: Fd, len: usize, _flags: u32) -> LinuxResult<isize>
             break;
         }
         let written = vfs::vfs_write(fd_out, &buf[..n]).map_err(vfs_error_to_linux)?;
-        total += written;
+        total = total.checked_add(written).ok_or(LinuxError::EINVAL)?;
         if n < to_read {
             break;
         }
@@ -599,12 +635,12 @@ pub fn copy_file_range(
     let mut in_off = if off_in.is_null() {
         None
     } else {
-        Some(unsafe { *off_in } as u64)
+        Some(copy_off_from_user(off_in)? as u64)
     };
     let mut out_off = if off_out.is_null() {
         None
     } else {
-        Some(unsafe { *off_out } as u64)
+        Some(copy_off_from_user(off_out)? as u64)
     };
 
     while total < len {
@@ -620,12 +656,12 @@ pub fn copy_file_range(
             Some(o) => vfs::vfs_pwrite(fd_out, &buf[..n], o).map_err(vfs_error_to_linux)?,
             None => vfs::vfs_write(fd_out, &buf[..n]).map_err(vfs_error_to_linux)?,
         };
-        total += written;
+        total = total.checked_add(written).ok_or(LinuxError::EINVAL)?;
         if let Some(ref mut o) = in_off {
-            *o += n as u64;
+            *o = (*o).checked_add(n as u64).ok_or(LinuxError::EINVAL)?;
         }
         if let Some(ref mut o) = out_off {
-            *o += written as u64;
+            *o = (*o).checked_add(written as u64).ok_or(LinuxError::EINVAL)?;
         }
         if n < to_read {
             break;
@@ -633,14 +669,10 @@ pub fn copy_file_range(
     }
 
     if !off_in.is_null() {
-        unsafe {
-            *off_in = in_off.unwrap_or(0) as Off;
-        }
+        copy_off_to_user(off_in, in_off.unwrap_or(0) as Off)?;
     }
     if !off_out.is_null() {
-        unsafe {
-            *off_out = out_off.unwrap_or(0) as Off;
-        }
+        copy_off_to_user(off_out, out_off.unwrap_or(0) as Off)?;
     }
     Ok(total as isize)
 }
@@ -718,7 +750,7 @@ fn validate_xattr_name(name: &str) -> LinuxResult<()> {
     Ok(())
 }
 
-unsafe fn xattr_name_from_ptr(name: *const u8) -> LinuxResult<alloc::string::String> {
+fn xattr_name_from_ptr(name: *const u8) -> LinuxResult<alloc::string::String> {
     if name.is_null() {
         return Err(LinuxError::EFAULT);
     }
@@ -747,9 +779,7 @@ fn copy_xattr_value(value: &[u8], out: *mut u8, size: usize) -> LinuxResult<isiz
     if out.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    unsafe {
-        core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
-    }
+    copy_buffer_to_user(out, value)?;
     Ok(value.len() as isize)
 }
 
@@ -766,8 +796,8 @@ pub fn getxattr(
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
-    let name = unsafe { xattr_name_from_ptr(name)? };
+    let path = c_str_to_string(path)?;
+    let name = xattr_name_from_ptr(name)?;
 
     match vfs::vfs_getxattr(&path, &name) {
         Ok(data) => copy_xattr_value(&data, value, size),
@@ -799,7 +829,7 @@ pub fn fgetxattr(fd: Fd, name: *const u8, value: *mut u8, size: usize) -> LinuxR
         return Err(LinuxError::EBADF);
     }
 
-    let name = unsafe { xattr_name_from_ptr(name)? };
+    let name = xattr_name_from_ptr(name)?;
 
     match vfs::vfs_fgetxattr(fd, &name) {
         Ok(data) => copy_xattr_value(&data, value, size),
@@ -828,8 +858,8 @@ pub fn setxattr(
         return Err(LinuxError::EINVAL);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
-    let name = unsafe { xattr_name_from_ptr(name)? };
+    let path = c_str_to_string(path)?;
+    let name = xattr_name_from_ptr(name)?;
     let data = copy_buffer_from_user(value, size)?;
 
     let create = flags & XATTR_CREATE != 0;
@@ -885,7 +915,7 @@ pub fn fsetxattr(
         return Err(LinuxError::EINVAL);
     }
 
-    let name = unsafe { xattr_name_from_ptr(name)? };
+    let name = xattr_name_from_ptr(name)?;
     let data = copy_buffer_from_user(value, size)?;
     let create = flags & XATTR_CREATE != 0;
 
@@ -902,7 +932,7 @@ pub fn listxattr(path: *const u8, list: *mut u8, size: usize) -> LinuxResult<isi
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
 
     match vfs::vfs_listxattr(&path) {
         Ok(data) => copy_xattr_value(&data, list, size),
@@ -943,8 +973,8 @@ pub fn removexattr(path: *const u8, name: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
-    let name = unsafe { xattr_name_from_ptr(name)? };
+    let path = c_str_to_string(path)?;
+    let name = xattr_name_from_ptr(name)?;
 
     vfs::vfs_removexattr(&path, &name)
         .map(|_| 0)
@@ -970,7 +1000,7 @@ pub fn fremovexattr(fd: Fd, name: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EBADF);
     }
 
-    let name = unsafe { xattr_name_from_ptr(name)? };
+    let name = xattr_name_from_ptr(name)?;
 
     vfs::vfs_fremovexattr(fd, &name)
         .map(|_| 0)
@@ -989,7 +1019,7 @@ pub fn mkdir(path: *const u8, mode: Mode) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
     vfs::vfs_mkdir(&path, mode).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -1002,7 +1032,7 @@ pub fn rmdir(path: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let path = unsafe { c_str_to_string(path)? };
+    let path = c_str_to_string(path)?;
     vfs::vfs_rmdir(&path).map_err(vfs_error_to_linux)?;
     Ok(0)
 }
@@ -1022,6 +1052,9 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
     if count < 24 {
         return Err(LinuxError::EINVAL);
     }
+    if count > i32::MAX as u32 {
+        return Err(LinuxError::EOVERFLOW);
+    }
 
     let (entries, cookie) = vfs::vfs_readdir_fd(fd).map_err(vfs_error_to_linux)?;
 
@@ -1031,29 +1064,46 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
     while index < entries.len() {
         let entry = &entries[index];
         let name_bytes = entry.name.as_bytes();
-        let reclen = ((24 + name_bytes.len() + 1 + 7) & !7) as u16;
-        if written + reclen as u32 > count {
+        let reclen_usize = 24usize
+            .checked_add(name_bytes.len())
+            .and_then(|len| len.checked_add(1))
+            .and_then(|len| len.checked_add(7))
+            .map(|len| len & !7)
+            .ok_or(LinuxError::EOVERFLOW)?;
+        if reclen_usize > u16::MAX as usize {
+            return Err(LinuxError::EOVERFLOW);
+        }
+        let reclen = reclen_usize as u16;
+        let next_written = written
+            .checked_add(u32::from(reclen))
+            .ok_or(LinuxError::EOVERFLOW)?;
+        if next_written > count {
             break;
         }
 
         let d_type = inode_type_to_d_type(entry.inode_type);
         let mut record = alloc::vec::Vec::new();
-        record.resize(reclen as usize, 0);
+        record.resize(reclen_usize, 0);
         record[0..8].copy_from_slice(&entry.ino.to_ne_bytes());
-        record[8..16].copy_from_slice(&((index + 1) as i64).to_ne_bytes());
+        let next_cookie = i64::try_from(index.checked_add(1).ok_or(LinuxError::EOVERFLOW)?)
+            .map_err(|_| LinuxError::EOVERFLOW)?;
+        record[8..16].copy_from_slice(&next_cookie.to_ne_bytes());
         record[16..18].copy_from_slice(&reclen.to_ne_bytes());
         record[18] = d_type;
         record[19..19 + name_bytes.len()].copy_from_slice(name_bytes);
 
-        let dst = unsafe { dirp.add(written as usize) };
-        UserSpaceMemory::copy_to_user(dst as u64, &record).map_err(|_| LinuxError::EFAULT)?;
+        let dst = (dirp as u64)
+            .checked_add(written as u64)
+            .ok_or(LinuxError::EFAULT)?;
+        UserSpaceMemory::copy_to_user(dst, &record).map_err(|_| LinuxError::EFAULT)?;
 
-        written += reclen as u32;
-        index += 1;
+        written = next_written;
+        index = index.checked_add(1).ok_or(LinuxError::EOVERFLOW)?;
     }
 
-    let _ = vfs::vfs_set_dir_cookie(fd, index as u64);
-    Ok(written as i32)
+    let final_cookie = u64::try_from(index).map_err(|_| LinuxError::EOVERFLOW)?;
+    let _ = vfs::vfs_set_dir_cookie(fd, final_cookie);
+    i32::try_from(written).map_err(|_| LinuxError::EOVERFLOW)
 }
 
 fn inode_type_to_d_type(inode_type: vfs::InodeType) -> u8 {

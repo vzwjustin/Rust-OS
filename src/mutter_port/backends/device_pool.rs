@@ -3,9 +3,9 @@
 //! Native Rust implementation (no direct Mutter C counterpart).
 //! Manages a pool of input devices for coordinated access and lifecycle tracking.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 
 /// Device Pool — manages input device lifecycle and access coordination.
 #[derive(Debug, Clone)]

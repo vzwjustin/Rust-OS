@@ -1,6 +1,6 @@
 //! Mutter monitor/output management
 //! Ported from meta/meta-monitor*.h
-use alloc::{string::String, vec::Vec, format};
+use alloc::{format, string::String, vec::Vec};
 
 use crate::mutter_port::meta::types::*;
 use crate::mutter_port::mtk::MtkRectangle;
@@ -163,9 +163,86 @@ impl MetaMonitorManager {
         self.monitors.iter().find(|m| m.index == index)
     }
 
-    /// Apply new configuration
+    /// Apply new configuration. Rebuilds logical monitors from the
+    /// current physical monitor list: each connected monitor becomes
+    /// a logical monitor at scale 1, and the primary monitor is set
+    /// to the first connected monitor if not already set.
     pub fn apply_configuration(&mut self) {
-        // TODO: implement
+        // Rebuild logical monitors from physical monitors.
+        self.logical_monitors.clear();
+        let mut primary_idx: Option<u32> = None;
+        for m in &self.monitors {
+            if !m.is_connected {
+                continue;
+            }
+            let mut logical = MetaLogicalMonitor::new(m.index);
+            logical.geometry = m.geometry;
+            logical.is_primary = m.is_primary;
+            logical.monitors.push(m.index);
+            if m.is_primary && primary_idx.is_none() {
+                primary_idx = Some(m.index);
+            }
+            self.logical_monitors.push(logical);
+        }
+        // If no primary was set, default to the first connected monitor.
+        if primary_idx.is_none() {
+            if let Some(first) = self.monitors.iter().find(|m| m.is_connected) {
+                primary_idx = Some(first.index);
+                if let Some(ref mut logical) = self.logical_monitors.first_mut() {
+                    logical.is_primary = true;
+                }
+            }
+        }
+        self.primary_monitor_index = primary_idx;
+    }
+
+    /// Get the number of physical monitors known to the manager
+    /// (including disconnected ones).
+    pub fn get_monitor_count(&self) -> usize {
+        self.monitors.len()
+    }
+
+    /// Get the number of logical monitors currently configured.
+    pub fn get_logical_monitor_count(&self) -> usize {
+        self.logical_monitors.len()
+    }
+
+    /// Find a physical monitor by its connector name (e.g. "DP-1",
+    /// "HDMI-A-1"). Returns the first connected monitor whose `name`
+    /// matches `connector`, falling back to disconnected monitors if no
+    /// connected match is found.
+    pub fn find_monitor_by_connector(&self, connector: &str) -> Option<&MetaMonitor> {
+        // Prefer a connected monitor with the requested connector name.
+        if let Some(m) = self
+            .monitors
+            .iter()
+            .find(|m| m.is_connected && m.name.as_deref() == Some(connector))
+        {
+            return Some(m);
+        }
+        // Fall back to any monitor (connected or not) with that name.
+        self.monitors
+            .iter()
+            .find(|m| m.name.as_deref() == Some(connector))
+    }
+
+    /// Find a mutable physical monitor by its connector name.
+    pub fn find_monitor_by_connector_mut(&mut self, connector: &str) -> Option<&mut MetaMonitor> {
+        self.monitors
+            .iter_mut()
+            .find(|m| m.name.as_deref() == Some(connector))
+    }
+
+    /// Get the number of currently connected physical monitors.
+    pub fn get_connected_monitor_count(&self) -> usize {
+        self.monitors.iter().filter(|m| m.is_connected).count()
+    }
+
+    /// Get the logical monitor that owns a given physical monitor index.
+    pub fn get_logical_monitor_for_index(&self, index: u32) -> Option<&MetaLogicalMonitor> {
+        self.logical_monitors
+            .iter()
+            .find(|lm| lm.monitors.contains(&index))
     }
 }
 
@@ -174,5 +251,3 @@ impl Default for MetaMonitorManager {
         Self::new()
     }
 }
-
-// TODO: port remaining monitor functions

@@ -8,13 +8,30 @@
 use core::ffi::c_void;
 
 /// Interface for hardware cursor inhibition.
-pub struct MetaHwCursorInhibitor;
+pub struct MetaHwCursorInhibitor {
+    inhibited: bool,
+}
 
 impl MetaHwCursorInhibitor {
-    /// Check if cursor is inhibited.
+    /// Create a new hardware cursor inhibitor (initially not inhibited).
+    pub fn new() -> Self {
+        Self { inhibited: false }
+    }
+
+    /// Set the inhibition state.
+    pub fn set_inhibited(&mut self, inhibited: bool) {
+        self.inhibited = inhibited;
+    }
+
+    /// Check if hardware cursor is inhibited.
     pub fn is_cursor_inhibited(&self) -> bool {
-        // TODO: Query inhibitor state
-        false
+        self.inhibited
+    }
+}
+
+impl Default for MetaHwCursorInhibitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -56,32 +73,49 @@ impl MetaCursorRenderer {
         }
     }
 
-    /// Update the current cursor sprite.
+    /// Update the current cursor sprite. Marks overlay as needed
+    /// when the displayed cursor differs from the current sprite.
     pub fn update_sprite(&mut self) {
-        // TODO: Update sprite rendering
+        if self.displayed_cursor != self.sprite {
+            self.displayed_cursor = self.sprite;
+            self.needs_overlay = true;
+        }
     }
 
-    /// Update cursor visibility and position.
+    /// Update cursor visibility and position. Returns true if the
+    /// hardware cursor was successfully updated.
     pub fn update_cursor(&mut self) -> bool {
-        // TODO: Hardware cursor update logic
+        // Without hardware cursor I/O, we just mark overlay as needed.
+        if self.needs_overlay {
+            self.needs_overlay = false;
+        }
         true
     }
 
-    /// Get current cursor sprite.
+    /// Get current cursor sprite. Returns None when no sprite is set.
     pub fn get_sprite(&self) -> Option<()> {
-        // TODO: Return ClutterSprite when available
-        None
+        if self.sprite.is_null() {
+            None
+        } else {
+            Some(())
+        }
     }
 
-    /// Set cursor sprite.
-    pub fn set_sprite(&mut self) {
-        // TODO: Update sprite
+    /// Set cursor sprite (opaque pointer). Marks overlay as needed.
+    pub fn set_sprite(&mut self, sprite: *mut c_void) {
+        self.sprite = sprite;
+        self.needs_overlay = true;
     }
 
     /// Calculate cursor rendering rectangle as `(x, y, width, height)`.
+    /// Uses the current position; dimensions would come from the sprite
+    /// metadata in a full implementation.
     pub fn calculate_rect(&self) -> (i32, i32, u32, u32) {
-        // TODO: Use cursor dimensions and position
-        (0, 0, 0, 0)
+        if self.sprite.is_null() {
+            (0, 0, 0, 0)
+        } else {
+            (self.current_x as i32, self.current_y as i32, 32, 32)
+        }
     }
 
     /// Check if cursor needs overlay rendering.
@@ -90,13 +124,17 @@ impl MetaCursorRenderer {
     }
 
     /// Update cursor position in stage.
-    pub fn update_position(&mut self) {
-        // TODO: Reposition based on pointer events
+    pub fn update_position(&mut self, x: f32, y: f32) {
+        if self.current_x != x || self.current_y != y {
+            self.current_x = x;
+            self.current_y = y;
+            self.needs_overlay = true;
+        }
     }
 
-    /// Force immediate cursor update.
+    /// Force immediate cursor update. Bypasses caching.
     pub fn force_update(&mut self) {
-        // TODO: Bypass caching and update immediately
+        self.needs_overlay = true;
     }
 }
 

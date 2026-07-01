@@ -142,6 +142,8 @@ pub fn read_event(fd: i32, buf: &mut [u8]) -> isize {
     if buf.len() < bytes_len {
         return -22; // EINVAL
     }
+    // SAFETY: `out` is a `Vec<u64>` and `bytes_len = count * size_of::<u64>()`
+    // is validated to be <= `buf.len()`.
     let bytes = unsafe { core::slice::from_raw_parts(out.as_ptr() as *const u8, bytes_len) };
     buf[..bytes_len].copy_from_slice(bytes);
     bytes_len as isize

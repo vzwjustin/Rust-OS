@@ -189,9 +189,17 @@ pub struct Ext4Superblock {
     pub s_checksum: u32,                // crc32c(superblock)
 }
 
+impl Default for Ext4Superblock {
+    fn default() -> Self {
+        // SAFETY: All-zero bit pattern is valid for this repr(C, packed) struct
+        // containing only integers and arrays of integers.
+        unsafe { mem::zeroed() }
+    }
+}
+
 /// EXT4 group descriptor
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Ext4GroupDesc {
     pub bg_block_bitmap_lo: u32,      // Blocks bitmap block (low 32 bits)
     pub bg_inode_bitmap_lo: u32,      // Inodes bitmap block (low 32 bits)
@@ -222,7 +230,7 @@ pub struct Ext4GroupDesc {
 
 /// EXT4 inode structure
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Ext4Inode {
     pub i_mode: u16,        // File mode
     pub i_uid: u16,         // Low 16 bits of Owner Uid
@@ -247,7 +255,7 @@ pub struct Ext4Inode {
 
 /// EXT4 directory entry
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Ext4DirEntry2 {
     pub inode: u32,   // Inode number
     pub rec_len: u16, // Directory entry length
@@ -282,7 +290,7 @@ impl Ext4FileSystem {
         let mut fs = Self {
             device_id,
             sector_base,
-            superblock: unsafe { mem::zeroed() },
+            superblock: Ext4Superblock::default(),
             block_size: 0,
             blocks_per_group: 0,
             inodes_per_group: 0,
@@ -1432,7 +1440,7 @@ impl Ext4FileSystem {
         self.adjust_group_desc_free(group, 1, 0)?;
 
         // Zero the inode on disk
-        let zeroed: Ext4Inode = unsafe { mem::zeroed() };
+        let zeroed: Ext4Inode = Ext4Inode::default();
         self.write_inode(inode_num, &zeroed)?;
         Ok(())
     }
@@ -1510,7 +1518,7 @@ impl FileSystem for Ext4FileSystem {
         let new_inode_num = self.alloc_inode()?;
         let mode = (0o100000u32 | permissions.to_octal() as u32) as u16; // S_IFREG | perms
         let now = self.current_time();
-        let mut inode: Ext4Inode = unsafe { mem::zeroed() };
+        let mut inode: Ext4Inode = Ext4Inode::default();
         inode.i_mode = mode;
         inode.i_uid = 0;
         inode.i_size_lo = 0;
@@ -1701,7 +1709,7 @@ impl FileSystem for Ext4FileSystem {
         let new_inode_num = self.alloc_inode()?;
         let mode = (0o040000u32 | permissions.to_octal() as u32) as u16; // S_IFDIR | perms
         let now = self.current_time();
-        let mut inode: Ext4Inode = unsafe { mem::zeroed() };
+        let mut inode: Ext4Inode = Ext4Inode::default();
         inode.i_mode = mode;
         inode.i_uid = 0;
         inode.i_size_lo = self.block_size; // directory starts with one block
@@ -1987,7 +1995,7 @@ impl FileSystem for Ext4FileSystem {
         let mode = (0o120000u32) as u16; // S_IFLNK
         let now = self.current_time();
         let target_bytes = target.as_bytes();
-        let mut inode: Ext4Inode = unsafe { mem::zeroed() };
+        let mut inode: Ext4Inode = Ext4Inode::default();
         inode.i_mode = mode;
         inode.i_uid = 0;
         inode.i_atime = now;
@@ -2000,6 +2008,8 @@ impl FileSystem for Ext4FileSystem {
         if target_bytes.len() <= 60 {
             // Inline symlink — store target in i_block array
             inode.i_size_lo = target_bytes.len() as u32;
+            // SAFETY: `i_block` is a field in a `repr(C)` inode and 60 bytes
+            // is the inline symlink max size.
             let block_bytes = unsafe {
                 core::slice::from_raw_parts_mut(
                     core::ptr::addr_of_mut!(inode.i_block) as *mut u8,

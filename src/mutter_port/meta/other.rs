@@ -1,8 +1,8 @@
 //! Additional Mutter types
 //! Ported from remaining meta/*.h files
 
-use alloc::{string::String, vec::Vec, boxed::Box};
 use crate::mutter_port::meta::types::*;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 /// Scheduler for deferred operations. Manages callbacks scheduled to run later.
 pub struct MetaLaters {
@@ -44,9 +44,16 @@ impl MetaStartupNotification {
         }
     }
 
-    /// Complete startup sequence
-    pub fn complete(&self) {
-        // TODO: implement
+    /// Complete startup sequence. Marks the startup as completed.
+    /// A full implementation would emit the "complete" signal to
+    /// dismiss the launch feedback display.
+    pub fn complete(&mut self) {
+        self.completed = true;
+    }
+
+    /// Whether the startup sequence has been completed.
+    pub fn is_completed(&self) -> bool {
+        self.completed
     }
 }
 

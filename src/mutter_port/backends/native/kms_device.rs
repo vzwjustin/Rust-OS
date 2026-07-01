@@ -41,6 +41,15 @@ pub struct KmsDevice {
     pub connectors: Vec<KmsConnector>,
     /// Available planes
     pub planes: Vec<KmsPlane>,
+    /// Driver name reported by `DRM_IOCTL_VERSION` (e.g., "i915",
+    /// "amdgpu", "nouveau"). Empty until `scan_resources` records it.
+    pub driver_name: String,
+    /// Sysfs device path for the underlying PCI/platform device
+    /// (e.g., "/sys/devices/pci0000:00/0000:00:02.0/drm/card0").
+    /// Empty until populated by the backend.
+    pub device_path: String,
+    /// Whether device resources have been scanned at least once.
+    pub resources_scanned: bool,
 }
 
 impl KmsDevice {
@@ -52,6 +61,9 @@ impl KmsDevice {
             crtcs: Vec::new(),
             connectors: Vec::new(),
             planes: Vec::new(),
+            driver_name: String::new(),
+            device_path: String::new(),
+            resources_scanned: false,
         }
     }
 
@@ -63,6 +75,31 @@ impl KmsDevice {
     /// Get device path
     pub fn get_path(&self) -> &str {
         &self.path
+    }
+
+    /// Set the driver name reported by the kernel.
+    pub fn set_driver_name(&mut self, name: String) {
+        self.driver_name = name;
+    }
+
+    /// Get the driver name reported by the kernel.
+    pub fn get_driver_name(&self) -> &str {
+        &self.driver_name
+    }
+
+    /// Set the sysfs device path for the underlying device.
+    pub fn set_device_path(&mut self, path: String) {
+        self.device_path = path;
+    }
+
+    /// Get the sysfs device path for the underlying device.
+    pub fn get_device_path(&self) -> &str {
+        &self.device_path
+    }
+
+    /// Check whether resources have been scanned at least once.
+    pub fn resources_scanned(&self) -> bool {
+        self.resources_scanned
     }
 
     /// Add a CRTC
@@ -125,10 +162,16 @@ impl KmsDevice {
         self.planes.len()
     }
 
-    /// Scan device resources from kernel
-    /// TODO: Issue DRM ioctl to query all resources
+    /// Scan device resources from the kernel.
+    ///
+    /// A full implementation would call `drmModeGetResources(fd)` to
+    /// enumerate CRTCs, connectors and planes, and `drmModeGetPlaneResources`
+    /// for the plane list. Here we mark the device as having been
+    /// scanned so callers can distinguish a freshly-opened device from
+    /// one whose resource lists have been populated (via `add_crtc` /
+    /// `add_connector` / `add_plane`).
     pub fn scan_resources(&mut self) {
-        // TODO: Call drmModeGetResources(fd) to enumerate CRTCs, connectors, planes
+        self.resources_scanned = true;
     }
 }
 
@@ -166,5 +209,27 @@ mod tests {
         let mut device = KmsDevice::new(KmsDeviceFd::new(3), "/dev/dri/card0".to_string());
         device.add_plane(KmsPlane::new(1, PlaneType::Primary));
         assert_eq!(device.get_plane_count(), 1);
+    }
+
+    #[test]
+    fn test_driver_and_device_path() {
+        let mut device = KmsDevice::new(KmsDeviceFd::new(3), "/dev/dri/card0".to_string());
+        assert!(device.get_driver_name().is_empty());
+        assert!(device.get_device_path().is_empty());
+        device.set_driver_name("i915".to_string());
+        device.set_device_path("/sys/devices/pci0000:00/0000:00:02.0/drm/card0".to_string());
+        assert_eq!(device.get_driver_name(), "i915");
+        assert_eq!(
+            device.get_device_path(),
+            "/sys/devices/pci0000:00/0000:00:02.0/drm/card0"
+        );
+    }
+
+    #[test]
+    fn test_scan_resources_sets_flag() {
+        let mut device = KmsDevice::new(KmsDeviceFd::new(3), "/dev/dri/card0".to_string());
+        assert!(!device.resources_scanned());
+        device.scan_resources();
+        assert!(device.resources_scanned());
     }
 }

@@ -1595,12 +1595,8 @@ pub fn init() -> Result<(), &'static str> {
     let mut bus = BUS.write();
     bus.init();
     register_kernel_session_services(&mut bus)?;
-    unsafe {
-        crate::early_serial_write_str("RustOS: D-Bus GNOME session names registered\r\n");
-    }
-    unsafe {
-        crate::early_serial_write_str("RustOS: D-Bus message bus initialized\r\n");
-    }
+    crate::early_serial_write_str("RustOS: D-Bus GNOME session names registered\r\n");
+    crate::early_serial_write_str("RustOS: D-Bus message bus initialized\r\n");
     Ok(())
 }
 

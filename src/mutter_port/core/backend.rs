@@ -16,13 +16,13 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::mutter_port::backends::idle_manager::IdleManager;
-use crate::mutter_port::backends::orientation_manager::OrientationManager;
-use crate::mutter_port::backends::settings::Settings;
 use super::cursor_tracker::MetaCursorTracker;
 use super::input_mapper::MetaInputMapper;
 use super::input_settings::MetaInputSettings;
 use super::monitor_manager::MetaMonitorManager;
+use crate::mutter_port::backends::idle_manager::IdleManager;
+use crate::mutter_port::backends::orientation_manager::OrientationManager;
+use crate::mutter_port::backends::settings::Settings;
 
 /// Which backend implementation is active. Mirrors the GObject subclass
 /// hierarchy: MetaBackendNative (DRM/KMS), MetaBackendX11 (X11), MetaBackendX11Nested.

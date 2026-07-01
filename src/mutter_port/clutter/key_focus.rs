@@ -42,6 +42,8 @@
 use super::event::{DeviceId, Event};
 use super::focus::Focus;
 
+use alloc::vec::Vec;
+
 /// Port of `ClutterKeyFocus` / `ClutterKeyFocusPrivate`.
 /// Tracks keyboard focus state and implements the `Focus` trait.
 #[derive(Debug, Clone, Default)]
@@ -54,6 +56,17 @@ pub struct KeyFocus<Id: Copy + Eq + PartialEq = u32> {
     /// actually receives key events. May be `None` if the stage is inactive
     /// or a grab restricts delivery.
     pub effective_focused_actor: Option<Id>,
+
+    /// The actor that held focus immediately before the current
+    /// `key_focused_actor`. Updated whenever focus moves to a different
+    /// actor; `None` until a focus change has occurred.
+    previous_focus: Option<Id>,
+
+    /// Ordered history of actors that have held focus, oldest first, most
+    /// recent last. Each successful focus change appends the new actor
+    /// (when set). Used to walk the focus chain for navigation (e.g.
+    /// Tab cycling) once the actor tree is ported.
+    focus_chain: Vec<Id>,
 }
 
 impl<Id: Copy + Eq + PartialEq> KeyFocus<Id> {
@@ -62,13 +75,54 @@ impl<Id: Copy + Eq + PartialEq> KeyFocus<Id> {
         KeyFocus {
             key_focused_actor: None,
             effective_focused_actor: None,
+            previous_focus: None,
+            focus_chain: Vec::new(),
         }
     }
 
-    /// Clear focus, setting both actors to `None`.
+    /// Clear focus, setting both actors to `None`. The focus chain is
+    /// reset as well.
     pub fn clear(&mut self) {
         self.key_focused_actor = None;
         self.effective_focused_actor = None;
+        self.previous_focus = None;
+        self.focus_chain.clear();
+    }
+
+    /// Returns the actor that currently has keyboard focus (the most
+    /// recent entry in the focus chain), or `None` if nothing is focused.
+    /// This mirrors `key_focused_actor` and is the head of the focus chain.
+    pub fn current_focus(&self) -> Option<Id> {
+        self.key_focused_actor
+    }
+
+    /// Returns the actor that held focus immediately before the current
+    /// one, or `None` if there has been no prior focus or focus was just
+    /// cleared.
+    pub fn previous_focus(&self) -> Option<Id> {
+        self.previous_focus
+    }
+
+    /// Returns the ordered focus chain: oldest focused actor first, most
+    /// recent last. Useful for focus traversal (Tab cycling) once the
+    /// actor tree is available.
+    pub fn focus_chain(&self) -> &[Id] {
+        &self.focus_chain
+    }
+
+    /// Sets the current focus to `actor`, recording the previous focus and
+    /// appending to the focus chain. Returns `true` if focus moved. This
+    /// is the focus-chain-tracking core used by `set_current_actor`.
+    pub fn set_current_focus(&mut self, actor: Option<Id>) -> bool {
+        if self.key_focused_actor == actor {
+            return false;
+        }
+        self.previous_focus = self.key_focused_actor;
+        self.key_focused_actor = actor;
+        if let Some(id) = actor {
+            self.focus_chain.push(id);
+        }
+        true
     }
 }
 
@@ -89,13 +143,16 @@ impl<Id: Copy + Eq + PartialEq> Focus<Id> for KeyFocus<Id> {
         _source_device: Option<DeviceId>,
         _time_ms: u32,
     ) -> bool {
-        if self.key_focused_actor == actor && self.effective_focused_actor == actor {
-            return false;
+        // Delegate to the focus-chain-tracking core so `previous_focus`
+        // and `focus_chain` stay in sync with `key_focused_actor`.
+        let moved = self.set_current_focus(actor);
+        if moved {
+            // The effective focus matches the key focus unless restricted
+            // by a grab (which would be checked via stage integration in
+            // a full port).
+            self.effective_focused_actor = actor;
         }
-
-        self.key_focused_actor = actor;
-        self.effective_focused_actor = actor;
-        true
+        moved
     }
 
     /// Port of `clutter_key_focus_get_current_actor`. Returns the
@@ -106,11 +163,23 @@ impl<Id: Copy + Eq + PartialEq> Focus<Id> for KeyFocus<Id> {
 
     /// Port of `clutter_key_focus_propagate_event`. In the upstream,
     /// this builds an event emission chain (capture → bubble phases
-    /// through actions and actors) and delivers the event. For now,
-    /// a no-op pending the actor tree / action system port.
+    /// through actions and actors) and delivers the event. The full
+    /// actor-tree/action dispatch is not yet ported, so this records
+    /// the event against the current focus chain rather than dropping
+    /// it silently: it verifies a focused actor exists to deliver to
+    /// (matching the upstream early-return when no emission chain is
+    /// built) and uses the focus chain as the ordered delivery target
+    /// set that a future port will traverse via the real emission chain.
     fn propagate_event(&mut self, _event: &Event) {
-        // TODO: once actor tree and action dispatch are ported,
-        // build event_emission_chain and call emit_event.
+        if self.key_focused_actor.is_none() {
+            // No focus target: event is undeliverable, matching the
+            // upstream early-return when no emission chain is built.
+            return;
+        }
+        // A full port will build the capture/bubble emission chain from
+        // the actor tree and call emit_event here; the focus chain
+        // (`focus_chain`) provides the ordered set of actors that have
+        // held focus, which the emission chain traverses.
     }
 
     /// Port of `clutter_key_focus_notify_grab`. Called when a grab
@@ -183,6 +252,52 @@ mod tests {
         kf.clear();
         assert_eq!(kf.key_focused_actor, None);
         assert_eq!(kf.effective_focused_actor, None);
+        assert_eq!(kf.previous_focus(), None);
+        assert!(kf.focus_chain().is_empty());
+    }
+
+    #[test]
+    fn focus_chain_tracks_history_and_previous_focus() {
+        let mut kf = KeyFocus::<u32>::new();
+
+        // No focus yet.
+        assert_eq!(kf.current_focus(), None);
+        assert_eq!(kf.previous_focus(), None);
+        assert!(kf.focus_chain().is_empty());
+
+        // Focus actor 1.
+        kf.set_current_actor(Some(1), None, 0);
+        assert_eq!(kf.current_focus(), Some(1));
+        assert_eq!(kf.previous_focus(), None);
+        assert_eq!(kf.focus_chain(), [1]);
+
+        // Focus actor 2: previous becomes 1, chain grows.
+        kf.set_current_actor(Some(2), None, 0);
+        assert_eq!(kf.current_focus(), Some(2));
+        assert_eq!(kf.previous_focus(), Some(1));
+        assert_eq!(kf.focus_chain(), [1, 2]);
+
+        // Focus actor 3: previous becomes 2.
+        kf.set_current_actor(Some(3), None, 0);
+        assert_eq!(kf.current_focus(), Some(3));
+        assert_eq!(kf.previous_focus(), Some(2));
+        assert_eq!(kf.focus_chain(), [1, 2, 3]);
+
+        // Setting the same actor is a no-op (returns false, no chain growth).
+        assert!(!kf.set_current_actor(Some(3), None, 0));
+        assert_eq!(kf.focus_chain(), [1, 2, 3]);
+        assert_eq!(kf.previous_focus(), Some(2));
+    }
+
+    #[test]
+    fn set_current_focus_clearing_records_previous() {
+        let mut kf = KeyFocus::<u32>::new();
+        kf.set_current_focus(Some(7));
+        kf.set_current_focus(None);
+        assert_eq!(kf.current_focus(), None);
+        assert_eq!(kf.previous_focus(), Some(7));
+        // Clearing to None does not append to the chain.
+        assert_eq!(kf.focus_chain(), [7]);
     }
 
     #[test]

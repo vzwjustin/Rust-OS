@@ -440,6 +440,7 @@ impl SyscallDispatcher {
         }
 
         // Read null-terminated string from user space (max 256 bytes for path)
+        // SAFETY: the user pointer is validated before reading; null terminator search is bounded.
         let program_path = unsafe {
             let mut path_bytes = Vec::new();
             let mut ptr = program_path_ptr as *const u8;
@@ -938,6 +939,7 @@ impl SyscallDispatcher {
             Ok(inode) => {
                 // Create stat structure
                 #[repr(C)]
+                #[derive(Clone, Copy)]
                 struct Stat {
                     dev: u64,
                     ino: u64,
@@ -971,12 +973,7 @@ impl SyscallDispatcher {
                 };
 
                 // Copy to user buffer
-                let stat_bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        &stat as *const _ as *const u8,
-                        core::mem::size_of::<Stat>(),
-                    )
-                };
+                let stat_bytes = crate::linux_compat::as_bytes(&stat);
 
                 if self.copy_to_user(stat_buf_ptr, stat_bytes).is_ok() {
                     SyscallResult::Success(0)
@@ -1069,6 +1066,8 @@ impl SyscallDispatcher {
             let mut copied = 0usize;
             while copied < to_read {
                 let chunk_len = core::cmp::min(4096, to_read - copied);
+                // SAFETY: `base_ptr` is a kernel-allocated buffer and `chunk_len`
+                // is bounded by 4096, staying within the buffer.
                 let dst =
                     unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
                 match crate::vfs::vfs_pread(fd, dst, offset + copied as u64) {
@@ -1078,6 +1077,7 @@ impl SyscallDispatcher {
                 }
             }
             if copied < length as usize {
+                // SAFETY: base_ptr is a kernel-allocated buffer of sufficient length.
                 unsafe {
                     core::ptr::write_bytes(base_ptr.add(copied), 0u8, length as usize - copied);
                 }
@@ -1456,6 +1456,7 @@ impl SyscallDispatcher {
 
         // struct utsname definition (POSIX compatible)
         #[repr(C)]
+        #[derive(Clone, Copy)]
         struct UtsName {
             sysname: [u8; 65],
             nodename: [u8; 65],
@@ -1485,8 +1486,7 @@ impl SyscallDispatcher {
         copy_str_to_buf(&mut utsname.machine, &uts_ns.machine);
 
         // Copy to user space
-        let utsname_bytes =
-            unsafe { core::slice::from_raw_parts(&utsname as *const _ as *const u8, UTSNAME_SIZE) };
+        let utsname_bytes = crate::linux_compat::as_bytes(&utsname);
 
         if self.copy_to_user(buf_ptr, utsname_bytes).is_ok() {
             SyscallResult::Success(0)

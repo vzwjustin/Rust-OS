@@ -344,6 +344,7 @@ impl UserSpaceMemory {
             virt_addr.p1_index(),
         ];
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             let level_4_table = &*level_4_table_ptr;
 
@@ -547,12 +548,14 @@ impl UserSpaceMemory {
 
         // Copy in blocks
         while copied + BLOCK_SIZE <= len {
+            // SAFETY: See module-level safety documentation.
             let src_block = unsafe { src.add(copied) };
             let dst_block = &mut buffer[copied..copied + BLOCK_SIZE];
 
             // Validate the block before copying
             Self::validate_user_ptr(src_block as u64, BLOCK_SIZE as u64, false)?;
 
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 core::ptr::copy_nonoverlapping(src_block, dst_block.as_mut_ptr(), BLOCK_SIZE);
             }
@@ -562,6 +565,7 @@ impl UserSpaceMemory {
 
         // Copy remaining bytes
         while copied < len {
+            // SAFETY: See module-level safety documentation.
             match Self::safe_read_user_byte(unsafe { src.add(copied) }) {
                 Ok(byte) => buffer[copied] = byte,
                 Err(e) => return Err(e),
@@ -584,6 +588,7 @@ impl UserSpaceMemory {
 
         // Copy in blocks with fault recovery
         while copied + BLOCK_SIZE <= len {
+            // SAFETY: See module-level safety documentation.
             let src_block = unsafe { src.add(copied) };
             let dst_block = &mut buffer[copied..copied + BLOCK_SIZE];
 
@@ -600,6 +605,7 @@ impl UserSpaceMemory {
                     // Fall back to byte-by-byte copying for the failed block
                     for i in 0..BLOCK_SIZE {
                         match Self::safe_read_user_byte_with_context(
+                            // SAFETY: See module-level safety documentation.
                             unsafe { src_block.add(i) },
                             context,
                         ) {
@@ -617,6 +623,7 @@ impl UserSpaceMemory {
 
         // Copy remaining bytes
         while copied < len {
+            // SAFETY: See module-level safety documentation.
             match Self::safe_read_user_byte_with_context(unsafe { src.add(copied) }, context) {
                 Ok(byte) => {
                     buffer[copied] = byte;
@@ -637,6 +644,7 @@ impl UserSpaceMemory {
         context: &mut PageFaultContext,
     ) -> Result<(), SyscallError> {
         for (i, slot) in dst.iter_mut().enumerate() {
+            // SAFETY: See module-level safety documentation.
             match Self::safe_read_user_byte_with_context(unsafe { src.add(i) }, context) {
                 Ok(byte) => {
                     *slot = byte;
@@ -689,12 +697,14 @@ impl UserSpaceMemory {
 
         // Copy in blocks
         while copied + BLOCK_SIZE <= len {
+            // SAFETY: See module-level safety documentation.
             let dst_block = unsafe { dst.add(copied) };
             let src_block = &buffer[copied..copied + BLOCK_SIZE];
 
             // Validate the block before copying
             Self::validate_user_ptr(dst_block as u64, BLOCK_SIZE as u64, true)?;
 
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 core::ptr::copy_nonoverlapping(src_block.as_ptr(), dst_block, BLOCK_SIZE);
             }
@@ -704,6 +714,7 @@ impl UserSpaceMemory {
 
         // Copy remaining bytes
         while copied < len {
+            // SAFETY: See module-level safety documentation.
             match Self::safe_write_user_byte(unsafe { dst.add(copied) }, buffer[copied]) {
                 Ok(()) => {}
                 Err(e) => return Err(e),
@@ -726,6 +737,7 @@ impl UserSpaceMemory {
 
         // Copy in blocks with fault recovery
         while copied + BLOCK_SIZE <= len {
+            // SAFETY: See module-level safety documentation.
             let dst_block = unsafe { dst.add(copied) };
             let src_block = &buffer[copied..copied + BLOCK_SIZE];
 
@@ -742,6 +754,7 @@ impl UserSpaceMemory {
                     // Fall back to byte-by-byte copying for the failed block
                     for i in 0..BLOCK_SIZE {
                         match Self::safe_write_user_byte_with_context(
+                            // SAFETY: See module-level safety documentation.
                             unsafe { dst_block.add(i) },
                             src_block[i],
                             context,
@@ -760,6 +773,7 @@ impl UserSpaceMemory {
         // Copy remaining bytes
         while copied < len {
             match Self::safe_write_user_byte_with_context(
+                // SAFETY: See module-level safety documentation.
                 unsafe { dst.add(copied) },
                 buffer[copied],
                 context,
@@ -782,6 +796,7 @@ impl UserSpaceMemory {
         context: &mut PageFaultContext,
     ) -> Result<(), SyscallError> {
         for (i, &byte) in src.iter().enumerate() {
+            // SAFETY: See module-level safety documentation.
             match Self::safe_write_user_byte_with_context(unsafe { dst.add(i) }, byte, context) {
                 Ok(()) => {
                     context.update_progress(i + 1);
@@ -799,6 +814,7 @@ impl UserSpaceMemory {
 
         // Volatile read after validation — the page table walk in validate_user_ptr
         // ensures the mapping exists and is readable.
+        // SAFETY: See module-level safety documentation.
         unsafe { Ok(core::ptr::read_volatile(ptr)) }
     }
 
@@ -809,6 +825,7 @@ impl UserSpaceMemory {
 
         // Volatile write after validation — the page table walk in validate_user_ptr
         // ensures the mapping exists and is writable.
+        // SAFETY: See module-level safety documentation.
         unsafe {
             core::ptr::write_volatile(ptr, value);
         }
@@ -828,6 +845,7 @@ impl UserSpaceMemory {
         // validation (e.g. race with another CPU), the page fault handler
         // will use the context to record progress for recovery.
         let _ = context;
+        // SAFETY: See module-level safety documentation.
         unsafe { Ok(core::ptr::read_volatile(ptr)) }
     }
 
@@ -843,6 +861,7 @@ impl UserSpaceMemory {
         // Volatile write after validation. The context tracks progress
         // for recovery in case of a fault during multi-byte operations.
         let _ = context;
+        // SAFETY: See module-level safety documentation.
         unsafe {
             core::ptr::write_volatile(ptr, value);
         }
@@ -947,6 +966,7 @@ impl UserSpaceMemory {
             virt_addr.p1_index(),
         ];
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             let level_4_table = &*level_4_table_ptr;
 

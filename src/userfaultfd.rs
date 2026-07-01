@@ -188,6 +188,8 @@ fn copy_from_user<T: Copy + Default>(addr: u64) -> LinuxResult<T> {
         return Err(LinuxError::EFAULT);
     }
     let mut value = T::default();
+    // SAFETY: `value` is a stack-local `Default` value and `T` is `Copy`; the
+    // pointer is valid for writes and the length is `size_of::<T>()`.
     let bytes = unsafe {
         core::slice::from_raw_parts_mut(
             (&mut value as *mut T) as *mut u8,
@@ -202,6 +204,8 @@ fn copy_to_user<T: Copy>(addr: u64, value: &T) -> LinuxResult<()> {
     if addr == 0 {
         return Err(LinuxError::EFAULT);
     }
+    // SAFETY: `value` is a `Copy` reference; the pointer is valid for reads
+    // and the length is `size_of::<T>()`.
     let bytes = unsafe {
         core::slice::from_raw_parts((value as *const T) as *const u8, core::mem::size_of::<T>())
     };
@@ -289,6 +293,8 @@ pub fn read_events(id: u32, buf: &mut [u8]) -> LinuxResult<isize> {
         return Err(LinuxError::EAGAIN);
     };
 
+    // SAFETY: `msg` is a stack-local `Copy` struct; the pointer is valid and
+    // the length is `size_of::<UffdMsg>()`.
     let msg_bytes = unsafe {
         core::slice::from_raw_parts(
             (&msg as *const UffdMsg) as *const u8,

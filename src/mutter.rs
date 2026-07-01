@@ -65,9 +65,7 @@ pub fn init() -> Result<(), &'static str> {
         return Err("Wayland compositor is not initialized");
     }
     crate::wayland::server::smoke_check()?;
-    unsafe {
-        crate::early_serial_write_str("RustOS: Mutter foundation initialized\r\n");
-    }
+    crate::early_serial_write_str("RustOS: Mutter foundation initialized\r\n");
     Ok(())
 }
 
@@ -515,9 +513,7 @@ pub fn launch_client() -> Result<(), &'static str> {
     MUTTER_LAUNCHED.store(true, Ordering::Release);
     MUTTER_SURFACE_COMMITTED.store(true, Ordering::Release);
 
-    unsafe {
-        crate::early_serial_write_str("RustOS: Mutter client launched (surface committed)\r\n");
-    }
+    crate::early_serial_write_str("RustOS: Mutter client launched (surface committed)\r\n");
     Ok(())
 }
 

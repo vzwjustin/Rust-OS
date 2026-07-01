@@ -23,37 +23,45 @@ pub fn render_surface(client: &ClientConnection, surface: &Surface) {
         return;
     };
 
-    let fb = match framebuffer::framebuffer() {
-        Some(fb) => fb,
-        None => return,
-    };
+    // Scope the framebuffer guard so the lock is released before `present()`
+    // re-locks `GLOBAL_FRAMEBUFFER` (spin::Mutex is not reentrant).
+    {
+        let mut fb_guard = match framebuffer::framebuffer() {
+            Some(g) => g,
+            None => return,
+        };
+        let fb = match &mut *fb_guard {
+            Some(fb) => fb,
+            None => return,
+        };
 
-    let (fb_width, fb_height) = (fb.width, fb.height);
-    let pixel_format = fb.pixel_format;
+        let (fb_width, fb_height) = (fb.width, fb.height);
+        let pixel_format = fb.pixel_format;
 
-    let regions: Vec<DamageRect> = if surface.damage.is_empty() {
-        vec![DamageRect {
-            x: 0,
-            y: 0,
-            width: buffer.width,
-            height: buffer.height,
-        }]
-    } else {
-        surface.damage.clone()
-    };
+        let regions: Vec<DamageRect> = if surface.damage.is_empty() {
+            vec![DamageRect {
+                x: 0,
+                y: 0,
+                width: buffer.width,
+                height: buffer.height,
+            }]
+        } else {
+            surface.damage.clone()
+        };
 
-    for rect in regions {
-        blit_region(
-            &pool.data,
-            buffer,
-            rect,
-            surface.x,
-            surface.y,
-            fb_width,
-            fb_height,
-            pixel_format,
-            fb,
-        );
+        for rect in regions {
+            blit_region(
+                &pool.data,
+                buffer,
+                rect,
+                surface.x,
+                surface.y,
+                fb_width,
+                fb_height,
+                pixel_format,
+                fb,
+            );
+        }
     }
 
     framebuffer::present();

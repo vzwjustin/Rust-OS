@@ -36,6 +36,8 @@
 //! As with the rest of `mutter_port::clutter`, this module uses no
 //! `unsafe`, no external crates, and only `core`/`alloc`.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 /// Text direction: LTR (default) or RTL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u32)]
@@ -72,7 +74,7 @@ pub struct PipelineCache;
 pub struct EventsQueue;
 
 /// Global accessibility enabled flag (mutable, read by `get_accessibility_enabled`).
-static mut ACCESSIBILITY_ENABLED: bool = true;
+static ACCESSIBILITY_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Port of `struct _ClutterContext`: global per-application state.
 #[derive(Debug, Clone)]
@@ -213,14 +215,12 @@ impl Context {
 /// Get whether Clutter accessibility support is enabled (global state).
 /// Note: in C this reads a static variable initialized by env parsing.
 pub fn get_accessibility_enabled() -> bool {
-    unsafe { ACCESSIBILITY_ENABLED }
+    ACCESSIBILITY_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Set whether Clutter accessibility support is enabled (global state).
 pub fn set_accessibility_enabled(enabled: bool) {
-    unsafe {
-        ACCESSIBILITY_ENABLED = enabled;
-    }
+    ACCESSIBILITY_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 #[cfg(test)]

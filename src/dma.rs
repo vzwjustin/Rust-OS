@@ -92,12 +92,16 @@ impl DmaCoherent {
     /// Shared byte slice view.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: The DMA buffer is owned by `self`; `virt` and `size` are
+        // valid and the buffer remains live for the lifetime of `self`.
         unsafe { core::slice::from_raw_parts(self.virt, self.size) }
     }
 
     /// Mutable byte slice view.
     #[inline]
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
+        // SAFETY: The DMA buffer is owned by `self`; `virt` and `size` are
+        // valid and `&mut self` ensures exclusive mutable access.
         unsafe { core::slice::from_raw_parts_mut(self.virt, self.size) }
     }
 

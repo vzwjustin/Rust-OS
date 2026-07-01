@@ -8,6 +8,8 @@
 #![allow(unused)]
 
 use crate::linux_compat::{self, LinuxError, LinuxResult};
+use alloc::vec;
+use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
@@ -29,6 +31,18 @@ pub struct IntegrationStats {
     pub memory_operations: u64,
 }
 
+/// Safe copy from user space, mapping errors to LinuxError::EFAULT.
+fn copy_from_user(ptr: u64, buf: &mut [u8]) -> LinuxResult<()> {
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(ptr, buf)
+        .map_err(|_| LinuxError::EFAULT)
+}
+
+/// Safe copy to user space, mapping errors to LinuxError::EFAULT.
+fn copy_to_user(ptr: u64, buf: &[u8]) -> LinuxResult<()> {
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(ptr, buf)
+        .map_err(|_| LinuxError::EFAULT)
+}
+
 lazy_static! {
     static ref INTEGRATION_STATS: Mutex<IntegrationStats> = Mutex::new(IntegrationStats::default());
 }
@@ -40,136 +54,114 @@ pub fn init() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    unsafe {
-        crate::early_serial_write_str("[Linux Integration] Initializing deep integration...\r\n")
-    };
+    crate::early_serial_write_str("[Linux Integration] Initializing deep integration...\r\n");
 
     // Wire Linux compat file operations to VFS
-    unsafe { crate::early_serial_write_str("linux_integration: vfs begin\r\n") };
+    crate::early_serial_write_str("linux_integration: vfs begin\r\n");
     init_vfs_integration()?;
-    unsafe { crate::early_serial_write_str("linux_integration: vfs ok\r\n") };
+    crate::early_serial_write_str("linux_integration: vfs ok\r\n");
 
     // Wire Linux compat process operations to process manager
-    unsafe { crate::early_serial_write_str("linux_integration: process begin\r\n") };
+    crate::early_serial_write_str("linux_integration: process begin\r\n");
     init_process_integration()?;
-    unsafe { crate::early_serial_write_str("linux_integration: process ok\r\n") };
+    crate::early_serial_write_str("linux_integration: process ok\r\n");
 
     // Wire Linux compat socket operations to network stack
-    unsafe { crate::early_serial_write_str("linux_integration: network begin\r\n") };
+    crate::early_serial_write_str("linux_integration: network begin\r\n");
     init_network_integration()?;
-    unsafe { crate::early_serial_write_str("linux_integration: network ok\r\n") };
+    crate::early_serial_write_str("linux_integration: network ok\r\n");
 
     // Wire Linux compat memory operations to memory manager
-    unsafe { crate::early_serial_write_str("linux_integration: memory begin\r\n") };
+    crate::early_serial_write_str("linux_integration: memory begin\r\n");
     init_memory_integration()?;
-    unsafe { crate::early_serial_write_str("linux_integration: memory ok\r\n") };
+    crate::early_serial_write_str("linux_integration: memory ok\r\n");
 
     // Wire Linux compat time operations to time subsystem
-    unsafe { crate::early_serial_write_str("linux_integration: time begin\r\n") };
+    crate::early_serial_write_str("linux_integration: time begin\r\n");
     init_time_integration()?;
-    unsafe { crate::early_serial_write_str("linux_integration: time ok\r\n") };
+    crate::early_serial_write_str("linux_integration: time ok\r\n");
 
     // Ensure crypto registry is ready for AF_ALG-style consumers
-    unsafe { crate::early_serial_write_str("linux_integration: crypto begin\r\n") };
+    crate::early_serial_write_str("linux_integration: crypto begin\r\n");
     init_crypto_integration()?;
-    unsafe { crate::early_serial_write_str("linux_integration: crypto ok\r\n") };
+    crate::early_serial_write_str("linux_integration: crypto ok\r\n");
 
     *initialized = true;
-    unsafe { crate::early_serial_write_str("[Linux Integration] Deep integration complete\r\n") };
+    crate::early_serial_write_str("[Linux Integration] Deep integration complete\r\n");
 
     Ok(())
 }
 
 /// Initialize VFS integration for Linux file operations
 fn init_vfs_integration() -> Result<(), &'static str> {
-    unsafe {
-        crate::early_serial_write_str("[Linux Integration] Wiring file operations to VFS...\r\n")
-    };
+    crate::early_serial_write_str("[Linux Integration] Wiring file operations to VFS...\r\n");
 
     // The linux_compat::file_ops module already uses our VFS
     // Just verify that VFS is available
 
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] File operations -> VFS integration ready\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] File operations -> VFS integration ready\r\n",
+    );
     Ok(())
 }
 
 /// Initialize process integration for Linux process operations
 fn init_process_integration() -> Result<(), &'static str> {
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Wiring process operations to process manager...\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Wiring process operations to process manager...\r\n",
+    );
 
     // The linux_compat::process_ops module uses our process manager
     // Verify that process manager is available
 
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Process operations -> Process Manager integration ready\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Process operations -> Process Manager integration ready\r\n",
+    );
     Ok(())
 }
 
 /// Initialize network integration for Linux socket operations
 fn init_network_integration() -> Result<(), &'static str> {
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Wiring socket operations to network stack...\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Wiring socket operations to network stack...\r\n",
+    );
 
     // The linux_compat::socket_ops module uses our network stack
     // Verify that network stack is available
 
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Socket operations -> Network Stack integration ready\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Socket operations -> Network Stack integration ready\r\n",
+    );
     Ok(())
 }
 
 /// Initialize memory integration for Linux memory operations
 fn init_memory_integration() -> Result<(), &'static str> {
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Wiring memory operations to memory manager...\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Wiring memory operations to memory manager...\r\n",
+    );
 
     // The linux_compat::memory_ops module uses our memory manager
     // Verify that memory manager is available
 
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Memory operations -> Memory Manager integration ready\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Memory operations -> Memory Manager integration ready\r\n",
+    );
     Ok(())
 }
 
 /// Initialize time integration for Linux time operations
 fn init_time_integration() -> Result<(), &'static str> {
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Wiring time operations to time subsystem...\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Wiring time operations to time subsystem...\r\n",
+    );
 
     // The linux_compat::time_ops module uses our time subsystem
     // Verify that time subsystem is available
 
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Time operations -> Time Subsystem integration ready\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Time operations -> Time Subsystem integration ready\r\n",
+    );
     Ok(())
 }
 
@@ -183,11 +175,9 @@ fn init_crypto_integration() -> Result<(), &'static str> {
         return Err("crypto registry empty after init");
     }
 
-    unsafe {
-        crate::early_serial_write_str(
-            "[Linux Integration] Crypto algorithms -> kernel crypto registry ready\r\n",
-        )
-    };
+    crate::early_serial_write_str(
+        "[Linux Integration] Crypto algorithms -> kernel crypto registry ready\r\n",
+    );
     Ok(())
 }
 
@@ -211,7 +201,7 @@ pub fn route_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             if args[2] < core::mem::size_of::<u64>() as u64 {
                 return Err(LinuxError::EINVAL);
             }
-            let mask = unsafe { core::ptr::read_unaligned(mask_ptr) };
+            let mask = linux_compat::copy_struct_from_user(mask_ptr)?;
             linux_compat::special_fd::signalfd(args[0] as i32, mask, args[3] as i32)
                 .map(|v| v as u64)
         }
@@ -1268,10 +1258,8 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             let (off, len) = if range_ptr.is_null() {
                 (0u64, u64::MAX)
             } else {
-                unsafe {
-                    let r = &*(range_ptr as *const (u64, u64));
-                    (r.0, r.1)
-                }
+                let r = linux_compat::copy_struct_from_user(range_ptr as *const (u64, u64))?;
+                (r.0, r.1)
             };
 
             // Get file stats via VFS to compute real page counts
@@ -1279,10 +1267,8 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 Ok(stat) => stat.size,
                 Err(_) => {
                     // Can't stat — return zeros
-                    let buf = unsafe { core::slice::from_raw_parts_mut(cstat, 40) };
-                    for b in buf.iter_mut() {
-                        *b = 0;
-                    }
+                    let zeros = [0u8; 40];
+                    copy_to_user(cstat as u64, &zeros)?;
                     return Ok(0);
                 }
             };
@@ -1296,18 +1282,14 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
 
             // struct cachestat { __u64 nr_cache; __u64 nr_dirty; __u64 nr_writeback; __u64 nr_evictable; __u64 nr_recently_evicted; }
             // All pages are in memory (no swap/backing store), so nr_cache = total pages
-            let buf = unsafe { core::slice::from_raw_parts_mut(cstat, 40) };
-            for b in buf.iter_mut() {
-                *b = 0;
-            }
-            unsafe {
-                let cs = &mut *(cstat as *mut (u64, u64, u64, u64, u64));
-                cs.0 = nr_pages; // nr_cache
-                cs.1 = 0; // nr_dirty
-                cs.2 = 0; // nr_writeback
-                cs.3 = nr_pages; // nr_evictable
-                cs.4 = 0; // nr_recently_evicted
-            }
+            let cs: (u64, u64, u64, u64, u64) = (
+                nr_pages, // nr_cache
+                0,        // nr_dirty
+                0,        // nr_writeback
+                nr_pages, // nr_evictable
+                0,        // nr_recently_evicted
+            );
+            linux_compat::copy_struct_to_user(cstat as *mut (u64, u64, u64, u64, u64), &cs)?;
             Ok(0)
         }
 
@@ -1379,23 +1361,14 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             //   __u64 sb_flags; __u64 opt; __u64 opt_fields; __u64 pad[16]; }
             // Total: 160 bytes minimum
             let len = core::cmp::min(bufsize, 256);
-            let buf_slice = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-            for b in buf_slice.iter_mut() {
-                *b = 0;
-            }
-
-            unsafe {
-                let sm = &mut *(buf as *mut (u32, u32, u32, u32, u32, u64, u64, u64, u64));
-                sm.0 = len as u32; // size
-                sm.1 = 1; // mnt_id (root mount = 1)
-                sm.2 = 0; // mnt_parent_id (no parent for root)
-                sm.3 = 1; // mnt_id_old
-                sm.4 = 0; // mnt_parent_id_old
-                sm.5 = 0; // sr_dev
-                sm.6 = 0; // sb_flags
-                sm.7 = 0; // opt
-                sm.8 = 0; // opt_fields
-            }
+            let mut buf_vec = vec![0u8; len];
+            // Write fields at known offsets (all little-endian on x86_64)
+            buf_vec[0..4].copy_from_slice(&(len as u32).to_ne_bytes()); // size
+            buf_vec[4..8].copy_from_slice(&1u32.to_ne_bytes()); // mnt_id
+            buf_vec[8..12].copy_from_slice(&0u32.to_ne_bytes()); // mnt_parent_id
+            buf_vec[12..16].copy_from_slice(&1u32.to_ne_bytes()); // mnt_id_old
+                                                                  // remaining fields are already zero
+            copy_to_user(buf as u64, &buf_vec)?;
             Ok(0)
         }
 
@@ -1415,11 +1388,11 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
 
             // Return mount IDs (1-based index for each mount)
             let count = core::cmp::min(mount_paths.len(), bufsize / 8);
-            for i in 0..count {
-                unsafe {
-                    *buf.add(i) = (i + 1) as u64;
-                }
+            let mut id_bytes = Vec::with_capacity(count * 8);
+            for i in 1..=count as u64 {
+                id_bytes.extend_from_slice(&i.to_ne_bytes());
             }
+            copy_to_user(buf as u64, &id_bytes)?;
             Ok(count as u64)
         }
 
@@ -1730,11 +1703,12 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             //   s32 stabil; s32 jitcnt; s32 calcnt; s32 errcnt; s32 stbcnt;
             //   s32 tai; s32:32 padding }
             // 208 bytes.
-            let buf_ptr = args[0] as *mut u8;
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, 208) };
+            let buf_ptr = args[0] as u64;
 
             // Read modes field (first 4 bytes)
-            let modes = unsafe { *(args[0] as *const u32) };
+            let mut modes_bytes = [0u8; 4];
+            copy_from_user(buf_ptr, &mut modes_bytes)?;
+            let modes = u32::from_ne_bytes(modes_bytes);
 
             // ADJ_OFFSET = 0x0001, ADJ_FREQUENCY = 0x0002, ADJ_MAXERROR = 0x0004
             // ADJ_ESTERROR = 0x0008, ADJ_STATUS = 0x0010, ADJ_TIMECONST = 0x0020
@@ -1744,13 +1718,9 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             // since we don't have a real NTP implementation.
 
             // Clear the buffer and return TIME_OK
-            for b in buf.iter_mut() {
-                *b = 0;
-            }
-            // Preserve modes field for read-back
-            unsafe {
-                *(args[0] as *mut u32) = modes;
-            }
+            let mut out = vec![0u8; 208];
+            out[0..4].copy_from_slice(&modes.to_ne_bytes());
+            copy_to_user(buf_ptr, &out)?;
             Ok(0) // TIME_OK
         }
         crate::syscall::SyscallNumber::ClockAdjtime => {
@@ -1765,15 +1735,13 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             if clockid < 0 || clockid > 1 {
                 return Err(LinuxError::EINVAL);
             }
-            let buf_ptr = args[1] as *mut u8;
-            let modes = unsafe { *(args[1] as *const u32) };
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, 208) };
-            for b in buf.iter_mut() {
-                *b = 0;
-            }
-            unsafe {
-                *(args[1] as *mut u32) = modes;
-            }
+            let buf_ptr = args[1] as u64;
+            let mut modes_bytes = [0u8; 4];
+            copy_from_user(buf_ptr, &mut modes_bytes)?;
+            let modes = u32::from_ne_bytes(modes_bytes);
+            let mut out = vec![0u8; 208];
+            out[0..4].copy_from_slice(&modes.to_ne_bytes());
+            copy_to_user(buf_ptr, &out)?;
             Ok(0) // TIME_OK
         }
 
@@ -1892,10 +1860,8 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             }
             // struct ustat { char f_fname[6]; char f_fpack[6]; long f_tfree;
             //   ino_t f_tinode; } — 20 bytes on 64-bit
-            let buf = unsafe { core::slice::from_raw_parts_mut(args[1] as *mut u8, 20) };
-            for b in buf.iter_mut() {
-                *b = 0;
-            }
+            let zeros = [0u8; 20];
+            copy_to_user(args[1] as u64, &zeros)?;
             // Return success with zeroed stats
             Ok(0)
         }
@@ -2154,13 +2120,17 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                     let mut total = 0usize;
                     for i in 0..nr_segs {
                         // struct iovec { void *iov_base; size_t iov_len; }
-                        let base = unsafe { *(iov.add(i * 16) as *const *const u8) };
-                        let len = unsafe { *(iov.add(i * 16 + 8) as *const usize) };
+                        let mut iovc_bytes = [0u8; 16];
+                        copy_from_user(iov as u64 + (i * 16) as u64, &mut iovc_bytes)?;
+                        let base =
+                            u64::from_ne_bytes(iovc_bytes[0..8].try_into().unwrap()) as *const u8;
+                        let len = usize::from_ne_bytes(iovc_bytes[8..16].try_into().unwrap());
                         if base.is_null() || len == 0 {
                             continue;
                         }
-                        let data = unsafe { core::slice::from_raw_parts(base, len) };
-                        match ipc.pipe_write(pipe_id, data) {
+                        let mut data = vec![0u8; len];
+                        copy_from_user(base as u64, &mut data)?;
+                        match ipc.pipe_write(pipe_id, &data) {
                             Ok(n) => total += n,
                             Err(_) => break,
                         }
@@ -2171,14 +2141,20 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                     let ipc = crate::process::ipc::get_ipc_manager();
                     let mut total = 0usize;
                     for i in 0..nr_segs {
-                        let base = unsafe { *(iov.add(i * 16) as *const *mut u8) };
-                        let len = unsafe { *(iov.add(i * 16 + 8) as *const usize) };
+                        let mut iovc_bytes = [0u8; 16];
+                        copy_from_user(iov as u64 + (i * 16) as u64, &mut iovc_bytes)?;
+                        let base =
+                            u64::from_ne_bytes(iovc_bytes[0..8].try_into().unwrap()) as *mut u8;
+                        let len = usize::from_ne_bytes(iovc_bytes[8..16].try_into().unwrap());
                         if base.is_null() || len == 0 {
                             continue;
                         }
-                        let buf = unsafe { core::slice::from_raw_parts_mut(base, len) };
-                        match ipc.pipe_read(pipe_id, buf) {
+                        let mut buf = vec![0u8; len];
+                        match ipc.pipe_read(pipe_id, &mut buf) {
                             Ok(n) => {
+                                if n > 0 {
+                                    copy_to_user(base as u64, &buf[..n])?;
+                                }
                                 total += n;
                                 if n < len {
                                     break;
@@ -2216,9 +2192,10 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             if args[0] == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let set = unsafe { *(args[0] as *const u64) };
+            let set = linux_compat::copy_struct_from_user(args[0] as *const u64)?;
             let timeout_ns = if args[2] != 0 {
-                let ts = unsafe { &*(args[2] as *const linux_compat::TimeSpec) };
+                let ts =
+                    linux_compat::copy_struct_from_user(args[2] as *const linux_compat::TimeSpec)?;
                 Some(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
             } else {
                 None
@@ -2270,6 +2247,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 return Err(LinuxError::EFAULT);
             }
             #[repr(C)]
+            #[derive(Clone, Copy)]
             struct OldUtsname {
                 sysname: [u8; 65],
                 nodename: [u8; 65],
@@ -2302,9 +2280,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             fill(&mut name.version, &uts.uts.version);
             fill(&mut name.machine, &uts.uts.machine);
             fill(&mut name.domainname, &uts.uts.domainname);
-            unsafe {
-                *(args[0] as *mut OldUtsname) = name;
-            }
+            linux_compat::copy_struct_to_user(args[0] as *mut OldUtsname, &name)?;
             Ok(0)
         }
 
@@ -2377,6 +2353,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                         // Write siginfo
                         if !infop.is_null() {
                             #[repr(C)]
+                            #[derive(Clone, Copy)]
                             struct SigInfo {
                                 si_signo: i32,
                                 si_errno: i32,
@@ -2387,18 +2364,17 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                                 si_status: i32,
                                 _pad2: [u8; 32],
                             }
-                            unsafe {
-                                *(infop as *mut SigInfo) = SigInfo {
-                                    si_signo: 17, // SIGCHLD
-                                    si_errno: 0,
-                                    si_code,
-                                    _pad: 0,
-                                    si_pid: pid,
-                                    si_uid: uid,
-                                    si_status,
-                                    _pad2: [0; 32],
-                                };
-                            }
+                            let si = SigInfo {
+                                si_signo: 17, // SIGCHLD
+                                si_errno: 0,
+                                si_code,
+                                _pad: 0,
+                                si_pid: pid,
+                                si_uid: uid,
+                                si_status,
+                                _pad2: [0; 32],
+                            };
+                            linux_compat::copy_struct_to_user(infop as *mut SigInfo, &si)?;
                         }
                         // Reap the zombie
                         let _ =
@@ -2447,6 +2423,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             let pcb = pm.get_process(pid).ok_or(LinuxError::ESRCH)?;
 
             #[repr(C)]
+            #[derive(Clone, Copy)]
             struct SchedAttr {
                 size: u32,
                 policy: u32,
@@ -2474,9 +2451,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 deadline_ns: 0,
                 period_ns: 0,
             };
-            unsafe {
-                *(args[1] as *mut SchedAttr) = attr;
-            }
+            linux_compat::copy_struct_to_user(args[1] as *mut SchedAttr, &attr)?;
             Ok(0)
         }
         crate::syscall::SyscallNumber::SchedSetattr => {
@@ -2489,6 +2464,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 args[0] as u32
             };
             #[repr(C)]
+            #[derive(Clone, Copy)]
             struct SchedAttr {
                 size: u32,
                 policy: u32,
@@ -2499,7 +2475,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
                 deadline_ns: u64,
                 period_ns: u64,
             }
-            let attr = unsafe { &*(args[1] as *const SchedAttr) };
+            let attr = linux_compat::copy_struct_from_user(args[1] as *const SchedAttr)?;
             let new_priority = match attr.policy {
                 0 => crate::process::Priority::Normal,
                 1 => crate::process::Priority::High,
@@ -2590,6 +2566,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
 
             // futex_waitv struct: { u64 val; u64 uaddr; u32 flags; u32 __reserved; }
             #[repr(C)]
+            #[derive(Clone, Copy)]
             struct FutexWaitv {
                 val: u64,
                 uaddr: u64,
@@ -2602,13 +2579,21 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
             loop {
                 // Check all futexes for any that have changed
                 for i in 0..nr_waiters {
-                    let w = unsafe { &*(waiters.add(i as usize * 32) as *const FutexWaitv) };
+                    // SAFETY: `waiters` was checked non-null above, `nr_waiters` is capped at
+                    // 128, and `i` is within that bound. The resulting user pointer is still
+                    // validated by `copy_struct_from_user` before being dereferenced.
+                    let waiter_ptr =
+                        unsafe { waiters.add(i as usize * core::mem::size_of::<FutexWaitv>()) }
+                            as *const FutexWaitv;
+                    let w = linux_compat::copy_struct_from_user(waiter_ptr)?;
                     let expected = w.val;
                     let uaddr = w.uaddr as *const u32;
                     if uaddr.is_null() {
                         continue;
                     }
-                    let current = unsafe { core::ptr::read_volatile(uaddr) };
+                    let mut val_bytes = [0u8; 4];
+                    copy_from_user(uaddr as u64, &mut val_bytes)?;
+                    let current = u32::from_ne_bytes(val_bytes);
                     if current != expected as u32 {
                         // Value changed — wake immediately
                         return Ok(i as u64);
@@ -2655,9 +2640,7 @@ fn route_misc_syscall(syscall_number: u64, args: &[u64]) -> LinuxResult<u64> {
         crate::syscall::SyscallNumber::Time => {
             let now_secs = (crate::time::uptime_ns() / 1_000_000_000) as i64;
             if args[0] != 0 {
-                unsafe {
-                    *(args[0] as *mut i64) = now_secs;
-                }
+                linux_compat::copy_struct_to_user(args[0] as *mut i64, &now_secs)?;
             }
             Ok(now_secs as u64)
         }

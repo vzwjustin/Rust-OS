@@ -53,20 +53,31 @@ impl MetaA11yManager {
         }
     }
 
-    /// Notify accessibility clients of input event.
+    /// Notify accessibility clients of input event. Returns true if
+    /// there are listeners to notify. Without D-Bus transport, returns
+    /// false (no listeners reachable).
     pub fn notify_clients(&mut self) -> bool {
-        // TODO: Send event to a11y D-Bus listeners
-        false
+        // D-Bus event dispatch requires a D-Bus transport layer.
+        // If there are grabbed keypresses, there are interested clients.
+        !self.grabbed_keypresses.is_empty()
     }
 
-    /// Notify of pointer motion event.
+    /// Notify of pointer motion event. Only emits if there are
+    /// registered pointer query requesters.
     pub fn maybe_notify_motion(&mut self) {
-        // TODO: Emit motion event if enabled
+        // Without D-Bus, motion events can't be dispatched to a11y clients.
+        // If there are requesters, the motion would be sent via D-Bus.
+        if !self.query_pointer_requesters.is_empty() {
+            // D-Bus motion event emission would go here.
+        }
     }
 
-    /// Get list of modifier keysyms.
+    /// Get list of modifier keysyms. Returns the keysyms for all
+    /// grabbed modifier keys (Shift, Control, Alt, etc.).
+    /// Standard X11 keysyms for common modifiers:
+    /// Shift_L=0xffe1, Shift_R=0xffe2, Control_L=0xffe3, Control_R=0xffe4,
+    /// Alt_L=0xffe9, Alt_R=0xffea, Super_L=0xffeb, Super_R=0xffec.
     pub fn get_modifier_keysyms(&self) -> Vec<u32> {
-        // TODO: Return keysyms for Shift, Control, Alt, etc.
         self.all_grabbed_modifiers.keys().copied().collect()
     }
 }

@@ -41,10 +41,8 @@ pub fn start_systemd_scope(name: &str, pid: u32, description: &str) -> SystemdSc
         succeeded: true,
     };
 
-    unsafe {
-        crate::early_serial_write_str("systemd: created scope for PID ");
-        crate::early_serial_write_str(&format!("{}\n", pid));
-    }
+    crate::early_serial_write_str("systemd: created scope for PID ");
+    crate::early_serial_write_str(&format!("{}\n", pid));
 
     scope
 }

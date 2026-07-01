@@ -44,6 +44,46 @@ use spin::Mutex;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
 use crate::memory::user_space::UserSpaceMemory;
+
+fn copy_value_from_user<T: Copy>(user_ptr: u64) -> LinuxResult<T> {
+    super::copy_struct_from_user(user_ptr as *const T)
+}
+
+fn copy_value_to_user<T: Copy>(user_ptr: u64, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(user_ptr as *mut T, value)
+}
+
+fn user_array_addr<T>(base: *const T, index: usize) -> LinuxResult<u64> {
+    if base.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let offset = index
+        .checked_mul(core::mem::size_of::<T>())
+        .ok_or(LinuxError::EINVAL)?;
+    (base as u64)
+        .checked_add(offset as u64)
+        .ok_or(LinuxError::EINVAL)
+}
+
+fn copy_user_memory_range(src: u64, dst: u64, len: usize) -> LinuxResult<()> {
+    let mut offset = 0usize;
+    let mut page_buf = [0u8; 4096];
+
+    while offset < len {
+        let chunk_len = core::cmp::min(page_buf.len(), len - offset);
+        let src_addr = src.checked_add(offset as u64).ok_or(LinuxError::EINVAL)?;
+        let dst_addr = dst.checked_add(offset as u64).ok_or(LinuxError::EINVAL)?;
+
+        UserSpaceMemory::copy_from_user(src_addr, &mut page_buf[..chunk_len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        UserSpaceMemory::copy_to_user(dst_addr, &page_buf[..chunk_len])
+            .map_err(|_| LinuxError::EFAULT)?;
+        offset += chunk_len;
+    }
+
+    Ok(())
+}
 use crate::process::{self, ProcessControlBlock};
 use crate::vfs;
 
@@ -669,7 +709,10 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
             );
 
             // File offset corresponding to span_start within this region.
-            let file_off_base = region.file_offset + (span_start.saturating_sub(reg_start));
+            let file_off_base = region
+                .file_offset
+                .checked_add(span_start.saturating_sub(reg_start))
+                .ok_or(LinuxError::EINVAL)?;
 
             let mut va = span_start;
             let mut foff = file_off_base;
@@ -677,8 +720,15 @@ pub fn msync(addr: *mut u8, length: usize, flags: i32) -> LinuxResult<i32> {
                 let page_len = core::cmp::min(4096, span_end - va);
                 if let Some(phys) = crate::memory::translate_addr(x86_64::VirtAddr::new(va as u64))
                 {
+                    // SAFETY: `translate_addr` confirmed the source virtual
+                    // page is mapped. `phys_offset + phys` addresses the
+                    // kernel's direct physical mapping, and `page_len` is
+                    // capped to the 4 KiB backing buffer.
                     unsafe {
-                        let src = (phys_offset + phys.as_u64()) as *const u8;
+                        let src_addr = phys_offset
+                            .checked_add(phys.as_u64())
+                            .ok_or(LinuxError::EFAULT)?;
+                        let src = src_addr as *const u8;
                         core::ptr::copy_nonoverlapping(src, page_buf.as_mut_ptr(), page_len);
                     }
                     // Write back synchronously; vfs_pwrite blocks until done.
@@ -866,27 +916,30 @@ pub fn mincore(addr: *mut u8, length: usize, vec: *mut u8) -> LinuxResult<i32> {
     }
 
     // Calculate number of pages
-    let pages = (length + 0xFFF) >> 12;
+    let pages = length.checked_add(0xFFF).ok_or(LinuxError::EINVAL)? >> 12;
 
     // Check page residency by walking the page table via the memory
     // manager's translate_addr. A page is resident (bit 0 = 1) if it
     // has a valid physical mapping; otherwise it's not resident (0).
-    unsafe {
-        for i in 0..pages {
-            let page_addr = addr_val + (i << 12);
-            let virt = x86_64::VirtAddr::new(page_addr as u64);
+    let mut residency = alloc::vec::Vec::with_capacity(pages);
+    for i in 0..pages {
+        let page_addr = addr_val + (i << 12);
+        let virt = x86_64::VirtAddr::new(page_addr as u64);
 
-            // Check if the page is mapped by translating the virtual
-            // address to a physical address. If translation succeeds,
-            // the page is resident in memory.
-            let resident = if let Some(_phys) = crate::memory::translate_addr(virt) {
-                1u8
-            } else {
-                0u8
-            };
+        // Check if the page is mapped by translating the virtual
+        // address to a physical address. If translation succeeds,
+        // the page is resident in memory.
+        let resident = if let Some(_phys) = crate::memory::translate_addr(virt) {
+            1u8
+        } else {
+            0u8
+        };
 
-            *vec.add(i) = resident;
-        }
+        residency.push(resident);
+    }
+
+    if !residency.is_empty() {
+        UserSpaceMemory::copy_to_user(vec as u64, &residency).map_err(|_| LinuxError::EFAULT)?;
     }
 
     Ok(0)
@@ -975,12 +1028,8 @@ pub fn mremap(
         )
         .map_err(vm_error_to_linux)?;
 
-        // Copy old contents to new location
-        unsafe {
-            let src = old_addr_val as *const u8;
-            let dst = new_addr_val as *mut u8;
-            core::ptr::copy_nonoverlapping(src, dst, aligned_old_size);
-        }
+        // Copy old contents to new location.
+        copy_user_memory_range(old_addr_val as u64, new_addr_val as u64, aligned_old_size)?;
 
         // Unmap old region
         vm_munmap(old_addr_val, aligned_old_size).map_err(vm_error_to_linux)?;
@@ -1026,12 +1075,12 @@ pub fn mremap(
         )
         .map_err(vm_error_to_linux)?;
 
-        // Copy old contents to new location
-        unsafe {
-            let src = old_addr_val as *const u8;
-            let dst = result as usize as *mut u8;
-            core::ptr::copy_nonoverlapping(src, dst, aligned_old_size);
-        }
+        // Copy old contents to new location.
+        copy_user_memory_range(
+            old_addr_val as u64,
+            result as usize as u64,
+            aligned_old_size,
+        )?;
 
         // Unmap old region
         vm_munmap(old_addr_val, aligned_old_size).map_err(vm_error_to_linux)?;
@@ -1074,7 +1123,10 @@ pub fn mmap2(
     pgoffset: Off,
 ) -> LinuxResult<*mut u8> {
     // Convert page offset to byte offset
-    let byte_offset = pgoffset * 4096;
+    if pgoffset < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    let byte_offset = pgoffset.checked_mul(4096).ok_or(LinuxError::EINVAL)?;
 
     // Call regular mmap
     mmap(addr, length, prot, flags, fd, byte_offset)
@@ -1127,9 +1179,12 @@ pub fn sbrk(increment: isize) -> LinuxResult<*mut u8> {
     if increment != 0 {
         with_current_pcb(|pcb| {
             let new_break = if increment > 0 {
-                old_break.wrapping_add(increment as usize)
+                old_break
+                    .checked_add(increment as usize)
+                    .ok_or(LinuxError::EINVAL)?
             } else {
-                old_break.wrapping_sub((-increment) as usize)
+                let decrement = increment.checked_neg().ok_or(LinuxError::EINVAL)? as usize;
+                old_break.checked_sub(decrement).ok_or(LinuxError::EINVAL)?
             };
             if pcb.initial_break == 0 {
                 pcb.initial_break = old_break;
@@ -1181,15 +1236,11 @@ pub fn get_mempolicy(
     };
 
     if !mode.is_null() {
-        unsafe {
-            *mode = policy;
-        }
+        copy_value_to_user(mode as u64, &policy)?;
     }
 
     if !nodemask.is_null() && maxnode > 0 {
-        unsafe {
-            *nodemask = mask;
-        }
+        copy_value_to_user(nodemask as u64, &mask)?;
     }
 
     Ok(0)
@@ -1205,7 +1256,7 @@ pub fn set_mempolicy(mode: i32, nodemask: *const u64, maxnode: u64) -> LinuxResu
         if nodemask.is_null() || maxnode == 0 {
             return Err(LinuxError::EINVAL);
         }
-        unsafe { *nodemask }
+        copy_value_from_user(nodemask as u64)?
     } else {
         0x1
     };
@@ -1266,7 +1317,7 @@ pub fn mbind(
     }
 
     let mask = if mode != MPOL_DEFAULT && mode != MPOL_LOCAL {
-        unsafe { *nodemask }
+        copy_value_from_user(nodemask as u64)?
     } else {
         0x1
     };
@@ -1294,8 +1345,8 @@ pub fn migrate_pages(
         return Err(LinuxError::EINVAL);
     }
 
-    let old_mask = unsafe { *old_nodes };
-    let new_mask = unsafe { *new_nodes };
+    let old_mask: u64 = copy_value_from_user(old_nodes as u64)?;
+    let new_mask: u64 = copy_value_from_user(new_nodes as u64)?;
 
     if (old_mask & !0x1) != 0 || (new_mask & !0x1) != 0 {
         return Err(LinuxError::EINVAL);
@@ -1338,7 +1389,7 @@ pub fn move_pages(
     let _ = pid;
 
     for i in 0..count as usize {
-        let page_addr = unsafe { *pages.add(i) };
+        let page_addr = copy_value_from_user::<*mut u8>(user_array_addr(pages, i as usize)?)?;
 
         if page_addr.is_null() {
             continue;
@@ -1346,13 +1397,11 @@ pub fn move_pages(
 
         // Get target node if nodes array is provided
         let target_node = if !nodes.is_null() {
-            unsafe { *nodes.add(i) }
+            copy_value_from_user::<i32>(user_array_addr(nodes, i as usize)?)?
         } else {
             // Query mode - return current node
             if !status.is_null() {
-                unsafe {
-                    *status.add(i) = 0; // All pages on node 0
-                }
+                copy_value_to_user::<i32>(user_array_addr(status, i as usize)?, &0)?;
             }
             continue;
         };
@@ -1361,17 +1410,16 @@ pub fn move_pages(
         if target_node < 0 || target_node > 0 {
             // Only node 0 is valid in single-node system
             if !status.is_null() {
-                unsafe {
-                    *status.add(i) = -(LinuxError::EINVAL as i32);
-                }
+                copy_value_to_user::<i32>(
+                    user_array_addr(status, i as usize)?,
+                    &-(LinuxError::EINVAL as i32),
+                )?
             }
             continue;
         }
 
         if !status.is_null() {
-            unsafe {
-                *status.add(i) = 0;
-            }
+            copy_value_to_user::<i32>(user_array_addr(status, i as usize)?, &0)?
         }
     }
 

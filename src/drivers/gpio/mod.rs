@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -90,13 +90,13 @@ struct SoftwareGpioChip {
     directions: Vec<GpioDirection>,
 }
 
-static mut SOFTWARE_GPIO: SoftwareGpioChip = SoftwareGpioChip {
+static SOFTWARE_GPIO: Mutex<SoftwareGpioChip> = Mutex::new(SoftwareGpioChip {
     lines: Vec::new(),
     directions: Vec::new(),
-};
+});
 
 fn sw_get_direction(_line: u32) -> Result<GpioDirection, &'static str> {
-    let chip = unsafe { &SOFTWARE_GPIO };
+    let chip = SOFTWARE_GPIO.lock();
     let idx = _line as usize;
     if idx >= chip.directions.len() {
         return Err("GPIO line out of range");
@@ -105,7 +105,7 @@ fn sw_get_direction(_line: u32) -> Result<GpioDirection, &'static str> {
 }
 
 fn sw_set_direction_input(line: u32) -> Result<(), &'static str> {
-    let chip = unsafe { &mut SOFTWARE_GPIO };
+    let mut chip = SOFTWARE_GPIO.lock();
     let idx = line as usize;
     if idx >= chip.directions.len() {
         return Err("GPIO line out of range");
@@ -115,7 +115,7 @@ fn sw_set_direction_input(line: u32) -> Result<(), &'static str> {
 }
 
 fn sw_set_direction_output(line: u32, value: bool) -> Result<(), &'static str> {
-    let chip = unsafe { &mut SOFTWARE_GPIO };
+    let mut chip = SOFTWARE_GPIO.lock();
     let idx = line as usize;
     if idx >= chip.directions.len() {
         return Err("GPIO line out of range");
@@ -126,7 +126,7 @@ fn sw_set_direction_output(line: u32, value: bool) -> Result<(), &'static str> {
 }
 
 fn sw_get_value(line: u32) -> Result<bool, &'static str> {
-    let chip = unsafe { &SOFTWARE_GPIO };
+    let chip = SOFTWARE_GPIO.lock();
     let idx = line as usize;
     if idx >= chip.lines.len() {
         return Err("GPIO line out of range");
@@ -135,7 +135,7 @@ fn sw_get_value(line: u32) -> Result<bool, &'static str> {
 }
 
 fn sw_set_value(line: u32, value: bool) -> Result<(), &'static str> {
-    let chip = unsafe { &mut SOFTWARE_GPIO };
+    let mut chip = SOFTWARE_GPIO.lock();
     let idx = line as usize;
     if idx >= chip.lines.len() {
         return Err("GPIO line out of range");
@@ -324,9 +324,10 @@ pub fn init() -> Result<(), &'static str> {
 
     // Initialize software GPIO chip backing store.
     let ngpio = sw_ngpio() as usize;
-    unsafe {
-        SOFTWARE_GPIO.lines = alloc::vec![false; ngpio];
-        SOFTWARE_GPIO.directions = alloc::vec![GpioDirection::Input; ngpio];
+    {
+        let mut chip = SOFTWARE_GPIO.lock();
+        chip.lines = alloc::vec![false; ngpio];
+        chip.directions = alloc::vec![GpioDirection::Input; ngpio];
     }
 
     register_chip("software-gpio", 0, SOFTWARE_GPIO_OPS)?;

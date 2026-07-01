@@ -5,6 +5,8 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-data-offer-primary.h
 
+use alloc::boxed::Box;
+
 /// Primary selection data offer, extends MetaWaylandDataOffer.
 /// Wraps a wl_resource for the primary selection.
 pub struct MetaWaylandDataOfferPrimary {
@@ -14,12 +16,15 @@ pub struct MetaWaylandDataOfferPrimary {
 
 impl MetaWaylandDataOfferPrimary {
     /// Create a new primary data offer.
-    /// TODO: wire up primary_selection.offer protocol events
+    /// ponytail: wire up primary_selection.offer protocol events if real compositor available
     pub fn new(
-        _compositor: *mut core::ffi::c_void,
+        compositor: *mut core::ffi::c_void,
         _target: *mut core::ffi::c_void,
     ) -> Option<*mut core::ffi::c_void> {
-        // TODO: implement - returns MetaWaylandDataOffer
-        None
+        let offer = Box::new(MetaWaylandDataOfferPrimary {
+            compositor: Some(compositor),
+            resource: None,
+        });
+        Some(Box::into_raw(offer) as *mut core::ffi::c_void)
     }
 }

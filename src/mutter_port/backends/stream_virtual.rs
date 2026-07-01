@@ -28,9 +28,7 @@ pub struct MetaVirtualMonitor {
 
 impl MetaVirtualMonitor {
     pub fn new() -> Self {
-        MetaVirtualMonitor {
-            modes: Vec::new(),
-        }
+        MetaVirtualMonitor { modes: Vec::new() }
     }
 }
 

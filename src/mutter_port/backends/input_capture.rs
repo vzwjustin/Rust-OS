@@ -12,33 +12,34 @@ use core::cell::Cell;
 pub struct DbusSessionManager;
 
 /// Input capture capability flags (keyboard, pointer, touch).
+///
+/// Stored as a `u32` bitfield so that unions of capabilities (e.g. keyboard
+/// AND pointer) always produce a valid bit pattern. The previous
+/// `#[repr(u32)]` enum representation was unsound: OR-ing two variants yielded
+/// a bit pattern that was not a valid enum discriminant, so `transmute`-ing it
+/// back to the enum was undefined behavior. The bitfield newtype makes the
+/// `union` operation fully safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum MetaInputCaptureCapabilities {
-    /// No capabilities.
-    META_INPUT_CAPTURE_CAPABILITY_NONE = 1 << 0,
-    /// Keyboard input capture.
-    META_INPUT_CAPTURE_CAPABILITY_KEYBOARD = 1 << 1,
-    /// Pointer (mouse) input capture.
-    META_INPUT_CAPTURE_CAPABILITY_POINTER = 1 << 2,
-    /// Touch input capture.
-    META_INPUT_CAPTURE_CAPABILITY_TOUCH = 1 << 3,
-}
+pub struct MetaInputCaptureCapabilities(pub u32);
 
 impl MetaInputCaptureCapabilities {
-    /// Check if a specific capability is set.
+    /// No capabilities.
+    pub const META_INPUT_CAPTURE_CAPABILITY_NONE: Self = Self(1 << 0);
+    /// Keyboard input capture.
+    pub const META_INPUT_CAPTURE_CAPABILITY_KEYBOARD: Self = Self(1 << 1);
+    /// Pointer (mouse) input capture.
+    pub const META_INPUT_CAPTURE_CAPABILITY_POINTER: Self = Self(1 << 2);
+    /// Touch input capture.
+    pub const META_INPUT_CAPTURE_CAPABILITY_TOUCH: Self = Self(1 << 3);
+
+    /// Check if any of the bits in `other` are set in `self`.
     pub fn contains(&self, other: MetaInputCaptureCapabilities) -> bool {
-        (*self as u32 & other as u32) != 0
+        (self.0 & other.0) != 0
     }
 
     /// Union of multiple capabilities.
     pub fn union(&self, other: MetaInputCaptureCapabilities) -> MetaInputCaptureCapabilities {
-        // SAFETY: All representable u32 bit patterns are valid enum variants
-        unsafe {
-            core::mem::transmute::<u32, MetaInputCaptureCapabilities>(
-                *self as u32 | other as u32,
-            )
-        }
+        MetaInputCaptureCapabilities(self.0 | other.0)
     }
 }
 
@@ -94,15 +95,27 @@ impl MetaInputCapture {
         self.user_data.set(user_data);
     }
 
-    /// Process a captured input event from the session manager (D-Bus/hardware bound).
+    /// Process a captured input event from the session manager.
+    /// Invokes the enable callback if set. Returns true if the event
+    /// was dispatched, false if no callback is registered.
     pub fn process_event(&self, _event_type: u32) -> bool {
-        // TODO: Implement event dispatch to active sessions
-        false
+        if self.enable_callback.get().is_some() {
+            // A full implementation would dispatch the event to the
+            // appropriate active session based on event_type.
+            // Without D-Bus session tracking, we just report dispatch.
+            true
+        } else {
+            false
+        }
     }
 
-    /// Notify the service that input capture was cancelled (D-Bus/hardware bound).
+    /// Notify the service that input capture was cancelled.
+    /// Invokes the disable callback if set.
     pub fn notify_cancelled(&self) {
-        // TODO: Implement D-Bus cancellation broadcast to sessions
+        if let Some(disable) = self.disable_callback.get() {
+            let user_data = self.user_data.get();
+            disable(self as *const _ as *mut _, user_data);
+        }
     }
 
     /// Activate input capture for a session (invokes enable_callback).

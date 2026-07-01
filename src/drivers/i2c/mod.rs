@@ -94,7 +94,7 @@ impl VirtualEeprom {
     }
 
     fn read(offset: u8, buf: &mut [u8]) -> Result<(), &'static str> {
-        let eeprom = unsafe { &VIRTUAL_EEPROM };
+        let eeprom = VIRTUAL_EEPROM.lock();
         for (i, byte) in buf.iter_mut().enumerate() {
             *byte = eeprom.data[(offset as usize).wrapping_add(i) % 256];
         }
@@ -102,7 +102,7 @@ impl VirtualEeprom {
     }
 
     fn write(offset: u8, buf: &[u8]) -> Result<(), &'static str> {
-        let eeprom = unsafe { &mut VIRTUAL_EEPROM };
+        let mut eeprom = VIRTUAL_EEPROM.lock();
         for (i, &byte) in buf.iter().enumerate() {
             eeprom.data[(offset as usize).wrapping_add(i) % 256] = byte;
         }
@@ -110,7 +110,7 @@ impl VirtualEeprom {
     }
 }
 
-static mut VIRTUAL_EEPROM: VirtualEeprom = VirtualEeprom::new();
+static VIRTUAL_EEPROM: spin::Mutex<VirtualEeprom> = spin::Mutex::new(VirtualEeprom::new());
 
 fn platform_transfer(msgs: &mut [I2cMsg]) -> Result<usize, &'static str> {
     let devices = I2C_DEVICES.read();

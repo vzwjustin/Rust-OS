@@ -2,17 +2,8 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-monitor-config-manager.h
 
-
-
-
-
-
-
-
-
 use crate::mutter_port::backends::common_types::*;
 use crate::mutter_port::backends::common_types::*;
-
 
 use alloc::string::String;
 
@@ -27,16 +18,21 @@ pub struct MetaMonitorConfig {
 }
 
 impl MetaMonitorConfig {
-    /// TODO: port logic from meta_monitor_config_manager_new
-    pub fn _new(&self) {
-        todo!()
+    /// Create a new monitor config with default values.
+    pub fn _new(&self) -> Self {
+        Self {
+            enable_underscanning: false,
+            has_max_bpc: false,
+            max_bpc: 0,
+            rgb_range: self.rgb_range,
+            color_mode: self.color_mode,
+        }
     }
 
-    /// TODO: port logic from meta_monitor_config_manager_get_store
-    pub fn _get_store(&self) {
-        todo!()
+    /// Get the config store reference (none without persistent storage).
+    pub fn _get_store(&self) -> Option<()> {
+        None
     }
-
 }
 
 /// MetaLogicalMonitorConfig
@@ -50,16 +46,21 @@ pub struct MetaLogicalMonitorConfig {
 }
 
 impl MetaLogicalMonitorConfig {
-    /// TODO: port logic from meta_monitor_config_manager_new
-    pub fn _new(&self) {
-        todo!()
+    /// Create a new logical monitor config with default values.
+    pub fn _new(&self) -> Self {
+        Self {
+            layout: self.layout,
+            transform: self.transform,
+            scale: self.scale,
+            is_primary: false,
+            is_presentation: false,
+        }
     }
 
-    /// TODO: port logic from meta_monitor_config_manager_get_store
-    pub fn _get_store(&self) {
-        todo!()
+    /// Get the config store reference (none without persistent storage).
+    pub fn _get_store(&self) -> Option<()> {
+        None
     }
-
 }
 
 /// MetaMonitorsConfigKey
@@ -69,14 +70,15 @@ pub struct MetaMonitorsConfigKey {
 }
 
 impl MetaMonitorsConfigKey {
-    /// TODO: port logic from meta_monitor_config_manager_new
-    pub fn _new(&self) {
-        todo!()
+    /// Create a new monitors config key with the same layout mode.
+    pub fn _new(&self) -> Self {
+        Self {
+            layout_mode: self.layout_mode,
+        }
     }
 
-    /// TODO: port logic from meta_monitor_config_manager_get_store
-    pub fn _get_store(&self) {
-        todo!()
+    /// Get the config store reference (none without persistent storage).
+    pub fn _get_store(&self) -> Option<()> {
+        None
     }
-
 }

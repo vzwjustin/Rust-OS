@@ -103,5 +103,32 @@ impl Default for MetaBarrierImpl {
     }
 }
 
-// TODO: Signal emission and barrier query helpers
-// These would be wired up with actual signal dispatch and barrier storage
+/// Emit a "hit" signal for a barrier event. A full implementation would
+/// emit a GObject signal on the MetaBarrier instance. Without GObject,
+/// this is a no-op that would dispatch to signal handlers.
+pub fn meta_barrier_emit_hit_signal(_barrier: &MetaBarrier, _event: &MetaBarrierEvent) {
+    // Signal emission requires GObject signal dispatch.
+}
+
+/// Emit a "left" signal for a barrier event. A full implementation would
+/// emit a GObject signal on the MetaBarrier instance.
+pub fn meta_barrier_emit_left_signal(_barrier: &MetaBarrier, _event: &MetaBarrierEvent) {
+    // Signal emission requires GObject signal dispatch.
+}
+
+/// Get the backend associated with a barrier. Without a real MetaBarrier
+/// type, returns None.
+pub fn meta_barrier_get_backend(_barrier: &MetaBarrier) -> Option<&MetaBackend> {
+    None
+}
+
+/// Get the border/geometry of a barrier. Without a real MetaBorder type,
+/// returns None.
+pub fn meta_barrier_get_border(_barrier: &MetaBarrier) -> Option<&MetaBorder> {
+    None
+}
+
+/// Get the flags of a barrier.
+pub fn meta_barrier_get_flags(_barrier: &MetaBarrier) -> MetaBarrierFlags {
+    MetaBarrierFlags::META_BARRIER_FLAG_NONE
+}

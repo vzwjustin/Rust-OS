@@ -68,22 +68,19 @@ pub fn align_down(addr: usize, align: usize) -> usize {
 }
 
 /// Global memory statistics for health monitoring
-static mut GLOBAL_MEMORY_STATS: Option<MemoryStats> = None;
+static GLOBAL_MEMORY_STATS: spin::Mutex<Option<MemoryStats>> = spin::Mutex::new(None);
 
 /// Store memory statistics for later retrieval
 pub fn store_memory_stats(stats: MemoryStats) {
-    unsafe {
-        GLOBAL_MEMORY_STATS = Some(stats);
-    }
+    *GLOBAL_MEMORY_STATS.lock() = Some(stats);
 }
 
 /// Get current memory statistics for health monitoring
 pub fn get_memory_stats() -> Result<MemoryStats, &'static str> {
-    unsafe {
-        GLOBAL_MEMORY_STATS
-            .clone()
-            .ok_or("Memory statistics not available")
-    }
+    GLOBAL_MEMORY_STATS
+        .lock()
+        .clone()
+        .ok_or("Memory statistics not available")
 }
 
 pub static HEAP_PHYS_START: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);

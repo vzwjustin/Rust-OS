@@ -67,9 +67,7 @@ pub fn install(root: Arc<dyn InodeOps>) -> VfsResult<()> {
 
     OVERLAY_READY.store(true, core::sync::atomic::Ordering::Release);
 
-    unsafe {
-        crate::early_serial_write_str("RustOS: GNOME runtime overlay installed\r\n");
-    }
+    crate::early_serial_write_str("RustOS: GNOME runtime overlay installed\r\n");
 
     Ok(())
 }

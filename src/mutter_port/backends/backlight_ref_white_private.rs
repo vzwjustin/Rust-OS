@@ -12,9 +12,12 @@ pub type Backlight = ();
 
 /// Constructor for creating a new BacklightRefWhite instance.
 ///
-/// In the upstream C code, this takes a MetaBackend pointer and MetaMonitor pointer.
-/// Those are hardware-specific, so this Rust stub leaves them as TODO I/O.
+/// In the upstream C code, this takes a MetaBackend pointer and MetaMonitor
+/// pointer to initialize the reference white backlight from hardware state.
+/// Without hardware access, creates a default instance.
 pub fn meta_backlight_ref_white_new() -> BacklightRefWhite {
-    // TODO: Initialize from MetaBackend and MetaMonitor
+    // A full implementation would query the MetaBackend and MetaMonitor
+    // for the current display hardware and initialize the reference white
+    // values from the monitor's EDID/color profile data.
     BacklightRefWhite::new()
 }

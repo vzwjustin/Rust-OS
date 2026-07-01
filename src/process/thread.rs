@@ -602,7 +602,8 @@ impl ThreadManager {
     fn allocate_stack(&self, size: usize) -> Result<u64, &'static str> {
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
         let region = memory_manager
             .allocate_region(
                 size,
@@ -618,7 +619,8 @@ impl ThreadManager {
     fn allocate_user_stack(&self, size: usize) -> Result<u64, &'static str> {
         use crate::memory::{get_memory_manager, MemoryProtection, MemoryRegionType};
 
-        let memory_manager = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager_guard = get_memory_manager().ok_or("Memory manager not initialized")?;
+        let memory_manager = &*memory_manager_guard;
         let region = memory_manager
             .allocate_region(
                 size,

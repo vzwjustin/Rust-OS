@@ -34,7 +34,6 @@ pub enum TabletPadFeedback {
 ///
 /// Represents a digitizer pad (typically paired with a tablet stylus).
 /// Holds pad state, button mappings, focus surface, and protocol resources.
-/// Hardware I/O is TODO.
 #[derive(Debug)]
 pub struct MetaWaylandTabletPad {
     pub tablet_seat: Option<*mut core::ffi::c_void>, // MetaWaylandTabletSeat pointer
@@ -47,6 +46,10 @@ pub struct MetaWaylandTabletPad {
     pub ring_count: u32,
     pub strip_count: u32,
     pub group_count: u32,
+    /// Current active mode for the pad (per zwp_tablet_pad_v2.mode).
+    pub mode: u32,
+    /// Index of the currently active button group.
+    pub current_group: u32,
 }
 
 impl MetaWaylandTabletPad {
@@ -62,6 +65,8 @@ impl MetaWaylandTabletPad {
             ring_count: 0,
             strip_count: 0,
             group_count: 0,
+            mode: 0,
+            current_group: 0,
         }
     }
 
@@ -73,12 +78,64 @@ impl MetaWaylandTabletPad {
         self.button_count = count;
     }
 
+    /// Get the number of rings on this pad.
+    pub fn get_ring_count(&self) -> u32 {
+        self.ring_count
+    }
+
+    /// Set the number of rings on this pad.
+    pub fn set_ring_count(&mut self, count: u32) {
+        self.ring_count = count;
+    }
+
+    /// Get the number of strips on this pad.
+    pub fn get_strip_count(&self) -> u32 {
+        self.strip_count
+    }
+
+    /// Set the number of strips on this pad.
+    pub fn set_strip_count(&mut self, count: u32) {
+        self.strip_count = count;
+    }
+
+    /// Get the number of button groups on this pad.
+    pub fn get_group_count(&self) -> u32 {
+        self.group_count
+    }
+
+    /// Set the number of button groups on this pad.
+    pub fn set_group_count(&mut self, count: u32) {
+        self.group_count = count;
+    }
+
     pub fn has_ring(&self) -> bool {
         self.ring_count > 0
     }
 
     pub fn has_strip(&self) -> bool {
         self.strip_count > 0
+    }
+
+    /// Get the current active mode for the pad.
+    pub fn get_mode(&self) -> u32 {
+        self.mode
+    }
+
+    /// Set the current active mode for the pad.
+    /// A full implementation would emit zwp_tablet_pad_v2.mode events
+    /// to all bound resources with the serial of the triggering event.
+    pub fn set_mode(&mut self, mode: u32) {
+        self.mode = mode;
+    }
+
+    /// Get the index of the currently active button group.
+    pub fn get_current_group(&self) -> u32 {
+        self.current_group
+    }
+
+    /// Set the currently active button group.
+    pub fn set_current_group(&mut self, group: u32) {
+        self.current_group = group;
     }
 }
 

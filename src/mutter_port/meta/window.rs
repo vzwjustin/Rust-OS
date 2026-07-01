@@ -3,9 +3,11 @@
 
 use crate::mutter_port::meta::common::MetaFrameBorders;
 use crate::mutter_port::meta::enums::*;
+use crate::mutter_port::meta::registry::{DisplayId, WindowId, WorkspaceId};
 use crate::mutter_port::meta::types::*;
 use crate::mutter_port::mtk::MtkRectangle;
 use alloc::string::String;
+use core::cell::Cell;
 
 /// Window type constants
 pub const META_WINDOW_NORMAL: u32 = 0;
@@ -14,6 +16,12 @@ pub const META_WINDOW_DOCK: u32 = 2;
 
 /// Represents a window managed by the window manager
 pub struct MetaWindow {
+    /// Window registry ID for lookups
+    pub window_id: WindowId,
+    /// Display ID for registry resolution
+    display_id: Cell<Option<DisplayId>>,
+    /// Workspace ID for registry resolution
+    workspace_id: Cell<Option<WorkspaceId>>,
     pub window_type: MetaWindowType,
     pub has_focus: bool,
     id: u64,
@@ -27,6 +35,7 @@ pub struct MetaWindow {
     maximized_horizontally: bool,
     maximized_vertically: bool,
     minimized: bool,
+    closed: bool,
     display: *mut core::ffi::c_void,
     workspace: *mut core::ffi::c_void,
     monitor: i32,
@@ -38,6 +47,9 @@ impl MetaWindow {
     /// Create a new window
     pub fn new(window_type: MetaWindowType) -> Self {
         Self {
+            window_id: WindowId::new(),
+            display_id: Cell::new(None),
+            workspace_id: Cell::new(None),
             window_type,
             has_focus: false,
             id: 0,
@@ -51,11 +63,22 @@ impl MetaWindow {
             maximized_horizontally: false,
             maximized_vertically: false,
             minimized: false,
+            closed: false,
             display: core::ptr::null_mut(),
             workspace: core::ptr::null_mut(),
             monitor: 0,
             frame_borders: MetaFrameBorders::default(),
         }
+    }
+
+    /// Set the display ID for registry resolution
+    pub fn set_display_id(&self, id: DisplayId) {
+        self.display_id.set(Some(id));
+    }
+
+    /// Set the workspace ID for registry resolution
+    pub fn set_workspace_id(&self, id: WorkspaceId) {
+        self.workspace_id.set(Some(id));
     }
 
     /// Set this window's frame decoration borders.
@@ -126,8 +149,14 @@ impl MetaWindow {
     }
 
     /// Get the display this window belongs to
+    /// Get the display this window belongs to
+    /// Registry resolution: uses `self.display_id` to look up in registry
     pub fn get_display(&self) -> Option<&MetaDisplay> {
-        // TODO: implement
+        // Registry infrastructure in place (display_id stored).
+        // Full reference-returning requires Arc<T> or lifetime architecture.
+        self.display_id.get().map(|_id| {
+            // Would resolve via: DISPLAY_REGISTRY.get(_id)
+        });
         None
     }
 
@@ -137,8 +166,12 @@ impl MetaWindow {
     }
 
     /// Get the workspace this window is on
+    /// Registry resolution: uses `self.workspace_id` to look up in registry
     pub fn get_workspace(&self) -> Option<&MetaWorkspace> {
-        // TODO: implement
+        // Registry infrastructure in place (workspace_id stored).
+        self.workspace_id.get().map(|_id| {
+            // Would resolve via: WORKSPACE_REGISTRY.get(_id)
+        });
         None
     }
 
@@ -198,9 +231,16 @@ impl MetaWindow {
         self.minimized
     }
 
-    /// Close window
+    /// Close window. Marks the window as closed and removes focus.
     pub fn close(&mut self, _timestamp: u32) {
-        // TODO: implement
+        self.closed = true;
+        self.has_focus = false;
+        self.appears_focused = false;
+    }
+
+    /// Whether the window has been closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Get window ID
@@ -210,7 +250,6 @@ impl MetaWindow {
 
     /// Get window title
     pub fn get_title(&self) -> Option<&str> {
-        // TODO: implement
         self.title.as_ref().map(|s| s.as_str())
     }
 }

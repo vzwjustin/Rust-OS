@@ -778,9 +778,7 @@ impl WindowManager {
     }
 
     fn refresh_system_monitor(&mut self) {
-        unsafe {
-            crate::early_serial_write_str("MON:enter\n");
-        }
+        crate::early_serial_write_str("MON:enter\n");
         self.monitor_lines.clear();
 
         let uptime_s = crate::time::uptime_ms() / 1000;
@@ -796,9 +794,7 @@ impl WindowManager {
         let _ = self.push_monitor_line(&format!("Clock: {}", clock));
         let _ = self.push_monitor_line(&format!("Uptime: {}s", uptime_s));
 
-        unsafe {
-            crate::early_serial_write_str("MON:mem\n");
-        }
+        crate::early_serial_write_str("MON:mem\n");
         if let Some(stats) = crate::memory::get_memory_stats() {
             let _ = self.push_monitor_line(&format!(
                 "Memory: {} / {} MiB",
@@ -815,32 +811,22 @@ impl WindowManager {
             let _ = self.push_monitor_line(&format!("Usable RAM: {} MiB", total_mib));
         }
 
-        unsafe {
-            crate::early_serial_write_str("MON:cpu\n");
-        }
+        crate::early_serial_write_str("MON:cpu\n");
         let cpu = crate::performance_monitor::cpu_utilization();
         let _ = self.push_monitor_line(&format!("CPU load est: {}%", cpu));
 
-        unsafe {
-            crate::early_serial_write_str("MON:procs\n");
-        }
+        crate::early_serial_write_str("MON:procs\n");
         let procs = crate::process::get_process_manager().list_processes().len();
         let _ = self.push_monitor_line(&format!("Processes: {}", procs));
 
-        unsafe {
-            crate::early_serial_write_str("MON:ifaces\n");
-        }
+        crate::early_serial_write_str("MON:ifaces\n");
         let ifaces = crate::net::network_stack().interface_count();
         let _ = self.push_monitor_line(&format!("Network: {} interface(s)", ifaces));
 
-        unsafe {
-            crate::early_serial_write_str("MON:mounts\n");
-        }
+        crate::early_serial_write_str("MON:mounts\n");
         let mounts = crate::fs::vfs().list_mounts().len();
         let _ = self.push_monitor_line(&format!("Mount points: {}", mounts));
-        unsafe {
-            crate::early_serial_write_str("MON:done\n");
-        }
+        crate::early_serial_write_str("MON:done\n");
     }
 
     fn push_monitor_line(&mut self, text: &str) -> bool {

@@ -472,28 +472,25 @@ impl Default for SigPending {
 /// Per-process signal handler table, shared (via Arc) across all threads in a
 /// thread group.  Mirrors Linux `struct sighand_struct`.
 pub struct SigHand {
-    /// One action entry per signal (indexed by sig-1).
-    pub action: [SigAction; 64],
+    /// One action entry per signal (indexed by sig-1), protected by `lock`.
+    action: Mutex<[SigAction; 64]>,
     /// Reference count (manual, mirrors Linux sighand_struct.count).
     pub count: AtomicU32,
-    /// Protects `action` during `sigaction()` / `exec()`.
-    pub lock: Mutex<()>,
 }
 
 impl SigHand {
     pub fn new() -> Self {
         SigHand {
-            action: [SigAction::default(); 64],
+            action: Mutex::new([SigAction::default(); 64]),
             count: AtomicU32::new(1),
-            lock: Mutex::new(()),
         }
     }
 
     /// Get the action for signal `sig` (1-indexed).
     pub fn get(&self, sig: u32) -> SigAction {
         if sig >= 1 && sig <= NSIG {
-            let _g = self.lock.lock();
-            self.action[(sig - 1) as usize]
+            let action = self.action.lock();
+            action[(sig - 1) as usize]
         } else {
             SigAction::default()
         }
@@ -502,22 +499,17 @@ impl SigHand {
     /// Set the action for signal `sig` (1-indexed).
     pub fn set(&self, sig: u32, act: SigAction) {
         if sig >= 1 && sig <= NSIG {
-            let _g = self.lock.lock();
-            // SAFETY: we hold the mutex; [SigAction; 64] is Copy, no aliasing issues.
-            // In a no_std context we work around the shared-ref constraint by using
-            // an unsafe write — the Mutex above provides the required exclusion.
-            let ptr = &self.action[(sig - 1) as usize] as *const SigAction as *mut SigAction;
-            unsafe { ptr.write(act) };
+            let mut action = self.action.lock();
+            action[(sig - 1) as usize] = act;
         }
     }
 
     /// Duplicate the handler table for `fork()` / `clone()` without CLONE_SIGHAND.
     pub fn dup(&self) -> SigHand {
-        let _g = self.lock.lock();
+        let action = self.action.lock();
         SigHand {
-            action: self.action, // [SigAction; 64] is Copy
+            action: Mutex::new(*action),
             count: AtomicU32::new(1),
-            lock: Mutex::new(()),
         }
     }
 }

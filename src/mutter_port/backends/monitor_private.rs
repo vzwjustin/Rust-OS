@@ -6,11 +6,6 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-monitor-private.h
 
-
-
-
-
-
 use crate::mutter_port::backends::common_types::*;
 use alloc::string::String;
 

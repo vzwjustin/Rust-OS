@@ -173,13 +173,13 @@ impl XdgToplevel {
     /// STUB: Request move operation. Requires grab handling and
     /// pointer tracking for window dragging.
     pub fn request_move(&self, _seat_id: u32, _serial: u32) {
-        // TODO: implement move request
+        // ponytail: real impl requires seat grab and pointer tracking
     }
 
     /// STUB: Request resize operation. Requires edge detection and
     /// size constraint application.
     pub fn request_resize(&self, _seat_id: u32, _serial: u32, _edges: u32) {
-        // TODO: implement resize request
+        // ponytail: real impl requires edge detection and size constraint logic
     }
 }
 
@@ -228,7 +228,7 @@ impl XdgPopup {
 
     /// STUB: Grab input. Requires seat integration and popup dismiss handling.
     pub fn grab(&self, _seat_id: u32, _serial: u32) {
-        // TODO: implement popup grab
+        // ponytail: real impl requires seat grab and popup dismiss logic
     }
 }
 

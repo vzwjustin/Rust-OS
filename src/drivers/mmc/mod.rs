@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ pub struct MmcCard {
 
 // ── Software SD card host ───────────────────────────────────────────────
 
-static mut SW_SD_DATA: Vec<u8> = Vec::new();
+static SW_SD_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 const SW_SD_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 const SW_SD_BLOCK: usize = 512;
 
@@ -96,7 +96,7 @@ fn sw_request(cmd: u32, arg: u32, buf: Option<&mut [u8]>) -> Result<u32, &'stati
         17 => {
             // READ_SINGLE_BLOCK
             let block = arg as usize;
-            let data = unsafe { &SW_SD_DATA };
+            let data = SW_SD_DATA.lock();
             let offset = block * SW_SD_BLOCK;
             if offset + SW_SD_BLOCK > data.len() {
                 return Err("SD read: block out of range");
@@ -112,7 +112,7 @@ fn sw_request(cmd: u32, arg: u32, buf: Option<&mut [u8]>) -> Result<u32, &'stati
         24 => {
             // WRITE_SINGLE_BLOCK
             let block = arg as usize;
-            let data = unsafe { &mut SW_SD_DATA };
+            let mut data = SW_SD_DATA.lock();
             let offset = block * SW_SD_BLOCK;
             if offset + SW_SD_BLOCK > data.len() {
                 return Err("SD write: block out of range");

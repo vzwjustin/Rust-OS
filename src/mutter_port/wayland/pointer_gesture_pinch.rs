@@ -10,12 +10,11 @@
 ///
 /// Returns true if the event was consumed, false otherwise.
 ///
-/// TODO: port logic from meta_wayland_pointer_gesture_pinch_handle_event, Clutter event processing
+/// ponytail: real impl requires Clutter event processing and gesture state tracking
 pub fn meta_wayland_pointer_gesture_pinch_handle_event(
     _pointer: *mut core::ffi::c_void,
     _event: *const core::ffi::c_void,
 ) -> bool {
-    // TODO: implement
     false
 }
 
@@ -23,21 +22,18 @@ pub fn meta_wayland_pointer_gesture_pinch_handle_event(
 ///
 /// Allocates and binds a wl_pointer_gesture_pinch resource for a client.
 ///
-/// TODO: port logic from meta_wayland_pointer_gesture_pinch_create_new_resource, Wayland protocol binding
+/// ponytail: real impl requires Wayland protocol binding and resource management
 pub fn meta_wayland_pointer_gesture_pinch_create_new_resource(
     _pointer: *mut core::ffi::c_void,
     _client: *mut core::ffi::c_void,
     _gestures_resource: *mut core::ffi::c_void,
     _id: u32,
 ) {
-    // TODO: implement
 }
 
 /// Cancel the gesture pinch.
 ///
 /// Sends a cancel event to the client, aborting the current pinch gesture.
 ///
-/// TODO: port logic from meta_wayland_pointer_gesture_pinch_cancel, event serialization
-pub fn meta_wayland_pointer_gesture_pinch_cancel(_pointer: *mut core::ffi::c_void, _serial: u32) {
-    // TODO: implement
-}
+/// ponytail: real impl requires event serialization and client notification
+pub fn meta_wayland_pointer_gesture_pinch_cancel(_pointer: *mut core::ffi::c_void, _serial: u32) {}

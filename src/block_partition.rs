@@ -89,8 +89,7 @@ pub fn parse_mbr(sector0: &[u8]) -> Vec<PartitionInfo> {
         let status = entry[0];
         let ptype = entry[4];
         let start_lba = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as u64;
-        let size_sectors =
-            u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]]) as u64;
+        let size_sectors = u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]]) as u64;
 
         if ptype == 0x00 || size_sectors == 0 {
             continue;
@@ -145,7 +144,7 @@ fn parse_gpt_entries(header: &GptHeader, table: &[u8]) -> Vec<PartitionInfo> {
 
     for i in 0..header.num_partition_entries as usize {
         let off = i * entry_size;
-        if off + 128 > table.len() {
+        if off.checked_add(128).map_or(true, |end| end > table.len()) {
             break;
         }
         let entry = &table[off..off + entry_size.min(table.len() - off)];

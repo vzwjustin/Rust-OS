@@ -15,11 +15,11 @@
 // `mtk_rectangle_crop_and_scale`) requires the `graphene` floating point
 // rectangle/vector library, which is not available here. Instead this
 // module defines a minimal local `FloatRect` type sufficient to port
-// `mtk_rectangle_from_graphene_rect` and `mtk_rectangle_scale_double`
-// faithfully; `mtk_rectangle_crop_and_scale` is stubbed out with a TODO
-// since it depends on `graphene_rect_scale`/`graphene_rect_offset`, which
-// would need to be ported separately (or graphene linked) before this can
-// be filled in.
+// `mtk_rectangle_from_graphene_rect`, `mtk_rectangle_scale_double`, and
+// `mtk_rectangle_crop_and_scale` faithfully. `crop_and_scale` reproduces
+// the upstream `graphene_rect_scale` + `graphene_rect_offset` followed by
+// `MTK_ROUNDING_STRATEGY_GROW` conversion using only the local `FloatRect`
+// arithmetic, so no separate graphene port is needed.
 //
 // `mtk_rectangle_transform` depends on `MtkMonitorTransform`, which is a
 // separate enum/module (mtk-monitor-transform.h) not ported here; it has
@@ -525,7 +525,10 @@ mod tests {
         // A rect covering the whole dst maps exactly onto the src crop.
         let full = Rectangle::new(0, 0, 100, 100);
         let src = FloatRect::new(10.0, 20.0, 50.0, 50.0);
-        assert_eq!(full.crop_and_scale(&src, 100, 100), Rectangle::new(10, 20, 50, 50));
+        assert_eq!(
+            full.crop_and_scale(&src, 100, 100),
+            Rectangle::new(10, 20, 50, 50)
+        );
     }
 
     #[test]
@@ -533,7 +536,10 @@ mod tests {
         // Bottom-right quarter of the dst maps into the src, offset by origin.
         let quarter = Rectangle::new(50, 50, 50, 50);
         let src = FloatRect::new(10.0, 20.0, 50.0, 50.0);
-        assert_eq!(quarter.crop_and_scale(&src, 100, 100), Rectangle::new(35, 45, 25, 25));
+        assert_eq!(
+            quarter.crop_and_scale(&src, 100, 100),
+            Rectangle::new(35, 45, 25, 25)
+        );
     }
 
     #[test]

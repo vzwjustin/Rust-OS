@@ -199,6 +199,8 @@ pub unsafe fn outl(val: u32, port: u16) {
 /// Full memory barrier (serialises all prior loads and stores).
 #[inline]
 pub fn mb() {
+    // SAFETY: `mfence` is a pure barrier instruction with no memory side
+    // effects beyond ordering. It requires no privileged state.
     unsafe {
         asm!("mfence", options(nostack, preserves_flags));
     }
@@ -209,6 +211,8 @@ pub fn mb() {
 /// to prevent speculative load reordering.
 #[inline]
 pub fn rmb() {
+    // SAFETY: `lfence` is a pure barrier instruction with no memory side
+    // effects beyond ordering. It requires no privileged state.
     unsafe {
         asm!("lfence", options(nostack, preserves_flags));
     }
@@ -219,6 +223,8 @@ pub fn rmb() {
 /// for store-buffer flushing (relevant for WC/WT memory types).
 #[inline]
 pub fn wmb() {
+    // SAFETY: `sfence` is a pure barrier instruction with no memory side
+    // effects beyond ordering. It requires no privileged state.
     unsafe {
         asm!("sfence", options(nostack, preserves_flags));
     }

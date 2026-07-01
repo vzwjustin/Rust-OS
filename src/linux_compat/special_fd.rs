@@ -9,6 +9,7 @@ use spin::RwLock;
 
 use super::types::PollFd;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process;
 use crate::process::ipc::get_ipc_manager;
 use crate::time;
@@ -28,6 +29,8 @@ static NEXT_EVENT_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_TIMER_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_SIGNALFD_ID: AtomicU32 = AtomicU32::new(1);
+
+const NSECS_PER_SEC: u64 = 1_000_000_000;
 
 /// Initialize special fd subsystem.
 ///
@@ -83,13 +86,84 @@ static SIGNALFD_BY_ID: RwLock<BTreeMap<u32, SignalFdState>> = RwLock::new(BTreeM
 
 const O_CLOEXEC: i32 = 0o2000000;
 const O_NONBLOCK: i32 = 0o4000;
+const EPOLL_EVENT_BYTES: usize = 12;
 
-fn root_inode() -> alloc::sync::Arc<dyn vfs::InodeOps> {
-    vfs::get_vfs().lookup("/").expect("root")
+fn user_array_ptr<T>(base: *const T, index: u64) -> LinuxResult<u64> {
+    if base.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+    let offset = index
+        .checked_mul(core::mem::size_of::<T>() as u64)
+        .ok_or(LinuxError::EFAULT)?;
+    (base as u64).checked_add(offset).ok_or(LinuxError::EFAULT)
+}
+
+fn checked_timer_part_to_ns(sec: u64, nsec: u64) -> LinuxResult<u64> {
+    if nsec >= NSECS_PER_SEC {
+        return Err(LinuxError::EINVAL);
+    }
+
+    sec.checked_mul(NSECS_PER_SEC)
+        .and_then(|sec_ns| sec_ns.checked_add(nsec))
+        .ok_or(LinuxError::EINVAL)
+}
+
+fn copy_struct_from_user<T: Copy>(user_ptr: u64) -> LinuxResult<T> {
+    super::copy_struct_from_user(user_ptr as *const T)
+}
+
+fn copy_struct_to_user<T: Copy>(user_ptr: u64, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(user_ptr as *mut T, value)
+}
+
+fn copy_epoll_event_from_user(event: *const u8) -> LinuxResult<(u32, u64)> {
+    if event.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut bytes = [0u8; EPOLL_EVENT_BYTES];
+    UserSpaceMemory::copy_from_user(event as u64, &mut bytes).map_err(|_| LinuxError::EFAULT)?;
+
+    let mut event_bytes = [0u8; core::mem::size_of::<u32>()];
+    event_bytes.copy_from_slice(&bytes[..core::mem::size_of::<u32>()]);
+    let mut data_bytes = [0u8; core::mem::size_of::<u64>()];
+    data_bytes.copy_from_slice(&bytes[core::mem::size_of::<u32>()..EPOLL_EVENT_BYTES]);
+
+    Ok((
+        u32::from_ne_bytes(event_bytes),
+        u64::from_ne_bytes(data_bytes),
+    ))
+}
+
+fn copy_epoll_event_to_user(
+    events: *mut u8,
+    index: u64,
+    revents: u32,
+    data: u64,
+) -> LinuxResult<()> {
+    if events.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let offset = index
+        .checked_mul(EPOLL_EVENT_BYTES as u64)
+        .ok_or(LinuxError::EFAULT)?;
+    let dst = (events as u64)
+        .checked_add(offset)
+        .ok_or(LinuxError::EFAULT)?;
+
+    let mut bytes = [0u8; EPOLL_EVENT_BYTES];
+    bytes[..core::mem::size_of::<u32>()].copy_from_slice(&revents.to_ne_bytes());
+    bytes[core::mem::size_of::<u32>()..EPOLL_EVENT_BYTES].copy_from_slice(&data.to_ne_bytes());
+    UserSpaceMemory::copy_to_user(dst, &bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn root_inode() -> LinuxResult<alloc::sync::Arc<dyn vfs::InodeOps>> {
+    vfs::get_vfs().lookup("/").map_err(|_| LinuxError::ENOENT)
 }
 
 pub fn register_special(kind: FdKind, flags: u32) -> LinuxResult<i32> {
-    let inode = root_inode();
+    let inode = root_inode()?;
     vfs::vfs_open_special(inode, flags, kind).map_err(|_| LinuxError::EMFILE)
 }
 
@@ -787,20 +861,20 @@ pub fn poll(fds: *mut PollFd, nfds: u64, timeout_ms: i32) -> LinuxResult<i32> {
     }
 
     let deadline = if timeout_ms >= 0 {
-        Some(time::uptime_ns() + timeout_ms as u64 * 1_000_000)
+        Some(time::uptime_ns().saturating_add((timeout_ms as u64).saturating_mul(1_000_000)))
     } else {
         None
     };
 
     loop {
         let mut ready = 0i32;
-        unsafe {
-            for i in 0..nfds {
-                let entry = &mut *fds.add(i as usize);
-                entry.revents = poll_revents(entry.fd, entry.events);
-                if entry.revents != 0 {
-                    ready += 1;
-                }
+        for i in 0..nfds {
+            let entry_ptr = user_array_ptr(fds, i)?;
+            let mut entry: PollFd = copy_struct_from_user(entry_ptr)?;
+            entry.revents = poll_revents(entry.fd, entry.events);
+            copy_struct_to_user(entry_ptr, &entry)?;
+            if entry.revents != 0 {
+                ready += 1;
             }
         }
 
@@ -862,8 +936,7 @@ pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut u8) -> LinuxResult<i32
                 return Err(LinuxError::EFAULT);
             }
             // struct epoll_event (packed, 12 bytes): { u32 events; u64 data; }
-            let events = unsafe { *(event as *const u32) };
-            let data = unsafe { *(event.add(4) as *const u64) };
+            let (events, data) = copy_epoll_event_from_user(event)?;
             if state.entries.iter().any(|e| e.fd == fd) {
                 return Err(LinuxError::EEXIST);
             }
@@ -878,8 +951,7 @@ pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut u8) -> LinuxResult<i32
             if event.is_null() {
                 return Err(LinuxError::EFAULT);
             }
-            let events = unsafe { *(event as *const u32) };
-            let data = unsafe { *(event.add(4) as *const u64) };
+            let (events, data) = copy_epoll_event_from_user(event)?;
             if let Some(entry) = state.entries.iter_mut().find(|e| e.fd == fd) {
                 entry.events = events;
                 entry.data = data;
@@ -903,7 +975,7 @@ pub fn epoll_wait(epfd: i32, events: *mut u8, maxevents: i32, timeout_ms: i32) -
     };
 
     let deadline = if timeout_ms >= 0 {
-        Some(time::uptime_ns() + timeout_ms as u64 * 1_000_000)
+        Some(time::uptime_ns().saturating_add((timeout_ms as u64).saturating_mul(1_000_000)))
     } else {
         None
     };
@@ -921,14 +993,7 @@ pub fn epoll_wait(epfd: i32, events: *mut u8, maxevents: i32, timeout_ms: i32) -
             }
             let revents = poll_revents(entry.fd, entry.events as i16) as u32;
             if revents != 0 {
-                unsafe {
-                    let off = out as usize * 12;
-                    // struct epoll_event (packed, 12 bytes):
-                    //   offset 0: u32 events  (actual events that occurred)
-                    //   offset 4: u64 data    (user data from epoll_ctl)
-                    *(events.add(off) as *mut u32) = revents;
-                    *(events.add(off + 4) as *mut u64) = entry.data;
-                }
+                copy_epoll_event_to_user(events, out as u64, revents, entry.data)?;
                 out += 1;
             }
         }
@@ -951,21 +1016,37 @@ pub fn epoll_wait(epfd: i32, events: *mut u8, maxevents: i32, timeout_ms: i32) -
     }
 }
 
+fn create_pipe_fds() -> LinuxResult<[i32; 2]> {
+    let ipc = get_ipc_manager();
+    let (pipe_id, _) = ipc.create_pipe().map_err(|_| LinuxError::EMFILE)?;
+
+    let read_fd = register_special(FdKind::PipeRead(pipe_id), OpenFlags::RDONLY)?;
+    let write_fd = match register_special(FdKind::PipeWrite(pipe_id), OpenFlags::WRONLY) {
+        Ok(fd) => fd,
+        Err(err) => {
+            let _ = vfs::vfs_close(read_fd);
+            return Err(err);
+        }
+    };
+
+    Ok([read_fd, write_fd])
+}
+
+fn close_pipe_fds(pipefds: [i32; 2]) {
+    let _ = vfs::vfs_close(pipefds[0]);
+    let _ = vfs::vfs_close(pipefds[1]);
+}
+
 /// pipe - create pipe with VFS fds
 pub fn pipe(pipefd: *mut [i32; 2]) -> LinuxResult<i32> {
     if pipefd.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let ipc = get_ipc_manager();
-    let (pipe_id, _) = ipc.create_pipe().map_err(|_| LinuxError::EMFILE)?;
-
-    let read_fd = register_special(FdKind::PipeRead(pipe_id), OpenFlags::RDONLY)?;
-    let write_fd = register_special(FdKind::PipeWrite(pipe_id), OpenFlags::WRONLY)?;
-
-    unsafe {
-        (*pipefd)[0] = read_fd;
-        (*pipefd)[1] = write_fd;
+    let pipefds = create_pipe_fds()?;
+    if let Err(err) = copy_struct_to_user(pipefd as u64, &pipefds) {
+        close_pipe_fds(pipefds);
+        return Err(err);
     }
     Ok(0)
 }
@@ -976,9 +1057,12 @@ pub fn pipe2(pipefd: *mut [i32; 2], flags: i32) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    pipe(pipefd)?;
+    if pipefd.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let pipefds = create_pipe_fds()?;
     // Apply O_CLOEXEC / O_NONBLOCK to both pipe ends.
-    let pipefd_ref = unsafe { &*pipefd };
     let mut fd_flags: u32 = 0;
     if (flags & O_CLOEXEC) != 0 {
         // O_CLOEXEC
@@ -989,8 +1073,12 @@ pub fn pipe2(pipefd: *mut [i32; 2], flags: i32) -> LinuxResult<i32> {
         fd_flags |= vfs::OpenFlags::NONBLOCK;
     }
     if fd_flags != 0 {
-        let _ = vfs::vfs_set_fd_flags(pipefd_ref[0], fd_flags);
-        let _ = vfs::vfs_set_fd_flags(pipefd_ref[1], fd_flags);
+        let _ = vfs::vfs_set_fd_flags(pipefds[0], fd_flags);
+        let _ = vfs::vfs_set_fd_flags(pipefds[1], fd_flags);
+    }
+    if let Err(err) = copy_struct_to_user(pipefd as u64, &pipefds) {
+        close_pipe_fds(pipefds);
+        return Err(err);
     }
     Ok(0)
 }
@@ -1126,7 +1214,6 @@ pub fn timerfd_settime(
     const TFD_TIMER_ABSTIME: i32 = 1 << 0;
     const TFD_TIMER_CANCEL_ON_SET: i32 = 1 << 1;
     const TFD_SETTIME_FLAGS: i32 = TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET;
-    const NSEC_PER_SEC: u64 = 1_000_000_000;
 
     if new_value.is_null() {
         return Err(LinuxError::EFAULT);
@@ -1138,8 +1225,8 @@ pub fn timerfd_settime(
         return Err(LinuxError::EBADF);
     };
 
-    let spec = unsafe { *(new_value as *const ITimerSpec) };
-    if spec.it_interval_nsec >= NSEC_PER_SEC || spec.it_value_nsec >= NSEC_PER_SEC {
+    let spec: ITimerSpec = copy_struct_from_user(new_value as u64)?;
+    if spec.it_interval_nsec >= NSECS_PER_SEC || spec.it_value_nsec >= NSECS_PER_SEC {
         return Err(LinuxError::EINVAL);
     }
     let mut table = TIMERFD_BY_ID.write();
@@ -1155,18 +1242,17 @@ pub fn timerfd_settime(
         } else {
             0
         };
-        unsafe {
-            *(old_value as *mut ITimerSpec) = ITimerSpec {
-                it_interval_sec: old_interval_ns / 1_000_000_000,
-                it_interval_nsec: old_interval_ns % 1_000_000_000,
-                it_value_sec: old_remaining / 1_000_000_000,
-                it_value_nsec: old_remaining % 1_000_000_000,
-            };
-        }
+        let old_spec = ITimerSpec {
+            it_interval_sec: old_interval_ns / 1_000_000_000,
+            it_interval_nsec: old_interval_ns % 1_000_000_000,
+            it_value_sec: old_remaining / 1_000_000_000,
+            it_value_nsec: old_remaining % 1_000_000_000,
+        };
+        copy_struct_to_user(old_value as u64, &old_spec)?;
     }
 
-    timer.interval_ns = spec.it_interval_sec * 1_000_000_000 + spec.it_interval_nsec;
-    let value_ns = spec.it_value_sec * 1_000_000_000 + spec.it_value_nsec;
+    timer.interval_ns = checked_timer_part_to_ns(spec.it_interval_sec, spec.it_interval_nsec)?;
+    let value_ns = checked_timer_part_to_ns(spec.it_value_sec, spec.it_value_nsec)?;
     if value_ns == 0 {
         timer.armed.store(0, Ordering::SeqCst);
     } else {
@@ -1175,7 +1261,7 @@ pub fn timerfd_settime(
         let expires = if (flags & TFD_TIMER_ABSTIME) != 0 {
             value_ns
         } else {
-            time::uptime_ns() + value_ns
+            time::uptime_ns().saturating_add(value_ns)
         };
         timer.expires_ns.store(expires, Ordering::SeqCst);
         timer.armed.store(1, Ordering::SeqCst);
@@ -1202,13 +1288,12 @@ pub fn timerfd_gettime(fd: i32, curr_value: *mut u8) -> LinuxResult<i32> {
     } else {
         0
     };
-    unsafe {
-        *(curr_value as *mut ITimerSpec) = ITimerSpec {
-            it_interval_sec: interval_ns / 1_000_000_000,
-            it_interval_nsec: interval_ns % 1_000_000_000,
-            it_value_sec: remaining / 1_000_000_000,
-            it_value_nsec: remaining % 1_000_000_000,
-        };
-    }
+    let current = ITimerSpec {
+        it_interval_sec: interval_ns / 1_000_000_000,
+        it_interval_nsec: interval_ns % 1_000_000_000,
+        it_value_sec: remaining / 1_000_000_000,
+        it_value_nsec: remaining % 1_000_000_000,
+    };
+    copy_struct_to_user(curr_value as u64, &current)?;
     Ok(0)
 }

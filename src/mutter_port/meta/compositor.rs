@@ -4,8 +4,8 @@
 //! MetaCompositor manages the rendering pipeline and window compositing.
 //! MetaBackground, MetaWindowActor, and MetaShapedTexture support visual rendering.
 
-use alloc::{boxed::Box, vec::Vec};
-use crate::mutter_port::meta::types::*;
+use crate::mutter_port::meta::display::MetaDisplay;
+use alloc::{boxed::Box, string::String, vec::Vec};
 // Use the rich window type (types::* only provides an opaque stub); this
 // matches what `meta::MetaWindow` re-exports.
 use crate::mutter_port::meta::window::MetaWindow;
@@ -15,6 +15,8 @@ pub struct MetaCompositor {
     display: Option<Box<MetaDisplay>>,
     is_enabled: bool,
     managed_windows: Vec<*mut MetaWindow>,
+    /// Whether a redraw is pending (dirty flag).
+    needs_redraw: bool,
 }
 
 impl MetaCompositor {
@@ -24,6 +26,7 @@ impl MetaCompositor {
             display: None,
             is_enabled: false,
             managed_windows: Vec::new(),
+            needs_redraw: false,
         }
     }
 
@@ -61,9 +64,27 @@ impl MetaCompositor {
         self.managed_windows.len()
     }
 
-    /// Redraw/composite the screen
+    /// Mark the compositor as needing a redraw.
+    pub fn schedule_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Whether a redraw is pending.
+    pub fn needs_redraw(&self) -> bool {
+        self.needs_redraw
+    }
+
+    /// Redraw/composite the screen. Iterates over all managed windows
+    /// and clears the dirty flag. A full implementation would drive the
+    /// Clutter paint pipeline to composite each window actor.
     pub fn redraw(&mut self) {
-        // TODO: implement
+        if !self.is_enabled {
+            return;
+        }
+        // The actual paint loop would walk `managed_windows` and call
+        // each window actor's paint method via the Clutter scene graph.
+        // For now, we clear the dirty flag to signal the redraw completed.
+        self.needs_redraw = false;
     }
 }
 
@@ -78,6 +99,7 @@ pub struct MetaBackground {
     red: f32,
     green: f32,
     blue: f32,
+    image_path: Option<String>,
 }
 
 impl MetaBackground {
@@ -86,6 +108,7 @@ impl MetaBackground {
             red: 0.0,
             green: 0.0,
             blue: 0.0,
+            image_path: None,
         }
     }
 
@@ -94,6 +117,8 @@ impl MetaBackground {
         self.red = red;
         self.green = green;
         self.blue = blue;
+        // Setting a solid color clears any image.
+        self.image_path = None;
     }
 
     /// Get background color
@@ -101,9 +126,16 @@ impl MetaBackground {
         (self.red, self.green, self.blue)
     }
 
-    /// Load background image
-    pub fn set_image(&mut self, _path: &str) {
-        // TODO: implement
+    /// Load background image from file path. A full implementation would
+    /// decode the image via a codec and upload it to a GPU texture.
+    /// For now, the path is stored for later resolution.
+    pub fn set_image(&mut self, path: &str) {
+        self.image_path = Some(String::from(path));
+    }
+
+    /// Get the current background image path, if any.
+    pub fn get_image_path(&self) -> Option<&str> {
+        self.image_path.as_deref()
     }
 }
 
@@ -170,19 +202,33 @@ impl Default for MetaWindowActor {
 /// Shaped texture for rendering window content
 pub struct MetaShapedTexture {
     is_valid: bool,
+    is_dirty: bool,
 }
 
 impl MetaShapedTexture {
     pub fn new() -> Self {
         Self {
             is_valid: false,
+            is_dirty: true,
         }
     }
 
-    /// Update the texture content
+    /// Mark the texture as needing an update.
+    pub fn invalidate(&mut self) {
+        self.is_dirty = true;
+    }
+
+    /// Whether the texture content needs to be re-uploaded.
+    pub fn is_dirty(&self) -> bool {
+        self.is_dirty
+    }
+
+    /// Update the texture content. Marks the texture as valid and
+    /// clears the dirty flag. A full implementation would re-upload
+    /// the window's pixel data to a GPU texture.
     pub fn update(&mut self) {
         self.is_valid = true;
-        // TODO: implement
+        self.is_dirty = false;
     }
 }
 

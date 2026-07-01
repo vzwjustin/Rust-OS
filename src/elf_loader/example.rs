@@ -410,7 +410,8 @@ fn create_process_page_table<A>(_allocator: &mut A) -> Result<KernelMapperGuard<
 where
     A: FrameAllocator<Size4KiB>,
 {
-    let mm = memory::get_memory_manager().ok_or(ElfError::AllocationFailed)?;
+    let mm_guard = memory::get_memory_manager().ok_or(ElfError::AllocationFailed)?;
+    let mm = &*mm_guard;
     Ok(KernelMapperGuard {
         guard: mm.page_table_manager.lock(),
     })

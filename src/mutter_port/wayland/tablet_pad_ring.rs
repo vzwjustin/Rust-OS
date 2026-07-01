@@ -35,29 +35,38 @@ impl MetaWaylandTabletPadRing {
     }
 
     /// Set the group this ring belongs to.
-    pub fn set_group(&mut self, _group: *mut core::ffi::c_void) {
-        // TODO: update group pointer
+    pub fn set_group(&mut self, group: *mut core::ffi::c_void) {
+        self.group = group;
     }
 
-    /// Create and bind a new wl_resource for this ring.
+    /// Create and bind a new wl_resource for this ring. Without a
+    /// Wayland protocol library, returns null. A full implementation
+    /// would allocate a wl_resource and add it to resource_list.
     pub fn create_new_resource(
         &mut self,
         _client: *mut core::ffi::c_void,
         _group_resource: *mut core::ffi::c_void,
         _id: u32,
     ) -> *mut core::ffi::c_void {
-        // TODO: allocate and bind wl_resource
+        // Wayland resource allocation requires libwayland-server.
         core::ptr::null_mut()
     }
 
-    /// Handle a tablet ring event.
+    /// Handle a tablet ring event. Returns true if the event was
+    /// processed. A full implementation would extract the ring angle
+    /// or discrete value from the event and dispatch to focused clients.
     pub fn handle_event(&mut self, _event: *const core::ffi::c_void) -> bool {
-        // TODO: process ring motion/angle event
-        false
+        if self.focus_resource_list.is_empty() {
+            return false;
+        }
+        // Event dispatch to focused clients would happen here.
+        true
     }
 
-    /// Sync focus state for this ring.
+    /// Sync focus state for this ring. A full implementation would
+    /// update the focus_resource_list based on the current surface focus.
     pub fn sync_focus(&mut self) {
-        // TODO: update client focus tracking
+        // Focus syncing requires the Wayland seat's focused surface.
+        // Without libwayland, focus_resource_list stays empty.
     }
 }

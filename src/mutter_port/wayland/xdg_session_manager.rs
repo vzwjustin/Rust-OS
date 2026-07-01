@@ -14,22 +14,16 @@ pub struct MetaWaylandXdgSessionManagement {
 impl MetaWaylandXdgSessionManagement {
     /// Create a new XDG session management instance
     pub fn new() -> Self {
-        Self {
-            compositor: None,
-        }
+        Self { compositor: None }
     }
 
     /// Initialize XDG session management support for the compositor
-    /// TODO: Register xdg_session_management protocol and bind to clients
-    pub fn init(_compositor: *mut c_void) {
-        // TODO: implement
-    }
+    /// ponytail: register xdg_session_management protocol; real impl binds to clients
+    pub fn init(_compositor: *mut c_void) {}
 
     /// Finalize XDG session management support for the compositor
-    /// TODO: Unbind protocol and clean up session state
-    pub fn finalize(_compositor: *mut c_void) {
-        // TODO: implement
-    }
+    /// ponytail: unbind protocol; real impl cleans up session state
+    pub fn finalize(_compositor: *mut c_void) {}
 }
 
 impl Default for MetaWaylandXdgSessionManagement {

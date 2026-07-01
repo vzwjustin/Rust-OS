@@ -300,6 +300,9 @@ pub fn parse_rsdp() -> Result<RsdpInfo, &'static str> {
         .rsdp_virtual
         .ok_or("Physical memory offset unavailable; cannot access ACPI tables")?;
 
+    // SAFETY: `rsdp_addr` is a validated virtual address from ACPI_STATE
+    // pointing to the RSDP mapped by `init()`. The RSDP is in ACPI reclaim
+    // memory and remains valid for the lifetime of the kernel.
     unsafe {
         let rsdp_v1 = &*(rsdp_addr as *const RsdpDescriptorV1);
 
@@ -307,6 +310,8 @@ pub fn parse_rsdp() -> Result<RsdpInfo, &'static str> {
             return Err("Invalid RSDP signature");
         }
 
+        // SAFETY: `rsdp_addr` is valid for `size_of::<RsdpDescriptorV1>()`
+        // bytes (ACPI 1.0 RSDP is 20 bytes, always present).
         if !checksum_bytes(slice::from_raw_parts(
             rsdp_addr as *const u8,
             mem::size_of::<RsdpDescriptorV1>(),
@@ -326,6 +331,8 @@ pub fn parse_rsdp() -> Result<RsdpInfo, &'static str> {
             let rsdp_v2 = &*(rsdp_addr as *const RsdpDescriptorV2);
 
             if rsdp_v2.length as usize >= mem::size_of::<RsdpDescriptorV2>() {
+                // SAFETY: `rsdp_addr` is valid for `rsdp_v2.length` bytes
+                // (validated by the length check above and ACPI spec).
                 if !checksum_bytes(slice::from_raw_parts(
                     rsdp_addr as *const u8,
                     rsdp_v2.length as usize,
@@ -394,10 +401,13 @@ pub fn enumerate_system_description_tables() -> Result<AcpiTables, &'static str>
         let virt = phys_to_virt(phys, physical_offset)
             .ok_or("Failed to translate ACPI SDT physical address")?;
 
+        // SAFETY: virt is a validated virtual address from phys_to_virt; SdtHeader is repr(C) and the first 36 bytes are always present.
         let header = unsafe { &*(virt as *const SdtHeader) };
 
         if header.length as usize >= mem::size_of::<SdtHeader>() {
             // Validate table checksum before accepting it
+            // SAFETY: `virt` is a validated virtual address from `phys_to_virt`,
+            // and `header.length` is the ACPI table's self-reported length.
             let table_slice =
                 unsafe { slice::from_raw_parts(virt as *const u8, header.length as usize) };
 
@@ -466,6 +476,10 @@ pub struct SdtHeader {
     creator_revision: u32,
 }
 
+/// # Safety
+/// `virt_addr` must be a valid mapped virtual address of an ACPI SDT table
+/// whose `length` field is trustworthy. The caller must ensure the memory
+/// region `[virt_addr, virt_addr + header.length)` is mapped and readable.
 unsafe fn read_sdt_entries(virt_addr: usize, entry_size: usize) -> Result<Vec<u64>, &'static str> {
     let header = &*(virt_addr as *const SdtHeader);
     let total_length = header.length as usize;
@@ -530,6 +544,9 @@ fn phys_to_virt(phys: u64, offset: u64) -> Option<usize> {
     offset.checked_add(phys).map(|addr| addr as usize)
 }
 
+/// # Safety
+/// `virt_addr` must be a valid mapped virtual address of an ACPI SDT table
+/// with the given `expected_signature`. The full table length must be mapped.
 unsafe fn sdt_slice_from_virt(
     virt_addr: usize,
     expected_signature: &[u8; 4],
@@ -620,6 +637,7 @@ pub fn parse_madt() -> Result<MadtInfo, &'static str> {
         .ok_or("Failed to map MADT virtual address")?;
 
     // Get the length from the MADT header
+    // SAFETY: virt_addr is validated by the caller (unsafe fn contract); SdtHeader is repr(C).
     let header = unsafe { &*(virt as *const SdtHeader) };
     let table_length = header.length as usize;
 
@@ -635,6 +653,9 @@ pub fn parse_madt() -> Result<MadtInfo, &'static str> {
     Ok(info)
 }
 
+/// # Safety
+/// `virt_addr` must be a valid mapped virtual address of a MADT table,
+/// and `table_length` must be the table's actual mapped length.
 unsafe fn parse_madt_from_address(
     virt_addr: usize,
     table_length: usize,
@@ -734,6 +755,7 @@ pub fn parse_fadt() -> Result<FadtInfo, &'static str> {
         .ok_or("Failed to map FADT virtual address")?;
 
     // Get the length from the FADT header
+    // SAFETY: virt_addr is validated by the caller (unsafe fn contract); SdtHeader is repr(C).
     let header = unsafe { &*(virt as *const SdtHeader) };
     let table_length = header.length as usize;
 
@@ -749,6 +771,9 @@ pub fn parse_fadt() -> Result<FadtInfo, &'static str> {
     Ok(info)
 }
 
+/// # Safety
+/// `virt_addr` must be a valid mapped virtual address of a FADT table,
+/// and `table_length` must be the table's actual mapped length.
 unsafe fn parse_fadt_from_address(
     virt_addr: usize,
     table_length: usize,
@@ -956,6 +981,7 @@ pub fn parse_mcfg() -> Result<McfgInfo, &'static str> {
         .ok_or("Failed to map MCFG virtual address")?;
 
     // Get the length from the MCFG header
+    // SAFETY: virt_addr is validated by the caller (unsafe fn contract); SdtHeader is repr(C).
     let header = unsafe { &*(virt as *const SdtHeader) };
     let table_length = header.length as usize;
 
@@ -971,6 +997,9 @@ pub fn parse_mcfg() -> Result<McfgInfo, &'static str> {
     Ok(info)
 }
 
+/// # Safety
+/// `virt_addr` must be a valid mapped virtual address of an MCFG table,
+/// and `table_length` must be the table's actual mapped length.
 unsafe fn parse_mcfg_from_address(
     virt_addr: usize,
     table_length: usize,
@@ -1053,6 +1082,7 @@ pub fn parse_hpet() -> Result<HpetInfo, &'static str> {
         })
         .ok_or("Failed to map HPET virtual address")?;
 
+    // SAFETY: virt is a validated HPET table virtual address; HpetTable is repr(C).
     let hpet_table = unsafe { &*(virt as *const HpetTable) };
 
     // Validate table signature

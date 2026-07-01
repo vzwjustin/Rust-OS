@@ -297,7 +297,10 @@ pub fn pcm_write(minor: u32, buf: &[u8]) -> Option<usize> {
 /// new rate. Mirrors a tiny slice of `snd_pcm_hw_params()`.
 pub fn set_hw_params(minor: u32, params: PcmHwParams) -> Result<(), &'static str> {
     params.validate()?;
-    let pcm_id = *PCM_BY_MINOR.read().get(&minor).ok_or("no such pcm device")?;
+    let pcm_id = *PCM_BY_MINOR
+        .read()
+        .get(&minor)
+        .ok_or("no such pcm device")?;
     let mut registry = PCM_REGISTRY.write();
     let pcm = registry.get_mut(&pcm_id).ok_or("no such pcm device")?;
     let bytes_per_sec = params.sample_rate as usize * params.frame_bytes();
@@ -317,7 +320,10 @@ pub fn hw_params(minor: u32) -> Option<PcmHwParams> {
 /// instead of the software ring buffer. Returns an error if the minor does
 /// not exist or is not a playback stream.
 pub fn bind_hw_sink(minor: u32, sink: HwSink) -> Result<(), &'static str> {
-    let pcm_id = *PCM_BY_MINOR.read().get(&minor).ok_or("no such pcm device")?;
+    let pcm_id = *PCM_BY_MINOR
+        .read()
+        .get(&minor)
+        .ok_or("no such pcm device")?;
     let mut registry = PCM_REGISTRY.write();
     let pcm = registry.get_mut(&pcm_id).ok_or("no such pcm device")?;
     if pcm.stream != PcmStream::Playback {

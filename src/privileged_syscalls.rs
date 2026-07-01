@@ -76,6 +76,9 @@ fn update_port_range(
     }
 }
 
+/// # Safety
+/// The caller must ensure this is called from ring 0 and `level` is 0-3.
+/// This modifies the I/O privilege level, affecting I/O port access rights.
 unsafe fn set_current_rflags_iopl(level: u8) {
     let mut flags: u64;
     asm!("pushfq; pop {}", out(reg) flags, options(nomem));
@@ -94,6 +97,7 @@ pub fn apply_io_privileges_for_process(pid: u32) {
     let state = state_for_pid(pid);
     let bitmap = state.hardware_bitmap();
     crate::gdt::set_io_permission_bitmap(&bitmap);
+    // SAFETY: IOPL modification is done from ring 0; level is validated.
     unsafe {
         set_current_rflags_iopl(state.iopl);
     }
@@ -154,6 +158,7 @@ pub fn clear_for_pid(pid: u32) {
 pub fn init() {
     IO_PRIVILEGES.write().clear();
     crate::gdt::deny_all_io_ports();
+    // SAFETY: IOPL modification is done from ring 0; level is validated.
     unsafe {
         set_current_rflags_iopl(0);
     }

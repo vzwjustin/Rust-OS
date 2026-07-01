@@ -9,7 +9,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::crtc_mode_kms::CrtcModeKms;
+use super::crtc_mode_kms::{CrtcModeKms, RefreshRateMode};
 use super::crtc_native::{CrtcNative, MonitorTransform};
 
 /// Gamma LUT (Look-Up Table) for color correction
@@ -50,6 +50,15 @@ pub struct CrtcKms {
     pub gamma_lut: Option<GammaLut>,
     /// Is this CRTC leased out (DRM lease)
     pub is_leased: bool,
+    /// Currently active display mode, or `None` when the CRTC is
+    /// disabled.
+    pub mode: Option<CrtcModeKms>,
+    /// X origin of the CRTC scanout within the framebuffer, in pixels.
+    pub x: i32,
+    /// Y origin of the CRTC scanout within the framebuffer, in pixels.
+    pub y: i32,
+    /// Current hardware transform applied to the scanout.
+    pub transform: MonitorTransform,
 }
 
 impl CrtcKms {
@@ -62,6 +71,10 @@ impl CrtcKms {
             cursor_plane: None,
             gamma_lut: None,
             is_leased: false,
+            mode: None,
+            x: 0,
+            y: 0,
+            transform: MonitorTransform::Normal,
         }
     }
 
@@ -124,11 +137,15 @@ impl CrtcKms {
         self.is_leased = leased;
     }
 
-    /// KMS hardware typically supports all rotation transforms
+    /// KMS hardware typically supports all rotation transforms.
+    ///
+    /// Upstream Mutter queries the plane's `IN_FORMATS` property to
+    /// verify the hardware can scan out the rotated buffer. Here we
+    /// report all transforms as handled when a primary plane has been
+    /// assigned, since most modern KMS drivers support rotation on the
+    /// primary plane.
     pub fn is_transform_handled(&self, transform: MonitorTransform) -> bool {
-        // Most KMS hardware supports rotation; some may not support all transforms
-        // For now, report all transforms as handled; subclasses can override
-        transform != MonitorTransform::Normal || true // All transforms handled
+        self.primary_plane.is_some() || transform == MonitorTransform::Normal
     }
 
     /// Most modern KMS hardware supports hardware cursor
@@ -136,22 +153,65 @@ impl CrtcKms {
         self.cursor_plane.is_some()
     }
 
-    /// Get deadline evasion time in microseconds (hardware-specific)
-    /// Requires knowledge of the specific hardware (read from GPU object typically)
+    /// Get deadline evasion time in microseconds (hardware-specific).
+    ///
+    /// A full implementation would query the KMS device's vblank queue
+    /// deadline from the GPU object. Here we return a conservative
+    /// default of 1000 us (1 ms), matching the upstream fallback used
+    /// when no driver-specific value is available.
     pub fn get_deadline_evasion(&self) -> i64 {
-        // TODO: Query from KMS device properties
-        0
+        1000
     }
 
-    /// Set the display mode (requires KMS atomic operations)
+    /// Set the display mode and mark the CRTC active.
+    ///
+    /// A full implementation would issue an atomic KMS commit with the
+    /// new mode via `drmModeAtomicAddProperty` and
+    /// `drmModeAtomicCommit`. Here we record the mode locally and flip
+    /// the active flag so downstream code can observe the intended
+    /// configuration.
     pub fn set_mode(&mut self, mode: &CrtcModeKms) {
-        // TODO: Issue atomic KMS commit with new mode
-        // This requires drmModeAtomicAddProperty() and drmModeAtomicCommit()
+        self.mode = Some(mode.clone());
+        self.native.active = true;
     }
 
-    /// Unset current configuration (disable CRTC)
+    /// Get the currently active display mode, if any.
+    pub fn get_mode(&self) -> Option<&CrtcModeKms> {
+        self.mode.as_ref()
+    }
+
+    /// Set the CRTC scanout origin within the framebuffer.
+    pub fn set_position(&mut self, x: i32, y: i32) {
+        self.x = x;
+        self.y = y;
+    }
+
+    /// Get the CRTC scanout origin.
+    pub fn get_position(&self) -> (i32, i32) {
+        (self.x, self.y)
+    }
+
+    /// Set the hardware transform applied to the scanout.
+    pub fn set_transform(&mut self, transform: MonitorTransform) {
+        self.transform = transform;
+    }
+
+    /// Get the current hardware transform.
+    pub fn get_transform(&self) -> MonitorTransform {
+        self.transform
+    }
+
+    /// Unset current configuration (disable CRTC).
+    ///
+    /// A full implementation would issue an atomic KMS commit to
+    /// disable this CRTC. Here we clear the local mode/transform state
+    /// and mark the CRTC inactive.
     pub fn unset_config(&mut self) {
-        // TODO: Issue atomic KMS commit to disable this CRTC
+        self.mode = None;
+        self.transform = MonitorTransform::Normal;
+        self.x = 0;
+        self.y = 0;
+        self.native.active = false;
     }
 }
 
@@ -201,5 +261,64 @@ mod tests {
         };
         crtc.set_gamma_lut(lut);
         assert_eq!(crtc.get_gamma_lut_size(), 256);
+    }
+
+    #[test]
+    fn test_set_mode_activates_crtc() {
+        let mut crtc = CrtcKms::new(1);
+        assert!(crtc.get_mode().is_none());
+        assert!(!crtc.native.active);
+        let mode = CrtcModeKms::new(
+            1,
+            "1920x1080".to_string(),
+            1920,
+            1080,
+            60000,
+            RefreshRateMode::Fixed,
+        );
+        crtc.set_mode(&mode);
+        assert!(crtc.get_mode().is_some());
+        assert!(crtc.native.active);
+    }
+
+    #[test]
+    fn test_position_and_transform() {
+        let mut crtc = CrtcKms::new(1);
+        assert_eq!(crtc.get_position(), (0, 0));
+        assert_eq!(crtc.get_transform(), MonitorTransform::Normal);
+        crtc.set_position(100, 200);
+        crtc.set_transform(MonitorTransform::Rotated90);
+        assert_eq!(crtc.get_position(), (100, 200));
+        assert_eq!(crtc.get_transform(), MonitorTransform::Rotated90);
+    }
+
+    #[test]
+    fn test_unset_config_clears_state() {
+        let mut crtc = CrtcKms::new(1);
+        let mode = CrtcModeKms::new(
+            1,
+            "1920x1080".to_string(),
+            1920,
+            1080,
+            60000,
+            RefreshRateMode::Fixed,
+        );
+        crtc.set_mode(&mode);
+        crtc.set_position(10, 20);
+        crtc.set_transform(MonitorTransform::Rotated180);
+        crtc.unset_config();
+        assert!(crtc.get_mode().is_none());
+        assert!(!crtc.native.active);
+        assert_eq!(crtc.get_position(), (0, 0));
+        assert_eq!(crtc.get_transform(), MonitorTransform::Normal);
+    }
+
+    #[test]
+    fn test_transform_handled_requires_primary_plane() {
+        let mut crtc = CrtcKms::new(1);
+        assert!(crtc.is_transform_handled(MonitorTransform::Normal));
+        assert!(!crtc.is_transform_handled(MonitorTransform::Rotated90));
+        crtc.set_primary_plane(PlaneHandle::Primary(1));
+        assert!(crtc.is_transform_handled(MonitorTransform::Rotated90));
     }
 }

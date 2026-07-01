@@ -39,19 +39,17 @@ struct BacklightDevice {
 
 // ── Software backlight (in-memory state) ────────────────────────────────
 
-static mut SW_BRIGHTNESS: u8 = 128;
-static mut SW_POWER: BacklightPower = BacklightPower::On;
+static SW_BRIGHTNESS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(128);
+static SW_POWER: spin::Mutex<BacklightPower> = spin::Mutex::new(BacklightPower::On);
 
 fn sw_update(brightness: u8, power: BacklightPower) -> Result<(), &'static str> {
-    unsafe {
-        SW_BRIGHTNESS = brightness;
-        SW_POWER = power;
-    }
+    SW_BRIGHTNESS.store(brightness, core::sync::atomic::Ordering::Relaxed);
+    *SW_POWER.lock() = power;
     Ok(())
 }
 
 fn sw_get_brightness() -> u8 {
-    unsafe { SW_BRIGHTNESS }
+    SW_BRIGHTNESS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 fn sw_name() -> &'static str {

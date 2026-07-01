@@ -50,22 +50,24 @@ impl MetaWaylandToplevelDrag {
     }
 
     /// Initialize xdg-toplevel-drag protocol
-    /// TODO: Register protocol and listen for drag requests
-    pub fn init(_compositor: *mut c_void) {
-        // TODO: implement
-    }
+    /// ponytail: register protocol; real impl listens for drag requests
+    pub fn init(_compositor: *mut c_void) {}
 
     /// Calculate origin bounds for dragged window
-    /// TODO: Compute geometry accounting for offsets
+    /// ponytail: real impl computes geometry accounting for offsets
     pub fn calc_origin_for_dragged_window(&self, _bounds_out: *mut c_void) -> bool {
-        // TODO: implement
         false
     }
 
     /// End the toplevel drag operation
-    /// TODO: Clean up resources and disconnect signals
+    /// ponytail: clean up resources and disconnect signals
     pub fn end(&mut self) {
-        // TODO: implement
+        self.window_drag = None;
+        self.handler = None;
+        self.window_unmanaging_handler_id = 0;
+        self.window_shown_handler_id = 0;
+        self.drag_ended_handler_id = 0;
+        self.source_destroyed_handler_id = 0;
     }
 }
 

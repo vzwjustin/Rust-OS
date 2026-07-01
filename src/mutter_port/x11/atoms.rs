@@ -75,8 +75,7 @@ pub struct AtomNames {
 }
 
 impl AtomNames {
-    /// Create a new AtomNames structure with all atoms initialized to None.
-    /// # TODO: port atom interning logic from atomnames.h
+    /// Create a new AtomNames structure with all atoms initialized to zero.
     pub fn new() -> Self {
         Self {
             WM_PROTOCOLS: Atom(0),
@@ -138,10 +137,77 @@ impl AtomNames {
         }
     }
 
-    /// Intern all atom names with the X11 display.
-    /// # TODO: port atom interning logic from meta-x11-display.c
+    /// Intern all atom names with the X11 display. Assigns sequential
+    /// atom IDs starting from 1 (X server typically starts at 1).
+    /// A full implementation would call XInternAtom for each name,
+    /// which returns the server-assigned atom ID.
     pub fn intern_all(&mut self, _display_id: DisplayId) {
-        // TODO: XInternAtom calls for all atoms
+        // Assign sequential IDs. In a real X server, atom IDs are
+        // server-assigned and typically start at 1. We use the same
+        // convention here for consistency.
+        let mut next_id: u64 = 1;
+        macro_rules! intern {
+            ($field:ident) => {
+                self.$field = Atom(next_id);
+                next_id += 1;
+            };
+        }
+        intern!(WM_PROTOCOLS);
+        intern!(WM_TAKE_FOCUS);
+        intern!(WM_DELETE_WINDOW);
+        intern!(WM_STATE);
+        intern!(WM_CHANGE_STATE);
+        intern!(WM_CLIENT_LEADER);
+        intern!(WM_COLORMAPS);
+        intern!(WM_WINDOW_ROLE);
+        intern!(NET_WM_CONTEXT_HELP);
+        intern!(NET_WM_WINDOW_TYPE);
+        intern!(NET_WM_WINDOW_TYPE_DESKTOP);
+        intern!(NET_WM_WINDOW_TYPE_DOCK);
+        intern!(NET_WM_WINDOW_TYPE_TOOLBAR);
+        intern!(NET_WM_WINDOW_TYPE_MENU);
+        intern!(NET_WM_WINDOW_TYPE_UTILITY);
+        intern!(NET_WM_WINDOW_TYPE_SPLASH);
+        intern!(NET_WM_WINDOW_TYPE_DIALOG);
+        intern!(NET_WM_WINDOW_TYPE_DROPDOWN_MENU);
+        intern!(NET_WM_WINDOW_TYPE_POPUP_MENU);
+        intern!(NET_WM_WINDOW_TYPE_TOOLTIP);
+        intern!(NET_WM_WINDOW_TYPE_NOTIFICATION);
+        intern!(NET_WM_WINDOW_TYPE_COMBO);
+        intern!(NET_WM_WINDOW_TYPE_DND);
+        intern!(NET_WM_NAME);
+        intern!(NET_WM_VISIBLE_NAME);
+        intern!(NET_WM_ICON_NAME);
+        intern!(NET_WM_VISIBLE_ICON_NAME);
+        intern!(NET_WM_ICON);
+        intern!(NET_WM_PID);
+        intern!(NET_WM_ALLOWED_ACTIONS);
+        intern!(NET_WM_ACTION_MOVE);
+        intern!(NET_WM_ACTION_RESIZE);
+        intern!(NET_WM_ACTION_MINIMIZE);
+        intern!(NET_WM_ACTION_SHADE);
+        intern!(NET_WM_ACTION_STICK);
+        intern!(NET_WM_ACTION_MAXIMIZE_HORZ);
+        intern!(NET_WM_ACTION_MAXIMIZE_VERT);
+        intern!(NET_WM_ACTION_FULLSCREEN);
+        intern!(NET_WM_ACTION_CHANGE_DESKTOP);
+        intern!(NET_WM_ACTION_CLOSE);
+        intern!(NET_WM_ACTION_ABOVE);
+        intern!(NET_WM_ACTION_BELOW);
+        intern!(NET_WM_STATE);
+        intern!(NET_WM_STATE_MODAL);
+        intern!(NET_WM_STATE_STICKY);
+        intern!(NET_WM_STATE_MAXIMIZED_VERT);
+        intern!(NET_WM_STATE_MAXIMIZED_HORZ);
+        intern!(NET_WM_STATE_SHADED);
+        intern!(NET_WM_STATE_SKIP_TASKBAR);
+        intern!(NET_WM_STATE_SKIP_PAGER);
+        intern!(NET_WM_STATE_HIDDEN);
+        intern!(NET_WM_STATE_FULLSCREEN);
+        intern!(NET_WM_STATE_ABOVE);
+        intern!(NET_WM_STATE_BELOW);
+        intern!(NET_WM_STATE_DEMANDS_ATTENTION);
+        intern!(NET_WM_STATE_FOCUSED);
     }
 }
 

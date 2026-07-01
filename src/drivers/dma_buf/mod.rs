@@ -7,7 +7,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -67,11 +67,10 @@ static NEXT_ATTACH_ID: AtomicU32 = AtomicU32::new(1);
 
 // ── Default ops for simple memory-backed buffers ────────────────────────
 
-static mut SIMPLE_BUF_ADDR: u64 = 0;
-static mut SIMPLE_BUF_SIZE: usize = 0;
+static SIMPLE_BUF_ADDR: AtomicU64 = AtomicU64::new(0);
 
 fn simple_attach(_buf_id: u32, _importer: &str) -> Result<u64, &'static str> {
-    Ok(unsafe { SIMPLE_BUF_ADDR })
+    Ok(SIMPLE_BUF_ADDR.load(Ordering::Relaxed))
 }
 
 fn simple_detach(_buf_id: u32, _attachment_id: u32) -> Result<(), &'static str> {
@@ -83,7 +82,7 @@ fn simple_map(
     _attachment_id: u32,
     _direction: DmaBufDirection,
 ) -> Result<u64, &'static str> {
-    Ok(unsafe { SIMPLE_BUF_ADDR })
+    Ok(SIMPLE_BUF_ADDR.load(Ordering::Relaxed))
 }
 
 fn simple_unmap(_buf_id: u32, _attachment_id: u32) -> Result<(), &'static str> {

@@ -8,6 +8,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Sentinel: no pending user-mode entry after execve.
 const PENDING_USER_ENTRY_NONE: u64 = u64::MAX;
+const USER_RFLAGS_BASE: u64 = 0x2;
+const USER_RFLAGS_IF: u64 = 1 << 9;
 
 /// After a successful execve from user mode, the syscall epilogue jumps here
 /// instead of returning to the pre-exec instruction pointer.
@@ -50,7 +52,7 @@ static PENDING_USER_ENTRY_RSP: AtomicU64 = AtomicU64::new(PENDING_USER_ENTRY_NON
 /// - RFLAGS.IF = 1 (interrupts enabled)
 /// - RFLAGS.IOPL = 0 (no I/O privilege)
 #[inline(never)]
-pub unsafe fn switch_to_user_mode(entry_point: u64, user_stack: u64) -> ! {
+unsafe fn switch_to_user_mode_with_rflags(entry_point: u64, user_stack: u64, rflags: u64) -> ! {
     // Get the user segment selectors from GDT
     // These are Ring 3 segments (DPL=3) and we set RPL=3
     let user_code_selector = crate::gdt::get_user_code_selector();
@@ -61,8 +63,6 @@ pub unsafe fn switch_to_user_mode(entry_point: u64, user_stack: u64) -> ! {
     // - Bit 9: IF (Interrupt Enable) = 1
     // - Bits 12-13: IOPL (I/O Privilege Level) = 0
     // - Other bits: cleared or default values
-    let rflags: u64 = 0x202; // IF=1, IOPL=0, reserved bit 1 set
-
     // `iretq` loads user CS/SS from the frame below. Keep kernel data segments
     // active until the privilege transition completes.
 
@@ -110,6 +110,25 @@ pub unsafe fn switch_to_user_mode(entry_point: u64, user_stack: u64) -> ! {
         entry_point = in(reg) entry_point,
         options(noreturn)
     );
+}
+
+#[inline]
+fn user_rflags(interrupts_enabled: bool) -> u64 {
+    if interrupts_enabled {
+        USER_RFLAGS_BASE | USER_RFLAGS_IF
+    } else {
+        USER_RFLAGS_BASE
+    }
+}
+
+#[inline(never)]
+pub unsafe fn switch_to_user_mode(entry_point: u64, user_stack: u64) -> ! {
+    switch_to_user_mode_with_rflags(entry_point, user_stack, user_rflags(true))
+}
+
+#[inline(never)]
+pub unsafe fn switch_to_user_mode_without_interrupts(entry_point: u64, user_stack: u64) -> ! {
+    switch_to_user_mode_with_rflags(entry_point, user_stack, user_rflags(false))
 }
 
 /// Execute a function in user mode and return to kernel mode
@@ -174,6 +193,7 @@ pub unsafe fn patch_syscall_return_to_kernel(
     let rflags: u64 = 0x202;
 
     let iretq_frame = saved_regs.add(120);
+    // SAFETY: iretq_frame is a kernel stack pointer with at least 48 bytes (6 * u64) of space for the iretq frame.
     core::ptr::write(iretq_frame as *mut u64, kernel_rip);
     core::ptr::write(iretq_frame.add(8) as *mut u64, kernel_code);
     core::ptr::write(iretq_frame.add(16) as *mut u64, rflags);
@@ -217,6 +237,7 @@ pub unsafe fn patch_syscall_return_to_user(saved_regs: *mut u8, entry_point: u64
 
     // Layout below saved GPRs: RIP, CS, RFLAGS, RSP, SS (iretq pop order).
     let iretq_frame = saved_regs.add(120);
+    // SAFETY: iretq_frame is a kernel stack pointer with at least 48 bytes (6 * u64) of space for the iretq frame.
     core::ptr::write(iretq_frame as *mut u64, entry_point);
     core::ptr::write(iretq_frame.add(8) as *mut u64, user_code);
     core::ptr::write(iretq_frame.add(16) as *mut u64, rflags);

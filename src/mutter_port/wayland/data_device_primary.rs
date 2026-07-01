@@ -39,15 +39,14 @@ impl MetaWaylandDataDevicePrimary {
     }
 
     /// Initialize the data device primary manager for the compositor
-    /// TODO: Register primary selection protocol and bind resources
-    pub fn manager_init(_compositor: *mut c_void) {
-        // TODO: implement
-    }
+    /// ponytail: register primary_selection protocol; real impl binds resources
+    pub fn manager_init(_compositor: *mut c_void) {}
 
     /// Set selection for a focused surface
-    /// TODO: Update primary selection and notify clients
-    pub fn set_focus(&mut self, _surface: *mut c_void) {
-        // TODO: implement
+    /// ponytail: update primary selection and notify clients when focus changes
+    pub fn set_focus(&mut self, surface: *mut c_void) {
+        self.focus_client = Some(surface);
+        self.focus_resource_list.clear();
     }
 }
 

@@ -24,6 +24,7 @@ use crate::process::{self};
 /// Operation counter for statistics
 static PROCESS_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 static PERSONALITIES: spin::RwLock<BTreeMap<i32, u32>> = spin::RwLock::new(BTreeMap::new());
+const NGROUPS_MAX: usize = 65_536;
 
 /// Initialize process operations subsystem
 pub fn init_process_operations() {
@@ -40,28 +41,12 @@ fn inc_ops() {
     PROCESS_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
-    if dst.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
 }
 
-fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
-    if src.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let mut value = core::mem::MaybeUninit::<T>::uninit();
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
-    Ok(unsafe { value.assume_init() })
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
 }
 
 /// Get current process PCB or return error
@@ -88,6 +73,7 @@ const CAP_SETPCAP: u64 = 1 << 8;
 
 /// Linux `struct __user_cap_header_struct`.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct CapUserHeader {
     version: u32,
     pid: i32,
@@ -95,6 +81,7 @@ struct CapUserHeader {
 
 /// Linux `struct __user_cap_data_struct`.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct CapUserData {
     effective: u32,
     permitted: u32,
@@ -250,9 +237,10 @@ pub fn waitpid(pid: Pid, status: *mut i32, options: i32) -> LinuxResult<Pid> {
                 // the code. Previously the raw code was written, so
                 // WEXITSTATUS(exit(5)) read 0 and WIFEXITED was false.
                 let wait_status = (exit_status & 0xff) << 8;
-                unsafe {
-                    *status = wait_status;
-                }
+                let _ = crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                    status as u64,
+                    &wait_status.to_ne_bytes(),
+                );
             }
             Ok(child_pid as i32)
         }
@@ -362,20 +350,28 @@ fn fs_error_to_linux(err: crate::fs::FsError) -> LinuxError {
 }
 
 /// Write a null-terminated string onto the descending stack; return its address.
-unsafe fn push_cstring(sp: &mut u64, s: &str) -> u64 {
+fn push_cstring(sp: &mut u64, s: &str) -> LinuxResult<u64> {
     let bytes = s.as_bytes();
-    *sp = sp.wrapping_sub((bytes.len() + 1) as u64);
+    let total_len = bytes.len().checked_add(1).ok_or(LinuxError::E2BIG)?;
+    *sp = sp.checked_sub(total_len as u64).ok_or(LinuxError::EFAULT)?;
     let addr = *sp;
-    core::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
-    (addr as *mut u8).add(bytes.len()).write(0);
-    addr
+    // SAFETY: the ELF loader has mapped the initial user stack before this builder runs.
+    // Arithmetic above rejects underflow, and the copy is bounded to the source string plus NUL.
+    let mut buf = alloc::vec![0u8; total_len];
+    buf[..bytes.len()].copy_from_slice(bytes);
+    buf[bytes.len()] = 0;
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(addr, &buf)
+        .map_err(|_| LinuxError::EFAULT)?;
+    Ok(addr)
 }
 
 /// Fill 16 random bytes for AT_RANDOM (security RNG with TSC fallback).
 fn fill_random_16(buf: &mut [u8; 16]) {
     if crate::security::get_random_bytes(buf).is_err() {
+        // SAFETY: TSC read has no side effects.
         let tsc = unsafe { core::arch::x86_64::_rdtsc() };
         buf[..8].copy_from_slice(&tsc.to_le_bytes());
+        // SAFETY: TSC read has no side effects.
         let tsc2 = unsafe { core::arch::x86_64::_rdtsc() };
         buf[8..].copy_from_slice(&tsc2.to_le_bytes());
     }
@@ -385,16 +381,24 @@ fn fill_random_16(buf: &mut [u8; 16]) {
 fn compute_phdr_addr(
     loaded: &crate::process::elf_loader::LoadedBinary,
     header: &crate::process::elf_loader::Elf64Header,
-) -> u64 {
+) -> LinuxResult<u64> {
     use crate::process::elf_loader::elf_constants;
     if let Some(ph) = loaded
         .program_headers
         .iter()
         .find(|p| p.p_type == elf_constants::PT_PHDR)
     {
-        loaded.base_address.as_u64() + ph.p_vaddr
+        loaded
+            .base_address
+            .as_u64()
+            .checked_add(ph.p_vaddr)
+            .ok_or(LinuxError::EINVAL)
     } else {
-        loaded.base_address.as_u64() + header.e_phoff
+        loaded
+            .base_address
+            .as_u64()
+            .checked_add(header.e_phoff)
+            .ok_or(LinuxError::EINVAL)
     }
 }
 
@@ -411,13 +415,13 @@ fn build_linux_initial_stack(
 
     let mut arg_addrs = Vec::with_capacity(argv.len());
     for arg in argv.iter().rev() {
-        arg_addrs.push(unsafe { push_cstring(&mut sp, arg) });
+        arg_addrs.push(push_cstring(&mut sp, arg)?);
     }
     arg_addrs.reverse();
 
     let mut env_addrs = Vec::with_capacity(envp.len());
     for env in envp.iter().rev() {
-        env_addrs.push(unsafe { push_cstring(&mut sp, env) });
+        env_addrs.push(push_cstring(&mut sp, env)?);
     }
     env_addrs.reverse();
 
@@ -425,15 +429,15 @@ fn build_linux_initial_stack(
 
     let mut random = [0u8; 16];
     fill_random_16(&mut random);
-    sp = sp.wrapping_sub(16);
+    sp = sp.checked_sub(16).ok_or(LinuxError::EFAULT)?;
     let random_addr = sp;
-    unsafe {
-        core::ptr::copy_nonoverlapping(random.as_ptr(), sp as *mut u8, 16);
-    }
+    // SAFETY: `sp` remains inside the mapped initial stack and the copy is exactly 16 bytes.
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(sp, &random)
+        .map_err(|_| LinuxError::EFAULT)?;
 
-    let execfn_addr = unsafe { push_cstring(&mut sp, exec_path) };
+    let execfn_addr = push_cstring(&mut sp, exec_path)?;
 
-    let phdr_addr = compute_phdr_addr(loaded, header);
+    let phdr_addr = compute_phdr_addr(loaded, header)?;
 
     // Compute AT_HWCAP from CPU features.
     let hwcap = {
@@ -502,24 +506,25 @@ fn build_linux_initial_stack(
         + (env_addrs.len() as u64 + 1)                     // envp pointers + NULL
         + (auxv_entries.len() as u64 * 2); // auxv (tag,val) pairs
 
-    let argc_addr = sp.wrapping_sub(n_words * 8) & !0xF;
+    let table_bytes = n_words.checked_mul(8).ok_or(LinuxError::E2BIG)?;
+    let argc_addr = sp.checked_sub(table_bytes).ok_or(LinuxError::EFAULT)? & !0xF;
 
     // Write the table upward from argc_addr: argc, argv[], NULL, envp[], NULL, auxv[].
     let mut cur = argc_addr;
-    unsafe {
-        write_u64_at(&mut cur, argv.len() as u64);
-        for &addr in arg_addrs.iter() {
-            write_u64_at(&mut cur, addr);
-        }
-        write_u64_at(&mut cur, 0); // argv NULL terminator
-        for &addr in env_addrs.iter() {
-            write_u64_at(&mut cur, addr);
-        }
-        write_u64_at(&mut cur, 0); // envp NULL terminator
-        for &(tag, val) in auxv_entries.iter() {
-            write_u64_at(&mut cur, tag);
-            write_u64_at(&mut cur, val);
-        }
+    // `argc_addr` and the reserved table size were computed with checked arithmetic
+    // inside the mapped initial stack. `write_u64_at` checks cursor advance overflow.
+    write_u64_at(&mut cur, argv.len() as u64)?;
+    for &addr in arg_addrs.iter() {
+        write_u64_at(&mut cur, addr)?;
+    }
+    write_u64_at(&mut cur, 0)?; // argv NULL terminator
+    for &addr in env_addrs.iter() {
+        write_u64_at(&mut cur, addr)?;
+    }
+    write_u64_at(&mut cur, 0)?; // envp NULL terminator
+    for &(tag, val) in auxv_entries.iter() {
+        write_u64_at(&mut cur, tag)?;
+        write_u64_at(&mut cur, val)?;
     }
 
     // argc_addr is 16-aligned by construction; the entry ABI is satisfied.
@@ -528,9 +533,11 @@ fn build_linux_initial_stack(
 
 /// Write a u64 at `*cur` (a user virtual address) and advance the cursor by 8.
 #[inline]
-unsafe fn write_u64_at(cur: &mut u64, val: u64) {
-    core::ptr::write(*cur as *mut u64, val);
-    *cur = cur.wrapping_add(8);
+fn write_u64_at(cur: &mut u64, val: u64) -> LinuxResult<()> {
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(*cur, &val.to_ne_bytes())
+        .map_err(|_| LinuxError::EFAULT)?;
+    *cur = cur.checked_add(8).ok_or(LinuxError::EFAULT)?;
+    Ok(())
 }
 
 struct ResolvedExec {
@@ -552,8 +559,13 @@ fn read_file_bytes_from_vfs(path: &str) -> Result<Vec<u8>, LinuxError> {
     // automatically on read, so we do it here.
     if stat.inode_type == crate::vfs::InodeType::Symlink {
         let fd = vfs::vfs_open(path, VfsOpenFlags::RDONLY, 0).map_err(vfs_error_to_linux)?;
-        let mut target = Vec::with_capacity(stat.size as usize);
-        target.resize(stat.size as usize, 0);
+        if stat.size == 0 || stat.size > MAX_USER_STRING as u64 {
+            let _ = vfs::vfs_close(fd);
+            return Err(LinuxError::ENOEXEC);
+        }
+        let target_len = stat.size as usize;
+        let mut target = Vec::with_capacity(target_len);
+        target.resize(target_len, 0);
         match vfs::vfs_read(fd, &mut target) {
             Ok(n) if n > 0 => {
                 let _ = vfs::vfs_close(fd);
@@ -574,10 +586,10 @@ fn read_file_bytes_from_vfs(path: &str) -> Result<Vec<u8>, LinuxError> {
         return Err(LinuxError::EISDIR);
     }
 
-    let file_size = stat.size as usize;
-    if file_size == 0 || file_size > MAX_EXEC_SIZE {
+    if stat.size == 0 || stat.size > MAX_EXEC_SIZE as u64 {
         return Err(LinuxError::ENOEXEC);
     }
+    let file_size = stat.size as usize;
 
     let fd = vfs::vfs_open(path, VfsOpenFlags::RDONLY, 0).map_err(vfs_error_to_linux)?;
     let mut binary_data = Vec::with_capacity(file_size);
@@ -752,7 +764,9 @@ pub fn exec_program_for_pid(
         }
     }
 
-    let header = unsafe { core::ptr::read(binary_data.as_ptr() as *const Elf64Header) };
+    // SAFETY: ELF validation ensured the buffer is large enough for the header; `read_unaligned`
+    // avoids imposing alignment requirements on the byte vector.
+    let header = unsafe { core::ptr::read_unaligned(binary_data.as_ptr() as *const Elf64Header) };
     let mut envp_strings = default_desktop_envp();
     envp_strings.extend(extra_envp.iter().map(|s| (*s).to_string()));
 
@@ -787,13 +801,17 @@ fn apply_loaded_binary(
             let user_data = crate::gdt::get_user_data_selector().0 | 3;
 
             pcb.memory.code_start = loaded.base_address.as_u64();
-            pcb.memory.code_size = loaded.code_regions.iter().map(|r| r.size as u64).sum();
+            pcb.memory.code_size = loaded.code_regions.iter().fold(0u64, |total, region| {
+                total.saturating_add(region.size as u64)
+            });
             pcb.memory.data_start = loaded
                 .data_regions
                 .first()
                 .map(|r| r.start.as_u64())
                 .unwrap_or(0);
-            pcb.memory.data_size = loaded.data_regions.iter().map(|r| r.size as u64).sum();
+            pcb.memory.data_size = loaded.data_regions.iter().fold(0u64, |total, region| {
+                total.saturating_add(region.size as u64)
+            });
             pcb.memory.heap_start = loaded.heap_start.as_u64();
             pcb.memory.heap_size = 8 * 1024;
             pcb.memory.stack_start = loaded.stack_top.as_u64().saturating_sub(8 * 1024 * 1024);
@@ -880,7 +898,9 @@ pub fn execve(
         }
     }
 
-    let header = unsafe { core::ptr::read(binary_data.as_ptr() as *const Elf64Header) };
+    // SAFETY: ELF validation ensured the buffer is large enough for the header; `read_unaligned`
+    // avoids imposing alignment requirements on the byte vector.
+    let header = unsafe { core::ptr::read_unaligned(binary_data.as_ptr() as *const Elf64Header) };
 
     let rsp = build_linux_initial_stack(
         loaded.stack_top.as_u64(),
@@ -951,7 +971,9 @@ pub unsafe fn execve_and_enter_user_mode(
         }
     }
 
-    let header = core::ptr::read(binary_data.as_ptr() as *const Elf64Header);
+    // SAFETY: ELF validation ensured the buffer is large enough for the header; `read_unaligned`
+    // avoids imposing alignment requirements on the byte vector.
+    let header = core::ptr::read_unaligned(binary_data.as_ptr() as *const Elf64Header);
     let rsp = build_linux_initial_stack(
         loaded.stack_top.as_u64(),
         &resolved.argv,
@@ -987,7 +1009,7 @@ pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> 
             let child_rusage = pcb_to_rusage(&child);
             copy_struct_to_user(rusage, &child_rusage)?;
         } else {
-            let zero_rusage = unsafe { core::mem::MaybeUninit::<Rusage>::zeroed().assume_init() };
+            let zero_rusage = Rusage::default();
             copy_struct_to_user(rusage, &zero_rusage)?;
         }
     }
@@ -996,15 +1018,17 @@ pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> 
 }
 
 /// exit - terminate current process
-pub fn exit(status: i32) -> ! {
+pub fn exit(status: i32) -> i64 {
     inc_ops();
+
+    if crate::user_sched::complete_user_exit_if_pending(status) {
+        return 0;
+    }
 
     let pid = process::current_pid();
     let _ = process::get_process_manager().terminate_process(pid, status);
 
-    loop {
-        x86_64::instructions::hlt();
-    }
+    0
 }
 
 //
@@ -1414,28 +1438,32 @@ pub fn getgroups(size: i32, list: *mut u32) -> LinuxResult<i32> {
     let groups = &pcb.supplementary_groups;
 
     if size == 0 {
-        return Ok(groups.len() as i32);
+        return i32::try_from(groups.len()).map_err(|_| LinuxError::EOVERFLOW);
     }
 
     if size < 0 {
         return Err(LinuxError::EINVAL);
     }
 
-    if (size as usize) < groups.len() {
+    let size = usize::try_from(size).map_err(|_| LinuxError::EINVAL)?;
+    if size < groups.len() {
         return Err(LinuxError::EINVAL);
     }
-
-    if !list.is_null() {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                groups.as_ptr().cast::<u8>(),
-                groups.len() * core::mem::size_of::<u32>(),
-            )
-        };
-        UserSpaceMemory::copy_to_user(list as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+    if list.is_null() {
+        return Err(LinuxError::EFAULT);
     }
 
-    Ok(groups.len() as i32)
+    let byte_len = groups
+        .len()
+        .checked_mul(core::mem::size_of::<u32>())
+        .ok_or(LinuxError::EOVERFLOW)?;
+    let mut bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(byte_len);
+    for group in groups {
+        bytes.extend_from_slice(&group.to_ne_bytes());
+    }
+    UserSpaceMemory::copy_to_user(list as u64, &bytes).map_err(|_| LinuxError::EFAULT)?;
+
+    i32::try_from(groups.len()).map_err(|_| LinuxError::EOVERFLOW)
 }
 
 /// setgroups - set list of supplementary group IDs
@@ -1454,17 +1482,26 @@ pub fn setgroups(size: i32, list: *const u32) -> LinuxResult<i32> {
         return Err(LinuxError::EPERM);
     }
 
-    let size = size as usize;
+    let size = usize::try_from(size).map_err(|_| LinuxError::EINVAL)?;
+    if size > NGROUPS_MAX {
+        return Err(LinuxError::EINVAL);
+    }
+    if size > 0 && list.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
     let mut groups = alloc::vec::Vec::with_capacity(size);
     if !list.is_null() {
         groups.resize(size, 0);
-        let bytes = unsafe {
-            core::slice::from_raw_parts_mut(
-                groups.as_mut_ptr().cast::<u8>(),
-                size * core::mem::size_of::<u32>(),
-            )
-        };
-        UserSpaceMemory::copy_from_user(list as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+        let byte_len = size
+            .checked_mul(core::mem::size_of::<u32>())
+            .ok_or(LinuxError::EOVERFLOW)?;
+        let mut byte_buf = alloc::vec![0u8; byte_len];
+        UserSpaceMemory::copy_from_user(list as u64, &mut byte_buf)
+            .map_err(|_| LinuxError::EFAULT)?;
+        for (i, chunk) in byte_buf.chunks_exact(4).enumerate() {
+            groups[i] = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
     }
 
     let pid = process::current_pid();
@@ -1635,13 +1672,17 @@ pub fn chroot(path: *const u8) -> LinuxResult<i32> {
 const ITIMER_REAL: i32 = 0;
 
 /// Convert seconds to uptime milliseconds.
-fn secs_to_ms(secs: u32) -> u64 {
-    secs as u64 * 1000
+fn secs_to_ms(secs: i64) -> u64 {
+    if secs <= 0 {
+        0
+    } else {
+        (secs as u64).saturating_mul(1000)
+    }
 }
 
 /// Convert uptime milliseconds to seconds (truncated).
 fn ms_to_secs(ms: u64) -> u32 {
-    (ms / 1000) as u32
+    u32::try_from(ms / 1000).unwrap_or(u32::MAX)
 }
 
 /// alarm - set an ITIMER_REAL alarm in seconds
@@ -1670,7 +1711,7 @@ pub fn alarm(seconds: u32) -> LinuxResult<u32> {
                 pcb.alarm_deadline = 0;
                 pcb.alarm_interval = 0;
             } else {
-                pcb.alarm_deadline = now_ms + secs_to_ms(seconds);
+                pcb.alarm_deadline = now_ms.saturating_add(secs_to_ms(seconds as i64));
                 pcb.alarm_interval = 0; // alarm() is one-shot
             }
 
@@ -1722,17 +1763,19 @@ pub fn setitimer(which: i32, new_value: *const u8, old_value: *mut u8) -> LinuxR
     // Both fields are i64 on x86_64 Linux, so each timeval is 16 bytes and
     // itimerval is 32 bytes.
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct Timeval {
         tv_sec: i64,
         tv_usec: i64,
     }
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct Itimerval {
         it_interval: Timeval,
         it_value: Timeval,
     }
 
-    let new = unsafe { &*(new_value as *const Itimerval) };
+    let new: Itimerval = copy_struct_from_user(new_value as *const Itimerval)?;
     if new.it_value.tv_sec < 0
         || new.it_value.tv_usec < 0
         || new.it_value.tv_usec >= 1_000_000
@@ -1759,15 +1802,15 @@ pub fn setitimer(which: i32, new_value: *const u8, old_value: *mut u8) -> LinuxR
 
             // Arm the new timer
             let initial_ms =
-                secs_to_ms(new.it_value.tv_sec as u32) + (new.it_value.tv_usec as u64 / 1000);
-            let interval_ms =
-                secs_to_ms(new.it_interval.tv_sec as u32) + (new.it_interval.tv_usec as u64 / 1000);
+                secs_to_ms(new.it_value.tv_sec).saturating_add(new.it_value.tv_usec as u64 / 1000);
+            let interval_ms = secs_to_ms(new.it_interval.tv_sec)
+                .saturating_add(new.it_interval.tv_usec as u64 / 1000);
 
             if initial_ms == 0 {
                 pcb.alarm_deadline = 0;
                 pcb.alarm_interval = 0;
             } else {
-                pcb.alarm_deadline = now_ms + initial_ms;
+                pcb.alarm_deadline = now_ms.saturating_add(initial_ms);
                 pcb.alarm_interval = interval_ms;
             }
 
@@ -1777,13 +1820,17 @@ pub fn setitimer(which: i32, new_value: *const u8, old_value: *mut u8) -> LinuxR
 
     // Write the old value if requested
     if !old_value.is_null() {
-        unsafe {
-            let old = &mut *(old_value as *mut Itimerval);
-            old.it_interval.tv_sec = old_interval_secs as i64;
-            old.it_interval.tv_usec = 0;
-            old.it_value.tv_sec = old_secs as i64;
-            old.it_value.tv_usec = 0;
-        }
+        let old = Itimerval {
+            it_interval: Timeval {
+                tv_sec: old_interval_secs as i64,
+                tv_usec: 0,
+            },
+            it_value: Timeval {
+                tv_sec: old_secs as i64,
+                tv_usec: 0,
+            },
+        };
+        copy_struct_to_user(old_value as *mut Itimerval, &old)?;
     }
 
     Ok(0)
@@ -1820,23 +1867,29 @@ pub fn getitimer(which: i32, curr_value: *mut u8) -> LinuxResult<i32> {
         .ok_or(LinuxError::ESRCH)?;
 
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct Timeval {
         tv_sec: i64,
         tv_usec: i64,
     }
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct Itimerval {
         it_interval: Timeval,
         it_value: Timeval,
     }
 
-    unsafe {
-        let curr = &mut *(curr_value as *mut Itimerval);
-        curr.it_interval.tv_sec = (interval_ms / 1000) as i64;
-        curr.it_interval.tv_usec = ((interval_ms % 1000) * 1000) as i64;
-        curr.it_value.tv_sec = (remaining_ms / 1000) as i64;
-        curr.it_value.tv_usec = ((remaining_ms % 1000) * 1000) as i64;
-    }
+    let curr = Itimerval {
+        it_interval: Timeval {
+            tv_sec: (interval_ms / 1000) as i64,
+            tv_usec: ((interval_ms % 1000) * 1000) as i64,
+        },
+        it_value: Timeval {
+            tv_sec: (remaining_ms / 1000) as i64,
+            tv_usec: ((remaining_ms % 1000) * 1000) as i64,
+        },
+    };
+    copy_struct_to_user(curr_value as *mut Itimerval, &curr)?;
 
     Ok(0)
 }
@@ -2205,9 +2258,11 @@ pub fn prctl(option: i32, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64) -> Linu
             }
 
             let pcb = current_pcb()?;
-            unsafe {
-                *sig_ptr = pcb.parent_death_signal as i32;
-            }
+            let sig = pcb.parent_death_signal as i32;
+            let _ = crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                sig_ptr as u64,
+                &sig.to_ne_bytes(),
+            );
             Ok(0)
         }
         PR_SET_NO_NEW_PRIVS => {
@@ -2263,20 +2318,16 @@ fn caps_for_pcb(pcb: &process::ProcessControlBlock) -> (u32, u32, u32) {
 }
 
 fn read_cap_header(hdrp: *mut u8) -> Result<(u32, i32), LinuxError> {
-    unsafe {
-        let header = core::ptr::read(hdrp as *const CapUserHeader);
-        if header.version != CAP_VERSION_1 {
-            return Err(LinuxError::EINVAL);
-        }
-        Ok((header.version, header.pid))
+    let header: CapUserHeader = copy_struct_from_user(hdrp as *const CapUserHeader)?;
+    if header.version != CAP_VERSION_1 {
+        return Err(LinuxError::EINVAL);
     }
+    Ok((header.version, header.pid))
 }
 
 fn read_cap_data(datap: *const u8) -> Result<(u32, u32, u32), LinuxError> {
-    unsafe {
-        let data = core::ptr::read(datap as *const CapUserData);
-        Ok((data.effective, data.permitted, data.inheritable))
-    }
+    let data: CapUserData = copy_struct_from_user(datap as *const CapUserData)?;
+    Ok((data.effective, data.permitted, data.inheritable))
 }
 
 fn write_cap_data(
@@ -2288,16 +2339,12 @@ fn write_cap_data(
     if datap.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    unsafe {
-        core::ptr::write(
-            datap as *mut CapUserData,
-            CapUserData {
-                effective,
-                permitted,
-                inheritable,
-            },
-        );
-    }
+    let data = CapUserData {
+        effective,
+        permitted,
+        inheritable,
+    };
+    copy_struct_to_user(datap as *mut CapUserData, &data)?;
     Ok(())
 }
 
@@ -2332,7 +2379,7 @@ pub fn capset(hdrp: *const u8, datap: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let header = unsafe { core::ptr::read(hdrp as *const CapUserHeader) };
+    let header: CapUserHeader = copy_struct_from_user(hdrp as *const CapUserHeader)?;
     if header.version != CAP_VERSION_1 {
         return Err(LinuxError::EINVAL);
     }
@@ -2376,14 +2423,13 @@ pub fn times(buf: *mut u8) -> LinuxResult<i64> {
 
     if !buf.is_null() {
         let pcb = current_pcb()?;
-
-        unsafe {
-            let tms = buf as *mut i64;
-            *tms.offset(0) = pcb_user_ticks(&pcb) as i64;
-            *tms.offset(1) = pcb.system_time_ticks as i64;
-            *tms.offset(2) = pcb.child_user_time as i64;
-            *tms.offset(3) = pcb.child_system_time as i64;
-        }
+        let tms = [
+            pcb_user_ticks(&pcb) as i64,
+            pcb.system_time_ticks as i64,
+            pcb.child_user_time as i64,
+            pcb.child_system_time as i64,
+        ];
+        copy_struct_to_user(buf as *mut [i64; 4], &tms)?;
     }
 
     // Return clock ticks since boot

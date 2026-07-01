@@ -6,9 +6,22 @@
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-dbus-session-watcher.h
 
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 
 pub struct MetaDbusSession {
-    // TODO: port from meta-dbus-session.h
+    pub dbus_handle: *mut core::ffi::c_void,
+    pub peer_name: String,
+    pub id: String,
+}
+
+impl MetaDbusSession {
+    pub fn new(peer_name: String, id: String) -> Self {
+        MetaDbusSession {
+            dbus_handle: core::ptr::null_mut(),
+            peer_name,
+            id,
+        }
+    }
 }
 
 /// Property enum constants for MetaDbusSession
@@ -17,7 +30,8 @@ pub const META_DBUS_SESSION_PROP_PEER_NAME: u32 = 1;
 pub const META_DBUS_SESSION_PROP_ID: u32 = 2;
 
 pub struct MetaDbusSessionInterface {
-    // TODO: port interface vtable from upstream
+    pub method_count: u32,
+    pub property_count: u32,
 }
 
 /// MetaDbusSessionWatcher: Monitors D-Bus session lifecycle events.
