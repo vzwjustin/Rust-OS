@@ -91,3 +91,12 @@ pub struct MetaFixed16Rectangle {
 
 /// MonitorTransform — alias for MtkMonitorTransform
 pub type MonitorTransform = MtkMonitorTransform;
+
+/// MtkRectangle — integer rectangle (mirrors mutter's `MtkRectangle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MtkRectangle {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}

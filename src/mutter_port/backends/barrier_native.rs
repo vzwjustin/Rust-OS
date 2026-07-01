@@ -20,11 +20,9 @@ pub struct MetaBarrier;
 /// Border type for barrier geometry.
 pub struct MetaBorder;
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetaBarrierFlags {
-    // TODO: extract flag constants from upstream
-}
+/// Barrier flags (bitmask). Type alias + consts so values can be OR-ed.
+/// TODO: extract the concrete flag constants from upstream.
+pub type MetaBarrierFlags = u32;
 
 // Barrier implementation interface
 impl MetaBarrierImpl {

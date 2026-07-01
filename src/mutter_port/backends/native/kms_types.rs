@@ -29,6 +29,3 @@ pub enum MetaKmsResourceChanges {
     META_KMS_RESOURCE_CHANGE_PRIVACY_SCREEN = 1 << 2,
     META_KMS_RESOURCE_CHANGE_FULL = 0xFFFFFFFF,
 }
-impl MetaFixed16Rectangle {
-    // TODO: Add methods
-}
