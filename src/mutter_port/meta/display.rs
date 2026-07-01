@@ -104,10 +104,31 @@ impl MetaDisplay {
     pub fn get_screen_height(&self) -> i32 {
         self.screen_height
     }
+
+    /// Set the logical screen dimensions.
+    pub fn set_screen_size(&mut self, width: i32, height: i32) {
+        self.screen_width = width;
+        self.screen_height = height;
+    }
 }
 
 impl Default for MetaDisplay {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_screen_size_roundtrip() {
+        let mut d = MetaDisplay::new();
+        assert_eq!(d.get_screen_width(), 0);
+        assert_eq!(d.get_screen_height(), 0);
+        d.set_screen_size(1920, 1080);
+        assert_eq!(d.get_screen_width(), 1920);
+        assert_eq!(d.get_screen_height(), 1080);
     }
 }

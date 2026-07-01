@@ -34,7 +34,6 @@ impl MetaCursorTracker {
     pub fn set_position(&mut self, x: i32, y: i32) {
         self.x = x;
         self.y = y;
-        // TODO: implement
     }
 
     /// Show cursor
@@ -64,8 +63,7 @@ impl MetaCursorTracker {
 
     /// Get cursor sprite
     pub fn get_cursor(&self) -> Option<&str> {
-        // TODO: implement
-        self.cursor_name.as_ref().map(|s| s.as_str())
+        self.cursor_name.as_deref()
     }
 }
 
