@@ -273,11 +273,20 @@ pub fn io_cancel(ctx: AioContext, iocb: *const IoCb, result: *mut IoEvent) -> i3
 
 // ── Internal ────────────────────────────────────────────────────────────
 
+/// Maximum per-operation transfer size accepted from user space. This caps the
+/// user-controlled `aio_nbytes` value to prevent unbounded kernel allocations.
+const MAX_AIO_TRANSFER: usize = 65536;
+
 fn process_iocb(iocb: &IoCb) -> i64 {
     let vfs = crate::vfs::get_vfs();
     match iocb.aio_lio_opcode {
         IO_CMD_PREAD => {
             if iocb.aio_buf == 0 || iocb.aio_nbytes == 0 {
+                return -22;
+            }
+            // Reject user-controlled sizes that would trigger an unbounded
+            // kernel allocation (OOM), capped at MAX_AIO_TRANSFER.
+            if iocb.aio_nbytes as usize > MAX_AIO_TRANSFER {
                 return -22;
             }
             let len = iocb.aio_nbytes as usize;
@@ -296,6 +305,11 @@ fn process_iocb(iocb: &IoCb) -> i64 {
         }
         IO_CMD_PWRITE => {
             if iocb.aio_buf == 0 || iocb.aio_nbytes == 0 {
+                return -22;
+            }
+            // Reject user-controlled sizes that would trigger an unbounded
+            // kernel allocation (OOM), capped at MAX_AIO_TRANSFER.
+            if iocb.aio_nbytes as usize > MAX_AIO_TRANSFER {
                 return -22;
             }
             let len = iocb.aio_nbytes as usize;
