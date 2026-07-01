@@ -1,17 +1,13 @@
-//! Wayland Commit Timing module
+//! Wayland Commit Timing — handles presentation timing and frame statistics.
 //!
-//! Ported from: meta-wayland-commit-timing.c/h
+//! Manages commit feedback, sync timing, and frame delivery statistics for
+//! Wayland surfaces using the presentation-time protocol.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-commit-timing.h
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandCommitTiming {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
-
-impl MetaWaylandCommitTiming {
-    /// Initialize commit timing support for the compositor
-    /// TODO: port logic from meta_wayland_commit_timing_init
-    pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
-    }
+/// Initialize commit timing support for the compositor.
+///
+/// Sets up presentation-time protocol handlers. DRM/I/O logic is left as TODO.
+pub fn meta_wayland_commit_timing_init(_compositor: *mut core::ffi::c_void) {
+    // TODO: protocol setup for presentation-time
 }

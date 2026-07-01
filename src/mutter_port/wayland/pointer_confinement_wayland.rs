@@ -1,39 +1,49 @@
-//! Wayland Pointer Confinement Wayland module
+//! Wayland Pointer Confinement module
 //!
-//! Ported from: meta-pointer-confinement-wayland.c/h
+//! Implements pointer constraint handling for fullscreen/locked pointer protocols.
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-pointer-confinement-wayland.h
 
-use alloc::{string::String, vec::Vec, format};
+use core::ffi::c_void;
 
+/// Wayland-based pointer confinement wraps a pointer constraint into a confinement region.
 pub struct MetaPointerConfinementWayland {
-    pub constraint: Option<*mut core::ffi::c_void>, // MetaWaylandPointerConstraint pointer
-    pub parent_constraint: Option<*mut core::ffi::c_void>, // MetaPointerConstraint pointer
+    /// Associated Wayland pointer constraint
+    pub constraint: Option<*mut c_void>,
+    /// Parent pointer constraint object
+    pub parent_constraint: Option<*mut c_void>,
 }
 
 impl MetaPointerConfinementWayland {
     /// Create a new pointer confinement from a wayland constraint
-    /// TODO: port logic from meta_pointer_confinement_wayland_new
-    pub fn new(_constraint: *mut core::ffi::c_void) -> Option<*mut core::ffi::c_void> {
+    /// TODO: Wrap constraint and initialize confinement region
+    pub fn new(_constraint: *mut c_void) -> Option<*mut c_void> {
         // TODO: implement
         None
     }
 
     /// Get the underlying wayland pointer constraint
-    /// TODO: port logic from meta_pointer_confinement_wayland_get_wayland_pointer_constraint
-    pub fn get_wayland_pointer_constraint(
-        &self,
-    ) -> Option<*mut core::ffi::c_void> {
+    pub fn get_wayland_pointer_constraint(&self) -> Option<*mut c_void> {
         self.constraint
     }
 
     /// Enable the pointer confinement
-    /// TODO: port logic from meta_pointer_confinement_wayland_enable
+    /// TODO: Apply constraint and restrict pointer movement
     pub fn enable(&mut self) {
         // TODO: implement
     }
 
     /// Disable the pointer confinement
-    /// TODO: port logic from meta_pointer_confinement_wayland_disable
+    /// TODO: Release constraint and restore free pointer movement
     pub fn disable(&mut self) {
         // TODO: implement
+    }
+}
+
+impl Default for MetaPointerConfinementWayland {
+    fn default() -> Self {
+        Self {
+            constraint: None,
+            parent_constraint: None,
+        }
     }
 }

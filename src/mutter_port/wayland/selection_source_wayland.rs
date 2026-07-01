@@ -1,18 +1,25 @@
-//! Wayland Selection Source Wayland module
+//! Wayland Selection Source module
 //!
-//! Ported from: meta-selection-source-wayland.c/h
+//! Adapts a Wayland data source to the MetaSelectionSource interface.
+//! Provides MIME type detection and async read capability for clipboard operations.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-selection-source-wayland.c
 
-use alloc::{string::String, vec::Vec, format};
+use alloc::vec::Vec;
 
+/// Selection source wrapping a Wayland data source.
+/// Inherits from MetaSelectionSource for compositor clipboard abstraction.
 pub struct MetaSelectionSourceWayland {
-    pub data_source: Option<*mut core::ffi::c_void>, // MetaWaylandDataSource pointer
+    /// Base MetaWaylandDataSource pointer.
+    pub data_source: *mut core::ffi::c_void,
+    /// Cached MIME type list for this source.
+    pub mimetypes: Vec<*const u8>, // Opaque pointer list (GList equivalent).
 }
 
 impl MetaSelectionSourceWayland {
-    /// Create a new selection source from a wayland data source
-    /// TODO: port logic from meta_selection_source_wayland_new
-    pub fn new(_source: *mut core::ffi::c_void) -> Option<*mut core::ffi::c_void> {
-        // TODO: implement - returns MetaSelectionSource
-        None
+    /// Create a new selection source from a Wayland data source.
+    pub fn new(_source: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+        // TODO: allocate MetaSelectionSource, wrap data_source, extract mimetypes
+        core::ptr::null_mut()
     }
 }

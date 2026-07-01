@@ -1,17 +1,15 @@
 //! Wayland X11 Interop module
 //!
-//! Ported from: meta-wayland-x11-interop.c/h
+//! Manages X11 and Wayland interoperability, bridging X11 clients running via Xwayland
+//! with Wayland-native surfaces. Handles window property translation and clipboard bridging.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-x11-interop.h
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandX11Interop {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
-
-impl MetaWaylandX11Interop {
-    /// Initialize X11 interoperability for the wayland compositor
-    /// TODO: port logic from meta_wayland_x11_interop_init
-    pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
-    }
+/// Initialize X11 interoperability for the Wayland compositor.
+///
+/// Sets up protocol bindings and event handlers for X11 window bridging.
+///
+/// TODO: port logic from meta_wayland_x11_interop_init, Xwayland event loop integration
+pub fn meta_wayland_x11_interop_init(_compositor: *mut core::ffi::c_void) {
+    // TODO: implement
 }

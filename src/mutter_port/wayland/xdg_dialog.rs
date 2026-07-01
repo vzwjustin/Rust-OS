@@ -1,17 +1,17 @@
 //! Wayland XDG Dialog module
 //!
-//! Ported from: meta-wayland-xdg-dialog.c/h
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-xdg-dialog.h
+//!
+//! Provides xdg-wm-dialog protocol support for window manager interactions.
+//! Protocol binding and dialog event handling are TODO.
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaWaylandXdgDialog {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
+/// Placeholder unit type for XDG dialog (wm-dialog) support in the compositor.
+pub struct MetaWaylandXdgDialog;
 
 impl MetaWaylandXdgDialog {
-    /// Initialize XDG wm dialog support for the compositor
-    /// TODO: port logic from meta_wayland_init_xdg_wm_dialog
+    /// Initialize XDG wm-dialog protocol support for the compositor.
+    /// TODO: protocol binding and resource creation.
     pub fn init(_compositor: *mut core::ffi::c_void) {
-        // TODO: implement
+        // Protocol binding deferred to backend implementation.
     }
 }

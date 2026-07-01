@@ -1,9 +1,9 @@
-//! GNOME src/wayland/meta-wayland-xdg-shell.c
+//! Wayland XDG Shell module
 //!
-//! Implements xdg_shell protocol (xdg-shell-v5+). Modern shell interface
+//! Implements xdg_shell protocol (xdg-shell-v6+). Modern shell interface
 //! providing application windows (xdg_toplevel) and popups (xdg_popup).
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-xdg-shell.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-xdg-shell.h
 
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 

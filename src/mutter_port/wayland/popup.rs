@@ -1,9 +1,9 @@
-//! GNOME src/wayland/meta-wayland-popup.c
+//! Wayland Popup Surface module
 //!
 //! Implements popup surface handling for menus, dropdowns, and other
-//! temporary surfaces. Manages popup grabs and positioning.
+//! temporary surfaces. Manages popup grabs and positioning via xdg_popup.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-popup.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-popup.h
 
 use alloc::vec::Vec;
 

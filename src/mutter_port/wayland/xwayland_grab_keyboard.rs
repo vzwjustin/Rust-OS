@@ -1,18 +1,17 @@
 //! Wayland XWayland Grab Keyboard module
 //!
-//! Ported from: meta-xwayland-grab-keyboard.c/h
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-xwayland-grab-keyboard.h
+//!
+//! Manages XWayland keyboard grab protocol for X11 clients running under Wayland.
+//! Keyboard focus and grab state synchronization are TODO.
 
-use alloc::{string::String, vec::Vec, format};
-
-pub struct MetaXwaylandKeyboardActiveGrab {
-    pub compositor: Option<*mut core::ffi::c_void>, // MetaWaylandCompositor pointer
-}
+/// Placeholder unit type for XWayland keyboard grab support.
+pub struct MetaXwaylandKeyboardActiveGrab;
 
 impl MetaXwaylandKeyboardActiveGrab {
-    /// Initialize XWayland keyboard grab support for the compositor
-    /// TODO: port logic from meta_xwayland_grab_keyboard_init
+    /// Initialize XWayland keyboard grab protocol support for the compositor.
+    /// TODO: protocol binding and event handler registration.
     pub fn init(_compositor: *mut core::ffi::c_void) -> bool {
-        // TODO: implement
         false
     }
 }
