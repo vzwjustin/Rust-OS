@@ -86,12 +86,16 @@ impl MetaOrientationManager {
     /// Set screen orientation
     pub fn set_orientation(&mut self, orientation: MetaOrientation) {
         self.orientation = orientation;
-        // TODO: implement
     }
 
-    /// Check if orientation auto-rotation is enabled
+    /// Check if orientation auto-rotation is locked.
     pub fn has_orientation_lock(&self) -> bool {
         self.has_lock
+    }
+
+    /// Set whether orientation auto-rotation is locked.
+    pub fn set_orientation_lock(&mut self, locked: bool) {
+        self.has_lock = locked;
     }
 }
 
@@ -175,9 +179,33 @@ impl MetaWorkspaceManager {
         }
     }
 
-    /// Reorder workspaces
-    pub fn reorder_workspace(&mut self, _from: u32, _to: u32) {
-        // TODO: implement
+    /// Move the workspace at `from` to position `to`, keeping the active
+    /// workspace pointing at the same workspace. Out-of-range or no-op moves
+    /// are ignored.
+    pub fn reorder_workspace(&mut self, from: u32, to: u32) {
+        let len = self.workspaces.len();
+        let (from, to) = (from as usize, to as usize);
+        if from >= len || to >= len || from == to {
+            return;
+        }
+
+        let ws = self.workspaces.remove(from);
+        self.workspaces.insert(to, ws);
+
+        // Track where the previously-active index lands after remove+insert.
+        let active = self.active_index as usize;
+        self.active_index = if active == from {
+            to as u32
+        } else {
+            let mut a = active;
+            if a > from {
+                a -= 1; // removal shifted it left
+            }
+            if a >= to {
+                a += 1; // insertion shifted it right
+            }
+            a as u32
+        };
     }
 }
 
@@ -205,7 +233,6 @@ impl MetaDebugControl {
     /// Enable debug mode
     pub fn set_debug_mode(&mut self, enabled: bool) {
         self.is_enabled = enabled;
-        // TODO: implement
     }
 
     /// Get debug status
@@ -248,6 +275,28 @@ mod tests {
         assert!(m.get_workspace_by_index(2).is_none());
         // active_index defaults to 0.
         assert_eq!(m.get_active_workspace().and_then(|w| w.get_name()), Some("one"));
+    }
+
+    #[test]
+    fn test_reorder_workspace_tracks_active() {
+        let mut m = MetaWorkspaceManager::new();
+        for n in ["a", "b", "c", "d"] {
+            m.create_workspace(Some(n));
+        }
+        // active defaults to index 0 ("a"); move it to index 2.
+        m.reorder_workspace(0, 2);
+        assert_eq!(m.get_workspace_by_index(0).and_then(|w| w.get_name()), Some("b"));
+        assert_eq!(m.get_workspace_by_index(2).and_then(|w| w.get_name()), Some("a"));
+        // The active workspace still resolves to "a" at its new index.
+        assert_eq!(m.get_active_workspace().and_then(|w| w.get_name()), Some("a"));
+    }
+
+    #[test]
+    fn test_orientation_lock_setter() {
+        let mut o = MetaOrientationManager::new();
+        assert!(!o.has_orientation_lock());
+        o.set_orientation_lock(true);
+        assert!(o.has_orientation_lock());
     }
 
     #[test]
