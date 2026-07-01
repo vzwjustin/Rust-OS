@@ -202,7 +202,21 @@ pub fn init() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Mark a subsystem as Ready.  Silently ignores unknown subsystem names
+/// so callers don't need to check whether a name is registered.
+pub fn mark_subsystem_ready(name: &'static str) {
+    let _ = update_subsystem_state(name, SubsystemState::Ready);
+}
+
+/// Mark a subsystem as Failed.  Silently ignores unknown subsystem names.
+pub fn mark_subsystem_failed(name: &'static str) {
+    let _ = update_subsystem_state(name, SubsystemState::Failed);
+}
+
 /// Mark the manually initialized boot path as ready for normal operation.
+/// Only subsystems still in `Uninitialized` or `Initializing` state are
+/// promoted to `Ready`; subsystems explicitly marked `Failed` retain
+/// their failure state so `is_subsystem_ready()` returns false for them.
 pub fn mark_boot_ready() {
     let mut systems = SUBSYSTEMS.lock();
     for system in systems.iter_mut() {

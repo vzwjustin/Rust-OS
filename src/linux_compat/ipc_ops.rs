@@ -786,17 +786,26 @@ pub fn semctl(semid: SemId, semnum: i32, cmd: i32, arg: u64) -> LinuxResult<i32>
 
 /// semtimedop - semaphore operations with timeout
 ///
-/// The timeout is not yet fully implemented — the operation will block
-/// indefinitely until it can complete. A future enhancement should use the
-/// timeout to wake the process with ETIMEDOUT.
+/// Delegates to sysv_ipc::semtimedop which implements proper blocking
+/// with timeout support via the process scheduler.
 pub fn semtimedop(
     semid: SemId,
     sops: *mut u8,
     nsops: usize,
-    _timeout: *const u8,
+    timeout: *const u8,
 ) -> LinuxResult<i32> {
     inc_ops();
-    semop(semid, sops, nsops)
+    let ret = crate::sysv_ipc::semtimedop(
+        semid as i32,
+        sops as *const crate::sysv_ipc::SemBuf,
+        nsops as u32,
+        timeout,
+    );
+    if ret < 0 {
+        Err(LinuxError::from_errno(-ret))
+    } else {
+        Ok(ret)
+    }
 }
 
 /// shmget - get shared memory segment identifier
