@@ -71,13 +71,32 @@ pub struct XenStore {
     pub entries: BTreeMap<String, String>,
 }
 
+/// Xen store watch (Linux `struct xenbus_watch`).
+pub struct XenWatch {
+    pub path: String,
+    pub token: u32,
+    pub triggered: u32,
+}
+
+/// Xen grant-table entry.
+#[derive(Debug, Clone)]
+pub struct XenGrant {
+    pub domid: u32,
+    pub gfn: u64,
+    pub readonly: bool,
+}
+
 // ── Registry ────────────────────────────────────────────────────────────
 
 static DEV_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 static DRIVER_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
+static WATCH_TOKEN_COUNTER: AtomicU32 = AtomicU32::new(0);
+static GRANT_REF_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 static XEN_DEVICES: RwLock<BTreeMap<u32, XenDevice>> = RwLock::new(BTreeMap::new());
 static XEN_DRIVERS: RwLock<BTreeMap<u32, XenDriver>> = RwLock::new(BTreeMap::new());
+static XEN_WATCHES: RwLock<BTreeMap<u32, XenWatch>> = RwLock::new(BTreeMap::new());
+static XEN_GRANTS: RwLock<BTreeMap<u32, XenGrant>> = RwLock::new(BTreeMap::new());
 static XEN_STORE: RwLock<XenStore> = RwLock::new(XenStore {
     id: 0,
     entries: BTreeMap::new(),
@@ -93,6 +112,20 @@ pub fn register_device(
     backend_path: &str,
     frontend_path: &str,
 ) -> Result<u32, &'static str> {
+    if name.trim().is_empty() {
+        return Err("Xen device name required");
+    }
+    if backend_path.trim().is_empty() || frontend_path.trim().is_empty() {
+        return Err("Xen device path required");
+    }
+
+    let mut devices = XEN_DEVICES.write();
+    if devices.values().any(|dev| {
+        dev.name == name || dev.backend_path == backend_path || dev.frontend_path == frontend_path
+    }) {
+        return Err("Xen device already registered");
+    }
+
     let id = DEV_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = XenDevice {
         id,
@@ -105,8 +138,13 @@ pub fn register_device(
         driver_name: None,
         bound: false,
     };
-    XEN_DEVICES.write().insert(id, dev);
-    try_match_driver(id)?;
+    devices.insert(id, dev);
+    drop(devices);
+
+    if let Err(err) = try_match_driver(id) {
+        XEN_DEVICES.write().remove(&id);
+        return Err(err);
+    }
     Ok(id)
 }
 
@@ -116,12 +154,18 @@ pub fn set_state(dev_id: u32, state: XenBusState) -> Result<(), &'static str> {
         let mut devices = XEN_DEVICES.write();
         let dev = devices.get_mut(&dev_id).ok_or("Xen device not found")?;
         let old_state = dev.state;
+        if !valid_xenbus_transition(old_state, state) {
+            return Err("Invalid Xen bus state transition");
+        }
         dev.state = state;
         if old_state == state {
             return Ok(());
         }
+        let state_key = alloc::format!("{}/state", dev.backend_path);
         let drv_name = dev.driver_name.clone();
         drop(devices);
+
+        store_write(&state_key, xenbus_state_name(state))?;
 
         if let Some(dn) = drv_name {
             let drivers = XEN_DRIVERS.read();
@@ -152,33 +196,116 @@ pub fn store_read(key: &str) -> Result<String, &'static str> {
 
 /// Write to Xen store (Linux `xenbus_write`).
 pub fn store_write(key: &str, value: &str) -> Result<(), &'static str> {
+    if key.trim().is_empty() {
+        return Err("Xen store key required");
+    }
+
     let mut store = XEN_STORE.write();
     store.entries.insert(String::from(key), String::from(value));
+    drop(store);
+    fire_watch(key);
     Ok(())
 }
 
 /// Watch a Xen store path (Linux `xenbus_watch`).
-pub fn store_watch(path: &str) -> Result<(), &'static str> {
-    // In a real implementation, this would register a watch with xenstored
-    let _ = path;
+pub fn store_watch(path: &str) -> Result<u32, &'static str> {
+    if path.trim().is_empty() {
+        return Err("Xen watch path required");
+    }
+
+    let token = WATCH_TOKEN_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let watch = XenWatch {
+        path: String::from(path),
+        token,
+        triggered: 0,
+    };
+    XEN_WATCHES.write().insert(token, watch);
+    store_write(&alloc::format!("watch/{}/path", token), path)?;
+    Ok(token)
+}
+
+/// Unregister a Xen store watch (Linux `unregister_xenbus_watch`).
+pub fn unwatch(token: u32) -> Result<(), &'static str> {
+    XEN_WATCHES
+        .write()
+        .remove(&token)
+        .ok_or("Watch not found")?;
     Ok(())
 }
 
+/// Fire a watch for a given path (called when xenstore data changes).
+pub fn fire_watch(path: &str) {
+    let mut watches = XEN_WATCHES.write();
+    for (_, w) in watches.iter_mut() {
+        if path == w.path || path.starts_with(&alloc::format!("{}/", w.path)) {
+            w.triggered += 1;
+        }
+    }
+}
+
+/// List all active watches.
+pub fn list_watches() -> Vec<(u32, String, u32)> {
+    XEN_WATCHES
+        .read()
+        .iter()
+        .map(|(t, w)| (*t, w.path.clone(), w.triggered))
+        .collect()
+}
+
 /// Grant access to a page (Linux `gnttab_grant_foreign_access`).
-pub fn grant_access(_domid: u32, _gfn: u64, _readonly: bool) -> Result<u32, &'static str> {
-    Err("Xen grant table not available")
+pub fn grant_access(domid: u32, gfn: u64, readonly: bool) -> Result<u32, &'static str> {
+    if domid == u32::MAX {
+        return Err("Invalid Xen domain id");
+    }
+
+    let grant_ref = GRANT_REF_COUNTER
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            if current == u32::MAX {
+                None
+            } else {
+                Some(current + 1)
+            }
+        })
+        .map_err(|_| "Xen grant reference exhausted")?;
+    XEN_GRANTS.write().insert(
+        grant_ref,
+        XenGrant {
+            domid,
+            gfn,
+            readonly,
+        },
+    );
+    Ok(grant_ref)
 }
 
 /// End grant access (Linux `gnttab_end_foreign_access`).
-pub fn end_grant_access(_ref: u32) -> Result<(), &'static str> {
+pub fn end_grant_access(grant_ref: u32) -> Result<(), &'static str> {
+    XEN_GRANTS
+        .write()
+        .remove(&grant_ref)
+        .ok_or("Xen grant reference not found")?;
     Ok(())
 }
 
 /// Register a Xen driver.
 pub fn register_driver(driver: XenDriver) -> Result<u32, &'static str> {
+    if driver.name.trim().is_empty() {
+        return Err("Xen driver name required");
+    }
+    if driver.id_table.is_empty() {
+        return Err("Xen driver id table required");
+    }
+
+    let mut drivers = XEN_DRIVERS.write();
+    if drivers.values().any(|drv| drv.name == driver.name) {
+        return Err("Xen driver already registered");
+    }
+
     let id = DRIVER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let driver_name = driver.name.clone();
     let id_table = driver.id_table.clone();
-    XEN_DRIVERS.write().insert(id, driver);
+    drivers.insert(id, driver);
+    drop(drivers);
 
     let device_ids: Vec<u32> = {
         let devices = XEN_DEVICES.read();
@@ -189,7 +316,19 @@ pub fn register_driver(driver: XenDriver) -> Result<u32, &'static str> {
             .collect()
     };
     for dev_id in device_ids {
-        try_match_driver(dev_id)?;
+        if let Err(err) = try_match_driver(dev_id) {
+            XEN_DRIVERS.write().remove(&id);
+            let mut devices = XEN_DEVICES.write();
+            for (_, dev) in devices.iter_mut() {
+                if dev.driver_name.as_deref() == Some(driver_name.as_str())
+                    && id_table.iter().any(|idt| idt.dev_type == dev.dev_type)
+                {
+                    dev.bound = false;
+                    dev.driver_name = None;
+                }
+            }
+            return Err(err);
+        }
     }
     Ok(id)
 }
@@ -231,6 +370,51 @@ fn try_match_driver(device_id: u32) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn valid_xenbus_transition(old: XenBusState, new: XenBusState) -> bool {
+    if old == new {
+        return true;
+    }
+
+    match old {
+        XenBusState::Unknown => matches!(new, XenBusState::Initialising | XenBusState::Closed),
+        XenBusState::Initialising => matches!(
+            new,
+            XenBusState::InitWait | XenBusState::Initialised | XenBusState::Closing
+        ),
+        XenBusState::InitWait => matches!(
+            new,
+            XenBusState::Initialised | XenBusState::Connected | XenBusState::Closing
+        ),
+        XenBusState::Initialised => matches!(
+            new,
+            XenBusState::Connected | XenBusState::Closing | XenBusState::Reconfiguring
+        ),
+        XenBusState::Connected => {
+            matches!(new, XenBusState::Closing | XenBusState::Reconfiguring)
+        }
+        XenBusState::Closing => matches!(new, XenBusState::Closed),
+        XenBusState::Closed => matches!(new, XenBusState::Initialising),
+        XenBusState::Reconfiguring => {
+            matches!(new, XenBusState::Reconfigured | XenBusState::Closing)
+        }
+        XenBusState::Reconfigured => matches!(new, XenBusState::Connected | XenBusState::Closing),
+    }
+}
+
+fn xenbus_state_name(state: XenBusState) -> &'static str {
+    match state {
+        XenBusState::Unknown => "Unknown",
+        XenBusState::Initialising => "Initialising",
+        XenBusState::InitWait => "InitWait",
+        XenBusState::Initialised => "Initialised",
+        XenBusState::Connected => "Connected",
+        XenBusState::Closing => "Closing",
+        XenBusState::Closed => "Closed",
+        XenBusState::Reconfiguring => "Reconfiguring",
+        XenBusState::Reconfigured => "Reconfigured",
+    }
+}
+
 /// List all Xen devices.
 pub fn list_devices() -> Vec<(u32, String, XenDevType, XenBusState, bool)> {
     XEN_DEVICES
@@ -255,6 +439,10 @@ fn null_remove(_dev_id: u32) -> Result<(), &'static str> {
 }
 
 pub fn init() -> Result<(), &'static str> {
+    if device_count() > 0 {
+        return Ok(());
+    }
+
     // Write some initial Xen store entries
     store_write("domid", "0")?;
     store_write("name", "RustOS-Dom0")?;
@@ -307,6 +495,7 @@ pub fn init() -> Result<(), &'static str> {
     // Transition devices to connected state
     let dev_ids: Vec<u32> = XEN_DEVICES.read().keys().copied().collect();
     for did in dev_ids {
+        set_state(did, XenBusState::Initialised)?;
         set_state(did, XenBusState::Connected)?;
     }
 

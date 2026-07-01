@@ -4,6 +4,7 @@
 //! Provides BPF map creation/lookup/update/delete, program load with a
 //! static verifier, and an in-kernel interpreter for program execution.
 
+use crate::memory::user_space::UserSpaceMemory;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -154,6 +155,53 @@ static MAPS: RwLock<BTreeMap<u32, Mutex<BpfMap>>> = RwLock::new(BTreeMap::new())
 static PROGS: RwLock<BTreeMap<u32, Mutex<BpfProg>>> = RwLock::new(BTreeMap::new());
 static NEXT_MAP_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
+
+fn copy_struct_from_user<T: Copy + Default>(addr: u64) -> Result<T, i32> {
+    if addr == 0 {
+        return Err(-14);
+    }
+
+    let mut value = T::default();
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            (&mut value as *mut T).cast::<u8>(),
+            core::mem::size_of::<T>(),
+        )
+    };
+    UserSpaceMemory::copy_from_user(addr, bytes).map_err(|_| -14)?;
+    Ok(value)
+}
+
+fn copy_user_bytes(addr: u64, len: u32) -> Result<Vec<u8>, i32> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    if addr == 0 {
+        return Err(-14);
+    }
+
+    let mut bytes = Vec::new();
+    bytes.resize(len as usize, 0);
+    UserSpaceMemory::copy_from_user(addr, &mut bytes).map_err(|_| -14)?;
+    Ok(bytes)
+}
+
+fn copy_user_cstr_max(addr: u64, max_len: usize) -> Result<Vec<u8>, i32> {
+    if addr == 0 {
+        return Err(-14);
+    }
+
+    let mut out = Vec::new();
+    for offset in 0..max_len {
+        let mut byte = [0u8; 1];
+        UserSpaceMemory::copy_from_user(addr + offset as u64, &mut byte).map_err(|_| -14)?;
+        if byte[0] == 0 {
+            break;
+        }
+        out.push(byte[0]);
+    }
+    Ok(out)
+}
 
 // ── BPF instruction decoding ────────────────────────────────────────────
 
@@ -926,7 +974,10 @@ fn bpf_map_lookup_elem(attr: u64, size: u32) -> i32 {
     if size < core::mem::size_of::<BpfMapElemAttr>() as u32 {
         return -22;
     }
-    let a = unsafe { *(attr as *const BpfMapElemAttr) };
+    let a = match copy_struct_from_user::<BpfMapElemAttr>(attr) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
     let map_id = match crate::linux_compat::special_fd::get_bpf_map_id(a.map_fd as i32) {
         Some(id) => id,
         None => return -9,
@@ -938,16 +989,15 @@ fn bpf_map_lookup_elem(attr: u64, size: u32) -> i32 {
     };
     let map = map_mutex.lock();
 
-    let key = unsafe { core::slice::from_raw_parts(a.key as *const u8, map.key_size as usize) };
-    match map.entries.get(key) {
+    let key = match copy_user_bytes(a.key, map.key_size) {
+        Ok(key) => key,
+        Err(e) => return e,
+    };
+    match map.entries.get(&key) {
         Some(val) => {
-            let dst = unsafe {
-                core::slice::from_raw_parts_mut(
-                    a.value_or_next_key as *mut u8,
-                    map.value_size as usize,
-                )
-            };
-            dst.copy_from_slice(val);
+            if UserSpaceMemory::copy_to_user(a.value_or_next_key, val).is_err() {
+                return -14;
+            }
             0
         }
         None => -2, // ENOENT
@@ -958,7 +1008,10 @@ fn bpf_map_update_elem(attr: u64, size: u32) -> i32 {
     if size < core::mem::size_of::<BpfMapElemAttr>() as u32 {
         return -22;
     }
-    let a = unsafe { *(attr as *const BpfMapElemAttr) };
+    let a = match copy_struct_from_user::<BpfMapElemAttr>(attr) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
     let map_id = match crate::linux_compat::special_fd::get_bpf_map_id(a.map_fd as i32) {
         Some(id) => id,
         None => return -9,
@@ -974,16 +1027,23 @@ fn bpf_map_update_elem(attr: u64, size: u32) -> i32 {
     }
     if map.entries.len() as u32 >= map.max_entries {
         // Check if key already exists
-        let key = unsafe { core::slice::from_raw_parts(a.key as *const u8, map.key_size as usize) };
-        if !map.entries.contains_key(key) {
+        let key = match copy_user_bytes(a.key, map.key_size) {
+            Ok(key) => key,
+            Err(e) => return e,
+        };
+        if !map.entries.contains_key(&key) {
             return -7; // E2BIG
         }
     }
-    let key = unsafe { core::slice::from_raw_parts(a.key as *const u8, map.key_size as usize) };
-    let val = unsafe {
-        core::slice::from_raw_parts(a.value_or_next_key as *const u8, map.value_size as usize)
+    let key = match copy_user_bytes(a.key, map.key_size) {
+        Ok(key) => key,
+        Err(e) => return e,
     };
-    map.entries.insert(key.to_vec(), val.to_vec());
+    let val = match copy_user_bytes(a.value_or_next_key, map.value_size) {
+        Ok(val) => val,
+        Err(e) => return e,
+    };
+    map.entries.insert(key, val);
     0
 }
 
@@ -991,7 +1051,10 @@ fn bpf_map_delete_elem(attr: u64, size: u32) -> i32 {
     if size < core::mem::size_of::<BpfMapElemAttr>() as u32 {
         return -22;
     }
-    let a = unsafe { *(attr as *const BpfMapElemAttr) };
+    let a = match copy_struct_from_user::<BpfMapElemAttr>(attr) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
     let map_id = match crate::linux_compat::special_fd::get_bpf_map_id(a.map_fd as i32) {
         Some(id) => id,
         None => return -9,
@@ -1005,8 +1068,11 @@ fn bpf_map_delete_elem(attr: u64, size: u32) -> i32 {
     if map.frozen {
         return -1;
     }
-    let key = unsafe { core::slice::from_raw_parts(a.key as *const u8, map.key_size as usize) };
-    match map.entries.remove(key) {
+    let key = match copy_user_bytes(a.key, map.key_size) {
+        Ok(key) => key,
+        Err(e) => return e,
+    };
+    match map.entries.remove(&key) {
         Some(_) => 0,
         None => -2,
     }
@@ -1016,7 +1082,10 @@ fn bpf_map_get_next_key(attr: u64, size: u32) -> i32 {
     if size < core::mem::size_of::<BpfMapElemAttr>() as u32 {
         return -22;
     }
-    let a = unsafe { *(attr as *const BpfMapElemAttr) };
+    let a = match copy_struct_from_user::<BpfMapElemAttr>(attr) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
     let map_id = match crate::linux_compat::special_fd::get_bpf_map_id(a.map_fd as i32) {
         Some(id) => id,
         None => return -9,
@@ -1031,32 +1100,27 @@ fn bpf_map_get_next_key(attr: u64, size: u32) -> i32 {
     if a.key == 0 {
         // Return first key
         if let Some(first_key) = map.entries.keys().next() {
-            let dst = unsafe {
-                core::slice::from_raw_parts_mut(
-                    a.value_or_next_key as *mut u8,
-                    map.key_size as usize,
-                )
-            };
-            dst.copy_from_slice(first_key);
+            if UserSpaceMemory::copy_to_user(a.value_or_next_key, first_key).is_err() {
+                return -14;
+            }
             return 0;
         }
         return -2;
     }
 
-    let key = unsafe { core::slice::from_raw_parts(a.key as *const u8, map.key_size as usize) };
+    let key = match copy_user_bytes(a.key, map.key_size) {
+        Ok(key) => key,
+        Err(e) => return e,
+    };
     let mut found = false;
     for k in map.entries.keys() {
         if found {
-            let dst = unsafe {
-                core::slice::from_raw_parts_mut(
-                    a.value_or_next_key as *mut u8,
-                    map.key_size as usize,
-                )
-            };
-            dst.copy_from_slice(k);
+            if UserSpaceMemory::copy_to_user(a.value_or_next_key, k).is_err() {
+                return -14;
+            }
             return 0;
         }
-        if k == key {
+        if k == &key {
             found = true;
         }
     }
@@ -1068,7 +1132,10 @@ fn bpf_prog_load(attr: u64, size: u32) -> i32 {
         // Minimum size for the fields we use
         return -22;
     }
-    let a = unsafe { *(attr as *const BpfProgLoadAttr) };
+    let a = match copy_struct_from_user::<BpfProgLoadAttr>(attr) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
 
     // Validate program type
     let valid_types = [
@@ -1092,26 +1159,26 @@ fn bpf_prog_load(attr: u64, size: u32) -> i32 {
         return -14;
     }
 
-    // Copy instructions (each BPF insn is 8 bytes: u8 code, u8 regs, s16 off, s32 imm)
-    let _insn_bytes = a.insn_cnt as usize * 8;
-    let insn_ptr = a.insns as *const u64;
+    let insn_bytes = match a.insn_cnt.checked_mul(8) {
+        Some(bytes) => bytes,
+        None => return -22,
+    };
+    let raw_insns = match copy_user_bytes(a.insns, insn_bytes) {
+        Ok(bytes) => bytes,
+        Err(e) => return e,
+    };
     let mut insns = Vec::with_capacity(a.insn_cnt as usize);
-    for i in 0..a.insn_cnt as usize {
-        insns.push(unsafe { core::ptr::read_volatile(insn_ptr.add(i)) });
+    for chunk in raw_insns.chunks_exact(8) {
+        insns.push(u64::from_ne_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]));
     }
 
     // Copy license string
-    let mut license = Vec::new();
-    let lic_ptr = a.license as *const u8;
-    let mut i = 0;
-    while i < 128 {
-        let b = unsafe { *lic_ptr.add(i) };
-        if b == 0 {
-            break;
-        }
-        license.push(b);
-        i += 1;
-    }
+    let license = match copy_user_cstr_max(a.license, 128) {
+        Ok(license) => license,
+        Err(e) => return e,
+    };
 
     // Verify the BPF program before storing it
     if let Err(errno) = verify_program(&insns) {

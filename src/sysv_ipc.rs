@@ -96,6 +96,8 @@ pub struct SemaphoreSet {
     pub perm: IpcPerm,
     pub ctime: u64,
     pub otime: u64,
+    /// PID of the last process to perform a semop on this set (GETPID).
+    pub last_pid: u32,
     /// PIDs waiting for semaphore values to change.
     /// Each entry records which sem_num and sem_op the waiter needs,
     /// plus an optional deadline in nanoseconds since boot (0 = no timeout).
@@ -160,7 +162,7 @@ static SEM_SETS: RwLock<BTreeMap<u32, Mutex<SemaphoreSet>>> = RwLock::new(BTreeM
 static SHM_SEGS: RwLock<BTreeMap<u32, Mutex<ShmSegment>>> = RwLock::new(BTreeMap::new());
 /// Maps attach addresses to their `Box<[u8]>` buffers so they stay alive
 /// until `shmdt` frees them.
-static SHM_ATTACHMENTS: RwLock<BTreeMap<u64, Box<[u8]>>> = RwLock::new(BTreeMap::new());
+static SHM_ATTACHMENTS: RwLock<BTreeMap<u64, (u32, Box<[u8]>)>> = RwLock::new(BTreeMap::new());
 static MSG_QUEUES: RwLock<BTreeMap<u32, Mutex<MessageQueue>>> = RwLock::new(BTreeMap::new());
 static NEXT_SEM_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_SHM_ID: AtomicU32 = AtomicU32::new(1);
@@ -196,6 +198,7 @@ pub fn semget(key: u32, nsems: i32, semflg: i32) -> i32 {
             },
             ctime: now,
             otime: 0,
+            last_pid: 0,
             waiters: Vec::new(),
         };
         SEM_SETS.write().insert(id, Mutex::new(set));
@@ -236,6 +239,7 @@ pub fn semget(key: u32, nsems: i32, semflg: i32) -> i32 {
         },
         ctime: now,
         otime: 0,
+        last_pid: 0,
         waiters: Vec::new(),
     };
     SEM_SETS.write().insert(id, Mutex::new(set));
@@ -389,6 +393,7 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
 
             // Register as a waiter on the blocking semaphore
             let block_op = ops[block_idx];
+            set.waiters.retain(|waiter| waiter.pid != pid);
             set.waiters.push(SemWaiter {
                 pid,
                 sem_num: block_op.sem_num,
@@ -424,6 +429,7 @@ pub fn semtimedop(semid: i32, sops: *const SemBuf, nsops: u32, timeout: *const u
                 (set.sems[op.sem_num as usize] as i32 + op.sem_op as i32) as i16;
         }
         set.otime = crate::time::uptime_ns() / 1_000_000_000;
+        set.last_pid = crate::process::current_pid();
 
         // Wake any waiters that can now proceed
         wake_sem_waiters(&mut set);
@@ -447,9 +453,14 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
 
     match cmd {
         IPC_RMID => {
+            let waiters: Vec<u32> = set.waiters.iter().map(|waiter| waiter.pid).collect();
+            set.waiters.clear();
             drop(set);
             drop(sets);
             SEM_SETS.write().remove(&(semid as u32));
+            for pid in waiters {
+                let _ = crate::process::get_process_manager().unblock_process(pid);
+            }
             return 0;
         }
         IPC_STAT => {
@@ -477,23 +488,32 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
             }
             set.sems[semnum as usize] = arg as i16;
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
+            set.last_pid = crate::process::current_pid();
             wake_sem_waiters(&mut set);
             return 0;
         }
         GETPID => {
-            return 0; // No tracking
+            return set.last_pid as i32;
         }
         GETNCNT => {
             if semnum < 0 || semnum as usize >= set.sems.len() {
                 return -34;
             }
-            return set.waiters.iter().filter(|w| w.sem_num == semnum as u16 && w.sem_op < 0).count() as i32;
+            return set
+                .waiters
+                .iter()
+                .filter(|w| w.sem_num == semnum as u16 && w.sem_op < 0)
+                .count() as i32;
         }
         GETZCNT => {
             if semnum < 0 || semnum as usize >= set.sems.len() {
                 return -34;
             }
-            return set.waiters.iter().filter(|w| w.sem_num == semnum as u16 && w.sem_op == 0).count() as i32;
+            return set
+                .waiters
+                .iter()
+                .filter(|w| w.sem_num == semnum as u16 && w.sem_op == 0)
+                .count() as i32;
         }
         GETALL => {
             let arr = arg as *mut u16;
@@ -517,6 +537,7 @@ pub fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
                 set.sems[i] = unsafe { *arr.add(i) } as i16;
             }
             set.ctime = crate::time::uptime_ns() / 1_000_000_000;
+            set.last_pid = crate::process::current_pid();
             wake_sem_waiters(&mut set);
             return 0;
         }
@@ -657,23 +678,15 @@ pub fn shmat(shmid: i32, shmaddr: u64, shmflg: i32) -> i64 {
     // Store the buffer so it lives as long as the attachment.  We keep it
     // in a static map keyed by the attach address so `shmdt` can find and
     // free it.
-    SHM_ATTACHMENTS.write().insert(attach_addr, attach_buf);
+    SHM_ATTACHMENTS
+        .write()
+        .insert(attach_addr, (shmid as u32, attach_buf));
 
-    // If the caller requested a specific address, we still return the
-    // kernel buffer address (we cannot map into user page tables yet),
-    // but we honour SHM_RND alignment for the address the caller *would*
-    // have gotten.
-    let addr = if shmaddr == 0 {
-        attach_addr
-    } else if shmflg & SHM_RND != 0 {
-        // Round down to page boundary — informational only since we
-        // can't actually place the mapping at the requested address.
-        attach_addr & !0xFFF
-    } else {
-        attach_addr
-    };
+    // This implementation cannot place mappings at caller-requested virtual
+    // addresses yet, so return the actual stable attachment handle that shmdt()
+    // can later detach.
+    let addr = attach_addr;
 
-    seg.attach_ptr = attach_addr;
     seg.nattch += 1;
     seg.atime = crate::time::uptime_ns() / 1_000_000_000;
     seg.lpid = crate::process::current_pid();
@@ -684,25 +697,25 @@ pub fn shmat(shmid: i32, shmaddr: u64, shmflg: i32) -> i64 {
 /// shmdt — detach shared memory segment
 pub fn shmdt(shmaddr: u64) -> i32 {
     // Free the attachment buffer and remove it from the map.
-    let removed = SHM_ATTACHMENTS.write().remove(&shmaddr).is_some();
-    if !removed {
-        return -22; // EINVAL — not a valid attachment
-    }
-
-    // Find segment by attach address and decrement nattch
-    let segs = SHM_SEGS.read();
-    for (_, seg_mutex) in segs.iter() {
-        let mut seg = seg_mutex.lock();
-        if seg.attach_ptr == shmaddr {
-            if seg.nattch > 0 {
-                seg.nattch -= 1;
-            }
-            seg.dtime = crate::time::uptime_ns() / 1_000_000_000;
-            seg.lpid = crate::process::current_pid();
-            return 0;
+    let shmid = match SHM_ATTACHMENTS.write().remove(&shmaddr) {
+        Some((shmid, _buf)) => shmid,
+        None => {
+            return -22; // EINVAL — not a valid attachment
         }
+    };
+
+    // Find segment by recorded attachment id and decrement nattch.
+    let segs = SHM_SEGS.read();
+    let Some(seg_mutex) = segs.get(&shmid) else {
+        return -22; // EINVAL — not a valid attachment
+    };
+    let mut seg = seg_mutex.lock();
+    if seg.nattch > 0 {
+        seg.nattch -= 1;
     }
-    -22 // EINVAL
+    seg.dtime = crate::time::uptime_ns() / 1_000_000_000;
+    seg.lpid = crate::process::current_pid();
+    0
 }
 
 /// shmctl — shared memory control
@@ -846,7 +859,7 @@ pub fn msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> i32 {
     let mut q = q_mutex.lock();
 
     // Read mtype (first 8 bytes) and mtext
-    let mtype = unsafe { *(msgp as *const i64) };
+    let mtype = unsafe { (msgp as *const i64).read_unaligned() };
     if mtype <= 0 {
         return -22;
     }
@@ -892,7 +905,7 @@ pub fn msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: i32)
         q.rtime = crate::time::uptime_ns() / 1_000_000_000;
         let copy_len = core::cmp::min(text.len(), msgsz);
         unsafe {
-            *(msgp as *mut i64) = mtype;
+            (msgp as *mut i64).write_unaligned(mtype);
             core::ptr::copy_nonoverlapping(text.as_ptr(), msgp.add(8), copy_len);
         }
         return copy_len as i32;

@@ -50,6 +50,23 @@ pub const GNOME_READINESS_NAME: &str = "org.rustos.GnomeReadiness";
 /// RustOS GNOME readiness object path
 pub const GNOME_READINESS_PATH: &str = "/org/rustos/GnomeReadiness";
 
+/// freedesktop notification service
+pub const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
+pub const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
+
+/// GNOME SessionManager
+pub const SESSION_MANAGER_NAME: &str = "org.gnome.SessionManager";
+pub const SESSION_MANAGER_PATH: &str = "/org/gnome/SessionManager";
+
+/// freedesktop ScreenSaver
+pub const SCREENSAVER_NAME: &str = "org.freedesktop.ScreenSaver";
+pub const SCREENSAVER_PATH: &str = "/org/freedesktop/ScreenSaver";
+
+/// GNOME Mutter Devkit
+pub const DEVKIT_NAME: &str = "org.gnome.Mutter.Devkit";
+pub const DEVKIT_PATH: &str = "/org/gnome/Mutter/Devkit";
+pub const DEVKIT_IFACE: &str = "org.gnome.Mutter.Devkit";
+
 // ── Endianness ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1191,17 +1208,24 @@ impl MessageBus {
         }
 
         // Yield kernel GNOME stubs when real session components connect.
-        if name == GNOME_SHELL_NAME || name == GNOME_READINESS_NAME {
-            let kernel_conn = if name == GNOME_SHELL_NAME {
-                KERNEL_SHELL_CONN.load(core::sync::atomic::Ordering::Acquire)
-            } else {
-                KERNEL_READY_CONN.load(core::sync::atomic::Ordering::Acquire)
-            };
-            if kernel_conn != 0 && conn_id != kernel_conn {
-                if let Some(&owner) = self.name_registry.get(name) {
-                    if owner == kernel_conn {
-                        self.force_release_name(name);
-                    }
+        let kernel_conn = if name == GNOME_SHELL_NAME {
+            KERNEL_SHELL_CONN.load(core::sync::atomic::Ordering::Acquire)
+        } else if name == GNOME_READINESS_NAME {
+            KERNEL_READY_CONN.load(core::sync::atomic::Ordering::Acquire)
+        } else if name == NOTIFICATIONS_NAME {
+            KERNEL_NOTIF_CONN.load(core::sync::atomic::Ordering::Acquire)
+        } else if name == SESSION_MANAGER_NAME {
+            KERNEL_SESSION_CONN.load(core::sync::atomic::Ordering::Acquire)
+        } else if name == SCREENSAVER_NAME {
+            KERNEL_SCREENSAVER_CONN.load(core::sync::atomic::Ordering::Acquire)
+        } else {
+            0
+        };
+
+        if kernel_conn != 0 && conn_id != kernel_conn {
+            if let Some(&owner) = self.name_registry.get(name) {
+                if owner == kernel_conn {
+                    self.force_release_name(name);
                 }
             }
         }
@@ -1447,6 +1471,16 @@ static BUS: RwLock<MessageBus> = RwLock::new(MessageBus::new());
 /// Kernel stub connections that hold GNOME session names until userspace claims them.
 static KERNEL_SHELL_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static KERNEL_READY_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static KERNEL_NOTIF_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static KERNEL_SESSION_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static KERNEL_SCREENSAVER_CONN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+static KERNEL_DEVKIT_CONN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Next notification ID for org.freedesktop.Notifications.Notify
+static NEXT_NOTIF_ID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+/// Next inhibit cookie for org.freedesktop.ScreenSaver.Inhibit
+static NEXT_INHIBIT_COOKIE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
 
 /// Pipes connected to the session bus before the client completes Hello.
 static UNCLAIMED_SESSION_PIPES: spin::Mutex<Vec<u32>> = spin::Mutex::new(Vec::new());
@@ -1510,6 +1544,27 @@ fn register_kernel_session_services(bus: &mut MessageBus) -> Result<(), &'static
     let ready_id = connection_id_from_sender(&ready_name);
     bus.request_name(ready_id, GNOME_READINESS_NAME)?;
     KERNEL_READY_CONN.store(ready_id, core::sync::atomic::Ordering::Release);
+
+    let notif_name = bus.connect()?;
+    let notif_id = connection_id_from_sender(&notif_name);
+    bus.request_name(notif_id, NOTIFICATIONS_NAME)?;
+    KERNEL_NOTIF_CONN.store(notif_id, core::sync::atomic::Ordering::Release);
+
+    let session_name = bus.connect()?;
+    let session_id = connection_id_from_sender(&session_name);
+    bus.request_name(session_id, SESSION_MANAGER_NAME)?;
+    KERNEL_SESSION_CONN.store(session_id, core::sync::atomic::Ordering::Release);
+
+    let ss_name = bus.connect()?;
+    let ss_id = connection_id_from_sender(&ss_name);
+    bus.request_name(ss_id, SCREENSAVER_NAME)?;
+    KERNEL_SCREENSAVER_CONN.store(ss_id, core::sync::atomic::Ordering::Release);
+
+    let devkit_name = bus.connect()?;
+    let devkit_id = connection_id_from_sender(&devkit_name);
+    bus.request_name(devkit_id, DEVKIT_NAME)?;
+    KERNEL_DEVKIT_CONN.store(devkit_id, core::sync::atomic::Ordering::Release);
+
     let match_rule = parse_signal_match(
         1,
         "type='signal',sender='org.rustos.GnomeReadiness',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/rustos/GnomeReadiness'",
@@ -1567,8 +1622,16 @@ pub fn release_kernel_gnome_stubs() {
     let mut bus = BUS.write();
     bus.force_release_name(GNOME_SHELL_NAME);
     bus.force_release_name(GNOME_READINESS_NAME);
+    bus.force_release_name(NOTIFICATIONS_NAME);
+    bus.force_release_name(SESSION_MANAGER_NAME);
+    bus.force_release_name(SCREENSAVER_NAME);
+    bus.force_release_name(DEVKIT_NAME);
     KERNEL_SHELL_CONN.store(0, core::sync::atomic::Ordering::Release);
     KERNEL_READY_CONN.store(0, core::sync::atomic::Ordering::Release);
+    KERNEL_NOTIF_CONN.store(0, core::sync::atomic::Ordering::Release);
+    KERNEL_SESSION_CONN.store(0, core::sync::atomic::Ordering::Release);
+    KERNEL_SCREENSAVER_CONN.store(0, core::sync::atomic::Ordering::Release);
+    KERNEL_DEVKIT_CONN.store(0, core::sync::atomic::Ordering::Release);
 }
 
 pub fn is_ready() -> bool {
@@ -1795,11 +1858,146 @@ const GNOME_READINESS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freede
   </interface>
 </node>"#;
 
+const NOTIFICATIONS_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.Notifications">
+    <method name="GetCapabilities">
+      <arg name="caps" type="as" direction="out"/>
+    </method>
+    <method name="GetServerInformation">
+      <arg name="name" type="s" direction="out"/>
+      <arg name="vendor" type="s" direction="out"/>
+      <arg name="version" type="s" direction="out"/>
+      <arg name="spec_version" type="s" direction="out"/>
+    </method>
+    <method name="Notify">
+      <arg name="app_name" type="s" direction="in"/>
+      <arg name="replaces_id" type="u" direction="in"/>
+      <arg name="app_icon" type="s" direction="in"/>
+      <arg name="summary" type="s" direction="in"/>
+      <arg name="body" type="s" direction="in"/>
+      <arg name="actions" type="as" direction="in"/>
+      <arg name="hints" type="a{sv}" direction="in"/>
+      <arg name="expire_timeout" type="i" direction="in"/>
+      <arg name="id" type="u" direction="out"/>
+    </method>
+    <method name="CloseNotification">
+      <arg name="id" type="u" direction="in"/>
+    </method>
+    <signal name="NotificationClosed">
+      <arg name="id" type="u"/>
+      <arg name="reason" type="u"/>
+    </signal>
+    <signal name="ActionInvoked">
+      <arg name="id" type="u"/>
+      <arg name="action_key" type="s"/>
+    </signal>
+  </interface>
+</node>"#;
+
+const SESSION_MANAGER_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.gnome.SessionManager">
+    <method name="Shutdown"/>
+    <method name="Reboot"/>
+    <method name="Logout">
+      <arg name="mode" type="u" direction="in"/>
+    </method>
+    <method name="CanShutdown">
+      <arg name="available" type="b" direction="out"/>
+    </method>
+    <method name="CanRestart">
+      <arg name="available" type="b" direction="out"/>
+    </method>
+    <method name="CanLogout">
+      <arg name="available" type="b" direction="out"/>
+    </method>
+    <method name="IsActive">
+      <arg name="active" type="b" direction="out"/>
+    </method>
+    <method name="GetSessionId">
+      <arg name="session_id" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>"#;
+
+const SCREENSAVER_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.ScreenSaver">
+    <method name="Lock"/>
+    <method name="SetActive">
+      <arg name="active" type="b" direction="in"/>
+    </method>
+    <method name="GetActive">
+      <arg name="active" type="b" direction="out"/>
+    </method>
+    <method name="Inhibit">
+      <arg name="application_name" type="s" direction="in"/>
+      <arg name="reason_for_inhibit" type="s" direction="in"/>
+      <arg name="cookie" type="u" direction="out"/>
+    </method>
+    <method name="UnInhibit">
+      <arg name="cookie" type="u" direction="in"/>
+    </method>
+  </interface>
+</node>"#;
+
+const DEVKIT_INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.freedesktop.DBus.Properties">
+    <method name="Get">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <method name="GetAll">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="properties" type="a{sv}" direction="out"/>
+    </method>
+    <method name="Set">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="in"/>
+    </method>
+  </interface>
+  <interface name="org.gnome.Mutter.Devkit">
+    <property name="Env" type="a{ss}" access="read"/>
+  </interface>
+</node>"#;
+
 fn introspect_xml(path: &str) -> &'static str {
     match path {
         BUS_PATH => BUS_INTROSPECT_XML,
         GNOME_SHELL_PATH => GNOME_SHELL_INTROSPECT_XML,
         GNOME_READINESS_PATH => GNOME_READINESS_INTROSPECT_XML,
+        NOTIFICATIONS_PATH => NOTIFICATIONS_INTROSPECT_XML,
+        SESSION_MANAGER_PATH => SESSION_MANAGER_INTROSPECT_XML,
+        SCREENSAVER_PATH => SCREENSAVER_INTROSPECT_XML,
+        DEVKIT_PATH => DEVKIT_INTROSPECT_XML,
         _ => {
             r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
 "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
@@ -1833,10 +2031,32 @@ fn gnome_readiness_property(iface: &str, prop: &str) -> Result<Value, &'static s
     }
 }
 
+fn devkit_property(iface: &str, prop: &str) -> Result<Value, &'static str> {
+    if iface != DEVKIT_IFACE {
+        return Err("org.freedesktop.DBus.Error.UnknownInterface");
+    }
+    match prop {
+        "Env" => {
+            let mut entries = Vec::new();
+            entries.push(Value::DictEntry(
+                Box::new(Value::String("WAYLAND_DISPLAY".to_string())),
+                Box::new(Value::String("wayland-0".to_string())),
+            ));
+            entries.push(Value::DictEntry(
+                Box::new(Value::String("DISPLAY".to_string())),
+                Box::new(Value::String(":0".to_string())),
+            ));
+            Ok(Value::Array("{ss}".to_string(), entries))
+        }
+        _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
+    }
+}
+
 fn session_property_get(path: &str, iface: &str, prop: &str) -> Result<Value, &'static str> {
     match path {
         GNOME_SHELL_PATH => gnome_shell_property(iface, prop),
         GNOME_READINESS_PATH => gnome_readiness_property(iface, prop),
+        DEVKIT_PATH => devkit_property(iface, prop),
         _ => Err("org.freedesktop.DBus.Error.UnknownProperty"),
     }
 }
@@ -1887,6 +2107,24 @@ fn session_property_get_all(path: &str, iface: &str) -> Vec<Value> {
                     }))),
                 ),
             ]
+        }
+        DEVKIT_PATH if iface == DEVKIT_IFACE => {
+            let mut env_entries = Vec::new();
+            env_entries.push(Value::DictEntry(
+                Box::new(Value::String("WAYLAND_DISPLAY".to_string())),
+                Box::new(Value::String("wayland-0".to_string())),
+            ));
+            env_entries.push(Value::DictEntry(
+                Box::new(Value::String("DISPLAY".to_string())),
+                Box::new(Value::String(":0".to_string())),
+            ));
+            vec![Value::DictEntry(
+                Box::new(Value::String("Env".to_string())),
+                Box::new(Value::Variant(Box::new(Variant {
+                    signature: "a{ss}".to_string(),
+                    value: Value::Array("{ss}".to_string(), env_entries),
+                }))),
+            )]
         }
         _ => Vec::new(),
     }
@@ -2253,6 +2491,170 @@ fn dispatch_session_service(
             Some(marshal_message(&reply))
         }
 
+        // ── org.freedesktop.Notifications ──────────────────────────────
+        (NOTIFICATIONS_NAME, "org.freedesktop.Notifications", "GetCapabilities") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("as".to_string()));
+            reply.body = vec![Value::Array(
+                "s".to_string(),
+                vec![
+                    Value::String("body".to_string()),
+                    Value::String("body-markup".to_string()),
+                    Value::String("icon-static".to_string()),
+                    Value::String("actions".to_string()),
+                ],
+            )];
+            Some(marshal_message(&reply))
+        }
+        (NOTIFICATIONS_NAME, "org.freedesktop.Notifications", "GetServerInformation") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("ssss".to_string()));
+            reply.body = vec![
+                Value::String("RustOS".to_string()),
+                Value::String("RustOS".to_string()),
+                Value::String("0.1".to_string()),
+                Value::String("1.2".to_string()),
+            ];
+            Some(marshal_message(&reply))
+        }
+        (NOTIFICATIONS_NAME, "org.freedesktop.Notifications", "Notify") => {
+            let body = if signature.is_empty() {
+                Vec::new()
+            } else {
+                unmarshaler.parse_body(signature).ok()?
+            };
+            // Notify args: app_name:s, replaces_id:u, app_icon:s, summary:s, body:s, actions:a{ss}, hints:a{sv}, expire_timeout:i
+            let app_name = body
+                .get(0)
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("Unknown");
+            let summary = body
+                .get(3)
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            let notif_body = body
+                .get(4)
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+
+            crate::desktop::push_notification(app_name, summary, notif_body);
+
+            let notif_id = NEXT_NOTIF_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("u".to_string()));
+            reply.body = vec![Value::UInt32(notif_id)];
+            Some(marshal_message(&reply))
+        }
+        (NOTIFICATIONS_NAME, "org.freedesktop.Notifications", "CloseNotification") => {
+            // Best-effort: we don't track external notification IDs yet
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+
+        // ── org.gnome.SessionManager ───────────────────────────────────
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "Shutdown") => {
+            crate::desktop::open_power_dialog();
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "Reboot") => {
+            crate::desktop::open_power_dialog();
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "Logout") => {
+            crate::desktop::open_power_dialog();
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "CanShutdown") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("b".to_string()));
+            reply.body = vec![Value::Bool(true)];
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "CanRestart") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("b".to_string()));
+            reply.body = vec![Value::Bool(true)];
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "CanLogout") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("b".to_string()));
+            reply.body = vec![Value::Bool(true)];
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "IsActive") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("b".to_string()));
+            reply.body = vec![Value::Bool(true)];
+            Some(marshal_message(&reply))
+        }
+        (SESSION_MANAGER_NAME, "org.gnome.SessionManager", "GetSessionId") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("s".to_string()));
+            reply.body = vec![Value::String("org.gnome.SessionManager".to_string())];
+            Some(marshal_message(&reply))
+        }
+
+        // ── org.freedesktop.ScreenSaver ────────────────────────────────
+        (SCREENSAVER_NAME, "org.freedesktop.ScreenSaver", "Lock") => {
+            crate::serial_println!("D-Bus: ScreenSaver.Lock requested");
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+        (SCREENSAVER_NAME, "org.freedesktop.ScreenSaver", "SetActive") => {
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+        (SCREENSAVER_NAME, "org.freedesktop.ScreenSaver", "GetActive") => {
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("b".to_string()));
+            reply.body = vec![Value::Bool(false)];
+            Some(marshal_message(&reply))
+        }
+        (SCREENSAVER_NAME, "org.freedesktop.ScreenSaver", "Inhibit") => {
+            let cookie = NEXT_INHIBIT_COOKIE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let mut reply = Message::new_method_return(bus_serial, serial, sender);
+            reply.header = reply
+                .header
+                .with_field(HeaderField::Signature, Value::Signature("u".to_string()));
+            reply.body = vec![Value::UInt32(cookie)];
+            Some(marshal_message(&reply))
+        }
+        (SCREENSAVER_NAME, "org.freedesktop.ScreenSaver", "UnInhibit") => {
+            let reply = Message::new_method_return(bus_serial, serial, sender);
+            Some(marshal_message(&reply))
+        }
+
         // Fallback: return a descriptive error for unhandled methods
         _ => Some(marshal_message(&Message::new_error(
             bus_serial,
@@ -2378,7 +2780,13 @@ pub fn process_wire_request(data: &[u8], source_pipe_id: Option<u32>) -> Option<
         return dispatch_properties(member, serial, sender, path, signature, &mut unmarshaler);
     }
 
-    if destination == GNOME_SHELL_NAME || destination == GNOME_READINESS_NAME {
+    if destination == GNOME_SHELL_NAME
+        || destination == GNOME_READINESS_NAME
+        || destination == NOTIFICATIONS_NAME
+        || destination == SESSION_MANAGER_NAME
+        || destination == SCREENSAVER_NAME
+        || destination == DEVKIT_NAME
+    {
         let signature = header.signature().unwrap_or("");
         return dispatch_session_service(
             destination,

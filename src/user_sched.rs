@@ -20,6 +20,16 @@ static USER_IRETQ_RSP: AtomicU64 = AtomicU64::new(RESUME_NONE);
 static USER_KERNEL_RESUME: AtomicU64 = AtomicU64::new(RESUME_NONE);
 static PENDING_USER_PID: AtomicU32 = AtomicU32::new(0);
 static SCHED_TICK_PENDING: AtomicBool = AtomicBool::new(false);
+/// Budget for one-shot Ring-3 bring-up diagnostics (avoids flooding serial when
+/// service_pending re-queues a failing pid every idle-loop iteration).
+static DIAG_BUDGET: AtomicU32 = AtomicU32::new(12);
+
+/// Returns true at most `DIAG_BUDGET` times, then suppresses further logs.
+fn diag_allowed() -> bool {
+    DIAG_BUDGET
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+        .is_ok()
+}
 static BOOTSTRAP_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
 static AFTER_USER_HOOK: Mutex<Option<fn()>> = Mutex::new(None);
@@ -85,7 +95,13 @@ pub fn service_pending(resume_rip: u64) {
         return;
     }
 
+    if diag_allowed() {
+        crate::serial_println!("user_sched: service_pending picked pid={}", pid);
+    }
     if run_user_process(pid).is_err() {
+        if diag_allowed() {
+            crate::serial_println!("user_sched: run_user_process({}) failed; re-queueing", pid);
+        }
         PENDING_USER_PID.store(pid, Ordering::Release);
     }
 }
@@ -186,14 +202,39 @@ fn run_user_process(child_pid: u32) -> Result<(), ()> {
     }
 
     let kernel_pm = process::get_process_manager();
-    let pcb = kernel_pm.get_process(child_pid).ok_or(())?;
+    let pcb = match kernel_pm.get_process(child_pid) {
+        Some(p) => p,
+        None => {
+            if diag_allowed() {
+                crate::serial_println!("user_sched: pid {} not found", child_pid);
+            }
+            return Err(());
+        }
+    };
 
     if !is_user_process(&pcb) {
+        if diag_allowed() {
+            crate::serial_println!(
+                "user_sched: pid {} not user-ready entry={:#x} cs={:#x} rsp={:#x}",
+                child_pid,
+                pcb.entry_point,
+                pcb.context.cs,
+                pcb.context.rsp
+            );
+        }
         return Err(());
     }
 
     let entry = pcb.entry_point;
     let rsp = pcb.context.rsp;
+    if diag_allowed() {
+        crate::serial_println!(
+            "user_sched: ENTER Ring-3 pid={} entry={:#x} rsp={:#x}",
+            child_pid,
+            entry,
+            rsp
+        );
+    }
     let parent_pid = process::current_pid();
     begin_user_bootstrap(
         parent_pid,

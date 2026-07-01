@@ -183,6 +183,10 @@ pub fn init() {
     register_softirq(HI_SOFTIRQ, tasklet_hi_action);
     register_softirq(TIMER_SOFTIRQ, timer_softirq_action);
     register_softirq(TASKLET_SOFTIRQ, tasklet_action);
+    register_softirq(
+        SCHED_SOFTIRQ,
+        crate::scheduler::load_balance::sched_softirq_action,
+    );
 
     crate::serial_println!("[softirq] initialized ({} softirq types)", NR_SOFTIRQS);
 }

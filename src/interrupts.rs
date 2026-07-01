@@ -412,26 +412,28 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 extern "x86-interrupt" fn page_fault_handler(
-    _stack_frame: InterruptStackFrame,
+    stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
 
     let fault_address = Cr2::read();
 
-    // Log all page faults for production debugging
     crate::serial_println!(
         "Page fault at {:?}: present={}, write={}, user={}",
         fault_address,
         !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION),
         error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE),
-        error_code.contains(PageFaultErrorCode::USER_MODE)
+        error_code.contains(PageFaultErrorCode::USER_MODE),
     );
 
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    if error_code.contains(PageFaultErrorCode::USER_MODE) {
+    // userfaultfd intercept for user-mode non-present faults
+    if error_code.contains(PageFaultErrorCode::USER_MODE)
+        && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+    {
         let pid = crate::process::current_pid();
         if pid != 0
             && crate::userfaultfd::handle_page_fault(fault_address.as_u64(), error_code.bits(), pid)
@@ -446,61 +448,44 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // Check for a user-installed page fault handler first
+    // Check user-installed handler (e.g. from test harness)
     {
         let handler_slot = USER_PAGE_FAULT_HANDLER.lock();
         if let Some(handler) = *handler_slot {
-            match handler(fault_address, error_code) {
-                Ok(()) => return, // Fault handled by user handler
-                Err(()) => {}     // Fall through to normal handling
-            }
-        }
-    }
-
-    // In production, attempt page fault recovery
-    if let Some(recovery_result) = attempt_page_fault_recovery(fault_address, error_code) {
-        match recovery_result {
-            PageFaultRecovery::Recovered => {
-                crate::serial_println!("Page fault recovered successfully");
+            if handler(fault_address, error_code).is_ok() {
                 return;
             }
-            PageFaultRecovery::NeedsSwap => {
-                crate::serial_println!("Page fault requires swap operation");
-                // Attempt to swap in the page from disk
-                // If swap-in fails, terminate the process
-                if let Err(_e) = attempt_swap_in_page(fault_address) {
-                    crate::serial_println!("Swap-in failed for address {:?}", fault_address);
-                    terminate_current_process("Page swap-in failure");
-                    return;
-                }
-            }
         }
     }
 
-    // If recovery fails, use error handling system
-    use crate::error::{ErrorContext, ErrorSeverity, KernelError, MemoryError, ERROR_MANAGER};
+    // Fast path: anonymous demand pages (stack growth, heap, data)
+    if crate::memory::try_fast_page_fault_handler(fault_address) {
+        return;
+    }
 
-    let error_context = ErrorContext::new(
-        KernelError::Memory(MemoryError::PageFaultUnrecoverable),
-        ErrorSeverity::Critical,
-        "page_fault_handler",
-        alloc::format!("Unrecoverable page fault at address {:?}", fault_address),
-    );
+    // Full MM path: CoW, swap-in, write/execute/guard checks
+    match crate::memory::handle_page_fault(fault_address, error_code.bits()) {
+        Ok(()) => return,
+        Err(_) => {}
+    }
 
-    if let Some(mut manager) = ERROR_MANAGER.try_lock() {
-        if let Err(_) = manager.handle_error(error_context) {
-            // Critical error handling failed - this is very bad
-            crate::serial_println!("CRITICAL: Page fault recovery failed completely");
-            loop {
-                unsafe {
-                    core::arch::asm!("hlt");
-                }
-            }
-        }
-    } else {
-        // Fallback - terminate the current process if possible
-        crate::serial_println!("CRITICAL: Unrecoverable page fault at {:?}", fault_address);
+    // Unrecoverable — SIGSEGV for user processes, panic for kernel
+    if error_code.contains(PageFaultErrorCode::USER_MODE) {
+        crate::serial_println!(
+            "SIGSEGV: unrecoverable page fault at {:?} (rip={:?})",
+            fault_address,
+            stack_frame.instruction_pointer,
+        );
         terminate_current_process("Unrecoverable page fault");
+    } else {
+        crate::serial_println!(
+            "KERNEL PAGE FAULT at {:?} rip={:?}",
+            fault_address,
+            stack_frame.instruction_pointer,
+        );
+        loop {
+            unsafe { core::arch::asm!("hlt") };
+        }
     }
 }
 
@@ -931,14 +916,13 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         crate::softirq::run_workqueue();
     }
 
-    unsafe {
-        // Send EOI directly to PIC port 0x20
-        core::arch::asm!(
-            "mov al, 0x20",
-            "out 0x20, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    // Must use notify_irq_eoi (LAPIC EOI register when APIC is active), not a
+    // raw PIC port-0x20 write: once init_apic_system() switches the timer to
+    // the local APIC, a PIC-only EOI never clears the LAPIC's in-service bit
+    // for this vector, so no further timer interrupt is ever delivered and
+    // the scheduler permanently stops preempting (matches keyboard/mouse
+    // handlers below, which already use notify_irq_eoi).
+    notify_irq_eoi(InterruptIndex::Timer);
 
     // After EOI, give the scheduler a chance to preempt the current process.
     // Only attempt this if the process subsystem has been initialized — calling

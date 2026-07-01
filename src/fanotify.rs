@@ -236,6 +236,15 @@ pub fn fanotify_init(flags: u32, event_flags: u32) -> i32 {
         return -22; // EINVAL
     }
 
+    let fid_mode = flags
+        & (FAN_REPORT_FID
+            | FAN_REPORT_DIR_FID
+            | FAN_REPORT_NAME
+            | FAN_REPORT_TARGET_FID
+            | FAN_REPORT_PIDFD
+            | FAN_REPORT_FD_ERROR)
+        != 0;
+
     // Only one class bit allowed
     let class_bits = flags & (FAN_CLASS_NOTIF | FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT);
     if class_bits != FAN_CLASS_NOTIF
@@ -248,6 +257,54 @@ pub fn fanotify_init(flags: u32, event_flags: u32) -> i32 {
         {
             return -22;
         }
+    }
+
+    if fid_mode && class_bits != FAN_CLASS_NOTIF {
+        return -22;
+    }
+
+    if flags & FAN_REPORT_MNT != 0 {
+        if class_bits != FAN_CLASS_NOTIF
+            || flags
+                & (FAN_REPORT_FID
+                    | FAN_REPORT_DIR_FID
+                    | FAN_REPORT_NAME
+                    | FAN_REPORT_TARGET_FID
+                    | FAN_REPORT_FD_ERROR)
+                != 0
+        {
+            return -22;
+        }
+    }
+
+    if flags & FAN_REPORT_NAME != 0 && flags & FAN_REPORT_DIR_FID == 0 {
+        return -22;
+    }
+
+    if flags & FAN_REPORT_TARGET_FID != 0
+        && (flags & FAN_REPORT_NAME == 0 || flags & FAN_REPORT_FID == 0)
+    {
+        return -22;
+    }
+
+    const O_ACCMODE: u32 = 0o3;
+    const O_APPEND: u32 = 0o2000;
+    const O_NONBLOCK: u32 = 0o4000;
+    const O_DSYNC: u32 = 0o10000;
+    const O_LARGEFILE: u32 = 0o100000;
+    const O_NOATIME: u32 = 0o1000000;
+    const O_CLOEXEC: u32 = 0o2000000;
+    const O_SYNC: u32 = 0o4010000;
+    const VALID_EVENT_F_FLAGS: u32 =
+        O_ACCMODE | O_APPEND | O_NONBLOCK | O_DSYNC | O_CLOEXEC | O_LARGEFILE | O_NOATIME | O_SYNC;
+
+    if event_flags & !VALID_EVENT_F_FLAGS != 0 {
+        return -22;
+    }
+
+    match event_flags & O_ACCMODE {
+        0 | 1 | 2 => {}
+        _ => return -22,
     }
 
     let id = NEXT_INSTANCE_ID.fetch_add(1, Ordering::SeqCst);

@@ -6,9 +6,10 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 use crate::drivers::input_manager;
+use crate::drivers::ps2_mouse::{MouseButtons, MousePacket};
 use crate::keyboard::{KeyEvent, SpecialKey};
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -19,6 +20,29 @@ pub struct HidBootKeyboardReport {
     pub modifiers: u8,
     pub reserved: u8,
     pub keys: [u8; 6],
+}
+
+/// Boot protocol mouse report (3 mandatory bytes plus optional wheel byte).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HidBootMouseReport {
+    pub buttons: u8,
+    pub x: i8,
+    pub y: i8,
+    pub wheel: i8,
+}
+
+impl HidBootMouseReport {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() < 3 {
+            return Err("HID boot mouse report must be at least 3 bytes");
+        }
+        Ok(Self {
+            buttons: data[0],
+            x: data[1] as i8,
+            y: data[2] as i8,
+            wheel: data.get(3).copied().unwrap_or(0) as i8,
+        })
+    }
 }
 
 impl HidBootKeyboardReport {
@@ -69,7 +93,7 @@ impl BootKeyboardState {
     }
 }
 
-static mut BOOT_KBD_STATE: BootKeyboardState = BootKeyboardState::new();
+static BOOT_KBD_STATE: Mutex<BootKeyboardState> = Mutex::new(BootKeyboardState::new());
 
 // ── HID usage to KeyEvent mapping ───────────────────────────────────────
 
@@ -171,11 +195,12 @@ fn dispatch_key_event(event: KeyEvent) {
 }
 
 fn process_modifier_changes(old_mod: u8, new_mod: u8) {
-    const MODIFIERS: [(u8, SpecialKey); 4] = [
+    const MODIFIERS: [(u8, SpecialKey); 5] = [
         (1 << 0, SpecialKey::LeftCtrl),
         (1 << 1, SpecialKey::LeftShift),
         (1 << 2, SpecialKey::LeftAlt),
         (1 << 4, SpecialKey::LeftCtrl), // Right Ctrl -> LeftCtrl for input layer
+        (1 << 6, SpecialKey::LeftAlt),  // Right Alt -> LeftAlt for input layer
     ];
 
     for (mask, key) in MODIFIERS {
@@ -202,7 +227,11 @@ fn process_modifier_changes(old_mod: u8, new_mod: u8) {
 pub fn parse_boot_keyboard_report(data: &[u8]) -> Result<(), &'static str> {
     let report = HidBootKeyboardReport::from_bytes(data)?;
 
-    let state = unsafe { &mut BOOT_KBD_STATE };
+    if report.keys.iter().any(|usage| (1..=3).contains(usage)) {
+        return Ok(());
+    }
+
+    let mut state = BOOT_KBD_STATE.lock();
     process_modifier_changes(state.modifiers, report.modifiers);
     state.modifiers = report.modifiers;
 
@@ -228,6 +257,33 @@ pub fn parse_boot_keyboard_report(data: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Parse a boot protocol mouse report and dispatch it to the input manager.
+pub fn parse_boot_mouse_report(data: &[u8]) -> Result<(), &'static str> {
+    let report = HidBootMouseReport::from_bytes(data)?;
+    let mut buttons = MouseButtons::new();
+    buttons.left = report.buttons & 0x01 != 0;
+    buttons.right = report.buttons & 0x02 != 0;
+    buttons.middle = report.buttons & 0x04 != 0;
+    buttons.button4 = report.buttons & 0x08 != 0;
+    buttons.button5 = report.buttons & 0x10 != 0;
+
+    input_manager::handle_mouse_packet(MousePacket {
+        buttons,
+        x_movement: report.x as i16,
+        y_movement: report.y as i16,
+        z_movement: report.wheel,
+    });
+    Ok(())
+}
+
+fn boot_mouse_parse(report: &[u8]) -> Result<(), &'static str> {
+    parse_boot_mouse_report(report)
+}
+
+fn boot_mouse_name() -> &'static str {
+    "boot-mouse"
+}
+
 fn boot_keyboard_parse(report: &[u8]) -> Result<(), &'static str> {
     parse_boot_keyboard_report(report)
 }
@@ -239,6 +295,11 @@ fn boot_keyboard_name() -> &'static str {
 const BOOT_KEYBOARD_OPS: HidDeviceOps = HidDeviceOps {
     parse_report: boot_keyboard_parse,
     get_name: boot_keyboard_name,
+};
+
+const BOOT_MOUSE_OPS: HidDeviceOps = HidDeviceOps {
+    parse_report: boot_mouse_parse,
+    get_name: boot_mouse_name,
 };
 
 // ── Registry ────────────────────────────────────────────────────────────
@@ -291,6 +352,7 @@ pub fn init() -> Result<(), &'static str> {
         HidDeviceType::BootKeyboard,
         BOOT_KEYBOARD_OPS,
     )?;
+    register_device("boot-mouse", HidDeviceType::BootMouse, BOOT_MOUSE_OPS)?;
     crate::serial_println!("hid: {} device(s) registered", device_count());
     Ok(())
 }

@@ -1131,16 +1131,16 @@ fn flush_framebuffer_cache(buffer: *mut u8, size: usize) {
 
 /// Signal hardware to present the frame
 fn present_hardware_frame(framebuffer_addr: u64) {
-    // Access GPU registers to trigger frame presentation
-    // This would be GPU-specific in a real implementation
+    // GPU-specific frame presentation: VBE displays use display start
+    // address updates, while modern GPUs use a present command submitted
+    // to the GPU command queue.
 
-    // For VBE/VESA, we might need to update display start address
+    // For VBE/VESA, update display start address for page flipping
     if let Some(_vbe_driver) = crate::drivers::vbe::driver().get_current_mode() {
-        // Update display start address if double buffering is used
         update_display_start_address(framebuffer_addr);
     }
 
-    // For modern GPUs, we would submit a present command to the GPU command queue
+    // For modern GPUs, submit a present command to the GPU command queue
     submit_present_command(framebuffer_addr);
 }
 

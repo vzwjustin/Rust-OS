@@ -13,14 +13,21 @@ use spin::RwLock;
 use super::process_ops;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::process;
 
 /// FS base MSR (x86_64)
-const MSR_FS_BASE: u32 = 0xC000_0100;
+const MSR_FS_BASE: u32 = crate::arch::x86::msr::MSR_FS_BASE;
 /// GS base MSR (x86_64)
-const MSR_GS_BASE: u32 = 0xC000_0101;
+const MSR_GS_BASE: u32 = crate::arch::x86::msr::MSR_GS_BASE;
 
 static CLEAR_CHILD_TID: AtomicU64 = AtomicU64::new(0);
+static MEMBARRIER_REGISTRATIONS: AtomicI32 = AtomicI32::new(0);
+
+/// Return the current clear-child-TID userspace address.
+pub fn clear_child_tid_address() -> u64 {
+    CLEAR_CHILD_TID.load(Ordering::SeqCst)
+}
 
 /// Per-thread FS/GS base addresses keyed by tid.
 static TLS_FS_BASE: RwLock<BTreeMap<Pid, u64>> = RwLock::new(BTreeMap::new());
@@ -31,6 +38,24 @@ static ROBUST_LISTS: RwLock<BTreeMap<Pid, usize>> = RwLock::new(BTreeMap::new())
 
 /// Legacy x86 thread area entries keyed by tid.
 static THREAD_AREAS: RwLock<BTreeMap<Pid, [u8; 32]>> = RwLock::new(BTreeMap::new());
+
+fn copy_pid_to_user(dst: *mut Pid, value: Pid) -> LinuxResult<()> {
+    UserSpaceMemory::copy_to_user(dst as u64, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_u64_to_user_addr(dst: u64, value: u64) -> LinuxResult<()> {
+    UserSpaceMemory::copy_to_user(dst, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_u64_from_user_addr(src: u64) -> LinuxResult<u64> {
+    let mut bytes = [0u8; core::mem::size_of::<u64>()];
+    UserSpaceMemory::copy_from_user(src, &mut bytes).map_err(|_| LinuxError::EFAULT)?;
+    Ok(u64::from_ne_bytes(bytes))
+}
+
+fn copy_usize_to_user(dst: *mut usize, value: usize) -> LinuxResult<()> {
+    UserSpaceMemory::copy_to_user(dst as u64, &value.to_ne_bytes()).map_err(|_| LinuxError::EFAULT)
+}
 
 /// A thread blocked on a futex, together with the bitset it is waiting on.
 /// Non-bitset operations use `FUTEX_BITSET_MATCH_ANY`, so FUTEX_WAKE wakes them
@@ -204,18 +229,48 @@ pub mod futex_op {
 /// clone - create a child process or thread
 pub fn clone(
     flags: u64,
-    _stack: *mut u8,
-    _parent_tid: *mut Pid,
-    _child_tid: *mut Pid,
-    _tls: u64,
+    stack: *mut u8,
+    parent_tid: *mut Pid,
+    child_tid: *mut Pid,
+    tls: u64,
 ) -> LinuxResult<Pid> {
     inc_ops();
 
-    if (flags & clone_flags::CLONE_THREAD) != 0 {
-        return process_ops::fork();
+    let parent_pid = process::current_pid();
+    let child_pid = process::integration::get_integration_manager()
+        .fork_process(parent_pid)
+        .map_err(|_| LinuxError::EAGAIN)?;
+    let linux_child_pid: Pid = child_pid.try_into().map_err(|_| LinuxError::EAGAIN)?;
+
+    // Apply clone-specific flags on the child PCB.
+    let pm = process::get_process_manager();
+
+    // CLONE_SETTLS: set the child's FS_BASE for thread-local storage.
+    if flags & clone_flags::CLONE_SETTLS != 0 {
+        let _ = pm.set_fs_base(child_pid, tls);
     }
 
-    process_ops::fork()
+    // CLONE_PARENT_SETTID: write child's TID into parent's tidptr.
+    if flags & clone_flags::CLONE_PARENT_SETTID != 0 && !parent_tid.is_null() {
+        copy_pid_to_user(parent_tid, linux_child_pid)?;
+    }
+
+    // CLONE_CHILD_CLEARTID: store the tidptr so do_exit can futex-wake it.
+    if flags & clone_flags::CLONE_CHILD_CLEARTID != 0 && !child_tid.is_null() {
+        let _ = pm.set_clear_child_tid(child_pid, child_tid as u64);
+    }
+
+    // CLONE_CHILD_SETTID: write child's TID into child's tidptr.
+    if flags & clone_flags::CLONE_CHILD_SETTID != 0 && !child_tid.is_null() {
+        copy_pid_to_user(child_tid, linux_child_pid)?;
+    }
+
+    // Override the child's stack pointer if a new stack was provided.
+    if stack as u64 != 0 {
+        let _ = pm.set_child_stack(child_pid, stack as u64);
+    }
+
+    Ok(linux_child_pid)
 }
 
 /// set_tid_address - set pointer to thread ID
@@ -468,8 +523,8 @@ pub fn futex(
                     let mut remaining = Vec::with_capacity(queue.len());
                     for waiter in queue.drain(..) {
                         if woke < nr_wake as i32 && (waiter.bitset & bitset) != 0 {
-                            let _ = process::get_process_manager()
-                                .unblock_process(waiter.pid as u32);
+                            let _ =
+                                process::get_process_manager().unblock_process(waiter.pid as u32);
                             woke += 1;
                         } else {
                             remaining.push(waiter);
@@ -583,14 +638,17 @@ pub fn futex(
                 // Block under the queue lock to close the lost-wakeup race.
                 let _ = process::get_process_manager().block_process(pid);
             }
+            crate::scheduler::yield_cpu();
 
             // When woken, we've been requeued to uaddr2 and it's our turn.
             // Try to acquire the PI futex at uaddr2 by atomically setting it
             // to our TID (if it's 0).
             let pi_futex = unsafe { &*(_uaddr2 as *const AtomicI32) };
             let tid = pid as i32;
-            let _ = pi_futex.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst);
-            Ok(0)
+            pi_futex
+                .compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst)
+                .map(|_| 0)
+                .map_err(|_| LinuxError::EAGAIN)
         }
         futex_op::FUTEX_CMP_REQUEUE_PI => {
             // FUTEX_CMP_REQUEUE_PI: Wake up to `val` waiters on uaddr and
@@ -613,31 +671,36 @@ pub fn futex(
             let key = uaddr as usize;
             let target_key = _uaddr2 as usize;
             let nr_wake = val.max(0) as usize;
+            let nr_requeue = (_timeout as usize).max(0);
             let mut woke = 0i32;
             let mut requeued = 0i32;
 
             let mut waiters = FUTEX_WAITERS.write();
 
             // Wake up to nr_wake waiters that have pi_requeue_target == target_key.
-            // Move them to the target PI futex wait queue and unblock them so
-            // they can try to acquire the PI futex.
+            // Requeue up to nr_requeue more onto the target PI futex wait queue.
+            let mut requeued_waiters: Vec<FutexWaiter> = Vec::new();
             if let Some(queue) = waiters.get_mut(&key) {
                 let mut remaining: Vec<FutexWaiter> = Vec::with_capacity(queue.len());
                 for waiter in queue.drain(..) {
-                    if woke < nr_wake as i32 && waiter.pi_requeue_target == target_key {
-                        // Requeue this waiter to the PI futex queue.
-                        waiters
-                            .entry(target_key)
-                            .or_default()
-                            .push(FutexWaiter {
+                    if waiter.pi_requeue_target == target_key {
+                        if woke < nr_wake as i32 {
+                            requeued_waiters.push(FutexWaiter {
                                 pid: waiter.pid,
                                 bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
                                 pi_requeue_target: 0,
                             });
-                        // Unblock so the waiter can try to acquire the PI futex.
-                        let _ = process::get_process_manager().unblock_process(waiter.pid as u32);
-                        requeued += 1;
-                        woke += 1;
+                            woke += 1;
+                        } else if (requeued as usize) < nr_requeue {
+                            requeued_waiters.push(FutexWaiter {
+                                pid: waiter.pid,
+                                bitset: futex_op::FUTEX_BITSET_MATCH_ANY,
+                                pi_requeue_target: 0,
+                            });
+                            requeued += 1;
+                        } else {
+                            remaining.push(waiter);
+                        }
                     } else {
                         remaining.push(waiter);
                     }
@@ -647,6 +710,11 @@ pub fn futex(
                 } else {
                     *queue = remaining;
                 }
+            }
+            for waiter in requeued_waiters {
+                let pid = waiter.pid;
+                waiters.entry(target_key).or_default().push(waiter);
+                let _ = process::get_process_manager().unblock_process(pid as u32);
             }
 
             Ok(woke + requeued)
@@ -702,10 +770,8 @@ pub fn get_robust_list(
         .ok_or(LinuxError::ESRCH)?;
 
     let head_addr = ROBUST_LISTS.read().get(&target).copied().unwrap_or(0);
-    unsafe {
-        *head_ptr = head_addr as *mut RobustListHead;
-        *len_ptr = core::mem::size_of::<RobustListHead>();
-    }
+    copy_u64_to_user_addr(head_ptr as u64, head_addr as u64)?;
+    copy_usize_to_user(len_ptr, core::mem::size_of::<RobustListHead>())?;
     Ok(0)
 }
 
@@ -749,45 +815,55 @@ pub fn get_thread_area(u_info: *mut u8) -> LinuxResult<i32> {
 pub fn arch_prctl(code: i32, addr: u64) -> LinuxResult<i32> {
     inc_ops();
 
-    const ARCH_SET_GS: i32 = 0x1001;
-    const ARCH_SET_FS: i32 = 0x1002;
-    const ARCH_GET_FS: i32 = 0x1003;
-    const ARCH_GET_GS: i32 = 0x1004;
+    use crate::arch::x86::prctl;
 
     let tid = current_tid();
 
     match code {
-        ARCH_SET_FS => {
+        prctl::ARCH_SET_FS => {
             TLS_FS_BASE.write().insert(tid, addr);
+            // Update the PCB's fs_base so context switches save/restore it.
+            let pm = crate::process::get_process_manager();
+            let pid = pm.current_process();
+            let _ = pm.set_fs_base(pid, addr);
             unsafe {
                 wrmsr(MSR_FS_BASE, addr);
             }
             Ok(0)
         }
-        ARCH_GET_FS => {
+        prctl::ARCH_GET_FS => {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
             let base = TLS_FS_BASE.read().get(&tid).copied().unwrap_or(0);
-            unsafe {
-                *(addr as *mut u64) = base;
-            }
+            copy_u64_to_user_addr(addr, base)?;
             Ok(0)
         }
-        ARCH_SET_GS => {
+        prctl::ARCH_SET_GS => {
             TLS_GS_BASE.write().insert(tid, addr);
             unsafe {
                 wrmsr(MSR_GS_BASE, addr);
             }
             Ok(0)
         }
-        ARCH_GET_GS => {
+        prctl::ARCH_GET_GS => {
             if addr == 0 {
                 return Err(LinuxError::EFAULT);
             }
             let base = TLS_GS_BASE.read().get(&tid).copied().unwrap_or(0);
-            unsafe {
-                *(addr as *mut u64) = base;
+            copy_u64_to_user_addr(addr, base)?;
+            Ok(0)
+        }
+        prctl::ARCH_GET_CPUID => {
+            if addr == 0 {
+                return Err(LinuxError::EFAULT);
+            }
+            copy_u64_to_user_addr(addr, 1)?;
+            Ok(0)
+        }
+        prctl::ARCH_SET_CPUID => {
+            if addr != 0 && addr != 1 {
+                return Err(LinuxError::EINVAL);
             }
             Ok(0)
         }
@@ -814,7 +890,7 @@ pub fn sched_setaffinity(pid: Pid, cpusetsize: usize, mask: *const CpuSet) -> Li
         return Err(LinuxError::EINVAL);
     }
 
-    let cpu_mask = unsafe { *mask };
+    let cpu_mask = copy_u64_from_user_addr(mask as u64)?;
     if cpu_mask == 0 {
         return Err(LinuxError::EINVAL);
     }
@@ -857,9 +933,7 @@ pub fn sched_getaffinity(_pid: Pid, cpusetsize: usize, mask: *mut CpuSet) -> Lin
         .map(|pcb| pcb.sched_info.cpu_affinity)
         .ok_or(LinuxError::ESRCH)?;
 
-    unsafe {
-        *mask = cpu_affinity;
-    }
+    copy_u64_to_user_addr(mask as u64, cpu_affinity)?;
     Ok(0)
 }
 
@@ -884,23 +958,46 @@ pub fn exit_group(status: i32) -> ! {
 // ============================================================================
 
 /// membarrier - issue memory barriers on set of threads
-pub fn membarrier(cmd: i32, _flags: i32) -> LinuxResult<i32> {
+pub fn membarrier(cmd: i32, flags: i32) -> LinuxResult<i32> {
     inc_ops();
 
     const MEMBARRIER_CMD_QUERY: i32 = 0;
-    const MEMBARRIER_CMD_GLOBAL: i32 = 1;
-    const MEMBARRIER_CMD_PRIVATE_EXPEDITED: i32 = 2;
+    const MEMBARRIER_CMD_GLOBAL: i32 = 1 << 0;
+    const MEMBARRIER_CMD_GLOBAL_EXPEDITED: i32 = 1 << 1;
+    const MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED: i32 = 1 << 2;
+    const MEMBARRIER_CMD_PRIVATE_EXPEDITED: i32 = 1 << 3;
+    const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED: i32 = 1 << 4;
+    const MEMBARRIER_CMD_GET_REGISTRATIONS: i32 = 1 << 9;
+    const MEMBARRIER_SUPPORTED: i32 = MEMBARRIER_CMD_GLOBAL
+        | MEMBARRIER_CMD_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_GET_REGISTRATIONS;
 
     match cmd {
-        MEMBARRIER_CMD_QUERY => Ok(MEMBARRIER_CMD_GLOBAL | MEMBARRIER_CMD_PRIVATE_EXPEDITED),
-        MEMBARRIER_CMD_GLOBAL => {
+        MEMBARRIER_CMD_QUERY => Ok(MEMBARRIER_SUPPORTED),
+        MEMBARRIER_CMD_GET_REGISTRATIONS => {
+            if flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            Ok(MEMBARRIER_REGISTRATIONS.load(Ordering::SeqCst))
+        }
+        MEMBARRIER_CMD_GLOBAL
+        | MEMBARRIER_CMD_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
+            if flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
             core::sync::atomic::fence(Ordering::SeqCst);
             core::sync::atomic::compiler_fence(Ordering::SeqCst);
             Ok(0)
         }
-        MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
-            core::sync::atomic::fence(Ordering::SeqCst);
-            core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED => {
+            if flags != 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            MEMBARRIER_REGISTRATIONS.fetch_or(cmd, Ordering::SeqCst);
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),

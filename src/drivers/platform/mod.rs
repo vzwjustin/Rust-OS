@@ -5,6 +5,14 @@
 //! `drivers/base/platform.c` with driver matching, probe/remove lifecycle,
 //! and resource (IRQ, memory) management.
 
+// Trait-based platform driver API (mirrors `include/linux/platform_device.h`).
+pub mod traits;
+pub use traits::{
+    platform_device_register, platform_device_unregister, platform_driver_register,
+    platform_driver_unregister, platform_get_irq, platform_get_resource, PlatformDeviceId,
+    PlatformDriver, PlatformResourceFlags, TraitPlatformDevice, TraitPlatformResource,
+};
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -42,7 +50,7 @@ pub struct PlatformDriverOps {
     pub match_device: fn(name: &str) -> bool,
 }
 
-struct PlatformDriver {
+struct PlatformDriverEntry {
     id: u32,
     name: String,
     ops: PlatformDriverOps,
@@ -61,7 +69,7 @@ struct PlatformDevice {
 // ── Registry ────────────────────────────────────────────────────────────
 
 static PLATFORM_DEVICES: RwLock<BTreeMap<u32, PlatformDevice>> = RwLock::new(BTreeMap::new());
-static PLATFORM_DRIVERS: RwLock<BTreeMap<u32, PlatformDriver>> = RwLock::new(BTreeMap::new());
+static PLATFORM_DRIVERS: RwLock<BTreeMap<u32, PlatformDriverEntry>> = RwLock::new(BTreeMap::new());
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_DRIVER_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -93,7 +101,7 @@ pub fn register_driver(name: &str, ops: PlatformDriverOps) -> Result<u32, &'stat
     let id = NEXT_DRIVER_ID.fetch_add(1, Ordering::SeqCst);
     PLATFORM_DRIVERS.write().insert(
         id,
-        PlatformDriver {
+        PlatformDriverEntry {
             id,
             name: String::from(name),
             ops,

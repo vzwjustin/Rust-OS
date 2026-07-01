@@ -46,6 +46,10 @@ pub struct MmapFlags {
     pub private: bool,
     /// Anonymous mapping (MAP_ANONYMOUS)
     pub anonymous: bool,
+    /// Only give out 32-bit addresses (MAP_32BIT, x86_64)
+    pub map_32bit: bool,
+    /// Only map above 4GB (MAP_ABOVE4G, x86_64)
+    pub above_4g: bool,
 }
 
 impl MmapFlags {
@@ -56,6 +60,8 @@ impl MmapFlags {
             shared: false,
             private: true,
             anonymous: true,
+            map_32bit: false,
+            above_4g: false,
         }
     }
 
@@ -66,6 +72,8 @@ impl MmapFlags {
             shared: true,
             private: false,
             anonymous: false,
+            map_32bit: false,
+            above_4g: false,
         }
     }
 
@@ -76,6 +84,8 @@ impl MmapFlags {
             shared: false,
             private: true,
             anonymous: true,
+            map_32bit: false,
+            above_4g: false,
         }
     }
 }

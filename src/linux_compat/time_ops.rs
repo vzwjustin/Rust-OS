@@ -197,9 +197,17 @@ pub fn clock_nanosleep(
     }
 
     const TIMER_ABSTIME: i32 = 1;
+    if flags & !TIMER_ABSTIME != 0 {
+        return Err(LinuxError::EINVAL);
+    }
 
     match clockid {
         clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
+            let req_ts = unsafe { *req };
+            if req_ts.tv_sec < 0 || req_ts.tv_nsec < 0 || req_ts.tv_nsec >= 1_000_000_000 {
+                return Err(LinuxError::EINVAL);
+            }
+
             if flags & TIMER_ABSTIME != 0 {
                 // Absolute time sleep: compute remaining time from now
                 let now_ns: i64 = if clockid == clock::CLOCK_REALTIME {
@@ -344,10 +352,24 @@ pub fn timer_settime(
         return Err(LinuxError::EFAULT);
     }
 
+    const TIMER_ABSTIME: i32 = 1;
+    if flags & !TIMER_ABSTIME != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let mut timers = POSIX_TIMERS.lock();
     let timer = timers.get_mut(&timerid).ok_or(LinuxError::EINVAL)?;
 
     let spec = unsafe { *(new_value as *const ITimerSpec) };
+    if spec.it_interval_sec < 0
+        || spec.it_value_sec < 0
+        || spec.it_interval_nsec < 0
+        || spec.it_value_nsec < 0
+        || spec.it_interval_nsec >= 1_000_000_000
+        || spec.it_value_nsec >= 1_000_000_000
+    {
+        return Err(LinuxError::EINVAL);
+    }
 
     // Store previous timer settings in old_value.
     if !old_value.is_null() {

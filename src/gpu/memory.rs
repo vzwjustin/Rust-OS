@@ -235,6 +235,8 @@ pub struct GPUMemoryManager {
     /// Size in bytes of the GPU-coherent memory window starting at
     /// `gpu_memory_base`. 0 means the window is unconfigured.
     pub gpu_memory_size: u64,
+    /// Host-side GPU allocations tracked for cleanup.
+    pub host_allocations: BTreeMap<u64, GPUHostAllocation>,
 }
 
 impl GPUMemoryManager {
@@ -284,6 +286,7 @@ impl GPUMemoryManager {
             compaction_enabled: true,
             gpu_memory_base: 0,
             gpu_memory_size: 0,
+            host_allocations: BTreeMap::new(),
         }
     }
 
@@ -464,7 +467,7 @@ impl GPUMemoryManager {
         };
 
         let allocation_id = self.allocate(size, 4096, flags)?; // 4KB alignment for DMA
-        let allocation = self.allocations.get(&allocation_id).unwrap();
+        let gpu_address = self.allocations.get(&allocation_id).unwrap().gpu_address;
 
         // Allocate host memory
         let cpu_address = self.allocate_host_memory(size)?;
@@ -475,7 +478,7 @@ impl GPUMemoryManager {
         let dma_buffer = DMABuffer {
             id: dma_id,
             cpu_address,
-            gpu_address: allocation.gpu_address,
+            gpu_address,
             size,
             direction,
             coherent: true,
@@ -854,7 +857,7 @@ impl GPUMemoryManager {
         page_flags
     }
 
-    fn allocate_host_memory(&self, size: usize) -> Result<NonNull<u8>, &'static str> {
+    fn allocate_host_memory(&mut self, size: usize) -> Result<NonNull<u8>, &'static str> {
         // Production implementation using actual memory allocation with GPU coherency
 
         // Calculate number of pages needed (align to page boundary)
@@ -1400,15 +1403,9 @@ impl GPUMemoryManager {
     }
 
     /// Track allocation for cleanup
-    fn track_allocation(&self, alloc_info: GPUHostAllocation) -> Result<(), &'static str> {
-        // In production, this would store allocation info in a data structure
-        // For now, just log the allocation
-        crate::println!(
-            "GPU {} allocated {} bytes at virtual address 0x{:016X}",
-            self.gpu_id,
-            alloc_info.size,
-            alloc_info.virt_addr
-        );
+    fn track_allocation(&mut self, alloc_info: GPUHostAllocation) -> Result<(), &'static str> {
+        let virt_addr = alloc_info.virt_addr;
+        self.host_allocations.insert(virt_addr, alloc_info);
         Ok(())
     }
 
@@ -1449,7 +1446,7 @@ impl GPUMemoryManager {
         crate::memory::unmap_page(virt_addr as usize)
     }
 
-    fn free_host_memory(&self, ptr: NonNull<u8>, size: usize) -> Result<(), &'static str> {
+    fn free_host_memory(&mut self, ptr: NonNull<u8>, size: usize) -> Result<(), &'static str> {
         // Production implementation for freeing GPU host memory
         let virt_addr = ptr.as_ptr() as u64;
 
@@ -1464,9 +1461,12 @@ impl GPUMemoryManager {
             }
         }
 
-        // In a full implementation, we would look up the allocation in our tracker
-        // and free the corresponding physical frames. For now, we rely on the
-        // memory manager to handle frame deallocation during page unmapping.
+        // Remove from the host allocations tracker and free physical frames.
+        if let Some(alloc) = self.host_allocations.remove(&virt_addr) {
+            // Physical frames are freed by the memory manager during unmap_page.
+            // We just drop the tracked allocation info here.
+            drop(alloc);
+        }
 
         self.stats
             .total_deallocations
@@ -1475,17 +1475,32 @@ impl GPUMemoryManager {
     }
 
     fn perform_memory_transfer(&self, src: u64, dst: u64, size: usize) -> Result<(), &'static str> {
-        // Production memory transfer - would use DMA engine or memcpy
         if src == 0 || dst == 0 || size == 0 {
             return Err("Invalid memory transfer parameters");
         }
 
-        // In production, would use:
-        // - DMA engine for large transfers
-        // - Memory barriers for cache coherency
-        // - Platform-specific GPU memory APIs
+        // Perform the memory copy. For GPU-local memory that has been mapped
+        // into the host address space, we use a direct memcpy. For unmapped
+        // GPU memory, the transfer is a no-op (the GPU page table is updated
+        // separately by move_allocation).
+        //
+        // In a hardware GPU driver, this would use the DMA engine or
+        // platform-specific GPU memory copy APIs.
+        //
+        // SAFETY: Only perform the direct copy if both addresses fall within
+        // the host-mapped region (below the GPU memory base). Unmapped GPU
+        // addresses would cause a page fault if dereferenced directly.
+        const GPU_MEM_BASE: u64 = 0x1_0000_0000; // GPU memory space starts at 4GB
+        if src < GPU_MEM_BASE && dst < GPU_MEM_BASE {
+            let src_ptr = src as *const u8;
+            let dst_ptr = dst as *mut u8;
+            unsafe {
+                core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size);
+            }
+        }
+        // For unmapped GPU-local memory, the copy is a no-op — the page
+        // table entries are updated separately by the caller.
 
-        // For now, validate the operation completed
         self.stats
             .total_transfers
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -1543,13 +1558,27 @@ impl GPUMemoryManager {
         allocation_id: u32,
         new_address: u64,
     ) -> Result<(), &'static str> {
-        // This would perform the actual memory move in a real implementation
+        let (old_address, size) = {
+            let allocation = self
+                .allocations
+                .get(&allocation_id)
+                .ok_or("Invalid allocation ID")?;
+            (allocation.gpu_address, allocation.size)
+        };
+
+        // Copy memory contents from old address to new address
+        self.perform_memory_transfer(old_address, new_address, size)?;
+
+        // Update page table entries for the new location
+        self.clear_page_table(old_address, size);
+        let flags = MemoryFlags::DEFAULT;
+        self.update_page_table(new_address, size, &flags)?;
+
+        // Update the allocation record
         if let Some(allocation) = self.allocations.get_mut(&allocation_id) {
             allocation.gpu_address = new_address;
-            Ok(())
-        } else {
-            Err("Invalid allocation ID")
         }
+        Ok(())
     }
 
     fn rebuild_free_blocks(&mut self) {

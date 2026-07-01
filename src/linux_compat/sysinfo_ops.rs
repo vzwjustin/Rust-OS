@@ -228,9 +228,15 @@ pub fn sysinfo(info: *mut SysInfo) -> LinuxResult<i32> {
         let mut si = SysInfo::zero();
 
         si.uptime = crate::time::uptime_ms() as i64 / 1000;
-        si.loads[0] = 0;
-        si.loads[1] = 0;
-        si.loads[2] = 0;
+
+        // Load averages: rough approximation from current run queue length.
+        // Linux stores these as fixed-point (tasks × 2^16). We use the
+        // current nr_running as an instantaneous sample.
+        let nr_running = crate::scheduler::load_balance::cpu_nr_running(0) as u64;
+        let load_fixed = (nr_running << 16) as u64;
+        si.loads[0] = load_fixed as u64;
+        si.loads[1] = load_fixed as u64;
+        si.loads[2] = load_fixed as u64;
 
         // Memory info from the basic memory subsystem
         if let Ok(stats) = crate::memory_basic::get_memory_stats() {
@@ -464,8 +470,13 @@ fn sysctl_lookup(name: &[i32]) -> LinuxResult<SysctlValue> {
             let host = core::str::from_utf8(&hn[..len]).unwrap_or("localhost");
             Ok(SysctlValue::OwnedString(alloc::string::String::from(host)))
         }
-        [2, 6] => Ok(SysctlValue::Int(60)),
-        _ => Err(LinuxError::ENOSYS),
+        [2, 6] => Ok(SysctlValue::Int(60)), // vm.dirty_expire_centisecs
+        [2, 11] => Ok(SysctlValue::Int(10)), // vm.dirty_background_ratio
+        [2, 17] => Ok(SysctlValue::Int(0)), // vm.nr_hugepages
+        [1, 65] => Ok(SysctlValue::Int(128)), // net.core.somaxconn
+        [4, 2] => Ok(SysctlValue::Int(4)),  // kernel.printk log level
+        [1, 7] => Ok(SysctlValue::Int(0)),  // net.ipv4.ip_forward
+        _ => Err(LinuxError::ENOENT),       // unknown key, not ENOSYS
     }
 }
 

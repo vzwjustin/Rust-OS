@@ -122,7 +122,8 @@ pub fn build_long_packet(
     // Length covers the packet number plus the AEAD ciphertext (payload + tag).
     let length = (pn_len + payload.len() + 16) as u64;
     let mut vbuf = [0u8; 8];
-    let n = super::common::encode_varint(length, &mut vbuf).ok_or(CryptoError::AuthenticationFailed)?;
+    let n =
+        super::common::encode_varint(length, &mut vbuf).ok_or(CryptoError::AuthenticationFailed)?;
     pkt.extend_from_slice(&vbuf[..n]);
 
     let pn_offset = pkt.len();
@@ -157,7 +158,14 @@ pub fn open_short_packet(
     dcid_len: usize,
     largest_received: Option<u64>,
 ) -> Result<(u64, Vec<u8>), CryptoError> {
-    unprotect(keys, datagram, 1 + dcid_len, datagram.len(), false, largest_received)
+    unprotect(
+        keys,
+        datagram,
+        1 + dcid_len,
+        datagram.len(),
+        false,
+        largest_received,
+    )
 }
 
 /// Open a protected long-header (Initial / Handshake / 0-RTT) packet, returning
@@ -200,7 +208,14 @@ pub fn open_long_packet(
         return Err(CryptoError::AuthenticationFailed);
     }
 
-    let (pn, payload) = unprotect(keys, datagram, pn_offset, packet_end, true, largest_received)?;
+    let (pn, payload) = unprotect(
+        keys,
+        datagram,
+        pn_offset,
+        packet_end,
+        true,
+        largest_received,
+    )?;
     Ok((typ, pn, payload))
 }
 
@@ -234,7 +249,11 @@ fn unprotect(
     for i in 0..pn_len {
         truncated = (truncated << 8) | (datagram[pn_offset + i] ^ mask[1 + i]) as u64;
     }
-    let pn = pn_decode(largest_received.unwrap_or(0), truncated, (pn_len * 8) as u32);
+    let pn = pn_decode(
+        largest_received.unwrap_or(0),
+        truncated,
+        (pn_len * 8) as u32,
+    );
 
     // Reconstruct the unprotected header (the AAD).
     let mut header = datagram[..pn_offset + pn_len].to_vec();
@@ -316,7 +335,13 @@ pub fn apply_frames(conn: &mut Connection, payload: &[u8], now: u64) -> FrameOut
                     now,
                     &acked,
                 );
-                let _ = super::recovery::detect_lost(&mut conn.pn_app, &mut conn.cong, now, &conn.rtt);
+                let lost =
+                    super::recovery::detect_lost(&mut conn.pn_app, &mut conn.cong, now, &conn.rtt);
+                for pkt in lost {
+                    if pkt.ack_eliciting && !pkt.frames.is_empty() {
+                        conn.retransmit_queue.push((pkt.level, pkt.frames));
+                    }
+                }
             }
             Frame::Ping => outcome.ack_eliciting = true,
             Frame::Crypto { offset, data } => {
@@ -396,8 +421,7 @@ mod tests {
 
         let pkt = build_short_packet(&keys, &dcid, 7, Some(0), payload).unwrap();
         // First byte is header-protected, so its low bits are masked on the wire.
-        let (pn, recovered) =
-            open_short_packet(&keys, &pkt, dcid.len(), Some(0)).unwrap();
+        let (pn, recovered) = open_short_packet(&keys, &pkt, dcid.len(), Some(0)).unwrap();
         assert_eq!(pn, 7);
         assert_eq!(recovered, payload);
     }
@@ -435,7 +459,8 @@ mod tests {
     fn tampered_packet_fails_auth() {
         let (keys, _server) = initial_keys(&[9, 9, 9, 9]);
         let dcid = [0u8; 4];
-        let mut pkt = build_short_packet(&keys, &dcid, 1, Some(0), b"hello-quic-payload!!").unwrap();
+        let mut pkt =
+            build_short_packet(&keys, &dcid, 1, Some(0), b"hello-quic-payload!!").unwrap();
         let n = pkt.len();
         pkt[n - 1] ^= 0x01; // flip a tag bit
         assert!(open_short_packet(&keys, &pkt, dcid.len(), Some(0)).is_err());

@@ -1726,7 +1726,7 @@ impl PageTableManager {
         }
 
         // Unmap old page
-        let _old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
+        let old_frame = self.unmap_page(page).ok_or("Failed to unmap page")?;
 
         // Map new page with write permissions
         let flags =
@@ -1734,8 +1734,13 @@ impl PageTableManager {
         self.map_page(page, new_frame, flags, frame_allocator)
             .map_err(|_| "Failed to map new page")?;
 
-        // Note: In a real implementation, we would need to manage reference counting
-        // for the old frame and only deallocate it when no other processes reference it
+        // The old frame is still referenced by other page tables (COW sharing).
+        // Frame deallocation is handled by the MemoryManager's refcount system:
+        // when the last reference is removed, decrement_frame_refcount returns 0
+        // and the frame is returned to the allocator. Here we only unmap our
+        // reference; the caller (MemoryManager) is responsible for calling
+        // decrement_frame_refcount(old_frame.start_address()).
+        let _ = old_frame;
 
         Ok(())
     }
@@ -2111,59 +2116,73 @@ impl MemoryManager {
     }
 
     /// Map a virtual memory region to physical frames
+    ///
+    /// Runs with interrupts disabled: this holds `page_table_manager` and
+    /// `frame_allocator` across the mapping loop, and the timer ISR can run
+    /// softirqs/workqueues (e.g. deferred driver probing) that take the same
+    /// locks. Without this, a timer tick landing mid-loop self-deadlocks the
+    /// CPU on the held spinlock (observed as exec of a new process hanging
+    /// forever with no fault, e.g. during userspace PID 1 ELF loading).
     pub fn map_region(&self, region: &mut VirtualMemoryRegion) -> Result<(), MemoryError> {
-        let mut page_table_manager = self.page_table_manager.lock();
-        let mut frame_allocator = self.frame_allocator.lock();
+        crate::interrupts::without_interrupts(|| {
+            let mut page_table_manager = self.page_table_manager.lock();
+            let mut frame_allocator = self.frame_allocator.lock();
 
-        let flags = region.protection.to_page_table_flags();
-        let mut first_frame = None;
+            let flags = region.protection.to_page_table_flags();
+            let mut first_frame = None;
 
-        for page in region.pages() {
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or(MemoryError::OutOfMemory)?;
+            for page in region.pages() {
+                let frame = frame_allocator
+                    .allocate_frame()
+                    .ok_or(MemoryError::OutOfMemory)?;
 
-            if first_frame.is_none() {
-                first_frame = Some(frame.start_address());
-            }
-
-            // Initialize page content if needed
-            if matches!(
-                region.region_type,
-                MemoryRegionType::UserStack | MemoryRegionType::UserHeap
-            ) {
-                unsafe {
-                    let page_ptr = (self.physical_memory_offset + frame.start_address().as_u64())
-                        .as_mut_ptr::<u8>();
-                    core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
+                if first_frame.is_none() {
+                    first_frame = Some(frame.start_address());
                 }
+
+                // Initialize page content if needed
+                if matches!(
+                    region.region_type,
+                    MemoryRegionType::UserStack | MemoryRegionType::UserHeap
+                ) {
+                    unsafe {
+                        let page_ptr = (self.physical_memory_offset
+                            + frame.start_address().as_u64())
+                        .as_mut_ptr::<u8>();
+                        core::ptr::write_bytes(page_ptr, 0, PAGE_SIZE);
+                    }
+                }
+
+                page_table_manager
+                    .map_page(page, frame, flags, &mut *frame_allocator)
+                    .map_err(|_| MemoryError::MappingFailed)?;
             }
 
-            page_table_manager
-                .map_page(page, frame, flags, &mut *frame_allocator)
-                .map_err(|_| MemoryError::MappingFailed)?;
-        }
-
-        region.mapped = true;
-        region.physical_start = first_frame;
-        Ok(())
+            region.mapped = true;
+            region.physical_start = first_frame;
+            Ok(())
+        })
     }
 
     /// Unmap a virtual memory region
+    ///
+    /// See [`Self::map_region`] for why this must run with interrupts disabled.
     pub fn unmap_region(&self, region: &mut VirtualMemoryRegion) -> Result<(), MemoryError> {
-        let mut page_table_manager = self.page_table_manager.lock();
-        let mut frame_allocator = self.frame_allocator.lock();
+        crate::interrupts::without_interrupts(|| {
+            let mut page_table_manager = self.page_table_manager.lock();
+            let mut frame_allocator = self.frame_allocator.lock();
 
-        for page in region.pages() {
-            if let Some(frame) = page_table_manager.unmap_page(page) {
-                let zone = MemoryZone::from_address(frame.start_address());
-                frame_allocator.deallocate_frame(frame, zone);
+            for page in region.pages() {
+                if let Some(frame) = page_table_manager.unmap_page(page) {
+                    let zone = MemoryZone::from_address(frame.start_address());
+                    frame_allocator.deallocate_frame(frame, zone);
+                }
             }
-        }
 
-        region.mapped = false;
-        region.physical_start = None;
-        Ok(())
+            region.mapped = false;
+            region.physical_start = None;
+            Ok(())
+        })
     }
 
     /// Add a virtual memory region to management
@@ -3517,28 +3536,28 @@ pub fn try_fast_page_fault_handler(addr: VirtAddr) -> bool {
             // Handle common fast-path cases
             match region.region_type {
                 MemoryRegionType::UserStack => {
-                    // Stack growth: if within reasonable bounds, allow it
+                    // Stack growth: if within reasonable bounds, handle it via demand paging
                     let stack_limit = region.start.as_u64().saturating_sub(1024 * 1024); // 1MB max stack growth
                     if addr.as_u64() >= stack_limit {
-                        // This would be handled by the full page fault handler
-                        // For now, indicate this needs full handling
-                        return false;
+                        if memory_manager.handle_demand_paging(addr, &region).is_ok() {
+                            return true;
+                        }
                     }
                 }
                 MemoryRegionType::UserHeap => {
-                    // Heap expansion: check if within reasonable bounds
+                    // Heap expansion: if within reasonable bounds, handle it via demand paging
                     if addr.as_u64() < region.end().as_u64() + (16 * 1024 * 1024) {
-                        // 16MB max heap growth
-                        // This could potentially be handled quickly
-                        // For now, delegate to full handler
-                        return false;
+                        if memory_manager.handle_demand_paging(addr, &region).is_ok() {
+                            return true;
+                        }
                     }
                 }
                 MemoryRegionType::UserData | MemoryRegionType::UserCode => {
                     // For code/data segments, check if this is a copy-on-write situation
                     if region.protection.copy_on_write {
-                        // COW requires full handling
-                        return false;
+                        if memory_manager.handle_copy_on_write(addr, &region).is_ok() {
+                            return true;
+                        }
                     }
                 }
                 _ => {

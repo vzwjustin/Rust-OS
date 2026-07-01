@@ -167,10 +167,23 @@ static NEXT_CARD_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Register an MMC host controller (Linux `mmc_alloc_host`).
 pub fn register_host(name: &str, ops: &'static MmcHostOps) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("MMC host name is empty");
+    }
+
     let max_clk = (ops.get_max_clk)();
+    if max_clk == 0 {
+        return Err("MMC host max clock is zero");
+    }
+
+    let mut hosts = MMC_HOSTS.write();
+    if hosts.values().any(|host| host.name == name) {
+        return Err("MMC host already registered");
+    }
+
     let card_present = (ops.get_cd)();
     let id = NEXT_HOST_ID.fetch_add(1, Ordering::SeqCst);
-    MMC_HOSTS.write().insert(
+    hosts.insert(
         id,
         MmcHost {
             id,
@@ -193,6 +206,13 @@ pub fn detect_card(host_id: u32) -> Result<u32, &'static str> {
         }
         (host.ops, host.max_clk)
     };
+    if MMC_CARDS
+        .read()
+        .values()
+        .any(|card| card.host_id == host_id)
+    {
+        return Err("MMC card already detected on host");
+    }
 
     // Send CMD0 (reset), CMD8 (interface condition), ACMD41 (init).
     let _ = (ops.request)(0, 0, None)?;
@@ -220,6 +240,7 @@ pub fn detect_card(host_id: u32) -> Result<u32, &'static str> {
         read_only: (ops.get_ro)(),
     };
 
+    (ops.set_ios)(card.clock_hz, card.bus_width)?;
     MMC_CARDS.write().insert(card_id, card);
 
     // Update host card_present.
@@ -233,11 +254,24 @@ pub fn detect_card(host_id: u32) -> Result<u32, &'static str> {
 
 /// Read a block from an MMC/SD card (Linux `mmc_read_block`).
 pub fn read_block(card_id: u32, block: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    if buf.len() < SW_SD_BLOCK {
+        return Err("SD read: buffer too small");
+    }
+
     let (host_id, _capacity) = {
         let cards = MMC_CARDS.read();
         let card = cards.get(&card_id).ok_or("MMC card not found")?;
-        if block as u64 * 512 >= card.capacity_bytes {
+        let offset = (block as u64)
+            .checked_mul(SW_SD_BLOCK as u64)
+            .ok_or("SD read: block offset overflow")?;
+        let end = offset
+            .checked_add(SW_SD_BLOCK as u64)
+            .ok_or("SD read: block end overflow")?;
+        if end > card.capacity_bytes {
             return Err("SD read: block beyond capacity");
+        }
+        if card.state == MmcCardState::Dis {
+            return Err("SD read: card disconnected");
         }
         (card.host_id, card.capacity_bytes)
     };
@@ -254,11 +288,27 @@ pub fn read_block(card_id: u32, block: u32, buf: &mut [u8]) -> Result<usize, &'s
 
 /// Write a block to an MMC/SD card (Linux `mmc_write_block`).
 pub fn write_block(card_id: u32, block: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    if buf.len() < SW_SD_BLOCK {
+        return Err("SD write: buffer too small");
+    }
+
     let (host_id, read_only) = {
         let cards = MMC_CARDS.read();
         let card = cards.get(&card_id).ok_or("MMC card not found")?;
         if card.read_only {
             return Err("SD card is read-only");
+        }
+        let offset = (block as u64)
+            .checked_mul(SW_SD_BLOCK as u64)
+            .ok_or("SD write: block offset overflow")?;
+        let end = offset
+            .checked_add(SW_SD_BLOCK as u64)
+            .ok_or("SD write: block end overflow")?;
+        if end > card.capacity_bytes {
+            return Err("SD write: block beyond capacity");
+        }
+        if card.state == MmcCardState::Dis {
+            return Err("SD write: card disconnected");
         }
         (card.host_id, card.read_only)
     };
@@ -293,6 +343,12 @@ pub fn card_count() -> usize {
 
 /// Initialize MMC subsystem with software SD host.
 pub fn init() -> Result<(), &'static str> {
+    if !MMC_HOSTS.read().is_empty() {
+        return Ok(());
+    }
+    let host_id = register_host("software-sd-host", &SW_SD_HOST_OPS)?;
+    let _ = detect_card(host_id)?;
+    crate::serial_println!("mmc: software SD host and card registered");
     crate::serial_println!("mmc: subsystem ready");
     Ok(())
 }

@@ -194,6 +194,7 @@ pub fn init() -> Result<(), &'static str> {
     register_subsystem("dbus", 70, &["linux_integration"]);
     register_subsystem("wayland", 71, &["dbus", "graphics"]);
     register_subsystem("desktop", 72, &["wayland"]);
+    register_subsystem("workqueue", 73, &["softirq"]);
 
     crate::notifier::init();
     update_subsystem_state("notifier", SubsystemState::Ready)?;
@@ -220,10 +221,7 @@ pub fn mark_subsystem_failed(name: &'static str) {
 pub fn mark_boot_ready() {
     let mut systems = SUBSYSTEMS.lock();
     for system in systems.iter_mut() {
-        if matches!(
-            system.state,
-            SubsystemState::Uninitialized | SubsystemState::Initializing
-        ) {
+        if matches!(system.state, SubsystemState::Initializing) {
             system.state = SubsystemState::Ready;
         }
     }

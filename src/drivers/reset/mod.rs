@@ -38,10 +38,10 @@ struct ResetLineState {
 
 // ── Software reset controller ───────────────────────────────────────────
 
-static mut SW_RESET_STATES: Vec<bool> = Vec::new();
+static SW_RESET_STATES: RwLock<Vec<bool>> = RwLock::new(Vec::new());
 
 fn sw_assert(line: u32) -> Result<(), &'static str> {
-    let states = unsafe { &mut SW_RESET_STATES };
+    let mut states = SW_RESET_STATES.write();
     let idx = line as usize;
     if idx >= states.len() {
         return Err("Reset line out of range");
@@ -51,7 +51,7 @@ fn sw_assert(line: u32) -> Result<(), &'static str> {
 }
 
 fn sw_deassert(line: u32) -> Result<(), &'static str> {
-    let states = unsafe { &mut SW_RESET_STATES };
+    let mut states = SW_RESET_STATES.write();
     let idx = line as usize;
     if idx >= states.len() {
         return Err("Reset line out of range");
@@ -61,7 +61,7 @@ fn sw_deassert(line: u32) -> Result<(), &'static str> {
 }
 
 fn sw_status(line: u32) -> Result<bool, &'static str> {
-    let states = unsafe { &SW_RESET_STATES };
+    let states = SW_RESET_STATES.read();
     let idx = line as usize;
     if idx >= states.len() {
         return Err("Reset line out of range");
@@ -107,10 +107,21 @@ static NEXT_CTRL_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Register a reset controller (Linux `reset_controller_register`).
 pub fn register_controller(name: &str, ops: &'static ResetOps) -> Result<u32, &'static str> {
+    if name.is_empty() {
+        return Err("Reset controller name is empty");
+    }
     let nresets = (ops.get_nresets)();
     if nresets == 0 {
         return Err("Reset controller must have at least one line");
     }
+    if RESET_CONTROLLERS
+        .read()
+        .values()
+        .any(|controller| controller.name == name)
+    {
+        return Err("Reset controller already registered");
+    }
+
     let id = NEXT_CTRL_ID.fetch_add(1, Ordering::SeqCst);
     RESET_CONTROLLERS.write().insert(
         id,
@@ -140,6 +151,9 @@ pub fn register_controller(name: &str, ops: &'static ResetOps) -> Result<u32, &'
 
 /// Request a reset control (Linux `reset_control_get`).
 pub fn request_line(ctrl_id: u32, line: u32, consumer: &str) -> Result<(), &'static str> {
+    if consumer.is_empty() {
+        return Err("Reset consumer name is empty");
+    }
     let mut lines = RESET_LINES.write();
     let state = lines
         .get_mut(&(ctrl_id, line))
@@ -226,6 +240,14 @@ pub fn total_lines() -> usize {
 
 /// Initialize reset controller subsystem with software controller.
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("reset: subsystem ready");
+    if !RESET_CONTROLLERS.read().is_empty() {
+        return Ok(());
+    }
+
+    let nresets = (SW_RESET_OPS.get_nresets)();
+    *SW_RESET_STATES.write() = alloc::vec![false; nresets as usize];
+
+    register_controller("software-reset", &SW_RESET_OPS)?;
+    crate::serial_println!("reset: software controller registered ({} lines)", nresets);
     Ok(())
 }

@@ -160,7 +160,13 @@ mod tests {
         pkt.push(0x00); // start of token-length varint (0)
         let hdr = parse_header(&pkt, 0).unwrap();
         match hdr {
-            PacketHeader::Long { typ, version, dcid, scid, body_offset } => {
+            PacketHeader::Long {
+                typ,
+                version,
+                dcid,
+                scid,
+                body_offset,
+            } => {
                 assert_eq!(typ, LongPacketType::Initial);
                 assert_eq!(version, 1);
                 assert_eq!(dcid.as_bytes(), b"aaaa");
@@ -177,7 +183,9 @@ mod tests {
         let pkt = alloc::vec![0x40u8, 0xAB, 0xCD, 0x00];
         let hdr = parse_header(&pkt, 2).unwrap();
         match hdr {
-            PacketHeader::Short { dcid, body_offset, .. } => {
+            PacketHeader::Short {
+                dcid, body_offset, ..
+            } => {
                 assert_eq!(dcid.as_bytes(), &[0xAB, 0xCD]);
                 assert_eq!(body_offset, 3);
             }

@@ -114,18 +114,29 @@ impl VirtualMemoryManager {
             VirtAddr::new(addr as u64)
         } else {
             // Kernel chooses address
-            self.next_mmap_addr
+            let mut base = self.next_mmap_addr;
+            // MAP_32BIT: constrain to low 32-bit address space
+            if flags.map_32bit {
+                let end = base.as_u64() + aligned_length as u64;
+                if end > 0x1_0000_0000 {
+                    base = VirtAddr::new(0x10000); // restart from a low address
+                }
+            }
+            // MAP_ABOVE4G: constrain to addresses above 4GB
+            if flags.above_4g {
+                if base.as_u64() < 0x1_0000_0000 {
+                    base = VirtAddr::new(0x1_0000_0000);
+                }
+            }
+            base
         };
 
         let end_addr = start_addr + aligned_length as u64;
 
         // Check for overlaps if fixed mapping
         if flags.fixed {
-            // In fixed mode, unmap any existing mappings (Linux behavior)
-            // For simplicity, we'll just check and fail for now
-            if self.find_region_at(start_addr).is_some() {
-                return Err(VmError::AlreadyMapped);
-            }
+            // In fixed mode, unmap any existing mappings (Linux behavior).
+            let _ = self.munmap(start_addr.as_u64() as usize, aligned_length);
         }
 
         // Create memory region

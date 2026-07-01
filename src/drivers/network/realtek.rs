@@ -4,8 +4,8 @@
 //! Supports both Fast Ethernet (100 Mbps) and Gigabit Ethernet (1000 Mbps) devices.
 
 use super::{
-    DeviceCapabilities, DeviceState, DeviceType, EnhancedNetworkStats, ExtendedNetworkCapabilities,
-    NetworkDriver, NetworkStats,
+    record_nic_event, DeviceCapabilities, DeviceState, DeviceType, EnhancedNetworkStats,
+    ExtendedNetworkCapabilities, LinkStatus, NetworkDriver, NetworkStats, NicEvent,
 };
 use crate::net::{MacAddress, NetworkError};
 use alloc::boxed::Box;
@@ -253,6 +253,64 @@ pub const RTL8139_TCR: u16 = 0x40; // Transmit Configuration Register
 pub const RTL8139_RCR: u16 = 0x44; // Receive Configuration Register
 pub const RTL8139_CONFIG1: u16 = 0x52; // Configuration Register 1
 
+const RTL8139_MSR: u16 = 0x58;
+const RTL8139_ISR_RX_OK: u16 = 0x0001;
+const RTL8139_ISR_RX_ERR: u16 = 0x0002;
+const RTL8139_ISR_TX_OK: u16 = 0x0004;
+const RTL8139_ISR_TX_ERR: u16 = 0x0008;
+const RTL8139_ISR_RX_OVERFLOW: u16 = 0x0010;
+const RTL8139_ISR_LINK_CHANGE: u16 = 0x0020;
+
+const RTL8169_PHYSTATUS: u16 = 0x6C;
+const RTL8169_PHYSTATUS_FULL_DUPLEX: u8 = 0x01;
+const RTL8169_PHYSTATUS_LINK: u8 = 0x02;
+const RTL8169_PHYSTATUS_100M: u8 = 0x08;
+const RTL8169_PHYSTATUS_1000M: u8 = 0x10;
+
+pub fn decode_rtl8139_link_status(media_status: u8) -> LinkStatus {
+    // RTL8139 MediaStatus bit 2 is LinkFail in Linux's 8139too driver.
+    if (media_status & 0x04) != 0 {
+        return LinkStatus::DOWN;
+    }
+    let speed = if (media_status & 0x08) != 0 { 10 } else { 100 };
+    LinkStatus::up(speed, true)
+}
+
+pub fn decode_rtl8169_link_status(phy_status: u8) -> LinkStatus {
+    if (phy_status & RTL8169_PHYSTATUS_LINK) == 0 {
+        return LinkStatus::DOWN;
+    }
+    let speed = if (phy_status & RTL8169_PHYSTATUS_1000M) != 0 {
+        1000
+    } else if (phy_status & RTL8169_PHYSTATUS_100M) != 0 {
+        100
+    } else {
+        10
+    };
+    LinkStatus::up(speed, (phy_status & RTL8169_PHYSTATUS_FULL_DUPLEX) != 0)
+}
+
+fn record_realtek_interrupt(stats: &mut EnhancedNetworkStats, isr: u16) {
+    if (isr & RTL8139_ISR_RX_OK) != 0 {
+        record_nic_event(stats, NicEvent::RxOk);
+    }
+    if (isr & RTL8139_ISR_TX_OK) != 0 {
+        record_nic_event(stats, NicEvent::TxOk);
+    }
+    if (isr & RTL8139_ISR_RX_ERR) != 0 {
+        record_nic_event(stats, NicEvent::RxError);
+    }
+    if (isr & RTL8139_ISR_TX_ERR) != 0 {
+        record_nic_event(stats, NicEvent::TxError);
+    }
+    if (isr & RTL8139_ISR_RX_OVERFLOW) != 0 {
+        record_nic_event(stats, NicEvent::RxOverflow);
+    }
+    if (isr & RTL8139_ISR_LINK_CHANGE) != 0 {
+        record_nic_event(stats, NicEvent::LinkChange);
+    }
+}
+
 /// Realtek driver implementation
 #[derive(Debug)]
 pub struct RealtekDriver {
@@ -281,9 +339,15 @@ impl RealtekDriver {
             1500
         };
         capabilities.jumbo_frames = device_info.supports_jumbo;
+        capabilities.supports_jumbo_frames = device_info.supports_jumbo;
         capabilities.hw_checksum = true;
+        capabilities.supports_checksum_offload = true;
         capabilities.scatter_gather = true;
         capabilities.vlan = true;
+        capabilities.supports_vlan = true;
+        capabilities.multicast_filter = true;
+        capabilities.max_tx_queues = 1;
+        capabilities.max_rx_queues = 1;
 
         let mut extended_capabilities = ExtendedNetworkCapabilities::default();
         extended_capabilities.base = capabilities;
@@ -555,11 +619,15 @@ impl NetworkDriver for RealtekDriver {
 
         // Read link speed from hardware
         let media_status = match self.device_info.map(|info| info.series) {
-            Some(RealtekSeries::Rtl8139) => self.read_reg8(0x12),
-            _ => self.read_reg8(0x6B),
+            Some(RealtekSeries::Rtl8139) => self.read_reg8(RTL8139_MSR),
+            _ => self.read_reg8(RTL8169_PHYSTATUS),
         };
-        self.current_speed = if (media_status & 0x01) != 0 { 100 } else { 10 };
-        self.full_duplex = (media_status & 0x04) != 0;
+        let decoded = match self.device_info.map(|info| info.series) {
+            Some(RealtekSeries::Rtl8139) => decode_rtl8139_link_status(media_status),
+            _ => decode_rtl8169_link_status(media_status),
+        };
+        self.current_speed = decoded.speed_mbps;
+        self.full_duplex = decoded.full_duplex;
 
         self.state = DeviceState::Running;
         Ok(())
@@ -643,11 +711,9 @@ impl NetworkDriver for RealtekDriver {
         // Check media status register
         match self.device_info.map(|info| info.series) {
             Some(RealtekSeries::Rtl8139) => {
-                (self.read_reg8(0x58) & 0x04) != 0 // Media status
+                decode_rtl8139_link_status(self.read_reg8(RTL8139_MSR)).link_up
             }
-            _ => {
-                (self.read_reg8(0x6C) & 0x02) != 0 // PHY status
-            }
+            _ => decode_rtl8169_link_status(self.read_reg8(RTL8169_PHYSTATUS)).link_up,
         }
     }
 
@@ -662,22 +728,9 @@ impl NetworkDriver for RealtekDriver {
         // Detect link speed and duplex from registers
         match self.device_info.map(|info| info.series) {
             Some(RealtekSeries::Rtl8139) => {
-                // RTL8139 is fixed at 100Mbps full duplex when link is up
-                (true, 100, true)
+                decode_rtl8139_link_status(self.read_reg8(RTL8139_MSR)).as_tuple()
             }
-            _ => {
-                // RTL8169/8168 - read PHY status
-                let phy_status = self.read_reg8(0x6C);
-                let speed = if (phy_status & 0x10) != 0 {
-                    1000
-                } else if (phy_status & 0x08) != 0 {
-                    100
-                } else {
-                    10
-                };
-                let full_duplex = (phy_status & 0x01) != 0;
-                (true, speed, full_duplex)
-            }
+            _ => decode_rtl8169_link_status(self.read_reg8(RTL8169_PHYSTATUS)).as_tuple(),
         }
     }
 
@@ -755,18 +808,13 @@ impl NetworkDriver for RealtekDriver {
                 let isr = self.read_reg16(RTL8139_ISR);
                 self.write_reg16(RTL8139_ISR, isr); // Clear interrupts
 
-                if (isr & 0x01) != 0 {
-                    // Receive OK
-                    self.stats.rx_packets += 1;
-                }
-                if (isr & 0x04) != 0 { // Transmit OK
-                     // Handle transmit completion
-                }
+                record_realtek_interrupt(&mut self.stats, isr);
             }
             _ => {
                 // RTL8169/8168 interrupt handling
                 let isr = self.read_reg16(0x3E);
                 self.write_reg16(0x3E, isr);
+                record_realtek_interrupt(&mut self.stats, isr);
             }
         }
 
@@ -989,6 +1037,8 @@ pub fn create_realtek_driver(
     base_addr: u64,
     irq: u8,
 ) -> Option<(Box<dyn NetworkDriver>, ExtendedNetworkCapabilities)> {
+    super::classify_common_nic(vendor_id, device_id)?;
+
     // Find matching device in database
     let device_info = REALTEK_DEVICES
         .iter()
@@ -1004,6 +1054,9 @@ pub fn create_realtek_driver(
 
 /// Check if PCI device is a Realtek controller
 pub fn is_realtek_device(vendor_id: u16, device_id: u16) -> bool {
+    if super::classify_common_nic(vendor_id, device_id).is_none() {
+        return false;
+    }
     REALTEK_DEVICES
         .iter()
         .any(|info| info.vendor_id == vendor_id && info.device_id == device_id)
@@ -1014,6 +1067,7 @@ pub fn get_realtek_device_info(
     vendor_id: u16,
     device_id: u16,
 ) -> Option<&'static RealtekDeviceInfo> {
+    super::classify_common_nic(vendor_id, device_id)?;
     REALTEK_DEVICES
         .iter()
         .find(|info| info.vendor_id == vendor_id && info.device_id == device_id)

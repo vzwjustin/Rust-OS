@@ -320,6 +320,6 @@ pub fn software_icc_ops() -> IccProviderOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("interconnect: subsystem ready");
+    crate::serial_println!("interconnect: framework ready (no software provider)");
     Ok(())
 }

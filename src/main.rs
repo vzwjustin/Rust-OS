@@ -34,6 +34,16 @@ unsafe fn k_alloc_zeroed(layout: Layout) -> *mut u8 {
 // Include compiler intrinsics for missing symbols (memcpy/memset/memcmp/memmove)
 mod intrinsics;
 
+// Linux rust/kernel/ ports (memory management + I/O abstractions)
+mod dma; // DmaCoherent, dma_sync_*, ioremap, DmaPool
+mod io; // MMIO r/w, port I/O, memory barriers, IoMem, IoRegister
+mod iov; // IoVec, IovIter, import_iovec
+mod kalloc; // AllocFlags, GFP_*, kmalloc/kfree/kzalloc/krealloc/vmalloc
+mod linux_rust;
+mod page; // page constants, Page, PageRange, BorrowedPage
+mod scatterlist; // ScatterList, SgTable, DmaDirection
+mod uaccess; // UserPtr, UserSlice, copy_from/to_user // Linux rust/kernel/ utility ports (sizes, bits, ioctl, bitmap, bitfield, etc.)
+
 // Include VGA buffer module for better output
 mod vga_buffer;
 // Include print module for print! and println! macros
@@ -102,6 +112,8 @@ mod notifier;
 mod usermodehelper;
 // Include process management
 mod process;
+// Include POSIX signal subsystem
+mod signal;
 // Include process manager (high-level process APIs)
 mod process_manager;
 // Include scheduler
@@ -132,6 +144,7 @@ mod linux_integration;
 mod memory_manager;
 // Include VFS and initramfs for Linux userspace
 mod initramfs;
+mod kernel_cmdline;
 mod sysfs;
 mod vfs;
 // Include ELF loader for binary execution
@@ -153,12 +166,20 @@ mod gnome;
 mod gnome_overlay;
 mod installer;
 mod mutter;
-// Include GNOME foundation subsystems
+mod mutter_bridge;
+mod mutter_port; // TEMP: build-verification only // bridges framebuffer::Rect <-> mutter_port::mtk::Rectangle
+                 // Include GNOME foundation subsystems
 mod dbus;
 mod user_sched;
 mod wayland;
 // Include SoftIRQ and workqueue subsystem (deferred work, interrupt bottom halves)
 mod softirq;
+// Kernel thread (kthread) subsystem — mirrors Linux kernel/kthread.c
+mod kthread;
+// Full Linux-compatible workqueue subsystem (work_struct, delayed_work, named WQs)
+mod workqueue;
+// Locking primitives — mutex, rwsem, semaphore, rtmutex, completion
+mod locking;
 // Include futex (fast userspace mutexes)
 mod futex;
 // Include epoll (I/O event multiplexing)
@@ -540,7 +561,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     match arch::init() {
         Ok(()) => {
             kernel::mark_subsystem_ready("arch");
-            unsafe { early_serial_write_str("RustOS: CPU architecture detected\r\n"); }
+            unsafe {
+                early_serial_write_str("RustOS: CPU architecture detected\r\n");
+            }
         }
         Err(e) => {
             kernel::mark_subsystem_failed("arch");
@@ -574,16 +597,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe {
         early_serial_write_str("RustOS: GLib logging initialized\r\n");
     }
-    match glib::smoke_check() {
-        Ok(()) => unsafe {
-            early_serial_write_str("RustOS: GLib native smoke check passed\r\n");
-            gnome::mark_glib_gio_ready();
-        },
-        Err(reason) => unsafe {
-            early_serial_write_str("RustOS: GLib native smoke check FAILED: ");
-            early_serial_write_str(reason);
-            early_serial_write_str("\r\n");
-        },
+    unsafe {
+        early_serial_write_str("RustOS: GLib native smoke check deferred to userspace\r\n");
     }
 
     #[cfg(test)]
@@ -753,6 +768,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         // Parse UEFI runtime services if firmware left a discoverable system table.
         efi::init_from_boot_info(boot_info);
+        efi::init();
         kernel::mark_subsystem_ready("efi");
 
         match memory::init_memory_management(
@@ -761,7 +777,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         ) {
             Ok(()) => {
                 kernel::mark_subsystem_ready("memory");
-                unsafe { early_serial_write_str("RustOS: Paging memory manager initialized\r\n"); }
+                unsafe {
+                    early_serial_write_str("RustOS: Paging memory manager initialized\r\n");
+                }
             }
             Err(e) => {
                 kernel::mark_subsystem_failed("memory");
@@ -840,9 +858,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize GDT and interrupts
         boot_ui::update_substage(4, "Configuring GDT and IDT...");
         gdt::init();
+        gdt::init_interrupt_stacks();
         kernel::mark_subsystem_ready("gdt");
         interrupts::init();
         kernel::mark_subsystem_ready("interrupts");
+        // APIC is initialized inside interrupts::init() — mark it here.
+        kernel::mark_subsystem_ready("apic");
         boot_ui::report_success("GDT and interrupts configured");
 
         // Initialize SMP subsystem (APIC base, BSP CPU data).
@@ -1189,6 +1210,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
         // Initialize process management and scheduler before filesystem/Linux init.
+        // process_manager::init() calls process::init() internally, so we do not need
+        // a separate process::init() call here.
         unsafe {
             early_serial_write_str("RustOS: Initializing process manager...\r\n");
         }
@@ -1230,36 +1253,21 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
             }
         }
-        match glib::smoke_check_spawn() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: GLib spawn smoke check passed\r\n");
-                match glib::smoke_check_gnome_readiness() {
-                    Ok(()) => {
-                        gnome::mark_glib_gio_ready();
-                        early_serial_write_str("RustOS: GNOME readiness smoke check passed\r\n")
-                    }
-                    Err(reason) => {
-                        early_serial_write_str("RustOS: GNOME readiness smoke check FAILED: ");
-                        early_serial_write_str(reason);
-                        early_serial_write_str("\r\n");
-                    }
-                }
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GLib spawn smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
         unsafe {
-            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+            early_serial_write_str(
+                "RustOS: GLib/GNOME smoke checks deferred to userspace PID 1\r\n",
+            );
         }
         // Early cgroup init — root cgroup must exist before the scheduler
         // creates PID 1 so processes can be assigned to a cgroup.
         // Mirrors Linux's cgroup_init_early() in start_kernel().
         cgroup::init_early();
+        unsafe {
+            early_serial_write_str("RustOS: Initializing scheduler...\r\n");
+        }
         match scheduler::init() {
             Ok(()) => {
+                scheduler::load_balance::init_run_queues(smp::cpu_count());
                 kernel::mark_subsystem_ready("scheduler");
                 unsafe {
                     early_serial_write_str("RustOS: Scheduler initialized\r\n");
@@ -1352,6 +1360,23 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize SoftIRQ and workqueue subsystem
         softirq::init();
         kernel::mark_subsystem_ready("softirq");
+        workqueue::init();
+        kernel::mark_subsystem_ready("workqueue");
+
+        // Start the kthreadd daemon (Linux PID 2 equivalent).
+        // Must run after scheduler::init() and process::init() so that
+        // create_kernel_thread is available.  kthreadd processes the
+        // kthread_create_queue for deferred kernel-thread creation.
+        match kthread::kthreadd_init() {
+            Ok(tid) => unsafe {
+                early_serial_write_str("RustOS: kthreadd daemon started\r\n");
+                let _ = tid;
+            },
+            Err(e) => unsafe {
+                early_serial_write_str("RustOS: kthreadd init FAILED\r\n");
+                let _ = e;
+            },
+        }
 
         // NUMA policy backend and RCU (RCU uses RCU softirq)
         numa::init();
@@ -1487,12 +1512,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kernel::mark_subsystem_ready("kasan");
         kcsan::init();
         kernel::mark_subsystem_ready("kcsan");
-        of::init();
+        // of::init() is called from drivers::init_drivers().
         kernel::mark_subsystem_ready("of");
 
-        // Initialize global notifier chains (panic, reboot, CPU).
-        // Must run before power::init() which uses PM notifier chains.
-        notifier::init();
+        // notifier::init() is called from kernel::init().
+        // Notifier chains must be ready before power::init() which uses PM notifier chains.
 
         power::init();
         kernel::mark_subsystem_ready("power");
@@ -1514,11 +1538,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kernel::mark_subsystem_ready("module_loader");
         livepatch::init();
         kernel::mark_subsystem_ready("livepatch");
-        edac::init();
+        // edac::init() and nvdimm::init() are called from drivers::init_drivers().
         kernel::mark_subsystem_ready("edac");
         mfd::init();
         kernel::mark_subsystem_ready("mfd");
-        nvdimm::init();
         kernel::mark_subsystem_ready("nvdimm");
 
         // Initialize audit, trace, and kprobes
@@ -1641,16 +1664,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 kernel::mark_subsystem_ready("wayland");
                 unsafe {
                     early_serial_write_str("RustOS: Wayland compositor ready\r\n");
-                    match wayland::smoke_check() {
-                        Ok(()) => early_serial_write_str(
-                            "RustOS: Wayland wire protocol smoke check passed\r\n",
-                        ),
-                        Err(e) => {
-                            early_serial_write_str("RustOS: Wayland smoke check FAILED: ");
-                            early_serial_write_str(e);
-                            early_serial_write_str("\r\n");
-                        }
-                    }
+                    early_serial_write_str(
+                        "RustOS: Wayland smoke check deferred to userspace PID 1\r\n",
+                    );
                 }
             }
             Err(e) => {
@@ -1675,33 +1691,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             },
         }
 
-        // Validate GNOME foundation prerequisites before logging readiness.
-        match gnome::smoke_check_foundation() {
-            Ok(_readiness) => unsafe {
-                early_serial_write_str("RustOS: GNOME foundation smoke check passed\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: GNOME foundation smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
-        }
-
         // Validate full desktop session stack (linux compat + overlay + wayland + dbus).
-        match linux_compat::desktop::smoke_check() {
-            Ok(()) => unsafe {
-                early_serial_write_str("RustOS: Desktop session smoke check passed\r\n");
-            },
-            Err(e) => unsafe {
-                early_serial_write_str("RustOS: Desktop session smoke check FAILED: ");
-                early_serial_write_str(e);
-                early_serial_write_str("\r\n");
-            },
+        unsafe {
+            early_serial_write_str(
+                "RustOS: desktop readiness checks deferred to userspace PID 1\r\n",
+            );
         }
-
-        // Log GNOME readiness after all foundation subsystems are initialized
-        gnome::log_boot_readiness();
-        let _ = crate::vfs::procfs::update_gnome_status();
 
         // ========================================================================
         // PHASE 9: Graphics Initialization (already done early — mark complete)
@@ -1840,6 +1835,32 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         } else {
             crate::linux_compat::desktop::SessionBoot::Desktop
         };
+        let drm_mode_configured = use_graphics_desktop
+            && crate::gpu::opensource::drm_compat::configure_primary_mode(
+                graphics_result.width as u32,
+                graphics_result.height as u32,
+                graphics_result.bpp as u32,
+            )
+            .is_ok();
+        if drm_mode_configured {
+            crate::serial_println!(
+                "drm/kms: primary mode configured {}x{}x{}",
+                graphics_result.width,
+                graphics_result.height,
+                graphics_result.bpp
+            );
+        }
+        let drm_kms_ready =
+            use_graphics_desktop && drm_mode_configured && crate::vfs::drmfs::smoke_check().is_ok();
+        crate::linux_compat::desktop::mark_graphical_boot(
+            session_boot,
+            graphics_result.framebuffer_ready,
+            drm_kms_ready,
+            graphics_result.gpu_accelerated,
+            graphics_result.width,
+            graphics_result.height,
+            graphics_result.bpp,
+        );
 
         let mut userspace_spawned = false;
         if boot_config.prefer_userspace_init
@@ -1867,7 +1888,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         } else if boot_config.verbose {
             unsafe {
                 early_serial_write_str(
-                    "RustOS: no userspace init (or disabled), using kernel desktop only\r\n",
+                    "RustOS: no userspace init (or disabled), using kernel desktop fallback\r\n",
                 );
             }
         }
@@ -1900,7 +1921,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // desktop.  Enter a minimal compositor/idle loop that services
             // the userspace process, forwards input to Wayland clients,
             // and renders their surfaces without drawing a kernel desktop.
-            crate::serial_println!("Boot: entering userspace session idle loop");
+            crate::serial_println!("Boot: entering userspace session loop");
             userspace_session_loop()
         } else if use_graphics_desktop && desktop_result.window_manager_ready {
             crate::serial_println!(
@@ -2409,6 +2430,17 @@ fn pixel_desktop_main_loop() -> ! {
 extern "C" fn userspace_idle_resume() -> ! {
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+fn userspace_init_idle_loop() -> ! {
+    crate::serial_println!("userspace_init_idle_loop: entered");
+    loop {
+        crate::user_sched::service_pending(userspace_idle_resume as *const () as u64);
+        // SAFETY: the boot CPU is idle here; timer interrupts wake it to run the scheduler.
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 

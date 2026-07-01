@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+use crate::memory::user_space::UserSpaceMemory;
 use crate::vfs;
 
 fn vfs_error_to_linux(err: crate::vfs::VfsError) -> LinuxError {
@@ -256,7 +257,7 @@ pub fn preadv2(
     iov: *const IoVec,
     iovcnt: i32,
     offset: Off,
-    _flags: i32,
+    flags: i32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -267,6 +268,7 @@ pub fn preadv2(
     if iov.is_null() || iovcnt <= 0 {
         return Err(LinuxError::EINVAL);
     }
+    validate_rwf_flags(flags)?;
 
     if offset == -1 {
         return readv(fd, iov, iovcnt);
@@ -288,7 +290,7 @@ pub fn pwritev2(
     iov: *const IoVec,
     iovcnt: i32,
     offset: Off,
-    _flags: i32,
+    flags: i32,
 ) -> LinuxResult<isize> {
     inc_ops();
 
@@ -299,6 +301,7 @@ pub fn pwritev2(
     if iov.is_null() || iovcnt <= 0 {
         return Err(LinuxError::EINVAL);
     }
+    validate_rwf_flags(flags)?;
 
     if offset == -1 {
         return writev(fd, iov, iovcnt);
@@ -309,6 +312,41 @@ pub fn pwritev2(
     }
 
     pwritev(fd, iov, iovcnt, offset)
+}
+
+fn validate_rwf_flags(flags: i32) -> LinuxResult<()> {
+    const RWF_HIPRI: i32 = 0x0000_0001;
+    const RWF_DSYNC: i32 = 0x0000_0002;
+    const RWF_SYNC: i32 = 0x0000_0004;
+    const RWF_NOWAIT: i32 = 0x0000_0008;
+    const RWF_APPEND: i32 = 0x0000_0010;
+    const RWF_NOAPPEND: i32 = 0x0000_0020;
+    const RWF_ATOMIC: i32 = 0x0000_0040;
+    const RWF_DONTCACHE: i32 = 0x0000_0080;
+    const RWF_NOSIGNAL: i32 = 0x0000_0100;
+    const RWF_SUPPORTED: i32 = RWF_HIPRI
+        | RWF_DSYNC
+        | RWF_SYNC
+        | RWF_NOWAIT
+        | RWF_APPEND
+        | RWF_NOAPPEND
+        | RWF_ATOMIC
+        | RWF_DONTCACHE
+        | RWF_NOSIGNAL;
+
+    if flags & !RWF_SUPPORTED != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+    if flags & RWF_APPEND != 0 && flags & RWF_NOAPPEND != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let unsupported_semantics = RWF_NOWAIT | RWF_APPEND | RWF_NOAPPEND | RWF_ATOMIC | RWF_DONTCACHE;
+    if flags & unsupported_semantics != 0 {
+        return Err(LinuxError::ENOTSUP);
+    }
+
+    Ok(())
 }
 
 // ============================================================================
@@ -982,7 +1020,7 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
     }
 
     if count < 24 {
-        return Ok(0);
+        return Err(LinuxError::EINVAL);
     }
 
     let (entries, cookie) = vfs::vfs_readdir_fd(fd).map_err(vfs_error_to_linux)?;
@@ -999,18 +1037,16 @@ pub fn getdents64(fd: Fd, dirp: *mut u8, count: u32) -> LinuxResult<i32> {
         }
 
         let d_type = inode_type_to_d_type(entry.inode_type);
-        unsafe {
-            let base = dirp.add(written as usize);
-            *(base as *mut u64) = entry.ino;
-            *(base.add(8) as *mut i64) = (index + 1) as i64;
-            *(base.add(16) as *mut u16) = reclen;
-            *base.add(18) = d_type;
-            let name_ptr = base.add(19);
-            for (i, &b) in name_bytes.iter().enumerate() {
-                *name_ptr.add(i) = b;
-            }
-            *name_ptr.add(name_bytes.len()) = 0;
-        }
+        let mut record = alloc::vec::Vec::new();
+        record.resize(reclen as usize, 0);
+        record[0..8].copy_from_slice(&entry.ino.to_ne_bytes());
+        record[8..16].copy_from_slice(&((index + 1) as i64).to_ne_bytes());
+        record[16..18].copy_from_slice(&reclen.to_ne_bytes());
+        record[18] = d_type;
+        record[19..19 + name_bytes.len()].copy_from_slice(name_bytes);
+
+        let dst = unsafe { dirp.add(written as usize) };
+        UserSpaceMemory::copy_to_user(dst as u64, &record).map_err(|_| LinuxError::EFAULT)?;
 
         written += reclen as u32;
         index += 1;

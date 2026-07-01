@@ -169,6 +169,26 @@ pub fn register_device(
     pid: u64,
     info: I3cDeviceInfo,
 ) -> Result<u32, &'static str> {
+    if matches!(dev_type, I3cDevType::I3c) && !(0x08..=0x77).contains(&dynamic_addr) {
+        return Err("I3C dynamic address out of range");
+    }
+
+    {
+        let buses = I3C_BUSES.read();
+        let bus = buses.get(&bus_id).ok_or("I3C bus not found")?;
+        let devices = I3C_DEVICES.read();
+        for &dev_id in &bus.device_ids {
+            if let Some(dev) = devices.get(&dev_id) {
+                if matches!(dev_type, I3cDevType::I3c) && dev.dynamic_addr == dynamic_addr {
+                    return Err("I3C dynamic address already in use");
+                }
+                if matches!(dev_type, I3cDevType::I2c) && dev.static_addr == static_addr {
+                    return Err("I2C static address already in use");
+                }
+            }
+        }
+    }
+
     let dev_id = DEVICE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dev = I3cDevice {
         id: dev_id,
@@ -187,7 +207,10 @@ pub fn register_device(
         let bus = buses.get(&bus_id).ok_or("I3C bus not found")?;
         bus.ops.attach_i3c_dev
     };
-    (attach_fn)(bus_id, dev_id)?;
+    if let Err(err) = (attach_fn)(bus_id, dev_id) {
+        I3C_DEVICES.write().remove(&dev_id);
+        return Err(err);
+    }
 
     let mut buses = I3C_BUSES.write();
     if let Some(bus) = buses.get_mut(&bus_id) {
@@ -307,6 +330,12 @@ pub fn software_i3c_ops() -> I3cMasterOps {
 // ── Init ────────────────────────────────────────────────────────────────
 
 pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("i3c: subsystem ready");
+    if !I3C_BUSES.read().is_empty() {
+        return Ok(());
+    }
+
+    let ops = software_i3c_ops();
+    let bus_id = register_bus("sw-i3c", ops, I3cBusMode::Pure, 12_500_000)?;
+    crate::serial_println!("i3c: software bus registered (id={}, 12.5 MHz)", bus_id);
     Ok(())
 }
