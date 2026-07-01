@@ -1,29 +1,43 @@
 //! Mutter compositor subsystem
 //! Ported from meta/compositor.h and meta-background*.h, meta-shaped-texture.h
+//!
+//! MetaCompositor manages the rendering pipeline and window compositing.
+//! MetaBackground, MetaWindowActor, and MetaShapedTexture support visual rendering.
 
+use alloc::{boxed::Box, vec::Vec};
 use crate::mutter_port::meta::types::*;
 
 /// Main compositor object managing rendering pipeline
 pub struct MetaCompositor {
-    // TODO: port compositor fields
+    display: Option<Box<MetaDisplay>>,
+    is_enabled: bool,
+    managed_windows: Vec<*mut MetaWindow>,
 }
 
 impl MetaCompositor {
+    /// Create a new MetaCompositor
+    pub fn new() -> Self {
+        Self {
+            display: None,
+            is_enabled: false,
+            managed_windows: Vec::new(),
+        }
+    }
+
     /// Get the display this compositor is managing
     pub fn get_display(&self) -> Option<&MetaDisplay> {
-        // TODO: implement
-        None
+        self.display.as_ref().map(|b| &**b)
     }
 
     /// Enable/disable compositing
-    pub fn set_enabled(&mut self, _enabled: bool) {
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.is_enabled = enabled;
         // TODO: implement
     }
 
     /// Check if compositor is active
     pub fn is_enabled(&self) -> bool {
-        // TODO: implement
-        false
+        self.is_enabled
     }
 
     /// Manage a new window for compositing
@@ -42,18 +56,33 @@ impl MetaCompositor {
     }
 }
 
+impl Default for MetaCompositor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Background image/content for desktop or monitors
 pub struct MetaBackground {
-    // TODO: port background fields
+    red: f32,
+    green: f32,
+    blue: f32,
 }
 
 impl MetaBackground {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+        }
     }
 
     /// Set background color
-    pub fn set_color(&mut self, _red: f32, _green: f32, _blue: f32) {
+    pub fn set_color(&mut self, red: f32, green: f32, blue: f32) {
+        self.red = red;
+        self.green = green;
+        self.blue = blue;
         // TODO: implement
     }
 
@@ -71,44 +100,66 @@ impl Default for MetaBackground {
 
 /// Actor for rendering a window's contents
 pub struct MetaWindowActor {
-    // TODO: port window actor fields
+    window: Option<Box<MetaWindow>>,
+    is_visible: bool,
+    opacity: f32,
 }
 
 impl MetaWindowActor {
+    /// Create a new MetaWindowActor
+    pub fn new() -> Self {
+        Self {
+            window: None,
+            is_visible: true,
+            opacity: 1.0,
+        }
+    }
+
     /// Get the window this actor represents
     pub fn get_window(&self) -> Option<&MetaWindow> {
-        // TODO: implement
-        None
+        self.window.as_ref().map(|b| &**b)
     }
 
     /// Show the actor
     pub fn show(&mut self) {
+        self.is_visible = true;
         // TODO: implement
     }
 
     /// Hide the actor
     pub fn hide(&mut self) {
+        self.is_visible = false;
         // TODO: implement
     }
 
     /// Set opacity (0.0 - 1.0)
-    pub fn set_opacity(&mut self, _opacity: f32) {
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity;
         // TODO: implement
+    }
+}
+
+impl Default for MetaWindowActor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 /// Shaped texture for rendering window content
 pub struct MetaShapedTexture {
-    // TODO: port shaped texture fields
+    is_valid: bool,
 }
 
 impl MetaShapedTexture {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            is_valid: false,
+        }
     }
 
     /// Update the texture content
     pub fn update(&mut self) {
+        self.is_valid = true;
         // TODO: implement
     }
 }
@@ -118,5 +169,3 @@ impl Default for MetaShapedTexture {
         Self::new()
     }
 }
-
-// TODO: port remaining compositor functions

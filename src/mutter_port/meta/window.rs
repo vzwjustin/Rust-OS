@@ -4,6 +4,7 @@
 use crate::mutter_port::meta::enums::*;
 use crate::mutter_port::meta::types::*;
 use crate::mutter_port::mtk::MtkRectangle;
+use alloc::string::String;
 
 /// Window type constants
 pub const META_WINDOW_NORMAL: u32 = 0;
@@ -12,12 +13,45 @@ pub const META_WINDOW_DOCK: u32 = 2;
 
 /// Represents a window managed by the window manager
 pub struct MetaWindow {
-    // TODO: port window fields
     pub window_type: MetaWindowType,
     pub has_focus: bool,
+    id: u64,
+    title: Option<String>,
+    buffer_rect: MtkRectangle,
+    frame_rect: MtkRectangle,
+    client_rect: MtkRectangle,
+    skip_taskbar: bool,
+    override_redirect: bool,
+    appears_focused: bool,
+    maximized_horizontally: bool,
+    maximized_vertically: bool,
+    display: *mut core::ffi::c_void,
+    workspace: *mut core::ffi::c_void,
+    monitor: i32,
 }
 
 impl MetaWindow {
+    /// Create a new window
+    pub fn new(window_type: MetaWindowType) -> Self {
+        Self {
+            window_type,
+            has_focus: false,
+            id: 0,
+            title: None,
+            buffer_rect: MtkRectangle::default(),
+            frame_rect: MtkRectangle::default(),
+            client_rect: MtkRectangle::default(),
+            skip_taskbar: false,
+            override_redirect: false,
+            appears_focused: false,
+            maximized_horizontally: false,
+            maximized_vertically: false,
+            display: core::ptr::null_mut(),
+            workspace: core::ptr::null_mut(),
+            monitor: 0,
+        }
+    }
+
     /// Check if window has input focus
     pub fn has_focus(&self) -> bool {
         self.has_focus
@@ -134,8 +168,12 @@ impl MetaWindow {
     /// Get window title
     pub fn get_title(&self) -> Option<&str> {
         // TODO: implement
-        None
+        self.title.as_ref().map(|s| s.as_str())
     }
 }
 
-// TODO: port remaining window functions
+impl Default for MetaWindow {
+    fn default() -> Self {
+        Self::new(MetaWindowType::Normal)
+    }
+}

@@ -6,11 +6,27 @@ use crate::mutter_port::meta::types::*;
 
 /// Represents a virtual workspace/desktop
 pub struct MetaWorkspace {
-    // TODO: port workspace fields
     pub index: u32,
+    name: Option<String>,
+    display: *mut core::ffi::c_void,
+    width: i32,
+    height: i32,
+    active_window: *mut core::ffi::c_void,
 }
 
 impl MetaWorkspace {
+    /// Create a new workspace
+    pub fn new(index: u32) -> Self {
+        Self {
+            index,
+            name: None,
+            display: core::ptr::null_mut(),
+            width: 0,
+            height: 0,
+            active_window: core::ptr::null_mut(),
+        }
+    }
+
     /// Get workspace index
     pub fn get_index(&self) -> u32 {
         self.index
@@ -57,4 +73,8 @@ impl MetaWorkspace {
     }
 }
 
-// TODO: port remaining workspace functions
+impl Default for MetaWorkspace {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}

@@ -4,12 +4,20 @@ use alloc::{string::String, vec::Vec, format};
 
 use crate::mutter_port::meta::types::*;
 
-/// X11 display connection handler
+/// X11 display connection handler (X11 protocol connection and screen info)
 pub struct MetaX11Display {
-    // TODO: port X11 display fields
+    pub xdisplay: Option<u64>, // opaque X11 Display pointer
+    pub screen_number: i32,
 }
 
 impl MetaX11Display {
+    pub fn new(screen_number: i32) -> Self {
+        Self {
+            xdisplay: None,
+            screen_number,
+        }
+    }
+
     /// Get the underlying meta display
     pub fn get_display(&self) -> Option<&MetaDisplay> {
         // TODO: implement
@@ -18,33 +26,49 @@ impl MetaX11Display {
 
     /// Get X11 display pointer
     pub fn get_xdisplay(&self) -> Option<u64> {
-        // TODO: implement
-        None
+        self.xdisplay
     }
 
     /// Get X11 screen number
     pub fn get_screen_number(&self) -> i32 {
-        // TODO: implement
-        0
+        self.screen_number
     }
 }
 
-/// X11 window group/class
+impl Default for MetaX11Display {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+/// X11 window group/class (group leader and member windows)
 pub struct MetaX11Group {
-    // TODO: port X11 group fields
+    pub leader: Option<u64>, // X11 window ID
+    pub windows: Vec<u32>,   // indices to member windows
 }
 
 impl MetaX11Group {
+    pub fn new() -> Self {
+        Self {
+            leader: None,
+            windows: Vec::new(),
+        }
+    }
+
     /// Get group leader window
     pub fn get_leader(&self) -> Option<u64> {
-        // TODO: implement
-        None
+        self.leader
     }
 
     /// Get all windows in group
     pub fn get_windows(&self) -> Vec<&MetaWindow> {
-        // TODO: implement
         Vec::new()
+    }
+}
+
+impl Default for MetaX11Group {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

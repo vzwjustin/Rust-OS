@@ -8,10 +8,31 @@ use alloc::vec::Vec;
 
 /// Main display object representing the X11 or Wayland display server
 pub struct MetaDisplay {
-    // TODO: port display fields
+    context: *mut core::ffi::c_void,
+    compositor: *mut core::ffi::c_void,
+    focus_window: *mut core::ffi::c_void,
+    workspace_manager: *mut core::ffi::c_void,
+    cursor_tracker: *mut core::ffi::c_void,
+    selection: *mut core::ffi::c_void,
+    screen_width: i32,
+    screen_height: i32,
 }
 
 impl MetaDisplay {
+    /// Create a new display
+    pub fn new() -> Self {
+        Self {
+            context: core::ptr::null_mut(),
+            compositor: core::ptr::null_mut(),
+            focus_window: core::ptr::null_mut(),
+            workspace_manager: core::ptr::null_mut(),
+            cursor_tracker: core::ptr::null_mut(),
+            selection: core::ptr::null_mut(),
+            screen_width: 0,
+            screen_height: 0,
+        }
+    }
+
     /// Close the display connection
     pub fn close(&mut self, _timestamp: u32) {
         // TODO: implement
@@ -87,4 +108,8 @@ impl MetaDisplay {
     }
 }
 
-// TODO: port remaining display functions
+impl Default for MetaDisplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
