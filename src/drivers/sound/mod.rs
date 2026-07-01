@@ -3,6 +3,8 @@
 //! Provides ALSA-compatible audio framework with sound cards, PCM devices,
 //! controls, and mixer support. Mirrors Linux's `sound/core/*`.
 
+pub mod hda;
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

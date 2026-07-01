@@ -546,9 +546,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Register kernel subsystems for init-order tracking and dependency checks.
     match kernel::init() {
         Ok(()) => unsafe {
+            // notifier::init() is called from kernel::init(); mark it ready here.
+            kernel::mark_subsystem_ready("notifier");
             early_serial_write_str("RustOS: Kernel subsystem registry initialized\r\n");
         },
         Err(e) => unsafe {
+            kernel::mark_subsystem_failed("notifier");
             early_serial_write_str("RustOS: Kernel subsystem registry FAILED: ");
             early_serial_write_str(e);
             early_serial_write_str("\r\n");
@@ -731,6 +734,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             }
             boot_ui::acpi_init_progress(None, physical_memory_offset.as_u64())
         };
+        if _acpi_result.tables_parsed {
+            kernel::mark_subsystem_ready("acpi");
+        } else {
+            kernel::mark_subsystem_failed("acpi");
+        }
         // SAFETY: Debug output
         unsafe {
             early_serial_write_str("RustOS: ACPI phase complete\r\n");
@@ -894,8 +902,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         boot_ui::update_substage(5, "Setting up syscall interface...");
         if syscall_fast::is_supported() {
             syscall_fast::init();
+            kernel::mark_subsystem_ready("syscall_fast");
             boot_ui::report_success("Fast syscall (SYSCALL/SYSRET) enabled");
         } else {
+            kernel::mark_subsystem_failed("syscall_fast");
             boot_ui::report_warning("Syscall", "Using INT 0x80 fallback");
         }
 
@@ -927,9 +937,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize IRQ domain framework (hierarchical interrupt controller mapping).
         match irq_domain::init() {
             Ok(()) => unsafe {
+                kernel::mark_subsystem_ready("irq_domain");
                 early_serial_write_str("RustOS: IRQ domain framework initialized\r\n");
             },
             Err(e) => unsafe {
+                kernel::mark_subsystem_failed("irq_domain");
                 early_serial_write_str("RustOS: IRQ domain init FAILED: ");
                 early_serial_write_str(e);
                 early_serial_write_str("\r\n");
@@ -1005,6 +1017,14 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Starting driver loading...\r\n");
         }
         let driver_result = boot_ui::driver_loading_progress();
+
+        // sound::init() is called inside driver_loading_progress(); mark it
+        // here based on whether PCM devices were registered.
+        if sound::pcm_count() > 0 {
+            kernel::mark_subsystem_ready("sound");
+        } else {
+            kernel::mark_subsystem_failed("sound");
+        }
 
         // Initialize network sub-modules (net::init() is called inside
         // driver_loading_progress, but these sub-module inits are not called
@@ -1164,6 +1184,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: time_initialized check done\r\n");
         }
         if time_initialized {
+            kernel::mark_subsystem_ready("time");
             unsafe {
                 early_serial_write_str("RustOS: About to get timer stats...\r\n");
             }
@@ -1186,6 +1207,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 );
             }
         } else {
+            kernel::mark_subsystem_failed("time");
             log_error!(
                 "kernel",
                 "Time system initialization failed in driver loading phase"
@@ -1344,6 +1366,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             early_serial_write_str("RustOS: Starting Phase 8 - Filesystem mount...\r\n");
         }
         let _fs_result = boot_ui::filesystem_mount_progress();
+        if _fs_result.initramfs_loaded {
+            kernel::mark_subsystem_ready("initramfs");
+        } else {
+            kernel::mark_subsystem_failed("initramfs");
+        }
         unsafe {
             early_serial_write_str("RustOS: Phase 8 complete\r\n");
         }
@@ -1428,6 +1455,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // (Phase 7) and block_io init so members are available.
         {
             let md_result = md::init();
+            if md_result.errors.is_empty() {
+                kernel::mark_subsystem_ready("md");
+            } else {
+                kernel::mark_subsystem_failed("md");
+            }
             if md_result.arrays_registered > 0 {
                 crate::serial_println!(
                     "[md] registered {} RAID arrays",
@@ -1448,6 +1480,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize usermodehelper (kernel-spawned userspace programs).
         // Mirrors Linux's usermodehelper_init() in do_basic_setup().
         usermodehelper::init();
+        kernel::mark_subsystem_ready("usermodehelper");
 
         // Initialize seccomp
         seccomp::init();
@@ -1483,6 +1516,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize disk quota subsystem
         quota::init();
+        kernel::mark_subsystem_ready("quota");
 
         // Initialize Landlock
         landlock::init();
@@ -1548,6 +1582,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         kernel::mark_subsystem_ready("privileged_syscalls");
         // Initialize restartable sequence registrations
         rseq::init();
+        kernel::mark_subsystem_ready("rseq");
 
         // Initialize module loader
         module_loader::init();
@@ -1698,9 +1733,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize Mutter foundation (Wayland handshake verification)
         match mutter::init() {
             Ok(()) => unsafe {
+                kernel::mark_subsystem_ready("mutter");
                 early_serial_write_str("RustOS: Mutter foundation ready\r\n");
             },
             Err(e) => unsafe {
+                kernel::mark_subsystem_failed("mutter");
                 early_serial_write_str("RustOS: Mutter init FAILED: ");
                 early_serial_write_str(e);
                 early_serial_write_str("\r\n");
