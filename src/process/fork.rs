@@ -235,21 +235,31 @@ pub fn copy_signal(flags: u64, child: &mut ProcessControlBlock, parent: &Process
 /// Copy or share namespaces according to clone flags.
 ///
 /// Each `CLONE_NEW*` flag requests a fresh namespace of that type; without it
-/// the child shares the parent's namespace.  The actual namespace cloning is
-/// handled by `crate::namespace::clone_ns()` in `copy_process`.
+/// the child shares the parent's namespace.  The parent's *current* namespace
+/// set is read from the global `namespace::NS_PROXIES` map (which stays
+/// up-to-date across `unshare`/`setns` calls), cloned into a child `NsProxy`,
+/// and stored both in the child PCB (`child.nsproxy`) and back into the global
+/// map so that runtime namespace lookups continue to work.
 pub fn copy_namespaces(
     flags: u64,
     child: &mut ProcessControlBlock,
     parent: &ProcessControlBlock,
 ) -> Result<(), i32> {
-    // TODO: wire namespace handles into ProcessControlBlock and call:
-    //   crate::namespace::copy_namespaces(flags, parent_ns) -> child_ns
-    let _new_pid_ns = flags & CLONE_NEWPID != 0;
-    let _new_net_ns = flags & CLONE_NEWNET != 0;
-    let _new_mnt_ns = flags & CLONE_NEWNS != 0;
-    let _new_user_ns = flags & CLONE_NEWUSER != 0;
-    let _new_uts_ns = flags & CLONE_NEWUTS != 0;
-    let _new_ipc_ns = flags & CLONE_NEWIPC != 0;
+    // Read the parent's live namespace set from the global map.  The PCB's
+    // `nsproxy` field is a snapshot taken at fork time and may be stale if the
+    // parent subsequently called `unshare(2)` or `setns(2)`, which only
+    // update the global map.
+    let parent_ns = crate::namespace::get_nsproxy(parent.pid);
+
+    // Build the child's namespace set based on the CLONE_NEW* flags.
+    let child_ns = crate::namespace::copy_namespaces(flags, &parent_ns, child.pid);
+
+    // Wire the handles into the child PCB.
+    child.nsproxy = child_ns.clone();
+
+    // Keep the global map in sync so get_nsproxy()/unshare()/setns() work.
+    crate::namespace::set_nsproxy(child.pid, child_ns);
+
     Ok(())
 }
 
@@ -321,7 +331,7 @@ pub fn copy_process(
         copy_files(flags, child, &parent_snap);
         copy_sighand(flags, child, &parent_snap);
         copy_signal(flags, child, &parent_snap);
-        crate::namespace::clone_ns(parent_pid, child_pid, flags);
+        copy_namespaces(flags, child, &parent_snap);
 
         // ── 4. CPU context ──────────────────────────────────────────────────
         copy_thread(child, regs, stack, flags);

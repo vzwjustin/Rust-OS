@@ -285,6 +285,22 @@ pub fn slave_name(id: u32) -> String {
     format!("/dev/pts/{}", id)
 }
 
+/// Check whether a PTY pair with the given id currently exists.
+pub fn exists(id: u32) -> bool {
+    PTY_REGISTRY.lock().contains_key(&id)
+}
+
+/// Return the ids of all currently-allocated PTY pairs, in ascending order.
+pub fn active_ids() -> Vec<u32> {
+    PTY_REGISTRY.lock().keys().copied().collect()
+}
+
+/// Remove a PTY pair from the registry (called when the last reference to a
+/// slave/master is dropped). Returns `true` if a pair was removed.
+pub fn destroy_pair(id: u32) -> bool {
+    PTY_REGISTRY.lock().remove(&id).is_some()
+}
+
 /// Open /dev/ptmx: create pair and return VFS fd for master.
 pub fn open_ptmx(flags: u32) -> VfsResult<i32> {
     let (id, _legacy_master, _legacy_slave) = create_pair().map_err(|_| VfsError::IoError)?;

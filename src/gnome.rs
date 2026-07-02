@@ -88,10 +88,26 @@ pub fn probe() -> GnomeReadiness {
         .unwrap_or(false)
         || crate::drivers::input_manager::is_initialized();
 
+    // `smoke_check_gnome_readiness()` performs *real* fork/exec spawns of a
+    // test ELF binary (see `glib::smoke_check_spawn`). `probe()` is called
+    // repeatedly (D-Bus init, readiness polling, procfs reads, ...), so
+    // without caching the result here this smoke test re-ran on every call,
+    // leaking virtual memory/physical frames and exec'ing the fixed test
+    // load address (`USER_SPACE_START`) over and over -- which permanently
+    // blocked any later real binary (e.g. `/init`) that needs that exact
+    // fixed address with `MemoryError::RegionOverlap`, and independently
+    // drove unbounded CPU/memory growth. Run it at most once and latch the
+    // result via `GLIB_GIO_READY`.
+    let glib_gio_ready = GLIB_GIO_READY.load(Ordering::Acquire) || {
+        let ok = glib::smoke_check_gnome_readiness().is_ok();
+        if ok {
+            mark_glib_gio_ready();
+        }
+        ok
+    };
+
     GnomeReadiness {
-        glib_gio: if GLIB_GIO_READY.load(Ordering::Acquire)
-            || glib::smoke_check_gnome_readiness().is_ok()
-        {
+        glib_gio: if glib_gio_ready {
             GnomeCapabilityState::Ready
         } else {
             GnomeCapabilityState::Blocked("GLib/GIO smoke path failed")

@@ -44,6 +44,25 @@ pub const USER_SPACE_START: usize = 0x_0000_1000_0000;
 pub const USER_SPACE_END: usize = 0x_0000_8000_0000;
 pub const KERNEL_SPACE_START: usize = 0xFFFF_8000_0000_0000;
 
+/// Address window for kernel-only generic allocations (e.g. kernel thread
+/// stacks) made via `MemoryManager::allocate_region()`.
+///
+/// `allocate_region()`'s `find_free_virtual_space()` search used to start at
+/// `USER_SPACE_START` unconditionally, regardless of `region_type` — so a
+/// `MemoryRegionType::KernelStack` allocation (e.g. `kthreadd`'s worker
+/// thread stacks, see `process/thread.rs::allocate_stack`) could claim
+/// `USER_SPACE_START` itself if it ran before any real user exec. Since
+/// there is only one *global* `regions` map (no per-process address-space
+/// isolation) and no fixed-address exec ever un-claims a generic
+/// allocation, that permanently blocked any later exec that needs that
+/// exact fixed address (e.g. native single-segment userspace binaries
+/// linked at `USER_SPACE_START`, such as `/init`) with
+/// `MemoryError::RegionOverlap`. Kernel-only region types are routed to
+/// this separate window instead, mirroring `KERNEL_HEAP_START`'s existing
+/// convention of keeping kernel-only mappings out of the user range.
+pub const KERNEL_DYNAMIC_START: usize = 0x_5555_5555_0000;
+pub const KERNEL_DYNAMIC_END: usize = 0x_6666_6666_0000;
+
 /// Physical memory zone boundaries
 pub const DMA_ZONE_END: u64 = 16 * 1024 * 1024; // 16MB
 pub const NORMAL_ZONE_END: u64 = 896 * 1024 * 1024; // 896MB
@@ -2235,12 +2254,27 @@ impl MemoryManager {
     ) -> Result<VirtualMemoryRegion, MemoryError> {
         let aligned_size = align_up_checked(size, PAGE_SIZE).ok_or(MemoryError::NoVirtualSpace)?;
 
+        // Kernel-only region types (e.g. kernel thread stacks) must never be
+        // placed inside the user-process address window: that window is a
+        // fixed, well-known range that native userspace binaries (and their
+        // heap/stack) are linked/placed against. See `KERNEL_DYNAMIC_START`'s
+        // doc comment for why sharing the window is unsafe.
+        let is_kernel_region = matches!(
+            region_type,
+            MemoryRegionType::Kernel | MemoryRegionType::KernelStack
+        );
+        let (space_start, space_end) = if is_kernel_region {
+            (KERNEL_DYNAMIC_START as u64, KERNEL_DYNAMIC_END as u64)
+        } else {
+            (USER_SPACE_START as u64, USER_SPACE_END as u64)
+        };
+
         // Find a free hole, then apply ASLR, then validate the *shifted*
         // address before mapping anything. Applying ASLR after validation
-        // could push the region past USER_SPACE_END or onto another region,
+        // could push the region past the window end or onto another region,
         // mapping frames that the overlap check would later reject.
         let base = self
-            .find_free_virtual_space(aligned_size)
+            .find_free_virtual_space_in(space_start, space_end, aligned_size)
             .ok_or(MemoryError::NoVirtualSpace)?;
 
         let enable_aslr = self.security_features.aslr_enabled
@@ -2260,7 +2294,7 @@ impl MemoryManager {
         let end_u = start_u
             .checked_add(aligned_size as u64)
             .ok_or(MemoryError::NoVirtualSpace)?;
-        if end_u > USER_SPACE_END as u64 {
+        if end_u > space_end {
             return Err(MemoryError::NoVirtualSpace);
         }
 
@@ -2396,12 +2430,27 @@ impl MemoryManager {
         Ok(main_region)
     }
 
-    /// Find free virtual address space
+    /// Find free virtual address space in the user-process window.
     fn find_free_virtual_space(&self, size: usize) -> Option<VirtAddr> {
-        let regions = self.regions.read();
-        let mut current_addr = VirtAddr::new(USER_SPACE_START as u64);
+        self.find_free_virtual_space_in(USER_SPACE_START as u64, USER_SPACE_END as u64, size)
+    }
 
-        while current_addr.as_u64() + size as u64 <= USER_SPACE_END as u64 {
+    /// Find free virtual address space within `[space_start, space_end)`.
+    ///
+    /// Used with `[USER_SPACE_START, USER_SPACE_END)` for user-process
+    /// allocations and `[KERNEL_DYNAMIC_START, KERNEL_DYNAMIC_END)` for
+    /// kernel-only allocations (see `KERNEL_DYNAMIC_START`'s doc comment) so
+    /// the two never share addresses.
+    fn find_free_virtual_space_in(
+        &self,
+        space_start: u64,
+        space_end: u64,
+        size: usize,
+    ) -> Option<VirtAddr> {
+        let regions = self.regions.read();
+        let mut current_addr = VirtAddr::new(space_start);
+
+        while current_addr.as_u64() + size as u64 <= space_end {
             let end_addr = current_addr + size;
 
             let overlaps = regions.values().any(|region| {

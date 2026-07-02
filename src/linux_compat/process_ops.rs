@@ -999,12 +999,13 @@ pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> 
 pub fn exit(status: i32) -> ! {
     inc_ops();
 
-    let pid = process::current_pid();
-    let _ = process::get_process_manager().terminate_process(pid, status);
-
-    loop {
-        x86_64::instructions::hlt();
-    }
+    // Route through the real `do_exit()` teardown path so subsystem state
+    // (most importantly `exit_mm()`, which releases the ELF code/data/heap
+    // mappings) is actually released. Calling `terminate_process()` directly
+    // skipped all of that, leaving fixed-address userspace mappings (e.g.
+    // `USER_SPACE_START`) permanently occupied and causing later execs at
+    // the same address to fail with `MemoryAllocationFailed`.
+    process::exit::do_exit(status)
 }
 
 //

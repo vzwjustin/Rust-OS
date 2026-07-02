@@ -35,6 +35,7 @@ pub mod crypto;
 pub mod cxl;
 pub mod dax;
 pub mod dca;
+pub mod device_manager;
 pub mod devfreq;
 pub mod display;
 pub mod dma;

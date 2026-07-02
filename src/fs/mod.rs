@@ -7,8 +7,10 @@
 //! - File descriptor management
 //! - Path resolution and caching
 
+pub mod autofs;
 pub mod btrfs;
 pub mod buffer;
+pub mod cachefiles;
 pub mod cifs;
 pub mod configfs;
 pub mod cramfs;
@@ -37,6 +39,7 @@ pub mod ntfs3;
 pub mod ocfs2;
 pub mod overlayfs;
 pub mod proc;
+pub mod pstore;
 pub mod ramfs;
 pub mod romfs;
 pub mod smb;
@@ -107,6 +110,22 @@ pub enum FileSystemType {
     Udf,
     /// ROMFS read-only filesystem
     RomFs,
+    /// procfs virtual filesystem (/proc)
+    Proc,
+    /// debugfs virtual filesystem
+    DebugFs,
+    /// devpts pseudoterminal filesystem
+    DevPts,
+    /// configfs virtual filesystem
+    ConfigFs,
+    /// FUSE (Filesystem in Userspace)
+    Fuse,
+    /// Persistent store filesystem (pstore)
+    PStore,
+    /// Automounter filesystem (autofs)
+    AutoFs,
+    /// FS-Cache backing cache (cachefiles)
+    CacheFiles,
 }
 
 impl fmt::Display for FileSystemType {
@@ -131,6 +150,14 @@ impl fmt::Display for FileSystemType {
             FileSystemType::Smb => write!(f, "smb"),
             FileSystemType::Udf => write!(f, "udf"),
             FileSystemType::RomFs => write!(f, "romfs"),
+            FileSystemType::Proc => write!(f, "proc"),
+            FileSystemType::DebugFs => write!(f, "debugfs"),
+            FileSystemType::DevPts => write!(f, "devpts"),
+            FileSystemType::ConfigFs => write!(f, "configfs"),
+            FileSystemType::Fuse => write!(f, "fuse"),
+            FileSystemType::PStore => write!(f, "pstore"),
+            FileSystemType::AutoFs => write!(f, "autofs"),
+            FileSystemType::CacheFiles => write!(f, "cachefiles"),
         }
     }
 }

@@ -47,6 +47,9 @@ pub enum DeviceType {
     Watchdog,
     /// Block storage device (/dev/vda, /dev/sda, etc.)
     BlockStorage,
+    /// Input event device (/dev/input0, /dev/input1, ...). Emits Linux
+    /// `struct input_event` records sourced from `crate::drivers::input_manager`.
+    Input,
 }
 
 /// Device node information
@@ -484,6 +487,10 @@ impl FileSystem for DevFs {
                     .map_err(|_| FsError::IoError)?;
                 Ok(buffer.len())
             }
+            DeviceType::Input => {
+                drop(devices);
+                read_input_event(buffer)
+            }
             _ => Err(FsError::NotSupported),
         }
     }
@@ -711,6 +718,174 @@ impl DevFs {
             _ => None,
         }
     }
+}
+
+// ── /dev/inputN support ─────────────────────────────────────────────────
+//
+// Encodes real events from `crate::drivers::input_manager` as Linux
+// `struct input_event { time, type, code, value }` records (24 bytes on
+// x86_64: 2x i64 timeval + u16 + u16 + i32), mirroring the encoding used by
+// `crate::vfs::devfs`'s already-wired `/dev/input/event0` node so userspace
+// evdev consumers (e.g. libinput probes) see the same wire format regardless
+// of which devfs tree services the open() call.
+
+const INPUT_EVENT_SIZE: usize = 24;
+const EV_SYN: u16 = 0;
+const EV_KEY: u16 = 1;
+const EV_REL: u16 = 2;
+const EV_ABS: u16 = 3;
+const SYN_REPORT: u16 = 0;
+const REL_WHEEL: u16 = 8;
+const ABS_X: u16 = 0;
+const ABS_Y: u16 = 1;
+const BTN_LEFT: u16 = 0x110;
+const BTN_RIGHT: u16 = 0x111;
+const BTN_MIDDLE: u16 = 0x112;
+const BTN_SIDE: u16 = 0x113;
+const BTN_EXTRA: u16 = 0x114;
+
+fn put_input_event(buf: &mut [u8], ty: u16, code: u16, value: i32) -> usize {
+    if buf.len() < INPUT_EVENT_SIZE {
+        return 0;
+    }
+
+    let uptime_us = crate::time::uptime_ms().saturating_mul(1000);
+    let sec = (uptime_us / 1_000_000) as i64;
+    let usec = (uptime_us % 1_000_000) as i64;
+
+    buf[0..8].copy_from_slice(&sec.to_le_bytes());
+    buf[8..16].copy_from_slice(&usec.to_le_bytes());
+    buf[16..18].copy_from_slice(&ty.to_le_bytes());
+    buf[18..20].copy_from_slice(&code.to_le_bytes());
+    buf[20..24].copy_from_slice(&value.to_le_bytes());
+    INPUT_EVENT_SIZE
+}
+
+fn key_event_code(event: crate::keyboard::KeyEvent) -> Option<u16> {
+    match event {
+        crate::keyboard::KeyEvent::CharacterPress(c)
+        | crate::keyboard::KeyEvent::CharacterRelease(c) => ascii_key_code(c),
+        crate::keyboard::KeyEvent::SpecialPress(key)
+        | crate::keyboard::KeyEvent::SpecialRelease(key) => special_key_code(key),
+        crate::keyboard::KeyEvent::RawPress(code) | crate::keyboard::KeyEvent::RawRelease(code) => {
+            Some(code as u16)
+        }
+    }
+}
+
+fn ascii_key_code(c: char) -> Option<u16> {
+    let c = c.to_ascii_lowercase();
+    match c {
+        'a'..='z' => Some(30 + (c as u8 - b'a') as u16),
+        '1'..='9' => Some(2 + (c as u8 - b'1') as u16),
+        '0' => Some(11),
+        ' ' => Some(57),
+        '\n' | '\r' => Some(28),
+        '\t' => Some(15),
+        _ => None,
+    }
+}
+
+fn special_key_code(key: crate::keyboard::SpecialKey) -> Option<u16> {
+    use crate::keyboard::SpecialKey;
+
+    match key {
+        SpecialKey::Escape => Some(1),
+        SpecialKey::Backspace => Some(14),
+        SpecialKey::Tab => Some(15),
+        SpecialKey::Enter => Some(28),
+        SpecialKey::LeftCtrl => Some(29),
+        SpecialKey::LeftShift => Some(42),
+        SpecialKey::RightShift => Some(54),
+        SpecialKey::LeftAlt => Some(56),
+        SpecialKey::Space => Some(57),
+        SpecialKey::CapsLock => Some(58),
+        SpecialKey::F1 => Some(59),
+        SpecialKey::F2 => Some(60),
+        SpecialKey::F3 => Some(61),
+        SpecialKey::F4 => Some(62),
+        SpecialKey::F5 => Some(63),
+        SpecialKey::F6 => Some(64),
+        SpecialKey::F7 => Some(65),
+        SpecialKey::F8 => Some(66),
+        SpecialKey::F9 => Some(67),
+        SpecialKey::F10 => Some(68),
+        SpecialKey::F11 => Some(87),
+        SpecialKey::F12 => Some(88),
+        SpecialKey::ArrowUp => Some(103),
+        SpecialKey::ArrowLeft => Some(105),
+        SpecialKey::ArrowRight => Some(106),
+        SpecialKey::ArrowDown => Some(108),
+        SpecialKey::Home => Some(102),
+        SpecialKey::End => Some(107),
+        SpecialKey::PageUp => Some(104),
+        SpecialKey::PageDown => Some(109),
+        SpecialKey::Insert => Some(110),
+        SpecialKey::Delete => Some(111),
+        SpecialKey::NumLock => Some(69),
+        SpecialKey::ScrollLock => Some(70),
+    }
+}
+
+fn mouse_button_code(button: crate::drivers::input_manager::MouseButton) -> u16 {
+    match button {
+        crate::drivers::input_manager::MouseButton::Left => BTN_LEFT,
+        crate::drivers::input_manager::MouseButton::Right => BTN_RIGHT,
+        crate::drivers::input_manager::MouseButton::Middle => BTN_MIDDLE,
+        crate::drivers::input_manager::MouseButton::Button4 => BTN_SIDE,
+        crate::drivers::input_manager::MouseButton::Button5 => BTN_EXTRA,
+    }
+}
+
+/// Read the next pending input event (if any) into `buf`, encoded as one or
+/// more back-to-back `struct input_event` records terminated by a SYN_REPORT.
+/// Returns `Ok(0)` (not an error) when no event is currently queued, matching
+/// the non-blocking-read convention `crate::drivers::input_manager` callers
+/// already rely on elsewhere in the kernel.
+fn read_input_event(buf: &mut [u8]) -> FsResult<usize> {
+    if buf.len() < INPUT_EVENT_SIZE {
+        return Err(FsError::InvalidArgument);
+    }
+
+    let Some(event) = crate::drivers::input_manager::get_event() else {
+        return Ok(0);
+    };
+
+    let mut written = match event {
+        crate::drivers::input_manager::InputEvent::KeyPress(key) => {
+            let Some(code) = key_event_code(key) else {
+                return Ok(0);
+            };
+            put_input_event(buf, EV_KEY, code, 1)
+        }
+        crate::drivers::input_manager::InputEvent::KeyRelease(key) => {
+            let Some(code) = key_event_code(key) else {
+                return Ok(0);
+            };
+            put_input_event(buf, EV_KEY, code, 0)
+        }
+        crate::drivers::input_manager::InputEvent::MouseButtonDown { button, .. } => {
+            put_input_event(buf, EV_KEY, mouse_button_code(button), 1)
+        }
+        crate::drivers::input_manager::InputEvent::MouseButtonUp { button, .. } => {
+            put_input_event(buf, EV_KEY, mouse_button_code(button), 0)
+        }
+        crate::drivers::input_manager::InputEvent::MouseScroll { delta, .. } => {
+            put_input_event(buf, EV_REL, REL_WHEEL, delta as i32)
+        }
+        crate::drivers::input_manager::InputEvent::MouseMove { x, y } => {
+            let mut total = put_input_event(buf, EV_ABS, ABS_X, x as i32);
+            if buf.len() >= total + INPUT_EVENT_SIZE {
+                total += put_input_event(&mut buf[total..], EV_ABS, ABS_Y, y as i32);
+            }
+            total
+        }
+    };
+
+    if buf.len() >= written + INPUT_EVENT_SIZE {
+        written += put_input_event(&mut buf[written..], EV_SYN, SYN_REPORT, 0);
+    }
+    Ok(written)
 }
 
 /// Create device node (for use by device drivers)

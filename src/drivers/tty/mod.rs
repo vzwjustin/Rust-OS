@@ -207,11 +207,76 @@ pub fn init() {
     pty::init();
 }
 
-/// Poll hardware (serial RX, virtio-console RX) into the console TTY.
+/// Poll hardware (serial RX, virtio-console RX, PS/2 keyboard) into the
+/// console TTY.
 pub fn poll_input() {
     serial_tty::poll_rx();
     if crate::drivers::virtio::console::is_available() {
         crate::drivers::virtio::console::poll_tty_input();
+    }
+    poll_keyboard();
+}
+
+/// Drain PS/2 keyboard events into the console TTY line discipline.
+///
+/// Uses `keyboard::get_key_event()` which returns properly decoded key
+/// events (with shift / caps-lock / modifier handling via the `pc_keyboard`
+/// crate) rather than raw scancodes.  Each press event is mapped to the
+/// appropriate byte for the N_TTY line discipline:
+///
+/// * `CharacterPress(c)` → the ASCII byte for `c`
+/// * `SpecialPress(Enter)` → `b'\r'` (ICRNL in the line discipline converts
+///   this to `b'\n'`, which commits the canonical line)
+/// * `SpecialPress(Backspace)` → `127` (DEL, matching the default VERASE)
+/// * `SpecialPress(Tab)` → `b'\t'`
+/// * `SpecialPress(Escape)` → `0x1b`
+///
+/// Echo output produced by the line discipline is sent to both the serial
+/// port and the VGA text buffer so typed characters appear on screen.
+fn poll_keyboard() {
+    use crate::keyboard::{get_key_event, KeyEvent, SpecialKey};
+
+    // Collect all available key events into a single buffer so we can push
+    // them through the line discipline in one shot.
+    let mut data: Vec<u8> = Vec::new();
+    while let Some(event) = get_key_event() {
+        if let Some(byte) = key_event_to_byte(event) {
+            data.push(byte);
+        }
+    }
+
+    if data.is_empty() {
+        return;
+    }
+
+    // Push the decoded bytes through the N_TTY line discipline.
+    let mut echo_opt: Option<Vec<u8>> = Some(Vec::new());
+    let mut console = CONSOLE_TTY.lock();
+    n_tty::tty_push_input(&mut console, &data, &mut echo_opt);
+    drop(console);
+
+    // Route echo output to serial AND VGA so typed characters are visible
+    // on the screen as well as on the serial console.
+    if let Some(echo) = echo_opt {
+        if !echo.is_empty() {
+            serial_tty::transmit(&echo);
+            crate::vga_buffer::write_bytes(&echo);
+        }
+    }
+}
+
+/// Map a keyboard `KeyEvent` (press only) to the byte the N_TTY line
+/// discipline expects.  Key-release events and unmapped special keys return
+/// `None` and are silently dropped.
+fn key_event_to_byte(event: crate::keyboard::KeyEvent) -> Option<u8> {
+    use crate::keyboard::{KeyEvent, SpecialKey};
+    match event {
+        KeyEvent::CharacterPress(c) if c.is_ascii() => Some(c as u8),
+        KeyEvent::SpecialPress(SpecialKey::Enter) => Some(b'\r'),
+        KeyEvent::SpecialPress(SpecialKey::Backspace) => Some(127), // DEL = VERASE
+        KeyEvent::SpecialPress(SpecialKey::Tab) => Some(b'\t'),
+        KeyEvent::SpecialPress(SpecialKey::Escape) => Some(0x1b),
+        _ => None,
     }
 }
 
@@ -224,7 +289,11 @@ pub fn read_console(buf: &mut [u8]) -> usize {
 pub fn write_console(buf: &[u8]) -> usize {
     with_console(|port| {
         let processed = n_tty::process_output(port.termios, buf);
+        // Write to VGA text buffer so output appears on the screen.
+        crate::vga_buffer::write_bytes(&processed);
+        // Send to serial port (COM1).
         let n = serial_tty::transmit(&processed);
+        // Send to virtio-console if available.
         if crate::drivers::virtio::console::is_available() {
             let _ = crate::drivers::virtio::console::send(&processed);
         }

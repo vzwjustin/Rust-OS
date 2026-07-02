@@ -57,52 +57,55 @@ pub const WORKSPACE_COUNT: usize = 4;
 pub mod colors {
     use crate::graphics::framebuffer::Color;
 
-    // Ubuntu / Yaru desktop palette (Jammy-style aubergine wallpaper, dark panel,
-    // left dock, Ubuntu orange accents).
-    pub const DESKTOP_BACKGROUND_TOP: Color = Color::rgb(44, 0, 30); // #2C001E
-    pub const DESKTOP_BACKGROUND_BOTTOM: Color = Color::rgb(94, 39, 80); // #5E2750
-    pub const DESKTOP_GLOW: Color = Color::rgb(233, 84, 32); // #E95420 Ubuntu orange
-    pub const MENU_BAR_BACKGROUND: Color = Color::rgb(26, 26, 26);
-    pub const MENU_BAR_TOP: Color = Color::rgb(30, 30, 30);
-    pub const MENU_BAR_BOTTOM: Color = Color::rgb(19, 19, 19);
-    pub const DOCK_TOP: Color = Color::rgb(48, 48, 48);
-    pub const DOCK_BOTTOM: Color = Color::rgb(36, 36, 36);
-    pub const TITLE_ACTIVE_TOP: Color = Color::rgb(119, 41, 83); // aubergine accent
-    pub const TITLE_ACTIVE_BOTTOM: Color = Color::rgb(94, 39, 80);
-    pub const MENU_BAR_HIGHLIGHT: Color = Color::rgb(55, 55, 55);
-    pub const MENU_BAR_ACCENT: Color = Color::rgb(12, 12, 12);
+    // Vanilla GNOME Shell / Adwaita dark palette: near-black panel and dock
+    // (#1e1e1e-#241f31 range), deep neutral desktop background, and a single
+    // Adwaita blue (#3584E4) accent used consistently for focus, selection,
+    // and highlight states — matching upstream GNOME rather than a
+    // distro-specific (Ubuntu/Yaru orange) theme.
+    pub const DESKTOP_BACKGROUND_TOP: Color = Color::rgb(32, 30, 42); // #201E2A
+    pub const DESKTOP_BACKGROUND_BOTTOM: Color = Color::rgb(20, 19, 26); // #14131A
+    pub const DESKTOP_GLOW: Color = Color::rgb(53, 132, 228); // #3584E4 Adwaita/GNOME blue
+    pub const MENU_BAR_BACKGROUND: Color = Color::rgb(30, 30, 30); // #1E1E1E
+    pub const MENU_BAR_TOP: Color = Color::rgb(36, 31, 49); // #241F31 GNOME panel
+    pub const MENU_BAR_BOTTOM: Color = Color::rgb(24, 21, 32);
+    pub const DOCK_TOP: Color = Color::rgb(36, 31, 49); // #241F31 GNOME panel, matches top bar
+    pub const DOCK_BOTTOM: Color = Color::rgb(26, 23, 35);
+    pub const TITLE_ACTIVE_TOP: Color = Color::rgb(53, 132, 228); // GNOME blue accent
+    pub const TITLE_ACTIVE_BOTTOM: Color = Color::rgb(38, 100, 180);
+    pub const MENU_BAR_HIGHLIGHT: Color = Color::rgb(55, 55, 60);
+    pub const MENU_BAR_ACCENT: Color = Color::rgb(14, 12, 18);
     pub const MENU_BAR_ICON: Color = Color::rgb(255, 255, 255);
     pub const DESKTOP_BACKGROUND: Color = DESKTOP_BACKGROUND_TOP;
     pub const WINDOW_BACKGROUND: Color = Color::rgb(250, 250, 250);
     pub const WINDOW_SURFACE_TOP: Color = Color::rgb(255, 255, 255);
     pub const WINDOW_SURFACE_BOTTOM: Color = Color::rgb(245, 245, 245);
     pub const WINDOW_SURFACE_ALT: Color = Color::rgb(248, 248, 248);
-    pub const WINDOW_SHADOW: Color = Color::rgb(8, 4, 12);
-    pub const TITLE_BAR_ACTIVE: Color = Color::rgb(119, 41, 83);
+    pub const WINDOW_SHADOW: Color = Color::rgb(6, 6, 10);
+    pub const TITLE_BAR_ACTIVE: Color = Color::rgb(53, 132, 228);
     pub const TITLE_BAR_INACTIVE: Color = Color::rgb(90, 90, 90);
     pub const TITLE_INACTIVE_TOP: Color = Color::rgb(100, 100, 100);
     pub const TITLE_INACTIVE_BOTTOM: Color = Color::rgb(70, 70, 70);
-    pub const BORDER_ACTIVE: Color = Color::rgb(233, 84, 32);
-    pub const BORDER_INACTIVE: Color = Color::rgb(120, 120, 120);
+    pub const BORDER_ACTIVE: Color = Color::rgb(53, 132, 228); // GNOME blue focus ring
+    pub const BORDER_INACTIVE: Color = Color::rgb(90, 90, 96);
     pub const TEXT_COLOR: Color = Color::rgb(28, 28, 28);
     pub const TEXT_COLOR_WHITE: Color = Color::rgb(255, 255, 255);
-    pub const TEXT_COLOR_MUTED: Color = Color::rgb(140, 140, 140);
-    pub const SHELL_BACKGROUND_TOP: Color = Color::rgb(44, 0, 30);
-    pub const SHELL_BACKGROUND_BOTTOM: Color = Color::rgb(26, 26, 26);
+    pub const TEXT_COLOR_MUTED: Color = Color::rgb(154, 153, 150); // Adwaita muted gray
+    pub const SHELL_BACKGROUND_TOP: Color = Color::rgb(32, 30, 42);
+    pub const SHELL_BACKGROUND_BOTTOM: Color = Color::rgb(24, 21, 32);
     pub const SHELL_TEXT: Color = Color::rgb(255, 255, 255);
-    pub const SHELL_PROMPT: Color = Color::rgb(233, 84, 32);
+    pub const SHELL_PROMPT: Color = Color::rgb(53, 132, 228);
     pub const BUTTON_BACKGROUND: Color = Color::rgb(245, 245, 245);
     pub const BUTTON_HOVER: Color = Color::rgb(235, 235, 235);
     pub const BUTTON_PRESSED: Color = Color::rgb(220, 220, 220);
-    pub const DOCK_BACKGROUND: Color = Color::rgb(44, 44, 44);
-    pub const DOCK_GLASS: Color = Color::rgb(58, 58, 58);
-    pub const DOCK_HIGHLIGHT: Color = Color::rgb(72, 72, 72);
-    pub const DOCK_ICON_ACCENT: Color = Color::rgb(233, 84, 32);
+    pub const DOCK_BACKGROUND: Color = Color::rgb(36, 31, 49);
+    pub const DOCK_GLASS: Color = Color::rgb(46, 42, 56);
+    pub const DOCK_HIGHLIGHT: Color = Color::rgb(60, 56, 70);
+    pub const DOCK_ICON_ACCENT: Color = Color::rgb(53, 132, 228); // GNOME blue
     pub const DOCK_INDICATOR: Color = Color::rgb(255, 255, 255);
     pub const WINDOW_BTN_MIN: Color = Color::rgb(255, 189, 68);
     pub const WINDOW_BTN_MAX: Color = Color::rgb(40, 200, 64);
     pub const WINDOW_BTN_CLOSE: Color = Color::rgb(255, 95, 87);
-    pub const FM_SELECTION: Color = Color::rgb(233, 84, 32);
+    pub const FM_SELECTION: Color = Color::rgb(53, 132, 228);
 }
 
 /// Window state enumeration
@@ -227,7 +230,7 @@ pub enum DesktopEvent {
 pub struct WindowId(pub usize);
 
 /// Keyboard focus tracker for the window manager, implementing
-/// `mutter_port::clutter::focus::Focus<WindowId>`.
+/// `clutter_compat::focus::Focus<WindowId>`.
 ///
 /// This routes the "which window has keyboard focus" state through the
 /// ported Mutter `ClutterFocus` abstraction. The `Focus` trait manages
@@ -243,11 +246,11 @@ pub struct WindowFocus {
     current: Option<WindowId>,
 }
 
-impl crate::mutter_port::clutter::focus::Focus<WindowId> for WindowFocus {
+impl crate::desktop::clutter_compat::focus::Focus<WindowId> for WindowFocus {
     fn set_current_actor(
         &mut self,
         actor: Option<WindowId>,
-        _source_device: Option<crate::mutter_port::clutter::event::DeviceId>,
+        _source_device: Option<crate::desktop::clutter_compat::event::DeviceId>,
         _time_ms: u32,
     ) -> bool {
         if self.current == actor {
@@ -489,18 +492,18 @@ pub struct WindowManager {
     /// Index of the last slide applied to the background, so we only
     /// crossfade when the slide actually changes (not every tick).
     last_slide_index: Option<usize>,
-    /// Keyboard focus state, routed through `mutter_port::clutter::focus::Focus`.
+    /// Keyboard focus state, routed through `clutter_compat::focus::Focus`.
     /// Tracks which window currently has keyboard focus; `focus_window`
     /// delegates to this, and the visual updates (border/title-bar
     /// colors) are applied based on the result.
     focus: WindowFocus,
-    /// Input grab stack, routed through `mutter_port::clutter::grab::GrabStack`.
+    /// Input grab stack, routed through `clutter_compat::grab::GrabStack`.
     /// Tracks the active drag/resize grab. When the user clicks a title
     /// bar, a move grab is activated; when the user clicks the resize
     /// handle, a resize grab is activated. Mouse-up dismisses the grab.
     /// The `dragging_window`/`resizing_window` fields are projections of
     /// the topmost grab's kind + actor.
-    grab_stack: crate::mutter_port::clutter::grab::GrabStack<WindowId>,
+    grab_stack: crate::desktop::clutter_compat::grab::GrabStack<WindowId>,
 }
 
 impl WindowManager {
@@ -576,7 +579,7 @@ impl WindowManager {
             bg_crossfade: None,
             last_slide_index: None,
             focus: WindowFocus::default(),
-            grab_stack: crate::mutter_port::clutter::grab::GrabStack::new(),
+            grab_stack: crate::desktop::clutter_compat::grab::GrabStack::new(),
         }
     }
 
@@ -888,7 +891,7 @@ impl WindowManager {
     /// When the slide show advances to a new fixed slide, a
     /// `BgCrossfade` is started to smoothly transition from the old
     /// color to the new one using the `EaseInOutCubic` easing curve
-    /// (via `mutter_port::clutter::easing`). The crossfade is ticked
+    /// (via `clutter_compat::easing`). The crossfade is ticked
     /// each frame until it completes, then the background's solid color
     /// is committed. For gradient (transitioning) slides, the color is
     /// set directly each tick (the gradient itself is the animation).
@@ -1771,7 +1774,7 @@ impl WindowManager {
                 self.focus_window(window_id);
             } else {
                 // Clear focus through the Focus trait abstraction.
-                use crate::mutter_port::clutter::focus as mfocus;
+                use crate::desktop::clutter_compat::focus as mfocus;
                 let _ =
                     mfocus::set_current_actor(&mut self.focus, None, None, mfocus::CURRENT_TIME);
                 self.focused_window = None;
@@ -1871,7 +1874,7 @@ impl WindowManager {
         // `true` iff the focus actually moved. The visual updates
         // (border/title-bar colors) are applied to all windows based
         // on which one is focused.
-        use crate::mutter_port::clutter::focus as mfocus;
+        use crate::desktop::clutter_compat::focus as mfocus;
 
         // Check the window exists first (the Focus trait doesn't know
         // about the window list).
@@ -2250,7 +2253,7 @@ impl WindowManager {
                 window.state = WindowState::Normal;
             } else if !visible && self.focused_window == Some(window_id) {
                 // Clear focus through the Focus trait abstraction.
-                use crate::mutter_port::clutter::focus as mfocus;
+                use crate::desktop::clutter_compat::focus as mfocus;
                 let _ =
                     mfocus::set_current_actor(&mut self.focus, None, None, mfocus::CURRENT_TIME);
                 self.focused_window = None;
@@ -2892,10 +2895,10 @@ impl WindowManager {
                     let handle_y = win_y + win_height.saturating_sub(RESIZE_HANDLE_SIZE);
                     if x >= handle_x && y >= handle_y {
                         // Route through the ported Mutter grab stack.
-                        let grab = crate::mutter_port::clutter::grab::Grab::with_kind(
+                        let grab = crate::desktop::clutter_compat::grab::Grab::with_kind(
                             window_id,
                             false,
-                            crate::mutter_port::clutter::grab::GrabKind::Resize,
+                            crate::desktop::clutter_compat::grab::GrabKind::Resize,
                         );
                         self.grab_stack.activate(grab);
                         self.resizing_window = Some(window_id);
@@ -2911,10 +2914,10 @@ impl WindowManager {
                 let title_rect = Rect::new(win_x, win_y, win_width, TITLE_BAR_HEIGHT);
                 if title_rect.contains(x, y) {
                     // Route through the ported Mutter grab stack.
-                    let grab = crate::mutter_port::clutter::grab::Grab::with_kind(
+                    let grab = crate::desktop::clutter_compat::grab::Grab::with_kind(
                         window_id,
                         false,
-                        crate::mutter_port::clutter::grab::GrabKind::Move,
+                        crate::desktop::clutter_compat::grab::GrabKind::Move,
                     );
                     self.grab_stack.activate(grab);
                     self.dragging_window = Some(window_id);
@@ -3626,23 +3629,25 @@ impl WindowManager {
             crate::graphics::framebuffer::fill_rect(stripe, color);
         }
 
-        // Ubuntu Jammy-style wallpaper accents: soft orange orb + aubergine glow.
+        // GNOME-style abstract wallpaper: soft Adwaita-blue glow (lower right)
+        // plus a dim violet counter-glow (upper left) for depth — built from
+        // concentric flat-color circles since there is no image decoder.
         let orb_cx = self.desktop_rect.x + width * 3 / 4;
         let orb_cy = self.desktop_rect.y + height * 4 / 5;
         for (radius, color) in [
-            (140usize, Color::rgb(180, 50, 20)),
-            (110, Color::rgb(210, 70, 28)),
-            (82, Color::rgb(233, 84, 32)),
-            (58, Color::rgb(245, 120, 60)),
+            (140usize, Color::rgb(18, 42, 74)),
+            (110, Color::rgb(24, 60, 104)),
+            (82, Color::rgb(31, 84, 140)),
+            (58, Color::rgb(53, 132, 228)),
         ] {
             crate::graphics::primitives::fill_circle(orb_cx, orb_cy, radius, color);
         }
         let glow_cx = self.desktop_rect.x + width / 5;
         let glow_cy = self.desktop_rect.y + height / 3;
         for (radius, color) in [
-            (120usize, Color::rgb(60, 10, 45)),
-            (90, Color::rgb(94, 39, 80)),
-            (62, Color::rgb(119, 41, 83)),
+            (120usize, Color::rgb(38, 24, 54)),
+            (90, Color::rgb(52, 34, 74)),
+            (62, Color::rgb(68, 46, 96)),
         ] {
             crate::graphics::primitives::fill_circle(glow_cx, glow_cy, radius, color);
         }
@@ -4324,8 +4329,17 @@ impl WindowManager {
             colors::MENU_BAR_ICON,
             font,
         );
+        // Real GNOME Shell keeps the clock dead-center in the panel at all
+        // times, so reserve a fixed center zone for it before laying out the
+        // (non-upstream-GNOME, but functionally useful) per-window task
+        // chips, and stop the chips well clear of that zone.
+        let clock = self.wall_clock_string();
+        let clock_width = clock.len() * font.char_width;
+        let clock_x =
+            self.menu_bar_rect.x + (self.menu_bar_rect.width.saturating_sub(clock_width)) / 2;
+
         let mut task_x = self.menu_bar_rect.x + 120;
-        let task_limit = self.menu_bar_rect.width.saturating_sub(160);
+        let task_limit = clock_x.saturating_sub(24);
         for window in self
             .windows
             .iter()
@@ -4359,30 +4373,19 @@ impl WindowManager {
         self.render_workspace_switcher();
         self.render_system_tray(text_y);
 
-        // Notification badge (between system tray and clock)
+        // Centered clock (GNOME Shell convention: Activities top-left, clock
+        // dead-center, status indicators top-right — never clock-on-the-right).
+        crate::graphics::draw_text(&clock, clock_x, text_y, colors::MENU_BAR_ICON, font);
+
+        // Notification badge: a small accent dot just left of the clock,
+        // GNOME-Shell-style (unread count shown via the message tray dot
+        // rather than crowding the clock text itself).
         let unread = self.notifications.unread_count();
         if unread > 0 {
-            let badge_str = if unread < 10 {
-                format!("({})", unread)
-            } else {
-                format!("(9+)")
-            };
-            let badge_w = badge_str.len() * font.char_width;
-            let clock_w = self.wall_clock_string().len() * font.char_width;
-            let badge_x = self.menu_bar_rect.x
-                + self
-                    .menu_bar_rect
-                    .width
-                    .saturating_sub(clock_w + badge_w + 20);
-            crate::graphics::draw_text(&badge_str, badge_x, text_y, colors::DOCK_ICON_ACCENT, font);
+            let dot_x = clock_x.saturating_sub(10);
+            let dot_y = self.menu_bar_rect.y + MENU_BAR_HEIGHT / 2;
+            crate::graphics::primitives::fill_circle(dot_x, dot_y, 3, colors::DOCK_ICON_ACCENT);
         }
-
-        let clock = self.wall_clock_string();
-        let right_text = format!("{}", clock);
-        let right_width = right_text.len() * font.char_width;
-        let right_x =
-            self.menu_bar_rect.x + self.menu_bar_rect.width.saturating_sub(right_width + 12);
-        crate::graphics::draw_text(&right_text, right_x, text_y, colors::MENU_BAR_ICON, font);
     }
 
     fn render_dock(&self) {
@@ -4441,8 +4444,90 @@ impl WindowManager {
         );
     }
 
+    /// Draw a small geometric glyph for a dock icon slot, built entirely
+    /// from rect/line/circle primitives (no image decoder is available, so
+    /// icons must read as shapes, not photographic thumbnails). `inner` is
+    /// the icon's content square (already inset from the tile border).
+    fn draw_dock_glyph(&self, slot: usize, inner: Rect, color: Color) {
+        use crate::graphics::framebuffer::{draw_rect, fill_rect};
+        use crate::graphics::primitives::draw_line;
+
+        let x = inner.x;
+        let y = inner.y;
+        let w = inner.width;
+        let h = inner.height;
+
+        match slot {
+            // Terminal: ">_" prompt chevron + cursor underscore.
+            0 => {
+                let cx = x + w * 3 / 10;
+                let top = y + h * 3 / 10;
+                let mid = y + h / 2;
+                let bot = y + h * 7 / 10;
+                draw_line(cx, top, cx + w / 3, mid, color);
+                draw_line(cx + w / 3, mid, cx, bot, color);
+                let ul_y = y + h * 7 / 10;
+                fill_rect(Rect::new(cx + w / 3 + 3, ul_y, w * 2 / 5, 2), color);
+            }
+            // Files: folder — back tab + body, drawn as two stacked rects.
+            1 => {
+                let tab_w = w * 2 / 5;
+                fill_rect(Rect::new(x, y + h / 6, tab_w, h / 6), color);
+                let body = Rect::new(x, y + h / 3, w, h * 2 / 3);
+                draw_rect(body, color, 2);
+            }
+            // System monitor: display + stand.
+            2 => {
+                let screen = Rect::new(x, y, w, h * 2 / 3);
+                draw_rect(screen, color, 2);
+                let stand = Rect::new(x + w * 3 / 8, y + h * 2 / 3 + 2, w / 4, h / 8);
+                fill_rect(stand, color);
+                let base = Rect::new(x + w / 4, y + h - 3, w / 2, 2);
+                fill_rect(base, color);
+            }
+            // Show Applications: classic GNOME 3x3 dot grid.
+            3 => {
+                let dot = (w / 6).max(2);
+                let gap_x = (w.saturating_sub(dot * 3)) / 4;
+                let gap_y = (h.saturating_sub(dot * 3)) / 4;
+                for row in 0..3 {
+                    for col in 0..3 {
+                        let dx = x + gap_x + col * (dot + gap_x);
+                        let dy = y + gap_y + row * (dot + gap_y);
+                        fill_rect(Rect::new(dx, dy, dot, dot), color);
+                    }
+                }
+            }
+            // Text editor: document outline + text lines.
+            4 => {
+                let doc = Rect::new(x + w / 6, y, w * 2 / 3, h);
+                draw_rect(doc, color, 2);
+                for i in 0..3 {
+                    let ly = y + h / 4 + i * (h / 4);
+                    if ly + 2 > y + h {
+                        break;
+                    }
+                    fill_rect(Rect::new(x + w / 6 + 4, ly, w * 2 / 3 - 8, 2), color);
+                }
+            }
+            // Network: ascending signal-strength bars.
+            5 => {
+                let bar_w = (w / 5).max(2);
+                let gap = 3;
+                for i in 0..3 {
+                    let bar_h = h * (i + 1) / 3;
+                    let bx = x + i * (bar_w + gap);
+                    let by = y + h - bar_h;
+                    fill_rect(Rect::new(bx, by, bar_w, bar_h), color);
+                }
+            }
+            _ => {
+                fill_rect(inner, color);
+            }
+        }
+    }
+
     fn render_dock_icons(&self, launcher_rect: Rect) {
-        let font = crate::graphics::get_default_font();
         let icon_x = launcher_rect.x + (launcher_rect.width.saturating_sub(DOCK_ICON_SIZE)) / 2;
         let mut icon_y = launcher_rect.y + 16;
         let icon_colors = [
@@ -4453,7 +4538,6 @@ impl WindowManager {
             Color::rgb(241, 196, 15),
             Color::rgb(155, 89, 182),
         ];
-        let icon_labels = ["Tm", "Fi", "Mo", "St", "Tx", "Nw"];
 
         for i in 0..DOCK_ICON_COUNT {
             if icon_y + DOCK_ICON_SIZE > launcher_rect.y + launcher_rect.height {
@@ -4497,11 +4581,9 @@ impl WindowManager {
                 Self::shade_color(icon_color, -14),
             );
 
-            let label = icon_labels[i % icon_labels.len()];
-            let label_x =
-                icon_x + (DOCK_ICON_SIZE.saturating_sub(label.len() * font.char_width)) / 2;
-            let label_y = icon_y + (DOCK_ICON_SIZE.saturating_sub(font.char_height)) / 2;
-            crate::graphics::draw_text(label, label_x, label_y, colors::DOCK_INDICATOR, font);
+            // Geometric glyph (shape language, not text) drawn in white on
+            // top of the icon's flat-color tile — reads clearly at 42x42.
+            self.draw_dock_glyph(i, inner, colors::DOCK_INDICATOR);
 
             if window_for_slot.is_some() {
                 let indicator = Rect::new(

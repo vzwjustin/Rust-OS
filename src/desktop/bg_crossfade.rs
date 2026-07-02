@@ -8,7 +8,7 @@
 //! blending from the start color to the end color per-pixel.
 
 use crate::graphics::framebuffer::{self, Color, Rect};
-use crate::mutter_port::clutter::easing::{easing_for_mode, AnimationMode};
+use crate::desktop::clutter_compat::easing::{easing_for_mode, AnimationMode};
 
 /// Total crossfade duration in seconds (matches upstream default).
 const DEFAULT_DURATION_MS: u64 = 750;
