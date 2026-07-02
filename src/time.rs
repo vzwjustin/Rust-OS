@@ -757,7 +757,16 @@ pub fn timer_tick() {
 
 /// Update timer statistics and handle timer-specific operations
 fn update_timer_statistics() {
-    let timer_manager = TIMER_MANAGER.lock();
+    // Called from the timer IRQ handler (`timer_tick`), so this must never
+    // block-acquire TIMER_MANAGER: thread context (e.g. `uptime_ms`) can hold
+    // the lock when this interrupt fires, and a plain spin::Mutex isn't
+    // IRQ-safe/reentrant — blocking here self-deadlocks the CPU forever
+    // (the lock holder can't resume to release it until this ISR returns).
+    // The stats below are best-effort bookkeeping, so skip this tick on
+    // contention rather than block.
+    let Some(timer_manager) = TIMER_MANAGER.try_lock() else {
+        return;
+    };
 
     if let Some(timer_type) = timer_manager.get_active_timer_type() {
         match timer_type {
@@ -1042,9 +1051,16 @@ pub fn sleep_ms(ms: u64) {
     let start = uptime_ms();
     let target = start + ms;
 
+    // Actually halt between checks instead of busy-spinning. Under KVM with
+    // legacy PIC/PIT delivery, a vCPU that never HLTs starves the in-kernel
+    // PIT's interrupt reinjection: a guest that only ever spin_loop()s can
+    // see IRQ0 delivery throttle from ~1kHz down to single-digit Hz within
+    // seconds (confirmed: identical boot ticks at the correct ~1kHz rate
+    // under `-accel tcg`, which has no such reinjection path). `hlt` also
+    // means the interrupt that wakes us updates uptime_ms() the moment we
+    // resume, instead of only being noticed on the next poll of a spin loop.
     while uptime_ms() < target {
-        // Use pause instruction to be more CPU-friendly
-        core::hint::spin_loop();
+        x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
 

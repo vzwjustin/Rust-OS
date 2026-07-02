@@ -29,6 +29,7 @@ backup_*.tar.gz
 /userspace/rootfs/
 /userspace/installer-rootfs/
 /userspace/*.cpio
+/userspace/*/target/
 
 # Deepwork session state (local only)
 .slim/deepwork/
