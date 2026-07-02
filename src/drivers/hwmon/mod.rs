@@ -97,6 +97,16 @@ unsafe fn rdmsr(msr: u32) -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
+/// CPUID leaf 6, EAX bit 0: Digital Thermal Sensor support. Reading the
+/// thermal/perf-status MSRs below on hardware/hypervisors that don't report
+/// this bit (e.g. QEMU's default `qemu64` CPU model) raises #GP, which this
+/// kernel cannot recover from — so probe before touching any of them.
+/// Mirrors the identical guard in `drivers/thermal/mod.rs`.
+fn cpu_has_digital_thermal_sensor() -> bool {
+    let leaf = unsafe { core::arch::x86_64::__cpuid(6) };
+    leaf.eax & 1 != 0
+}
+
 fn cpu_temp_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64, &'static str> {
     if sensor_type != HwmonSensorType::Temp || index != 0 {
         return Err("Invalid sensor for CPU hwmon");
@@ -106,7 +116,13 @@ fn cpu_temp_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64, &'stat
     const MSR_TEMP_TARGET: u32 = 0x1A2;
     const TJMAX_FALLBACK: i32 = 100;
 
-    // SAFETY: MSR index is valid for the running CPU model (checked via CPUID).
+    if !cpu_has_digital_thermal_sensor() {
+        // MSR not supported on this CPU/hypervisor, return a safe default
+        // rather than risking a #GP from an unsupported MSR read.
+        return Ok(45_000); // 45C in millidegrees
+    }
+
+    // SAFETY: CPUID leaf 6 confirmed digital thermal sensor support above.
     let therm_status = unsafe { rdmsr(MSR_THERM_STATUS) };
     if (therm_status >> 31) & 1 == 0 {
         // MSR not valid, return a safe default
@@ -118,7 +134,7 @@ fn cpu_temp_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64, &'stat
         return Ok((TJMAX_FALLBACK * 1000) as u64);
     }
 
-    // SAFETY: MSR index is valid for the running CPU model (checked via CPUID).
+    // SAFETY: CPUID leaf 6 confirmed digital thermal sensor support above.
     let tjmax = match unsafe { rdmsr(MSR_TEMP_TARGET) } {
         target if target != 0 => {
             let t = ((target >> 16) & 0xFF) as i32;
@@ -168,7 +184,14 @@ fn platform_voltage_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64
         (HwmonSensorType::In, 3) => {
             // CPU VCore from MSR if available
             const MSR_VCORE: u32 = 0x198; // IA32_PERF_STATUS
-            // SAFETY: MSR index is valid for the running CPU model (checked via CPUID).
+            if !cpu_has_digital_thermal_sensor() {
+                // No indication this CPU/hypervisor supports MSR access to
+                // perf-status; avoid risking a #GP from an unsupported read.
+                return Ok(1_000); // Default 1V
+            }
+            // SAFETY: CPUID leaf 6 confirmed digital thermal sensor support,
+            // used here as a proxy for "MSR reads are supported" as in
+            // cpu_temp_read above.
             let val = unsafe { rdmsr(MSR_VCORE) };
             let vid = (val >> 32) & 0xFF;
             if vid > 0 && vid < 0x80 {

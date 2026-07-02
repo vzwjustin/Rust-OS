@@ -30,6 +30,28 @@ use spin::RwLock;
 /// Maximum number of pending connections in the accept queue per listening socket
 const MAX_BACKLOG: usize = 16;
 
+/// Maximum number of connections (any state) tracked at once. Bounds worst-case
+/// memory use; new SYNs are answered with RST once this is reached rather than
+/// growing the connection table without limit.
+const MAX_CONNECTIONS: usize = 4096;
+
+/// Maximum number of half-open (SYN-RECEIVED) connections tracked at once.
+/// This is the primary SYN-flood defense: an attacker sending spoofed SYNs
+/// cannot grow the table past this cap, and each half-open entry is also
+/// reaped by `tcp_tick` after ~75s (see `TcpConnection::is_timed_out`).
+const MAX_HALF_OPEN: usize = 512;
+
+/// Maximum number of out-of-order segments buffered per connection while
+/// waiting for reassembly. Without a cap a peer can send an unbounded amount
+/// of out-of-order data and grow `ooo_segments` without limit.
+const MAX_OOO_SEGMENTS: usize = 64;
+
+/// Maximum bytes buffered in `recv_buffer` awaiting delivery to the
+/// application, per connection. `recv_window` is derived from the free space
+/// remaining under this cap so the advertised window actually shrinks as the
+/// buffer fills, instead of staying fixed at its initial value forever.
+const MAX_RECV_BUFFER: usize = 65536;
+
 /// TCP header minimum size
 pub const TCP_HEADER_MIN_SIZE: usize = 20;
 
@@ -445,6 +467,29 @@ impl TcpConnection {
             }
             _ => false,
         }
+    }
+
+    /// Recompute `recv_window` from the space actually free in `recv_buffer`
+    /// under `MAX_RECV_BUFFER`. Must be called after any change to
+    /// `recv_buffer`'s length so the advertised window reflects real
+    /// available buffer space instead of staying fixed forever.
+    pub fn update_recv_window(&mut self) {
+        let free = MAX_RECV_BUFFER.saturating_sub(self.recv_buffer.len());
+        self.recv_window = cmp::min(free, u16::MAX as usize) as u16;
+    }
+
+    /// Append `data` to `recv_buffer` if it fits under `MAX_RECV_BUFFER`,
+    /// updating `recv_window` afterwards. Returns `false` (and appends
+    /// nothing) if the buffer is full, so the caller can leave
+    /// `recv_sequence` unadvanced and let the peer retransmit once window
+    /// space frees up.
+    pub fn try_append_recv(&mut self, data: &[u8]) -> bool {
+        if self.recv_buffer.len().saturating_add(data.len()) > MAX_RECV_BUFFER {
+            return false;
+        }
+        self.recv_buffer.extend_from_slice(data);
+        self.update_recv_window();
+        true
     }
 
     /// Handle duplicate ACKs for fast retransmit
@@ -991,25 +1036,37 @@ fn handle_established_state(
     // Handle data reception
     if !payload.is_empty() {
         if header.sequence_number == connection.recv_sequence {
-            // In-order data
-            connection.recv_buffer.extend_from_slice(payload);
-            connection.recv_sequence = connection.recv_sequence.wrapping_add(payload.len() as u32);
+            // In-order data. If the receive buffer is full, drop the segment
+            // and leave recv_sequence unadvanced so the peer retransmits once
+            // the application drains the buffer and the window reopens.
+            if connection.try_append_recv(payload) {
+                connection.recv_sequence =
+                    connection.recv_sequence.wrapping_add(payload.len() as u32);
 
-            // Check if any out-of-order segments can now be reassembled
-            loop {
-                let recv_seq = connection.recv_sequence;
-                // Find a segment that starts at our current recv_sequence
-                let found_idx = connection
-                    .ooo_segments
-                    .iter()
-                    .position(|(seq, _)| *seq == recv_seq);
-                if let Some(idx) = found_idx {
-                    let (_, data) = connection.ooo_segments.remove(idx);
-                    connection.recv_buffer.extend_from_slice(&data);
-                    connection.recv_sequence =
-                        connection.recv_sequence.wrapping_add(data.len() as u32);
-                } else {
-                    break;
+                // Check if any out-of-order segments can now be reassembled
+                loop {
+                    let recv_seq = connection.recv_sequence;
+                    // Find a segment that starts at our current recv_sequence
+                    let found_idx = connection
+                        .ooo_segments
+                        .iter()
+                        .position(|(seq, _)| *seq == recv_seq);
+                    if let Some(idx) = found_idx {
+                        let data_len = connection.ooo_segments[idx].1.len();
+                        // Stop reassembling (leave it buffered) once the
+                        // receive buffer can't take the next segment either.
+                        if connection.recv_buffer.len().saturating_add(data_len)
+                            > MAX_RECV_BUFFER
+                        {
+                            break;
+                        }
+                        let (_, data) = connection.ooo_segments.remove(idx);
+                        let _ = connection.try_append_recv(&data);
+                        connection.recv_sequence =
+                            connection.recv_sequence.wrapping_add(data_len as u32);
+                    } else {
+                        break;
+                    }
                 }
             }
 
@@ -1025,13 +1082,16 @@ fn handle_established_state(
                 .ooo_segments
                 .iter()
                 .any(|(seq, _)| *seq == header.sequence_number);
-            if !already_have {
+            if !already_have && connection.ooo_segments.len() < MAX_OOO_SEGMENTS {
                 connection
                     .ooo_segments
                     .push((header.sequence_number, payload.to_vec()));
                 // Sort by sequence number to keep the buffer ordered
                 connection.ooo_segments.sort_by_key(|(seq, _)| *seq);
             }
+            // If already at MAX_OOO_SEGMENTS, drop the segment — the peer
+            // will retransmit it once earlier gaps are filled and the buffer
+            // has room again.
             // Send duplicate ACK with expected sequence number
             send_ack_packet(connection)?;
         }
@@ -1114,8 +1174,9 @@ fn handle_fin_wait1_state(
 ) -> NetworkResult<()> {
     // Process any data segment that arrived (still in-flight data from peer)
     if !payload.is_empty() && header.sequence_number == connection.recv_sequence {
-        connection.recv_buffer.extend_from_slice(payload);
-        connection.recv_sequence = connection.recv_sequence.wrapping_add(payload.len() as u32);
+        if connection.try_append_recv(payload) {
+            connection.recv_sequence = connection.recv_sequence.wrapping_add(payload.len() as u32);
+        }
         send_ack_packet(connection)?;
     }
 
@@ -1270,6 +1331,29 @@ fn handle_new_connection(
     if !TCP_MANAGER.is_listening(&local_addr, local_port) {
         send_rst_for_segment(local_addr, local_port, remote_addr, remote_port, header, 0)?;
         return Err(NetworkError::ConnectionRefused);
+    }
+
+    // Admission control: reject (RST, no allocation) once the total
+    // connection table or the half-open (SYN-RECEIVED) count is at its cap.
+    // Without this a SYN flood can grow the connection table without bound
+    // (each entry is only reaped ~75s later by `tcp_tick`), exhausting kernel
+    // memory long before the timeout kicks in.
+    {
+        let connections = TCP_MANAGER.connections.read();
+        if connections.len() >= MAX_CONNECTIONS {
+            drop(connections);
+            send_rst_for_segment(local_addr, local_port, remote_addr, remote_port, header, 0)?;
+            return Err(NetworkError::ConnectionRefused);
+        }
+        let half_open = connections
+            .values()
+            .filter(|c| c.state == TcpState::SynReceived)
+            .count();
+        if half_open >= MAX_HALF_OPEN {
+            drop(connections);
+            send_rst_for_segment(local_addr, local_port, remote_addr, remote_port, header, 0)?;
+            return Err(NetworkError::ConnectionRefused);
+        }
     }
 
     // Create new connection
@@ -1696,11 +1780,18 @@ pub fn tcp_tick(current_time: u64) {
 
     for (key, needs_retransmit, needs_cleanup) in keys_to_process {
         if needs_cleanup {
-            // Connection has been idle too long — force close
-            let _ = TCP_MANAGER.update_connection(key, |conn| {
-                conn.state = TcpState::Closed;
-                conn.retransmit_at = 0;
-            });
+            // Connection (often half-open, or TIME-WAIT) has been idle past
+            // its state's timeout. Actually remove it from the table —
+            // previously this only set state = Closed and left the entry
+            // (and its Vec buffers) in the map forever, so idle/half-open
+            // connections accumulated without bound instead of being reaped.
+            let (local_addr, local_port, remote_addr, remote_port) = key;
+            let _ = TCP_MANAGER.remove_connection(
+                &local_addr,
+                local_port,
+                &remote_addr,
+                remote_port,
+            );
             continue;
         }
 

@@ -331,7 +331,9 @@ pub fn copy_process(
         copy_files(flags, child, &parent_snap);
         copy_sighand(flags, child, &parent_snap);
         copy_signal(flags, child, &parent_snap);
-        copy_namespaces(flags, child, &parent_snap);
+        // copy_namespaces is currently infallible (always returns Ok); the
+        // Result is kept for API symmetry with the other copy_* calls.
+        let _ = copy_namespaces(flags, child, &parent_snap);
 
         // ── 4. CPU context ──────────────────────────────────────────────────
         copy_thread(child, regs, stack, flags);
