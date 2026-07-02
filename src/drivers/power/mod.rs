@@ -133,25 +133,25 @@ pub fn enter_state(state: PowerState) -> Result<(), &'static str> {
     if let Some(ref ops) = *ops {
         match state {
             PowerState::SuspendToRam => {
-                (ops.suspend)();
+                (ops.suspend)()?;
                 *CURRENT_POWER_STATE.write() = PowerState::SuspendToRam;
             }
             PowerState::Hibernate | PowerState::SuspendToDisk => {
                 if let Some(freeze) = ops.freeze {
-                    (freeze)();
+                    (freeze)()?;
                 } else {
-                    (ops.suspend)();
+                    (ops.suspend)()?;
                 }
                 *CURRENT_POWER_STATE.write() = state;
             }
             PowerState::PowerOff | PowerState::Reboot => {
                 if let Some(poweroff) = ops.poweroff {
-                    (poweroff)();
+                    (poweroff)()?;
                 }
                 *CURRENT_POWER_STATE.write() = state;
             }
             PowerState::Running => {
-                (ops.resume)();
+                (ops.resume)()?;
                 *CURRENT_POWER_STATE.write() = PowerState::Running;
             }
         }
@@ -165,7 +165,7 @@ pub fn enter_state(state: PowerState) -> Result<(), &'static str> {
 pub fn resume() -> Result<(), &'static str> {
     let ops = PM_OPS.read();
     if let Some(ref ops) = *ops {
-        (ops.resume)();
+        (ops.resume)()?;
         *CURRENT_POWER_STATE.write() = PowerState::Running;
         Ok(())
     } else {

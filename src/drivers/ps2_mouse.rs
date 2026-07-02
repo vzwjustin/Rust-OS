@@ -375,8 +375,14 @@ fn try_enable_intellimouse_explorer() -> Result<(), Ps2Error> {
 }
 
 /// Process a byte received from the mouse (called from IRQ handler)
+///
+/// Non-ISR paths (get_button_state/get_statistics/get_protocol/reset_parser)
+/// take this same lock with interrupts enabled, so a mouse IRQ arriving on
+/// the same CPU while one of those holds it would spin forever on a blocking
+/// `lock()`. Use `try_lock()` and drop the byte on contention instead —
+/// same fix class as the sysv_ipc timer-ISR deadlock.
 pub fn process_byte(byte: u8) -> Option<MousePacket> {
-    let mut state = MOUSE_STATE.lock();
+    let mut state = MOUSE_STATE.try_lock()?;
     if let Some(ref mut mouse) = *state {
         mouse.parse_byte(byte)
     } else {

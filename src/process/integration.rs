@@ -651,47 +651,66 @@ impl ProcessIntegration {
         let child_pid =
             process_manager.create_process(child_name, Some(parent_pid), parent_priority)?;
 
-        // Clone parent's memory space with proper COW (share physical frames)
+        // Clone parent's memory space with proper COW (share physical frames).
+        //
+        // Unlike exec (which replaces the address space entirely), a forked
+        // child that doesn't immediately exec runs with `child.memory` set to
+        // the parent's layout (step 5 below) but its *own* page tables. If any
+        // of these clones fail, the child's page tables won't actually back
+        // that layout — code/data/heap/stack pages the child (or a signal
+        // handler, or a copy-on-write fault handler) touches would be
+        // unmapped or missing COW protection. Treat any failure as fatal to
+        // the fork and tear down the half-initialized child rather than let
+        // it run into that state.
+        let mut cow_failed = false;
+
         // 1. Clone code segment (read-only, directly shared)
         if code_size > 0 {
-            // Best-effort COW clone: if the parent's code is in kernel space
-            // and can't be cloned, the child will get fresh mappings on exec.
-            let _ = memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(code_start),
-                code_size as usize,
-                x86_64::VirtAddr::new(code_start),
-            );
+            cow_failed |= memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(code_start),
+                    code_size as usize,
+                    x86_64::VirtAddr::new(code_start),
+                )
+                .is_err();
         }
 
         // 2. Clone data segment with COW
         if data_size > 0 {
-            let _ = memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(data_start),
-                data_size as usize,
-                x86_64::VirtAddr::new(data_start),
-            );
+            cow_failed |= memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(data_start),
+                    data_size as usize,
+                    x86_64::VirtAddr::new(data_start),
+                )
+                .is_err();
         }
 
         // 3. Clone heap with COW
         if heap_size > 0 {
-            // If COW cloning fails (e.g. the parent's heap is in kernel space
-            // and can't be mapped into a child page table), skip the clone.
-            // The child will get a fresh heap when exec() replaces its
-            // address space, or when it calls brk().
-            let _ = memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(heap_start),
-                heap_size as usize,
-                x86_64::VirtAddr::new(heap_start),
-            );
+            cow_failed |= memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(heap_start),
+                    heap_size as usize,
+                    x86_64::VirtAddr::new(heap_start),
+                )
+                .is_err();
         }
 
         // 4. Clone stack with COW
         if stack_size > 0 {
-            let _ = memory_manager.clone_page_entries_cow(
-                x86_64::VirtAddr::new(stack_start),
-                stack_size as usize,
-                x86_64::VirtAddr::new(stack_start),
-            );
+            cow_failed |= memory_manager
+                .clone_page_entries_cow(
+                    x86_64::VirtAddr::new(stack_start),
+                    stack_size as usize,
+                    x86_64::VirtAddr::new(stack_start),
+                )
+                .is_err();
+        }
+
+        if cow_failed {
+            let _ = process_manager.terminate_process(child_pid, -1);
+            return Err("Failed to clone parent memory into child (COW mapping failed)");
         }
 
         // 5. Copy parent's memory layout, fd table, and context into child PCB

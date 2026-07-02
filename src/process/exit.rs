@@ -327,14 +327,57 @@ pub fn do_exit(code: i32) -> ! {
 
     // ── Schedule away — we never come back ─────────────────────────────────
 
-    // Force the scheduler to pick the next runnable task.  The Zombie PCB
-    // stays in the table until the parent calls wait4.
-    pm.schedule();
+    // Pick the next runnable task.  The Zombie PCB stays in the table until
+    // the parent calls wait4.  `pm.schedule()` only updates scheduler
+    // bookkeeping (which PID is "current") — it does not touch registers,
+    // the stack, or CR3, so without an explicit context switch below the CPU
+    // would fall through still running the exiting (now-zombie) task's stack
+    // and code, wedging on the final `hlt` forever instead of ever running
+    // another task.
+    if let Ok(Some(next_pid)) = pm.schedule() {
+        if let Some(next) = pm.get_process(next_pid) {
+            let next_thread_stack = next
+                .main_thread
+                .and_then(|tid| super::thread::get_thread_manager().get_thread(tid))
+                .map(|t| t.kernel_stack + t.stack_size as u64)
+                .unwrap_or(0);
 
-    // SAFETY: schedule() should not return when the current task is a Zombie.
-    // If it does (e.g. during early boot before a parent exists), halt.
-    unsafe {
-        core::arch::asm!("cli; hlt", options(noreturn, nomem, nostack));
+            let next_ctx = super::context::ProcessContext {
+                cpu: next.context.clone(),
+                fpu: next.fpu.clone(),
+                kernel_stack: next_thread_stack,
+                user_stack: 0,
+                page_table: next.memory.page_directory,
+            };
+
+            // Scratch storage for the exiting task's "current" register
+            // state. It is written by `switch_context` but never read again
+            // — this task is a zombie and is never scheduled back in.
+            let mut dead_ctx = super::context::ProcessContext::default();
+
+            pm.set_current_process(next_pid);
+
+            // SAFETY: one-way switch into `next_pid`. `dead_ctx` receives the
+            // exiting task's saved registers but is immediately dropped;
+            // `context_switch_asm` transfers control onto `next_ctx`'s stack
+            // and does not return here.
+            unsafe {
+                let _ = super::context::get_context_switcher().switch_context(
+                    &mut dead_ctx,
+                    &next_ctx,
+                    next_pid,
+                );
+            }
+        }
+    }
+
+    // Reached only if there was no runnable task to switch to (e.g. during
+    // early boot before any other process exists), or the switch above
+    // somehow returned. Halt with interrupts enabled so a future timer or
+    // device interrupt can still schedule work rather than freezing the CPU
+    // permanently.
+    loop {
+        x86_64::instructions::hlt();
     }
 }
 
