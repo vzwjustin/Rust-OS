@@ -111,9 +111,7 @@ fn cpu_freeze_idle() {
     crate::serial_println!("[power] freeze: entering idle (HLT)");
     x86_64::instructions::interrupts::disable();
     loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
+        x86_64::instructions::hlt();
     }
 }
 

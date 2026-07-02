@@ -270,6 +270,7 @@ pub fn landlock_add_rule(ruleset_fd: i32, rule_type: u32, rule_attr: *const u8, 
 
     match rule_type {
         LANDLOCK_RULE_PATH_BENEATH => {
+            // SAFETY: rule_attr is a validated user pointer (checked for null above); LandlockPathBeneathAttr is repr(C) Copy.
             let attr = unsafe { *(rule_attr as *const LandlockPathBeneathAttr) };
             let allowed = attr.allowed_access;
             let parent_fd = attr.parent_fd;
@@ -300,6 +301,7 @@ pub fn landlock_add_rule(ruleset_fd: i32, rule_type: u32, rule_attr: *const u8, 
             crate::serial_println!("[landlock] add_rule: path_beneath allowed={:#x}", allowed);
         }
         LANDLOCK_RULE_NET_PORT => {
+            // SAFETY: rule_attr is a validated user pointer (checked for null above); LandlockNetPortAttr is repr(C) Copy.
             let attr = unsafe { *(rule_attr as *const LandlockNetPortAttr) };
             let allowed = attr.allowed_access;
             let port = attr.port;

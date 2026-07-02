@@ -31,6 +31,14 @@ fn inc_ops() {
     RESOURCE_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
+}
+
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
+}
+
 fn current_pid() -> u32 {
     process::current_pid()
 }
@@ -243,9 +251,7 @@ pub fn getrlimit(resource: i32, rlim: *mut RLimit) -> LinuxResult<i32> {
         .map(|pcb| pcb_rlimit_to_api(pcb.rlimits.limits[resource as usize]))
         .ok_or(LinuxError::ESRCH)?;
 
-    unsafe {
-        *rlim = limit;
-    }
+    copy_struct_to_user(rlim, &limit)?;
 
     Ok(0)
 }
@@ -262,7 +268,7 @@ pub fn setrlimit(resource: i32, rlim: *const RLimit) -> LinuxResult<i32> {
         return Err(LinuxError::EINVAL);
     }
 
-    let limit = unsafe { *rlim };
+    let limit: RLimit = copy_struct_from_user(rlim)?;
     validate_rlimit(&limit)?;
 
     let pid = current_pid();
@@ -314,13 +320,11 @@ pub fn prlimit(
             .get_process(target_pid)
             .map(|pcb| pcb_rlimit_to_api(pcb.rlimits.limits[resource as usize]))
             .ok_or(LinuxError::ESRCH)?;
-        unsafe {
-            *old_limit = old;
-        }
+        copy_struct_to_user(old_limit, &old)?;
     }
 
     if !new_limit.is_null() {
-        let limit = unsafe { *new_limit };
+        let limit: RLimit = copy_struct_from_user(new_limit)?;
         validate_rlimit(&limit)?;
 
         process::get_process_manager()
@@ -545,7 +549,7 @@ pub fn sched_setscheduler(pid: Pid, policy: i32, param: *const SchedParam) -> Li
         _ => return Err(LinuxError::EINVAL),
     }
 
-    let sched_param = unsafe { *param };
+    let sched_param: SchedParam = copy_struct_from_user(param)?;
     validate_sched_param(policy, &sched_param)?;
 
     let target_pid = resolve_sched_pid(pid)?;
@@ -590,7 +594,7 @@ pub fn sched_setparam(pid: Pid, param: *const SchedParam) -> LinuxResult<i32> {
     }
 
     let target_pid = resolve_sched_pid(pid)?;
-    let sched_param = unsafe { *param };
+    let sched_param: SchedParam = copy_struct_from_user(param)?;
 
     process::get_process_manager()
         .with_process_mut(target_pid, |pcb| {
@@ -616,9 +620,12 @@ pub fn sched_getparam(pid: Pid, param: *mut SchedParam) -> LinuxResult<i32> {
         .map(|pcb| pcb.sched_info.sched_priority)
         .ok_or(LinuxError::ESRCH)?;
 
-    unsafe {
-        (*param).sched_priority = priority;
-    }
+    copy_struct_to_user(
+        param,
+        &SchedParam {
+            sched_priority: priority,
+        },
+    )?;
     Ok(0)
 }
 
@@ -659,10 +666,11 @@ pub fn sched_rr_get_interval(pid: Pid, tp: *mut TimeSpec) -> LinuxResult<i32> {
         .map(|pcb| pcb.sched_info.rr_interval_ns)
         .ok_or(LinuxError::ESRCH)?;
 
-    unsafe {
-        (*tp).tv_sec = (interval_ns / 1_000_000_000) as i64;
-        (*tp).tv_nsec = (interval_ns % 1_000_000_000) as i64;
-    }
+    let interval = TimeSpec {
+        tv_sec: (interval_ns / 1_000_000_000) as i64,
+        tv_nsec: (interval_ns % 1_000_000_000) as i64,
+    };
+    copy_struct_to_user(tp, &interval)?;
 
     Ok(0)
 }

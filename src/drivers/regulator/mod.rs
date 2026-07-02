@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -46,26 +46,16 @@ struct Regulator {
 
 // ── Fixed platform regulators ───────────────────────────────────────────
 
-struct FixedRegulatorState {
-    enabled: bool,
-    voltage_uv: u32,
-}
-
 // Platform 3.3V rail (always on)
-static mut REG_3V3: FixedRegulatorState = FixedRegulatorState {
-    enabled: true,
-    voltage_uv: 3_300_000,
-};
+static REG_3V3_ENABLED: AtomicBool = AtomicBool::new(true);
 
 fn reg_3v3_enable(enabled: bool) -> Result<(), &'static str> {
-    unsafe {
-        REG_3V3.enabled = enabled;
-    }
+    REG_3V3_ENABLED.store(enabled, Ordering::Relaxed);
     Ok(())
 }
 
 fn reg_3v3_is_enabled() -> bool {
-    unsafe { REG_3V3.enabled }
+    REG_3V3_ENABLED.load(Ordering::Relaxed)
 }
 
 fn reg_3v3_set_voltage(uv: u32) -> Result<(), &'static str> {
@@ -92,20 +82,15 @@ const REG_3V3_OPS: RegulatorOps = RegulatorOps {
 };
 
 // Platform 5V rail
-static mut REG_5V: FixedRegulatorState = FixedRegulatorState {
-    enabled: true,
-    voltage_uv: 5_000_000,
-};
+static REG_5V_ENABLED: AtomicBool = AtomicBool::new(true);
 
 fn reg_5v_enable(enabled: bool) -> Result<(), &'static str> {
-    unsafe {
-        REG_5V.enabled = enabled;
-    }
+    REG_5V_ENABLED.store(enabled, Ordering::Relaxed);
     Ok(())
 }
 
 fn reg_5v_is_enabled() -> bool {
-    unsafe { REG_5V.enabled }
+    REG_5V_ENABLED.load(Ordering::Relaxed)
 }
 
 fn reg_5v_set_voltage(uv: u32) -> Result<(), &'static str> {
@@ -132,34 +117,28 @@ const REG_5V_OPS: RegulatorOps = RegulatorOps {
 };
 
 // CPU core rail (switchable, ACPI-gated when available)
-static mut REG_VCORE: FixedRegulatorState = FixedRegulatorState {
-    enabled: false,
-    voltage_uv: 1_000_000,
-};
+static REG_VCORE_ENABLED: AtomicBool = AtomicBool::new(false);
+static REG_VCORE_VOLTAGE_UV: AtomicU32 = AtomicU32::new(1_000_000);
 
 fn reg_vcore_enable(enabled: bool) -> Result<(), &'static str> {
-    unsafe {
-        REG_VCORE.enabled = enabled;
-    }
+    REG_VCORE_ENABLED.store(enabled, Ordering::Relaxed);
     Ok(())
 }
 
 fn reg_vcore_is_enabled() -> bool {
-    unsafe { REG_VCORE.enabled }
+    REG_VCORE_ENABLED.load(Ordering::Relaxed)
 }
 
 fn reg_vcore_set_voltage(uv: u32) -> Result<(), &'static str> {
     if !(800_000..=1_500_000).contains(&uv) {
         return Err("CPU core voltage out of range");
     }
-    unsafe {
-        REG_VCORE.voltage_uv = uv;
-    }
+    REG_VCORE_VOLTAGE_UV.store(uv, Ordering::Relaxed);
     Ok(())
 }
 
 fn reg_vcore_get_voltage() -> u32 {
-    unsafe { REG_VCORE.voltage_uv }
+    REG_VCORE_VOLTAGE_UV.load(Ordering::Relaxed)
 }
 
 fn reg_vcore_name() -> &'static str {

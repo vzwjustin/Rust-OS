@@ -102,6 +102,8 @@ pub fn io_setup(max_events: u32, ctx_idp: *mut AioContext) -> i32 {
     AIO_CONTEXTS.write().insert(id, Mutex::new(ctx));
 
     let handle = handle_from_ctx_id(id);
+    // SAFETY: `handle` is a stack-local `Copy` struct; the pointer is valid
+    // and the length is `size_of::<AioContext>()`.
     let handle_bytes = unsafe {
         core::slice::from_raw_parts(
             (&handle as *const AioContext).cast::<u8>(),
@@ -157,6 +159,8 @@ pub fn io_submit(ctx: AioContext, nr: i64, iocbpp: *const *const IoCb) -> i32 {
             continue;
         }
         let mut iocb = IoCb::default();
+        // SAFETY: `iocb` is a stack-local `Default` value; the pointer is
+        // valid for writes and the length is `size_of::<IoCb>()`.
         let iocb_bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 (&mut iocb as *mut IoCb).cast::<u8>(),
@@ -221,6 +225,8 @@ pub fn io_getevents(
     let count = core::cmp::min(nr as usize, ctx.events.len());
     for i in 0..count {
         let event = ctx.events.remove(0);
+        // SAFETY: `event` is a stack-local `Copy` struct; the pointer is
+        // valid and the length is `size_of::<IoEvent>()`.
         let event_bytes = unsafe {
             core::slice::from_raw_parts(
                 (&event as *const IoEvent).cast::<u8>(),
@@ -255,6 +261,8 @@ pub fn io_cancel(ctx: AioContext, iocb: *const IoCb, result: *mut IoEvent) -> i3
         if let Some(pos) = ctx.events.iter().position(|e| e.obj == target) {
             let event = ctx.events.remove(pos);
             if !result.is_null() {
+                // SAFETY: `event` is a stack-local `Copy` struct; the pointer
+                // is valid and the length is `size_of::<IoEvent>()`.
                 let event_bytes = unsafe {
                     core::slice::from_raw_parts(
                         (&event as *const IoEvent).cast::<u8>(),

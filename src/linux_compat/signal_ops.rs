@@ -13,7 +13,6 @@ use spin::Mutex;
 
 use super::types::*;
 use super::{LinuxError, LinuxResult};
-use crate::memory::user_space::UserSpaceMemory;
 use crate::process::{self, ProcessState};
 
 #[repr(C)]
@@ -232,28 +231,12 @@ fn inc_ops() {
     SIGNAL_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
-    if dst.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
 }
 
-fn copy_struct_from_user<T>(src: *const T) -> LinuxResult<T> {
-    if src.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    let mut value = core::mem::MaybeUninit::<T>::uninit();
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_from_user(src as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
-    Ok(unsafe { value.assume_init() })
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
 }
 
 /// Signal action constants
@@ -302,25 +285,25 @@ pub fn sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> 
             .get_process(pid)
             .and_then(|pcb| pcb.signal_restorer.get(&(signum as u32)).copied())
             .unwrap_or(0);
-        unsafe {
-            (*oldact).sa_handler = old_handler as usize;
-            (*oldact).sa_flags = old_flags as u32;
-            (*oldact).sa_restorer = old_restorer as usize;
-            (*oldact).sa_mask = signal_mask_for(pid);
-        }
+        let old_action = SigAction {
+            sa_handler: old_handler as usize,
+            sa_flags: old_flags as u32,
+            sa_restorer: old_restorer as usize,
+            sa_mask: signal_mask_for(pid),
+        };
+        copy_struct_to_user(oldact, &old_action)?;
     }
 
     if !act.is_null() {
-        unsafe {
-            let handler = (*act).sa_handler as u64;
-            let flags = (*act).sa_flags as u64;
-            let restorer = (*act).sa_restorer as u64;
-            process_manager.with_process_mut(pid, |pcb| {
-                pcb.signal_handlers.insert(signum as u32, handler);
-                pcb.signal_flags.insert(signum as u32, flags);
-                pcb.signal_restorer.insert(signum as u32, restorer);
-            });
-        }
+        let action: SigAction = copy_struct_from_user(act)?;
+        let handler = action.sa_handler as u64;
+        let flags = action.sa_flags as u64;
+        let restorer = action.sa_restorer as u64;
+        process_manager.with_process_mut(pid, |pcb| {
+            pcb.signal_handlers.insert(signum as u32, handler);
+            pcb.signal_flags.insert(signum as u32, flags);
+            pcb.signal_restorer.insert(signum as u32, restorer);
+        });
     }
 
     Ok(0)
@@ -349,26 +332,22 @@ pub fn sigprocmask(how: i32, set: *const SigSet, oldset: *mut SigSet) -> LinuxRe
     let pid = process::current_pid();
 
     if !oldset.is_null() {
-        unsafe {
-            *oldset = signal_mask_for(pid);
-        }
+        copy_struct_to_user(oldset, &signal_mask_for(pid))?;
     }
 
     if !set.is_null() {
-        unsafe {
-            let mask = *set;
-            match how {
-                sig_how::SIG_BLOCK => {
-                    update_signal_mask(pid, |current| current | mask);
-                }
-                sig_how::SIG_UNBLOCK => {
-                    update_signal_mask(pid, |current| current & !mask);
-                }
-                sig_how::SIG_SETMASK => {
-                    update_signal_mask(pid, |_| mask);
-                }
-                _ => return Err(LinuxError::EINVAL),
+        let mask: SigSet = copy_struct_from_user(set)?;
+        match how {
+            sig_how::SIG_BLOCK => {
+                update_signal_mask(pid, |current| current | mask);
             }
+            sig_how::SIG_UNBLOCK => {
+                update_signal_mask(pid, |current| current & !mask);
+            }
+            sig_how::SIG_SETMASK => {
+                update_signal_mask(pid, |_| mask);
+            }
+            _ => return Err(LinuxError::EINVAL),
         }
     }
 
@@ -400,9 +379,7 @@ pub fn sigpending(set: *mut SigSet) -> LinuxResult<i32> {
     }
 
     let pid = process::current_pid();
-    unsafe {
-        *set = pending_signal_set(pid);
-    }
+    copy_struct_to_user(set, &pending_signal_set(pid))?;
 
     Ok(0)
 }
@@ -427,7 +404,7 @@ pub fn sigsuspend(mask: *const SigSet) -> LinuxResult<i32> {
     }
 
     let pid = process::current_pid();
-    let new_mask = unsafe { *mask };
+    let new_mask: SigSet = copy_struct_from_user(mask)?;
     let old_mask = signal_mask_for(pid);
     update_signal_mask(pid, |_| new_mask);
 
@@ -527,16 +504,21 @@ pub fn sigtimedwait(
         return Err(LinuxError::EFAULT);
     }
 
-    let wait_set = unsafe { *set };
+    let wait_set: SigSet = copy_struct_from_user(set)?;
     let blocked = signal_mask_for(process::current_pid());
 
     let deadline = if timeout.is_null() {
         None
     } else {
-        unsafe {
-            let ts = &*timeout;
-            Some(crate::time::system_time() + ts.tv_sec as u64 + ts.tv_nsec as u64 / 1_000_000_000)
+        let ts: TimeSpec = copy_struct_from_user(timeout)?;
+        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+            return Err(LinuxError::EINVAL);
         }
+        Some(
+            crate::time::system_time()
+                .saturating_add(ts.tv_sec as u64)
+                .saturating_add(ts.tv_nsec as u64 / 1_000_000_000),
+        )
     };
 
     wait_for_signal(wait_set, blocked, deadline)
@@ -594,7 +576,7 @@ pub fn rt_sigtimedwait(set: u64, timeout_ns: Option<u64>) -> LinuxResult<i32> {
     let pid = process::current_pid();
     let blocked = signal_mask_for(pid);
 
-    let deadline = timeout_ns.map(|ns| crate::time::uptime_ns() + ns);
+    let deadline = timeout_ns.map(|ns| crate::time::uptime_ns().saturating_add(ns));
 
     loop {
         let pending = pending_signal_set(pid);
@@ -617,80 +599,69 @@ pub fn rt_sigtimedwait(set: u64, timeout_ns: Option<u64>) -> LinuxResult<i32> {
 
 /// Signal set manipulation helpers
 
-/// sigemptyset - initialize empty signal set
-pub fn sigemptyset(set: *mut SigSet) -> LinuxResult<i32> {
+fn with_sigset_mut<R>(set: *mut SigSet, f: impl FnOnce(&mut SigSet) -> R) -> LinuxResult<R> {
     if set.is_null() {
         return Err(LinuxError::EFAULT);
     }
+    let mut value: SigSet = copy_struct_from_user(set)?;
+    let result = f(&mut value);
+    copy_struct_to_user(set, &value)?;
+    Ok(result)
+}
 
-    unsafe {
-        *set = 0;
+fn with_sigset<R>(set: *const SigSet, f: impl FnOnce(&SigSet) -> R) -> LinuxResult<R> {
+    if set.is_null() {
+        return Err(LinuxError::EFAULT);
     }
+    let value: SigSet = copy_struct_from_user(set)?;
+    Ok(f(&value))
+}
 
+/// sigemptyset - initialize empty signal set
+pub fn sigemptyset(set: *mut SigSet) -> LinuxResult<i32> {
+    with_sigset_mut(set, |set| *set = 0)?;
     Ok(0)
 }
 
 /// sigfillset - initialize full signal set
 pub fn sigfillset(set: *mut SigSet) -> LinuxResult<i32> {
-    if set.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
-    unsafe {
-        *set = !0;
-    }
-
+    with_sigset_mut(set, |set| *set = !0)?;
     Ok(0)
 }
 
 /// sigaddset - add signal to set
 pub fn sigaddset(set: *mut SigSet, signum: i32) -> LinuxResult<i32> {
-    if set.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
     if signum < 1 || signum > 64 {
         return Err(LinuxError::EINVAL);
     }
 
-    unsafe {
-        *set |= 1u64 << (signum - 1);
-    }
-
+    with_sigset_mut(set, |set| *set |= 1u64 << (signum - 1))?;
     Ok(0)
 }
 
 /// sigdelset - remove signal from set
 pub fn sigdelset(set: *mut SigSet, signum: i32) -> LinuxResult<i32> {
-    if set.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
     if signum < 1 || signum > 64 {
         return Err(LinuxError::EINVAL);
     }
 
-    unsafe {
-        *set &= !(1u64 << (signum - 1));
-    }
-
+    with_sigset_mut(set, |set| *set &= !(1u64 << (signum - 1)))?;
     Ok(0)
 }
 
 /// sigismember - test if signal is in set
 pub fn sigismember(set: *const SigSet, signum: i32) -> LinuxResult<i32> {
-    if set.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
-
     if signum < 1 || signum > 64 {
         return Err(LinuxError::EINVAL);
     }
 
-    unsafe {
-        let is_member = (*set & (1u64 << (signum - 1))) != 0;
-        Ok(if is_member { 1 } else { 0 })
-    }
+    with_sigset(set, |set| {
+        if (*set & (1u64 << (signum - 1))) != 0 {
+            1
+        } else {
+            0
+        }
+    })
 }
 
 /// kill - send signal to a process
@@ -780,7 +751,7 @@ pub fn rt_sigqueueinfo(pid: Pid, sig: i32, info: *const u8) -> LinuxResult<i32> 
 
     // Read siginfo structure (simplified — we just use the signal number)
     // struct siginfo { int si_signo; int si_errno; int si_code; ... }
-    let si_signo = unsafe { *(info as *const i32) };
+    let si_signo: i32 = copy_struct_from_user(info as *const i32)?;
     if si_signo != sig {
         return Err(LinuxError::EINVAL);
     }

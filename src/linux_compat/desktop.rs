@@ -152,11 +152,9 @@ pub fn is_framebuffer_fallback_ready() -> bool {
 /// Initialize desktop session support (called from `init_linux_compat`).
 pub fn init_desktop_session() {
     mark_session_ready();
-    unsafe {
-        crate::early_serial_write_str(
-            "RustOS: Linux compat desktop session path ready (Wayland/D-Bus via connect)\r\n",
-        );
-    }
+    crate::early_serial_write_str(
+        "RustOS: Linux compat desktop session path ready (Wayland/D-Bus via connect)\r\n",
+    );
 }
 
 /// Load `path` into `pid` using the linux compat ELF loader + shebang resolution.

@@ -188,10 +188,14 @@ fn try_match_driver(device_id: u32) -> Result<(), &'static str> {
     let matched_driver = {
         let devices = AUX_DEVICES.read();
         let dev = devices.get(&device_id);
-        if dev.is_none() || dev.unwrap().bound {
+        let Some(dev) = dev else {
+            return Ok(());
+        };
+
+        if dev.bound {
             return Ok(());
         }
-        let modalias = dev.unwrap().match_modalias.clone();
+        let modalias = dev.match_modalias.clone();
 
         let drivers = AUX_DRIVERS.read();
         let mut found: Option<(u32, fn(u32) -> Result<(), &'static str>)> = None;

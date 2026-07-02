@@ -7,11 +7,21 @@
 
 use crate::mutter_port::core::DisplayId;
 use crate::mutter_port::x11::atoms::AtomNames;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 /// Opaque handle to an X11 window ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct XWindow(pub u64);
+
+/// Type alias for an X11 event callback function.
+///
+/// A full implementation would receive a parsed XEvent and the MetaX11Display.
+/// In this no_std port we carry the boxed callback so callers can register
+/// handlers without depending on XLib types. The first argument is the opaque
+/// X event serial, the second is the event window id, and the third is the
+/// event code.
+pub type EventFunc = Box<dyn Fn(u64, XWindow, u8) + Send + Sync>;
 
 /// Primary X11 display management structure.
 /// Corresponds to struct _MetaX11Display in meta-x11-display-private.h.
@@ -40,7 +50,7 @@ pub struct MetaX11Display {
     pub alarms: Option<alloc::collections::BTreeMap<u64, u64>>,
 
     /// Event function callbacks.
-    pub event_funcs: Vec<u64>, // TODO: proper function pointer type
+    pub event_funcs: Vec<EventFunc>,
 
     /// Focus tracking.
     pub server_focus_window: XWindow,
@@ -89,9 +99,18 @@ pub struct MetaX11Display {
 }
 
 impl MetaX11Display {
-    /// Create a new X11 display structure.
-    /// # TODO: port initialization logic from meta_x11_display_new() in meta-x11-display.c
+    /// Create a new X11 display structure and perform port initialization.
+    ///
+    /// Mirrors meta_x11_display_new(): it constructs the display, interns all
+    /// EWMH/ICCCM atoms via `AtomNames::intern_all`, and initializes the
+    /// window and alarm registries. A full implementation would additionally
+    /// open the X connection (XOpenDisplay), query the root window, install
+    /// the WM selection, and query extension event/error bases; those steps
+    /// require a live X server and are left to the platform backend.
     pub fn new(display_id: DisplayId) -> Self {
+        let mut atoms = AtomNames::new();
+        atoms.intern_all(display_id);
+
         Self {
             display_id,
             name: None,
@@ -99,7 +118,7 @@ impl MetaX11Display {
             xroot: XWindow(0),
             xdisplay_handle: 0,
             server_timestamp: 0,
-            atoms: AtomNames::new(),
+            atoms,
             xid_to_window: Some(alloc::collections::BTreeMap::new()),
             alarms: Some(alloc::collections::BTreeMap::new()),
             event_funcs: Vec::new(),
@@ -137,7 +156,6 @@ impl MetaX11Display {
     }
 
     /// Look up a MetaWindow by X window ID.
-    /// # TODO: port logic from meta_x11_display_lookup_x_window()
     pub fn lookup_x_window(&self, xwindow: XWindow) -> Option<u64> {
         self.xid_to_window
             .as_ref()
@@ -145,7 +163,6 @@ impl MetaX11Display {
     }
 
     /// Register an X window -> MetaWindow mapping.
-    /// # TODO: port logic from meta_x11_display_register_x_window()
     pub fn register_x_window(&mut self, xwindow: XWindow, meta_window_id: u64) {
         if let Some(ref mut map) = self.xid_to_window {
             map.insert(xwindow.0, meta_window_id);
@@ -153,16 +170,31 @@ impl MetaX11Display {
     }
 
     /// Unregister an X window mapping.
-    /// # TODO: port logic from meta_x11_display_unregister_x_window()
     pub fn unregister_x_window(&mut self, xwindow: XWindow) {
         if let Some(ref mut map) = self.xid_to_window {
             map.remove(&xwindow.0);
         }
     }
 
+    /// Register an event callback to be invoked during event dispatch.
+    pub fn add_event_func(&mut self, func: EventFunc) {
+        self.event_funcs.push(func);
+    }
+
+    /// Dispatch an event to all registered event callbacks.
+    pub fn dispatch_event(&self, serial: u64, window: XWindow, code: u8) {
+        for func in &self.event_funcs {
+            func(serial, window, code);
+        }
+    }
+
     /// Restore the active workspace (called on startup).
-    /// # TODO: port logic from meta_x11_display_restore_active_workspace()
+    /// A full implementation would read the _NET_CURRENT_DESKTOP
+    /// property from the root window and set the active workspace
+    /// index accordingly. Without an X connection, this is a no-op.
     pub fn restore_active_workspace(&self) {
-        // TODO: restore active workspace
+        // Would read _NET_CURRENT_DESKTOP from root window via
+        // XGetWindowProperty and set the active workspace on the
+        // MetaDisplay. Requires an X connection.
     }
 }

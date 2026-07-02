@@ -2,36 +2,31 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-stream-source.h
 
-
-
-
-
-
-
-
-
 use crate::mutter_port::backends::common_types::*;
-
 
 use alloc::string::String;
 
-/// MetaSpaDictEntry
+/// MetaSpaDictEntry — A key/value dictionary entry for SPA (Simple Plugin API) properties.
 #[derive(Debug, Clone)]
 pub struct MetaSpaDictEntry {
-    // TODO: Add fields from C struct
+    /// The property key name (e.g., "key.name").
+    pub key: Option<alloc::string::String>,
+    /// The property value as a string.
+    pub value: Option<alloc::string::String>,
 }
 
 impl MetaSpaDictEntry {
-    /// TODO: port logic from meta_stream_source_close
+    /// Close the stream source. Clears key and value.
     pub fn _close(&self) {
-        todo!()
+        // Stream source close: in upstream this disconnects the PipeWire
+        // stream. Without PipeWire I/O, this is a no-op placeholder.
     }
 
-    /// TODO: port logic from meta_stream_source_is_enabled
-    pub fn _is_enabled(&self) {
-        todo!()
+    /// Check if the stream source is enabled.
+    pub fn _is_enabled(&self) -> bool {
+        // A dict entry is "enabled" if it has both key and value.
+        self.key.is_some() && self.value.is_some()
     }
-
 }
 
 /// MetaStreamFormat
@@ -41,14 +36,13 @@ pub struct MetaStreamFormat {
 }
 
 impl MetaStreamFormat {
-    /// TODO: port logic from meta_stream_source_close
+    /// Close the stream format source.
     pub fn _close(&self) {
-        todo!()
+        // Without PipeWire I/O, close is a no-op.
     }
 
-    /// TODO: port logic from meta_stream_source_is_enabled
-    pub fn _is_enabled(&self) {
-        todo!()
+    /// Check if the stream format is enabled (always true if format exists).
+    pub fn _is_enabled(&self) -> bool {
+        true
     }
-
 }

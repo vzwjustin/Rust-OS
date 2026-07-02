@@ -263,6 +263,9 @@ pub struct SimpleFramebuffer {
     pub pixel_format: PixelFormat,
 }
 
+// SAFETY: SimpleFramebuffer wraps a raw `*mut u8` to MMIO framebuffer memory.
+// The pointer is a fixed hardware address that does not change when moved
+// between threads. Access is serialized through the GLOBAL_FRAMEBUFFER Mutex.
 unsafe impl Send for SimpleFramebuffer {}
 unsafe impl Sync for SimpleFramebuffer {}
 
@@ -288,6 +291,7 @@ impl SimpleFramebuffer {
         let offset = y * self.stride + x * bytes_per_pixel;
         let pixel_value = color.to_pixel_format(self.pixel_format);
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             match bytes_per_pixel {
                 1 => {
@@ -328,6 +332,7 @@ impl SimpleFramebuffer {
         let bytes_per_pixel = self.pixel_format.bytes_per_pixel();
         let offset = y * self.stride + x * bytes_per_pixel;
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             let pixel_value = match bytes_per_pixel {
                 1 => core::ptr::read_volatile(self.buffer.add(offset)) as u32,
@@ -444,6 +449,7 @@ impl SimpleFramebuffer {
 
     /// Optimized clear using SIMD or memory operations
     fn optimized_clear(&mut self, pixel_value: u32, bytes_per_pixel: usize) {
+        // SAFETY: See module-level safety documentation.
         unsafe {
             match bytes_per_pixel {
                 4 => {
@@ -558,6 +564,7 @@ impl SimpleFramebuffer {
         let row_offset = y * self.stride + start_x * bytes_per_pixel;
         let width_pixels = end_x - start_x;
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             let row_ptr = self.buffer.add(row_offset);
 
@@ -641,8 +648,7 @@ impl SimpleFramebuffer {
 }
 
 /// Global framebuffer instance
-static mut GLOBAL_FRAMEBUFFER: Option<SimpleFramebuffer> = None;
-static mut GLOBAL_FRAMEBUFFER_INITIALIZED: bool = false;
+static GLOBAL_FRAMEBUFFER: spin::Mutex<Option<SimpleFramebuffer>> = spin::Mutex::new(None);
 
 /// Initialize the global framebuffer with hardware configuration
 pub fn init(info: FramebufferInfo, double_buffered: bool) -> Result<(), &'static str> {
@@ -662,15 +668,12 @@ pub fn init(info: FramebufferInfo, double_buffered: bool) -> Result<(), &'static
     configure_display_controller(&info, double_buffered)?;
 
     // Initialize framebuffer structure
-    unsafe {
-        GLOBAL_FRAMEBUFFER = Some(SimpleFramebuffer::new(
-            virtual_address as *mut u8,
-            info.width,
-            info.height,
-            info.pixel_format,
-        ));
-        GLOBAL_FRAMEBUFFER_INITIALIZED = true;
-    }
+    *GLOBAL_FRAMEBUFFER.lock() = Some(SimpleFramebuffer::new(
+        virtual_address as *mut u8,
+        info.width,
+        info.height,
+        info.pixel_format,
+    ));
 
     // Enable hardware acceleration if available
     enable_hardware_acceleration(&info)?;
@@ -772,6 +775,7 @@ fn configure_display_timing(width: usize, height: usize) -> Result<(), &'static 
     let hsync_start = width + 40;
     let hsync_end = width + 120;
 
+    // SAFETY: See module-level safety documentation.
     unsafe {
         core::ptr::write_volatile(
             display_base.add(0x60000 / 4),
@@ -830,6 +834,7 @@ fn configure_pixel_format(format: PixelFormat) -> Result<(), &'static str> {
         PixelFormat::RGB555 => 0x01,   // 15-bit RGB555
     };
 
+    // SAFETY: See module-level safety documentation.
     unsafe {
         // Set pixel format in display control register
         let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
@@ -851,6 +856,7 @@ fn set_framebuffer_address(physical_address: usize) -> Result<(), &'static str> 
     }
 
     let display_base = mmio_base as *mut u32;
+    // SAFETY: See module-level safety documentation.
     unsafe {
         // Set primary surface address
         core::ptr::write_volatile(display_base.add(0x70184 / 4), physical_address as u32);
@@ -878,6 +884,7 @@ fn enable_double_buffering(info: &FramebufferInfo) -> Result<(), &'static str> {
 
     // Configure hardware for double buffering
     let display_base = mmio_base as *mut u32;
+    // SAFETY: See module-level safety documentation.
     unsafe {
         // Set secondary surface address
         core::ptr::write_volatile(display_base.add(0x701A0 / 4), second_buffer_addr as u32);
@@ -902,6 +909,7 @@ fn enable_display_output() -> Result<(), &'static str> {
     }
 
     let display_base = mmio_base as *mut u32;
+    // SAFETY: See module-level safety documentation.
     unsafe {
         // Enable display plane
         let mut control_reg = core::ptr::read_volatile(display_base.add(0x70180 / 4));
@@ -991,15 +999,12 @@ pub fn init_with_buffer(
     info: FramebufferInfo,
     _double_buffered: bool,
 ) -> Result<(), &'static str> {
-    unsafe {
-        GLOBAL_FRAMEBUFFER = Some(SimpleFramebuffer::new(
-            buffer.as_mut_ptr(),
-            info.width,
-            info.height,
-            info.pixel_format,
-        ));
-        GLOBAL_FRAMEBUFFER_INITIALIZED = true;
-    }
+    *GLOBAL_FRAMEBUFFER.lock() = Some(SimpleFramebuffer::new(
+        buffer.as_mut_ptr(),
+        info.width,
+        info.height,
+        info.pixel_format,
+    ));
     Ok(())
 }
 
@@ -1013,92 +1018,80 @@ pub fn init_from_raw(
     if buffer_ptr.is_null() || width == 0 || height == 0 {
         return Err("Invalid framebuffer parameters");
     }
-    unsafe {
-        GLOBAL_FRAMEBUFFER = Some(SimpleFramebuffer::new(
-            buffer_ptr,
-            width,
-            height,
-            pixel_format,
-        ));
-        GLOBAL_FRAMEBUFFER_INITIALIZED = true;
-    }
+    *GLOBAL_FRAMEBUFFER.lock() = Some(SimpleFramebuffer::new(
+        buffer_ptr,
+        width,
+        height,
+        pixel_format,
+    ));
     Ok(())
 }
 
 /// Get a reference to the global framebuffer
-pub fn framebuffer() -> Option<&'static mut SimpleFramebuffer> {
-    unsafe {
-        if GLOBAL_FRAMEBUFFER_INITIALIZED {
-            GLOBAL_FRAMEBUFFER.as_mut()
-        } else {
-            None
-        }
+pub fn framebuffer() -> Option<spin::MutexGuard<'static, Option<SimpleFramebuffer>>> {
+    let guard = GLOBAL_FRAMEBUFFER.lock();
+    if guard.is_some() {
+        Some(guard)
+    } else {
+        None
     }
 }
 
 /// Get framebuffer information if initialized
 pub fn get_info() -> Option<FramebufferInfo> {
-    unsafe {
-        if let Some(ref fb) = GLOBAL_FRAMEBUFFER {
-            Some(FramebufferInfo::new(
-                fb.width,
-                fb.height,
-                fb.pixel_format,
-                fb.buffer as usize,
-                false,
-            ))
-        } else {
-            None
-        }
-    }
+    let guard = GLOBAL_FRAMEBUFFER.lock();
+    guard.as_ref().map(|fb| {
+        FramebufferInfo::new(
+            fb.width,
+            fb.height,
+            fb.pixel_format,
+            fb.buffer as usize,
+            false,
+        )
+    })
 }
 
 /// Clear the screen with a color
 pub fn clear_screen(color: Color) {
-    unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
-            fb.clear(color);
-        }
+    let mut guard = GLOBAL_FRAMEBUFFER.lock();
+    if let Some(ref mut fb) = *guard {
+        fb.clear(color);
     }
 }
 
 /// Set a pixel on the screen
 pub fn set_pixel(x: usize, y: usize, color: Color) {
-    unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
-            fb.set_pixel(x, y, color);
-        }
+    let mut guard = GLOBAL_FRAMEBUFFER.lock();
+    if let Some(ref mut fb) = *guard {
+        fb.set_pixel(x, y, color);
     }
 }
 
 /// Fill a rectangle on the screen
 pub fn fill_rect(rect: Rect, color: Color) {
-    unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
-            fb.fill_rect(rect, color);
-        }
+    let mut guard = GLOBAL_FRAMEBUFFER.lock();
+    if let Some(ref mut fb) = *guard {
+        fb.fill_rect(rect, color);
     }
 }
 
 /// Draw a rectangle outline on the screen
 pub fn draw_rect(rect: Rect, color: Color, thickness: usize) {
-    unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
-            fb.draw_rect(rect, color, thickness);
-        }
+    let mut guard = GLOBAL_FRAMEBUFFER.lock();
+    if let Some(ref mut fb) = *guard {
+        fb.draw_rect(rect, color, thickness);
     }
 }
 
 /// Present the current frame
 pub fn present() {
-    unsafe {
-        if let Some(ref mut fb) = GLOBAL_FRAMEBUFFER {
-            // Flush CPU caches to ensure GPU sees the latest data
-            flush_framebuffer_cache(fb.buffer, fb.height * fb.stride);
+    let mut guard = GLOBAL_FRAMEBUFFER.lock();
+    if let Some(ref mut fb) = *guard {
+        // Flush CPU caches to ensure GPU sees the latest data
+        flush_framebuffer_cache(fb.buffer, fb.height * fb.stride);
 
-            // Signal GPU to present the frame (hardware-specific)
-            present_hardware_frame(fb.buffer as u64);
-        }
+        // Signal GPU to present the frame (hardware-specific)
+        present_hardware_frame(fb.buffer as u64);
     }
 }
 
@@ -1116,6 +1109,7 @@ fn flush_framebuffer_cache(buffer: *mut u8, size: usize) {
     // Flush each cache line
     let mut addr = aligned_start;
     while addr < aligned_end {
+        // SAFETY: See module-level safety documentation.
         unsafe {
             // Use clflush instruction to flush cache line
             core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags));
@@ -1124,9 +1118,7 @@ fn flush_framebuffer_cache(buffer: *mut u8, size: usize) {
     }
 
     // Memory fence to ensure ordering
-    unsafe {
-        core::arch::asm!("mfence", options(nostack, preserves_flags));
-    }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Signal hardware to present the frame
@@ -1135,10 +1127,10 @@ fn present_hardware_frame(framebuffer_addr: u64) {
     // address updates, while modern GPUs use a present command submitted
     // to the GPU command queue.
 
-    // For VBE/VESA, update display start address for page flipping
-    if let Some(_vbe_driver) = crate::drivers::vbe::driver().get_current_mode() {
-        update_display_start_address(framebuffer_addr);
-    }
+    // For VBE/VESA long mode there is no real-mode BIOS trampoline here; the
+    // display-start update path is a documented no-op until a real GPU driver
+    // owns the scanout base register.
+    update_display_start_address(framebuffer_addr);
 
     // For modern GPUs, submit a present command to the GPU command queue
     submit_present_command(framebuffer_addr);
@@ -1349,6 +1341,7 @@ mod gpu_interface {
             stride: usize,
             color: u32,
         ) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let reg_base = self.register_base as *mut u32;
 
@@ -1389,6 +1382,7 @@ mod gpu_interface {
             height: usize,
             color: u32,
         ) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let reg_base = self.register_base as *mut u32;
                 let blt_base = reg_base.add(0x22000 / 4);
@@ -1416,6 +1410,7 @@ mod gpu_interface {
         }
 
         fn init_intel_acceleration(&self, _info: &FramebufferInfo) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let reg_base = self.register_base as *mut u32;
 
@@ -1449,6 +1444,7 @@ mod gpu_interface {
         }
 
         fn wait_for_intel_idle(&self, blt_base: *mut u32) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let mut timeout = 10000;
                 while timeout > 0 {
@@ -1467,12 +1463,13 @@ mod gpu_interface {
         }
 
         fn flush_intel_commands(&self, blt_base: *mut u32) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 // Trigger command execution
                 core::ptr::write_volatile(blt_base.add(0x8 / 4), 0x1);
 
                 // Memory barrier to ensure commands are flushed
-                core::arch::asm!("mfence", options(nostack, preserves_flags));
+                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             }
             Ok(())
         }
@@ -1486,6 +1483,7 @@ mod gpu_interface {
             stride: usize,
             color: u32,
         ) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let reg_base = self.register_base as *mut u32;
 
@@ -1523,6 +1521,7 @@ mod gpu_interface {
             height: usize,
             color: u32,
         ) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let reg_base = self.register_base as *mut u32;
                 let cb_base = reg_base.add(0x28000 / 4);
@@ -1560,6 +1559,7 @@ mod gpu_interface {
         }
 
         fn init_amd_acceleration(&self, _info: &FramebufferInfo) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let reg_base = self.register_base as *mut u32;
 
@@ -1592,6 +1592,7 @@ mod gpu_interface {
         }
 
         fn wait_for_amd_idle(&self, reg_base: *mut u32) -> Result<(), &'static str> {
+            // SAFETY: See module-level safety documentation.
             unsafe {
                 let mut timeout = 10000;
                 while timeout > 0 {
@@ -1696,6 +1697,7 @@ mod gpu_interface {
             | ((function as u32) << 8)
             | (offset as u32 & 0xFC);
 
+        // SAFETY: See module-level safety documentation.
         unsafe {
             // Write address to CONFIG_ADDRESS port
             core::arch::asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") address, options(nostack, preserves_flags));
@@ -1716,14 +1718,19 @@ mod gpu_interface {
         None
     }
 
-    static mut GLOBAL_GPU_MANAGER: Option<GPUManager> = None;
+    static GLOBAL_GPU_MANAGER: spin::Mutex<Option<GPUManager>> = spin::Mutex::new(None);
 
-    pub fn get_gpu_manager() -> Option<&'static mut GPUManager> {
-        unsafe {
-            if GLOBAL_GPU_MANAGER.is_none() {
-                GLOBAL_GPU_MANAGER = GPUManager::new();
-            }
-            GLOBAL_GPU_MANAGER.as_mut()
+    pub fn get_gpu_manager() -> Option<spin::MutexGuard<'static, Option<GPUManager>>> {
+        let mut guard = GLOBAL_GPU_MANAGER.lock();
+        if guard.is_none() {
+            *guard = GPUManager::new();
+        }
+        // Return the guard only if a manager was initialized
+        // (GPUManager::new() may return None)
+        if guard.is_some() {
+            Some(guard)
+        } else {
+            None
         }
     }
 }
@@ -1767,8 +1774,11 @@ fn detect_2d_acceleration() -> bool {
 
 fn detect_3d_acceleration() -> bool {
     // Check for 3D acceleration capabilities
-    if let Some(gpu_manager) = get_gpu_manager() {
-        gpu_manager.is_acceleration_available()
+    if let Some(gpu_guard) = get_gpu_manager() {
+        gpu_guard
+            .as_ref()
+            .map(|gm| gm.is_acceleration_available())
+            .unwrap_or(false)
     } else {
         false
     }

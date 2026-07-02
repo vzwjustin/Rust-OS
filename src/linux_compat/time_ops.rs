@@ -16,6 +16,9 @@ use super::process_ops;
 use super::types::*;
 use super::{LinuxError, LinuxResult};
 
+const NSECS_PER_SEC: i64 = 1_000_000_000;
+const NSECS_PER_USEC: i64 = 1_000;
+
 /// Operation counter for statistics
 static TIME_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -40,24 +43,43 @@ fn inc_ops() {
 /// copied through the validated user-space memory path. Returns `EFAULT` if the
 /// pointer is null or the copy fails validation.
 fn copy_struct_from_user<T: Copy>(user_ptr: u64) -> LinuxResult<T> {
-    use crate::memory::user_space::UserSpaceMemory;
+    super::copy_struct_from_user(user_ptr as *const T)
+}
 
-    if user_ptr == 0 {
-        return Err(LinuxError::EFAULT);
+/// Safely copy a POD structure to a user-space pointer.
+fn copy_struct_to_user<T: Copy>(user_ptr: u64, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(user_ptr as *mut T, value)
+}
+
+fn checked_timespec_to_ns(ts: &TimeSpec) -> LinuxResult<i64> {
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= NSECS_PER_SEC {
+        return Err(LinuxError::EINVAL);
     }
 
-    let mut value = core::mem::MaybeUninit::<T>::uninit();
-    // SAFETY: the slice covers exactly `size_of::<T>()` bytes of the uninitialized
-    // storage, which is fully written by a successful copy_from_user.
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            value.as_mut_ptr() as *mut u8,
-            core::mem::size_of::<T>(),
-        )
-    };
-    UserSpaceMemory::copy_from_user(user_ptr, bytes).map_err(|_| LinuxError::EFAULT)?;
-    // SAFETY: all bytes of `value` were initialized by the copy above.
-    Ok(unsafe { value.assume_init() })
+    ts.tv_sec
+        .checked_mul(NSECS_PER_SEC)
+        .and_then(|sec_ns| sec_ns.checked_add(ts.tv_nsec))
+        .ok_or(LinuxError::EINVAL)
+}
+
+fn realtime_ns_i64() -> i64 {
+    let max_secs = (i64::MAX as u64) / (NSECS_PER_SEC as u64);
+    let secs = core::cmp::min(crate::time::system_time(), max_secs);
+    (secs as i64).saturating_mul(NSECS_PER_SEC)
+}
+
+fn uptime_ns_i64() -> i64 {
+    core::cmp::min(crate::time::uptime_ns(), i64::MAX as u64) as i64
+}
+
+fn checked_timer_part_to_ns(sec: u64, nsec: u64) -> LinuxResult<u64> {
+    if nsec >= NSECS_PER_SEC as u64 {
+        return Err(LinuxError::EINVAL);
+    }
+
+    sec.checked_mul(NSECS_PER_SEC as u64)
+        .and_then(|sec_ns| sec_ns.checked_add(nsec))
+        .ok_or(LinuxError::EINVAL)
 }
 
 /// Timer specification structure (struct itimerspec)
@@ -87,12 +109,11 @@ lazy_static! {
 /// Alarm deadline as Unix timestamp (0 = no alarm scheduled)
 static ALARM_DEADLINE: AtomicU64 = AtomicU64::new(0);
 
-fn zero_itimerspec(ptr: *mut u8) {
+fn zero_itimerspec(ptr: *mut u8) -> LinuxResult<()> {
     if !ptr.is_null() {
-        unsafe {
-            *(ptr as *mut ITimerSpec) = ITimerSpec::default();
-        }
+        copy_struct_to_user(ptr as u64, &ITimerSpec::default())?;
     }
+    Ok(())
 }
 
 /// clock_gettime - get time of specified clock
@@ -107,28 +128,33 @@ pub fn clock_gettime(clockid: i32, tp: *mut TimeSpec) -> LinuxResult<i32> {
         clock::CLOCK_REALTIME => {
             let secs = crate::time::system_time();
             let ms = crate::time::uptime_ms() % 1000;
-            unsafe {
-                (*tp).tv_sec = secs as Time;
-                (*tp).tv_nsec = (ms * 1_000_000) as Nsec;
-            }
+            let value = TimeSpec {
+                tv_sec: secs as Time,
+                tv_nsec: (ms * 1_000_000) as Nsec,
+            };
+            copy_struct_to_user(tp as u64, &value)?;
             Ok(0)
         }
         clock::CLOCK_MONOTONIC => {
             let ms = crate::time::uptime_ms();
-            unsafe {
-                (*tp).tv_sec = (ms / 1000) as Time;
-                (*tp).tv_nsec = ((ms % 1000) * 1_000_000) as Nsec;
-            }
+            let value = TimeSpec {
+                tv_sec: (ms / 1000) as Time,
+                tv_nsec: ((ms % 1000) * 1_000_000) as Nsec,
+            };
+            copy_struct_to_user(tp as u64, &value)?;
             Ok(0)
         }
         clock::CLOCK_PROCESS_CPUTIME_ID
         | clock::CLOCK_THREAD_CPUTIME_ID
         | clock::CLOCK_MONOTONIC_RAW
         | clock::CLOCK_BOOTTIME => {
-            unsafe {
-                (*tp).tv_sec = 0;
-                (*tp).tv_nsec = 0;
-            }
+            copy_struct_to_user(
+                tp as u64,
+                &TimeSpec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            )?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -170,10 +196,13 @@ pub fn clock_getres(clockid: i32, res: *mut TimeSpec) -> LinuxResult<i32> {
         | clock::CLOCK_MONOTONIC_RAW
         | clock::CLOCK_BOOTTIME => {
             // Kernel time is tracked at nanosecond granularity.
-            unsafe {
-                (*res).tv_sec = 0;
-                (*res).tv_nsec = 1;
-            }
+            copy_struct_to_user(
+                res as u64,
+                &TimeSpec {
+                    tv_sec: 0,
+                    tv_nsec: 1,
+                },
+            )?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -191,20 +220,18 @@ pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> LinuxResult<i32> {
     // Copy the request out of user space instead of dereferencing the raw pointer.
     let sleep_time: TimeSpec = copy_struct_from_user(req as u64)?;
 
-    // Validate sleep time
-    if sleep_time.tv_sec < 0 || sleep_time.tv_nsec < 0 || sleep_time.tv_nsec >= 1_000_000_000 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    let sleep_us = sleep_time.tv_sec as u64 * 1_000_000 + (sleep_time.tv_nsec as u64 / 1_000);
+    let sleep_us = (checked_timespec_to_ns(&sleep_time)? / NSECS_PER_USEC) as u64;
     crate::time::sleep_us(sleep_us);
 
     // If interrupted by signal and rem is not null, store remaining time
     if !rem.is_null() {
-        unsafe {
-            (*rem).tv_sec = 0;
-            (*rem).tv_nsec = 0;
-        }
+        copy_struct_to_user(
+            rem as u64,
+            &TimeSpec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+        )?;
     }
 
     Ok(0)
@@ -230,25 +257,21 @@ pub fn clock_nanosleep(
 
     match clockid {
         clock::CLOCK_REALTIME | clock::CLOCK_MONOTONIC => {
-            let req_ts = unsafe { *req };
-            if req_ts.tv_sec < 0 || req_ts.tv_nsec < 0 || req_ts.tv_nsec >= 1_000_000_000 {
-                return Err(LinuxError::EINVAL);
-            }
+            let req_ts: TimeSpec = copy_struct_from_user(req as u64)?;
+            let req_ns = checked_timespec_to_ns(&req_ts)?;
 
             if flags & TIMER_ABSTIME != 0 {
                 // Absolute time sleep: compute remaining time from now
                 let now_ns: i64 = if clockid == clock::CLOCK_REALTIME {
-                    crate::time::system_time() as i64 * 1_000_000_000
+                    realtime_ns_i64()
                 } else {
-                    crate::time::uptime_ns() as i64
+                    uptime_ns_i64()
                 };
-                let target_ns =
-                    unsafe { (*req).tv_sec as i64 * 1_000_000_000 + (*req).tv_nsec as i64 };
-                if target_ns > now_ns {
-                    let remaining_ns = target_ns - now_ns;
+                if req_ns > now_ns {
+                    let remaining_ns = req_ns - now_ns;
                     let sleep_ts = TimeSpec {
-                        tv_sec: remaining_ns / 1_000_000_000,
-                        tv_nsec: remaining_ns % 1_000_000_000,
+                        tv_sec: remaining_ns / NSECS_PER_SEC,
+                        tv_nsec: remaining_ns % NSECS_PER_SEC,
                     };
                     return nanosleep(&sleep_ts, rem);
                 }
@@ -272,10 +295,11 @@ pub fn gettimeofday(tv: *mut TimeVal, tz: *mut u8) -> LinuxResult<i32> {
     // Get actual time of day from kernel time subsystem
     let secs = crate::time::system_time();
     let us = crate::time::uptime_us() % 1_000_000;
-    unsafe {
-        (*tv).tv_sec = secs as Time;
-        (*tv).tv_usec = us as Time;
-    }
+    let value = TimeVal {
+        tv_sec: secs as Time,
+        tv_usec: us as Time,
+    };
+    copy_struct_to_user(tv as u64, &value)?;
 
     // tz is obsolete and should be NULL
     if !tz.is_null() {
@@ -293,8 +317,7 @@ pub fn time(tloc: *mut Time) -> LinuxResult<Time> {
     inc_ops();
     let secs = crate::time::system_time();
     if !tloc.is_null() {
-        // SAFETY: caller guarantees tloc points to a valid, writable Time value.
-        unsafe { *tloc = secs as i64 };
+        copy_struct_to_user(tloc as u64, &(secs as Time))?;
     }
     Ok(secs as i64)
 }
@@ -320,13 +343,11 @@ pub fn settimeofday(tv: *const TimeVal, tz: *const u8) -> LinuxResult<i32> {
         return Err(LinuxError::EPERM);
     }
 
-    unsafe {
-        let secs = (*tv).tv_sec;
-        if secs < 0 {
-            return Err(LinuxError::EINVAL);
-        }
-        crate::time::set_system_time(secs as u64);
+    let requested: TimeVal = copy_struct_from_user(tv as u64)?;
+    if requested.tv_sec < 0 {
+        return Err(LinuxError::EINVAL);
     }
+    crate::time::set_system_time(requested.tv_sec as u64);
 
     Ok(0)
 }
@@ -357,9 +378,7 @@ pub fn timer_create(
                     interval_ns: 0,
                 },
             );
-            unsafe {
-                *timerid = id;
-            }
+            copy_struct_to_user(timerid as u64, &id)?;
             Ok(0)
         }
         _ => Err(LinuxError::EINVAL),
@@ -389,13 +408,7 @@ pub fn timer_settime(
 
     // Copy the new timer spec out of user space rather than dereferencing directly.
     let spec: ITimerSpec = copy_struct_from_user(new_value as u64)?;
-    if spec.it_interval_sec < 0
-        || spec.it_value_sec < 0
-        || spec.it_interval_nsec < 0
-        || spec.it_value_nsec < 0
-        || spec.it_interval_nsec >= 1_000_000_000
-        || spec.it_value_nsec >= 1_000_000_000
-    {
+    if spec.it_interval_nsec >= NSECS_PER_SEC as u64 || spec.it_value_nsec >= NSECS_PER_SEC as u64 {
         return Err(LinuxError::EINVAL);
     }
 
@@ -407,18 +420,17 @@ pub fn timer_settime(
         } else {
             0
         };
-        unsafe {
-            *(old_value as *mut ITimerSpec) = ITimerSpec {
-                it_interval_sec: timer.interval_ns / 1_000_000_000,
-                it_interval_nsec: timer.interval_ns % 1_000_000_000,
-                it_value_sec: old_remaining / 1_000_000_000,
-                it_value_nsec: old_remaining % 1_000_000_000,
-            };
-        }
+        let old_spec = ITimerSpec {
+            it_interval_sec: timer.interval_ns / 1_000_000_000,
+            it_interval_nsec: timer.interval_ns % 1_000_000_000,
+            it_value_sec: old_remaining / 1_000_000_000,
+            it_value_nsec: old_remaining % 1_000_000_000,
+        };
+        copy_struct_to_user(old_value as u64, &old_spec)?;
     }
 
-    timer.interval_ns = spec.it_interval_sec * 1_000_000_000 + spec.it_interval_nsec;
-    let value_ns = spec.it_value_sec * 1_000_000_000 + spec.it_value_nsec;
+    timer.interval_ns = checked_timer_part_to_ns(spec.it_interval_sec, spec.it_interval_nsec)?;
+    let value_ns = checked_timer_part_to_ns(spec.it_value_sec, spec.it_value_nsec)?;
 
     if value_ns == 0 {
         timer.expires_ns = 0;
@@ -427,7 +439,7 @@ pub fn timer_settime(
         timer.expires_ns = if (flags & 1) != 0 {
             value_ns
         } else {
-            crate::time::uptime_ns() + value_ns
+            crate::time::uptime_ns().saturating_add(value_ns)
         };
     }
 
@@ -455,14 +467,13 @@ pub fn timer_gettime(
         timer.expires_ns.saturating_sub(now)
     };
 
-    unsafe {
-        *(curr_value as *mut ITimerSpec) = ITimerSpec {
-            it_interval_sec: timer.interval_ns / 1_000_000_000,
-            it_interval_nsec: timer.interval_ns % 1_000_000_000,
-            it_value_sec: remaining / 1_000_000_000,
-            it_value_nsec: remaining % 1_000_000_000,
-        };
-    }
+    let current = ITimerSpec {
+        it_interval_sec: timer.interval_ns / 1_000_000_000,
+        it_interval_nsec: timer.interval_ns % 1_000_000_000,
+        it_value_sec: remaining / 1_000_000_000,
+        it_value_nsec: remaining % 1_000_000_000,
+    };
+    copy_struct_to_user(curr_value as u64, &current)?;
 
     Ok(0)
 }
@@ -502,7 +513,7 @@ pub fn alarm(seconds: u32) -> u32 {
     };
 
     if seconds != 0 {
-        ALARM_DEADLINE.store(now + seconds as u64, Ordering::Relaxed);
+        ALARM_DEADLINE.store(now.saturating_add(seconds as u64), Ordering::Relaxed);
     }
 
     remaining
@@ -512,7 +523,7 @@ pub fn alarm(seconds: u32) -> u32 {
 pub fn sleep(seconds: u32) -> u32 {
     inc_ops();
 
-    crate::time::sleep_us(seconds as u64 * 1_000_000);
+    crate::time::sleep_us((seconds as u64).saturating_mul(1_000_000));
     0
 }
 
@@ -530,14 +541,20 @@ pub fn usleep(usec: u32) -> LinuxResult<i32> {
 
 /// Convert TimeSpec to nanoseconds
 pub fn timespec_to_ns(ts: &TimeSpec) -> i64 {
-    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+    checked_timespec_to_ns(ts).unwrap_or_else(|_| {
+        if ts.tv_sec < 0 || ts.tv_nsec < 0 {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    })
 }
 
 /// Convert nanoseconds to TimeSpec
 pub fn ns_to_timespec(ns: i64) -> TimeSpec {
     TimeSpec {
-        tv_sec: ns / 1_000_000_000,
-        tv_nsec: ns % 1_000_000_000,
+        tv_sec: ns.div_euclid(NSECS_PER_SEC),
+        tv_nsec: ns.rem_euclid(NSECS_PER_SEC),
     }
 }
 

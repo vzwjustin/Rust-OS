@@ -142,6 +142,44 @@ pub struct MbrPartitionEntry {
     pub size_sectors: u32,
 }
 
+/// Safely parse a 512-byte MBR buffer into a `MasterBootRecord` without
+/// relying on `unsafe` pointer casts. The MBR layout is:
+///   [0..446)   bootstrap code
+///   [446..510) four 16-byte partition entries
+///   [510..512) 0x55AA signature
+fn parse_mbr(buf: &[u8; 512]) -> MasterBootRecord {
+    let mut bootstrap = [0u8; 446];
+    bootstrap.copy_from_slice(&buf[..446]);
+
+    let mut partitions = [MbrPartitionEntry {
+        boot_indicator: 0,
+        start_chs: [0; 3],
+        partition_type: 0,
+        end_chs: [0; 3],
+        start_lba: 0,
+        size_sectors: 0,
+    }; 4];
+
+    for (i, entry) in partitions.iter_mut().enumerate() {
+        let off = 446 + i * 16;
+        let chunk = &buf[off..off + 16];
+        entry.boot_indicator = chunk[0];
+        entry.start_chs.copy_from_slice(&chunk[1..4]);
+        entry.partition_type = chunk[4];
+        entry.end_chs.copy_from_slice(&chunk[5..8]);
+        entry.start_lba = u32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
+        entry.size_sectors = u32::from_le_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]);
+    }
+
+    let signature = u16::from_le_bytes([buf[510], buf[511]]);
+
+    MasterBootRecord {
+        bootstrap,
+        partitions,
+        signature,
+    }
+}
+
 impl MbrPartitionEntry {
     /// Check if partition entry is valid
     pub fn is_valid(&self) -> bool {
@@ -276,7 +314,7 @@ impl PartitionManager {
         // Read MBR (sector 0)
         super::read_storage_sectors(device_id, 0, &mut buffer)?;
 
-        let mbr = unsafe { *(buffer.as_ptr() as *const MasterBootRecord) };
+        let mbr = parse_mbr(&buffer);
 
         // Check MBR signature
         if mbr.signature != 0xAA55 {
@@ -617,25 +655,20 @@ impl FilesystemInterface {
 }
 
 /// Global filesystem interface
-static mut FILESYSTEM_INTERFACE: Option<FilesystemInterface> = None;
+static FILESYSTEM_INTERFACE: spin::Mutex<Option<FilesystemInterface>> = spin::Mutex::new(None);
 
 /// Initialize filesystem interface
 pub fn init_filesystem_interface() {
-    unsafe {
-        FILESYSTEM_INTERFACE = Some(FilesystemInterface::new());
-    }
+    *FILESYSTEM_INTERFACE.lock() = Some(FilesystemInterface::new());
 }
 
-/// Get filesystem interface
-pub fn get_filesystem_interface() -> Option<&'static mut FilesystemInterface> {
-    unsafe { FILESYSTEM_INTERFACE.as_mut() }
+/// Run `f` with the global filesystem interface, if initialized.
+pub fn with_filesystem_interface<R>(f: impl FnOnce(&mut FilesystemInterface) -> R) -> Option<R> {
+    FILESYSTEM_INTERFACE.lock().as_mut().map(f)
 }
 
 /// Scan all storage devices for filesystems
 pub fn scan_all_storage_filesystems() -> Result<Vec<(u32, Vec<PartitionInfo>)>, StorageError> {
-    if let Some(fs_interface) = get_filesystem_interface() {
-        fs_interface.scan_all_devices()
-    } else {
-        Err(StorageError::DeviceNotFound)
-    }
+    with_filesystem_interface(|fs_interface| fs_interface.scan_all_devices())
+        .unwrap_or(Err(StorageError::DeviceNotFound))
 }

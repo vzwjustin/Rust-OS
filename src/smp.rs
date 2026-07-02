@@ -74,6 +74,7 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     // Get Local APIC base from MSR
+    // SAFETY: MSR/APIC access is valid; base address is mapped.
     let apic_base = unsafe { read_msr(0x1B) };
     if apic_base & (1 << 11) == 0 {
         return Err("APIC not enabled");
@@ -103,6 +104,7 @@ pub fn init() -> Result<(), &'static str> {
 /// Get current CPU's APIC ID
 pub fn get_apic_id() -> u32 {
     if let Some(base) = get_apic_base() {
+        // SAFETY: MSR/APIC access is valid; base address is mapped.
         unsafe { read_apic(base, apic_regs::APIC_ID) >> 24 }
     } else {
         // Fallback to CPUID
@@ -221,18 +223,27 @@ fn get_apic_base() -> Option<VirtAddr> {
 }
 
 /// Read APIC register
+/// # Safety
+/// The caller must ensure `base` is a valid mapped APIC base address
+/// and `offset` is a valid 4-byte-aligned APIC register offset.
 unsafe fn read_apic(base: VirtAddr, offset: u32) -> u32 {
     let addr = (base.as_u64() + offset as u64) as *const u32;
     addr.read_volatile()
 }
 
 /// Write APIC register
+/// # Safety
+/// The caller must ensure `base` is a valid mapped APIC base address
+/// and `offset` is a valid 4-byte-aligned APIC register offset.
 unsafe fn write_apic(base: VirtAddr, offset: u32, value: u32) {
     let addr = (base.as_u64() + offset as u64) as *mut u32;
     addr.write_volatile(value);
 }
 
 /// Read Model-Specific Register
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model.
 unsafe fn read_msr(msr: u32) -> u64 {
     let (high, low): (u32, u32);
     core::arch::asm!(
@@ -246,6 +257,9 @@ unsafe fn read_msr(msr: u32) -> u64 {
 }
 
 /// Write Model-Specific Register
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model.
 unsafe fn write_msr(msr: u32, value: u64) {
     let low = value as u32;
     let high = (value >> 32) as u32;
@@ -530,6 +544,9 @@ pub fn is_cpu_online(cpu_id: u32) -> bool {
 }
 
 /// Wait for IPI delivery to complete by polling the ICR delivery status bit.
+/// # Safety
+/// The caller must ensure `base` is a valid mapped APIC base address
+/// and that an IPI has been initiated.
 unsafe fn wait_for_ipi_delivery(base: VirtAddr) -> Result<(), &'static str> {
     // Poll the delivery status bit (bit 12) - 0 means delivered
     for _ in 0..1000 {

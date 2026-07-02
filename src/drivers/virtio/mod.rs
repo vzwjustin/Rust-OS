@@ -6,6 +6,15 @@
 //!
 //! The driver follows the VirtIO 1.0+ specification using PCI capabilities
 //! for device configuration, notification, and ISR access.
+//!
+//! # Safety
+//!
+//! All `unsafe` blocks perform either:
+//! - VirtIO ring buffer (vring) access — physical-contiguous descriptors
+//!   negotiated with the hypervisor; indices masked by ring size
+//! - MMIO register access via PCI BAR mapping (volatile reads/writes)
+//! - `unsafe impl Send/Sync` for VirtQueue/transport types — ring access is
+//!   synchronized via the device's kick/call notifications, not Rust borrows
 
 pub mod blk;
 pub mod console;
@@ -213,6 +222,9 @@ pub struct VirtQueue {
     pub used_virt: *mut VirtqUsedElem,
 }
 
+// SAFETY: VirtQueue holds raw pointers to virtio descriptor/avail/used rings
+// in DMA-coherent memory. The rings are accessed only through the virtio
+// transport's MMIO registers which serialize access. See module-level docs.
 unsafe impl Send for VirtQueue {}
 unsafe impl Sync for VirtQueue {}
 
@@ -232,13 +244,16 @@ impl VirtQueue {
         let layout =
             alloc::alloc::Layout::from_size_align(total, 4096).map_err(|_| "layout error")?;
 
+        // SAFETY: layout is valid and non-zero; the returned pointer is checked for null below.
         let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if ptr.is_null() {
             return Err("virtqueue allocation failed");
         }
 
         let desc_virt = ptr as *mut VirtqDesc;
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         let avail_virt = unsafe { ptr.add(desc_size) } as *mut u16;
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         let used_virt = unsafe { ptr.add(desc_size + avail_size) } as *mut VirtqUsedElem;
 
         let desc_phys = virt_to_phys(desc_virt as usize);
@@ -246,6 +261,7 @@ impl VirtQueue {
         let used_phys = virt_to_phys(used_virt as usize);
 
         // Initialize available ring index
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         unsafe {
             *avail_virt = 0; // flags
             *avail_virt.add(1) = 0; // idx
@@ -267,8 +283,10 @@ impl VirtQueue {
 
     /// Submit a buffer to the available ring
     pub fn submit(&mut self, desc_idx: u16) {
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         let avail_idx = unsafe { *self.avail_virt.add(1) };
         let ring_pos = (avail_idx % self.size) as usize;
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         unsafe {
             *self.avail_virt.add(2 + ring_pos) = desc_idx;
             *self.avail_virt.add(1) = avail_idx.wrapping_add(1);
@@ -277,6 +295,7 @@ impl VirtQueue {
 
     /// Check if there are completed buffers in the used ring
     pub fn has_used(&self) -> bool {
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         let used_idx = unsafe {
             let used_ring = self.used_virt as *const u16;
             *used_ring.add(1)
@@ -290,6 +309,7 @@ impl VirtQueue {
             return None;
         }
         let ring_pos = (self.last_used_idx % self.size) as usize;
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         let elem = unsafe {
             let used_ring = self.used_virt as *const u8;
             let elem_ptr = used_ring.add(6) as *const VirtqUsedElem;
@@ -303,6 +323,7 @@ impl VirtQueue {
     pub fn alloc_desc(&self) -> Option<u16> {
         // Simple linear scan for a free descriptor (addr == 0 means free)
         for i in 0..self.size {
+            // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
             let desc = unsafe { &*self.desc_virt.add(i as usize) };
             if desc.addr == 0 && desc.len == 0 {
                 return Some(i);
@@ -319,6 +340,7 @@ impl VirtQueue {
         let mut found = 0usize;
 
         for i in 0..self.size {
+            // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
             let desc = unsafe { &mut *self.desc_virt.add(i as usize) };
             if desc.addr == 0 && desc.len == 0 {
                 desc.addr = 1; // reserved sentinel; overwritten by set_desc
@@ -341,6 +363,7 @@ impl VirtQueue {
 
     /// Set up a descriptor
     pub fn set_desc(&self, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         unsafe {
             let desc = &mut *self.desc_virt.add(idx as usize);
             desc.addr = addr;
@@ -352,6 +375,7 @@ impl VirtQueue {
 
     /// Free a descriptor
     pub fn free_desc(&self, idx: u16) {
+        // SAFETY: the ring buffer allocation is valid for the computed size; offsets are within bounds.
         unsafe {
             let desc = &mut *self.desc_virt.add(idx as usize);
             desc.addr = 0;
@@ -456,11 +480,13 @@ fn get_bar_address(dev: &PciDevice, bar_idx: u8) -> Option<u64> {
 
 /// Read from a VirtIO capability's BAR-mapped region
 fn read_cap_mmio(base: u64, offset: u32) -> u32 {
+    // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
     unsafe { core::ptr::read_volatile((base + offset as u64) as *const u32) }
 }
 
 /// Write to a VirtIO capability's BAR-mapped region
 fn write_cap_mmio(base: u64, offset: u32, value: u32) {
+    // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
     unsafe {
         core::ptr::write_volatile((base + offset as u64) as *mut u32, value);
     }
@@ -468,11 +494,13 @@ fn write_cap_mmio(base: u64, offset: u32, value: u32) {
 
 /// Read 8-bit from cap MMIO
 fn read_cap_mmio8(base: u64, offset: u32) -> u8 {
+    // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
     unsafe { core::ptr::read_volatile((base + offset as u64) as *const u8) }
 }
 
 /// Write 8-bit to cap MMIO
 fn write_cap_mmio8(base: u64, offset: u32, value: u8) {
+    // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
     unsafe {
         core::ptr::write_volatile((base + offset as u64) as *mut u8, value);
     }
@@ -480,11 +508,13 @@ fn write_cap_mmio8(base: u64, offset: u32, value: u8) {
 
 /// Read 16-bit from cap MMIO
 fn read_cap_mmio16(base: u64, offset: u32) -> u16 {
+    // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
     unsafe { core::ptr::read_volatile((base + offset as u64) as *const u16) }
 }
 
 /// Write 16-bit to cap MMIO
 fn write_cap_mmio16(base: u64, offset: u32, value: u16) {
+    // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
     unsafe {
         core::ptr::write_volatile((base + offset as u64) as *mut u16, value);
     }
@@ -501,6 +531,9 @@ pub struct VirtioTransport {
     pub notify_base: u64,
 }
 
+// SAFETY: VirtioTransport holds MMIO base addresses (u64) for PCI BARs.
+// These are fixed physical addresses that don't change when moved between
+// threads. Access is serialized through the virtio config callbacks.
 unsafe impl Send for VirtioTransport {}
 unsafe impl Sync for VirtioTransport {}
 
@@ -653,6 +686,7 @@ impl VirtioTransport {
     /// Notify the device that a queue has pending buffers
     pub fn notify(&self, queue: &VirtQueue) {
         let notify_off = queue.notify_off as u64 * self.caps.notify_off_multiplier as u64;
+        // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
         unsafe {
             core::ptr::write_volatile((self.notify_base + notify_off) as *mut u16, 0);
         }
@@ -661,6 +695,7 @@ impl VirtioTransport {
     /// Read ISR status (reading acknowledges the interrupt)
     pub fn read_isr(&self) -> u8 {
         if self.isr_base != 0 {
+            // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
             unsafe { core::ptr::read_volatile(self.isr_base as *const u8) }
         } else {
             0
@@ -670,6 +705,7 @@ impl VirtioTransport {
     /// Read device-specific config at the given offset
     pub fn read_device_config8(&self, offset: u32) -> u8 {
         if self.device_base != 0 {
+            // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
             unsafe { core::ptr::read_volatile((self.device_base + offset as u64) as *const u8) }
         } else {
             0
@@ -679,6 +715,7 @@ impl VirtioTransport {
     /// Read device-specific config (32-bit) at the given offset
     pub fn read_device_config32(&self, offset: u32) -> u32 {
         if self.device_base != 0 {
+            // SAFETY: base + offset is a valid mapped MMIO address for the VirtIO device register.
             unsafe { core::ptr::read_volatile((self.device_base + offset as u64) as *const u32) }
         } else {
             0

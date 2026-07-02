@@ -145,11 +145,9 @@ fn cooperative_block_mount(
                 return Err(LinuxError::ENODEV);
             }
             if let Some((device_id, part)) = parse_block_device_path(source) {
-                if let Some(fsi) =
-                    crate::drivers::storage::filesystem_interface::get_filesystem_interface()
-                {
+                crate::drivers::storage::filesystem_interface::with_filesystem_interface(|fsi| {
                     let _ = fsi.mount_filesystem(device_id, part, String::from(target), None);
-                }
+                });
             }
             crate::vfs::legacy_mount::mount_block_device(source, target, fstype).map_err(|e| {
                 match e {
@@ -449,8 +447,8 @@ fn should_preserve_virtual_runtime_mount(fstype: &str, target: &str) -> bool {
     )
 }
 
-fn root_inode() -> Arc<dyn vfs::InodeOps> {
-    vfs::get_vfs().lookup("/").expect("root mount")
+fn root_inode() -> LinuxResult<Arc<dyn vfs::InodeOps>> {
+    vfs::get_vfs().lookup("/").map_err(vfs_error_to_linux)
 }
 
 fn alloc_inotify_fd(flags: i32) -> LinuxResult<Fd> {
@@ -461,13 +459,24 @@ fn alloc_inotify_fd(flags: i32) -> LinuxResult<Fd> {
 
     let vfs_flags = if flags & 0x800 != 0 { 0x800 } else { 0 };
 
-    let fd =
-        vfs::vfs_open_special(root_inode(), vfs_flags, FdKind::Inotify(id)).map_err(
-            |e| match e {
-                VfsError::TooManyFiles => LinuxError::EMFILE,
-                _ => LinuxError::EMFILE,
-            },
-        )?;
+    let inode = match root_inode() {
+        Ok(inode) => inode,
+        Err(err) => {
+            INOTIFY_INSTANCES.lock().remove(&id);
+            return Err(err);
+        }
+    };
+    let fd = match vfs::vfs_open_special(inode, vfs_flags, FdKind::Inotify(id)).map_err(|e| match e
+    {
+        VfsError::TooManyFiles => LinuxError::EMFILE,
+        _ => LinuxError::EMFILE,
+    }) {
+        Ok(fd) => fd,
+        Err(err) => {
+            INOTIFY_INSTANCES.lock().remove(&id);
+            return Err(err);
+        }
+    };
 
     INOTIFY_FD_MAP.lock().insert(fd, id);
     Ok(fd)
@@ -606,28 +615,30 @@ pub mod fstype {
     pub const ISOFS_SUPER_MAGIC: i64 = 0x9660;
 }
 
-fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
     if dst.is_null() {
         return Err(LinuxError::EFAULT);
     }
 
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
+    let bytes = super::as_bytes(value);
     UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+}
+
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn fill_statfs(buf: *mut StatFs, vfs_stat: vfs::StatFs) -> LinuxResult<()> {
     let mut stat = StatFs::zero();
-    stat.f_type = vfs_stat.fs_type as i64;
-    stat.f_bsize = vfs_stat.block_size as i64;
+    stat.f_type = u64_to_i64_saturating(vfs_stat.fs_type);
+    stat.f_bsize = u64_to_i64_saturating(vfs_stat.block_size);
     stat.f_blocks = vfs_stat.total_blocks;
     stat.f_bfree = vfs_stat.free_blocks;
     stat.f_bavail = vfs_stat.avail_blocks;
     stat.f_files = vfs_stat.total_inodes;
     stat.f_ffree = vfs_stat.free_inodes;
-    stat.f_namelen = vfs_stat.max_name_len as i64;
-    stat.f_frsize = vfs_stat.block_size as i64;
+    stat.f_namelen = u64_to_i64_saturating(vfs_stat.max_name_len);
+    stat.f_frsize = u64_to_i64_saturating(vfs_stat.block_size);
 
     copy_struct_to_user(buf, &stat)
 }
@@ -970,9 +981,7 @@ pub fn ustat(_dev: Dev, ubuf: *mut u8) -> LinuxResult<i32> {
     // struct ustat { char f_fname[6]; char f_fpack[6]; long f_tfree; ino_t f_tinode; }
     // 20 bytes on 64-bit — return zeroed
     let zeros = [0u8; 20];
-    unsafe {
-        core::ptr::copy_nonoverlapping(zeros.as_ptr(), ubuf, 20);
-    }
+    UserSpaceMemory::copy_to_user(ubuf as u64, &zeros).map_err(|_| LinuxError::EFAULT)?;
     Ok(0)
 }
 

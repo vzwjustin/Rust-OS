@@ -255,6 +255,8 @@ pub fn sys_seccomp(pid: u32, op: u32, flags: u32, filter_data: *const u8) -> i32
             }
 
             let sizes: [u16; 3] = [80, 24, 64];
+            // SAFETY: `sizes` is a stack-local `[u16; 3]` array; the pointer
+            // is valid and the length is `size_of::<[u16; 3]>()`.
             let bytes = unsafe {
                 core::slice::from_raw_parts(
                     sizes.as_ptr() as *const u8,

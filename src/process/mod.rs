@@ -879,7 +879,11 @@ impl ProcessManager {
         // `security::init()` installs PID 0's context, so a missing context here is expected
         // during early boot and a warning is the right level.
         if let Err(e) = crate::security::create_context(pid, parent_pid) {
-            crate::serial_println!("Warning: failed to create security context for PID {}: {}", pid, e);
+            crate::serial_println!(
+                "Warning: failed to create security context for PID {}: {}",
+                pid,
+                e
+            );
         }
 
         // Initialize IPC state for new process
@@ -949,7 +953,11 @@ impl ProcessManager {
         // context and only create one for genuinely new processes (or if it is somehow absent).
         if crate::security::get_context(pid).is_none() {
             if let Err(e) = crate::security::create_context(pid, parent_pid) {
-                crate::serial_println!("Warning: failed to create security context for PID {}: {}", pid, e);
+                crate::serial_println!(
+                    "Warning: failed to create security context for PID {}: {}",
+                    pid,
+                    e
+                );
             }
         }
 

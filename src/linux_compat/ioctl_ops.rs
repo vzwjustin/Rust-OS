@@ -13,6 +13,21 @@ use super::file_ops;
 use super::tty_ops::{self, Termios, WinSize};
 use super::types::*;
 use super::{LinuxError, LinuxResult};
+
+fn copy_value_to_user<T: Copy>(user_ptr: u64, value: &T) -> LinuxResult<()> {
+    if user_ptr == 0 {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let bytes = super::as_bytes(value);
+
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(user_ptr, bytes)
+        .map_err(|_| LinuxError::EFAULT)
+}
+
+fn copy_value_from_user<T: Copy>(user_ptr: u64) -> LinuxResult<T> {
+    super::copy_struct_from_user(user_ptr as *const T)
+}
 use crate::process;
 use crate::vfs;
 
@@ -268,9 +283,8 @@ pub fn fcntl(fd: Fd, cmd: i32, arg: u64) -> LinuxResult<i32> {
             // Check for a conflicting lock. If none, set l_type to F_UNLCK.
             // struct flock: l_type(2), l_whence(2), l_start(8), l_len(8), l_pid(4)
             let mut fl = [0u8; 24];
-            unsafe {
-                core::ptr::copy_nonoverlapping(arg as *const u8, fl.as_mut_ptr(), 24);
-            }
+            crate::memory::user_space::UserSpaceMemory::copy_from_user(arg, &mut fl)
+                .map_err(|_| LinuxError::EFAULT)?;
             let l_type = i16::from_ne_bytes([fl[0], fl[1]]);
             let l_start =
                 i64::from_ne_bytes([fl[4], fl[5], fl[6], fl[7], fl[8], fl[9], fl[10], fl[11]]);
@@ -294,9 +308,8 @@ pub fn fcntl(fd: Fd, cmd: i32, arg: u64) -> LinuxResult<i32> {
                 fl[0..2].copy_from_slice(&2i16.to_ne_bytes()); // F_UNLCK
                 fl[20..24].copy_from_slice(&0i32.to_ne_bytes());
             }
-            unsafe {
-                core::ptr::copy_nonoverlapping(fl.as_ptr(), arg as *mut u8, 24);
-            }
+            crate::memory::user_space::UserSpaceMemory::copy_to_user(arg, &fl)
+                .map_err(|_| LinuxError::EFAULT)?;
             Ok(0)
         }
         fcntl_cmd::F_SETLK | fcntl_cmd::F_SETLKW => {
@@ -304,9 +317,8 @@ pub fn fcntl(fd: Fd, cmd: i32, arg: u64) -> LinuxResult<i32> {
                 return Err(LinuxError::EFAULT);
             }
             let mut fl = [0u8; 24];
-            unsafe {
-                core::ptr::copy_nonoverlapping(arg as *const u8, fl.as_mut_ptr(), 24);
-            }
+            crate::memory::user_space::UserSpaceMemory::copy_from_user(arg, &mut fl)
+                .map_err(|_| LinuxError::EFAULT)?;
             let l_type = i16::from_ne_bytes([fl[0], fl[1]]);
             let l_start =
                 i64::from_ne_bytes([fl[4], fl[5], fl[6], fl[7], fl[8], fl[9], fl[10], fl[11]]);
@@ -879,16 +891,14 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
                 return Err(LinuxError::EFAULT);
             }
             let winsize = tty_ops::tty_get_winsize(fd)?;
-            unsafe {
-                *(argp as *mut WinSize) = winsize;
-            }
+            copy_value_to_user::<WinSize>(argp, &(winsize))?;
             Ok(0)
         }
         ioctl_req::TIOCSWINSZ => {
             if argp == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let winsize = unsafe { *(argp as *const WinSize) };
+            let winsize = copy_value_from_user::<WinSize>(argp)?;
             tty_ops::tty_set_winsize(fd, winsize)?;
             Ok(0)
         }
@@ -901,16 +911,14 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
                 return Err(LinuxError::EFAULT);
             }
             let pgrp = tty_ops::tcgetpgrp(fd)?;
-            unsafe {
-                *(argp as *mut i32) = pgrp;
-            }
+            copy_value_to_user::<i32>(argp, &(pgrp))?;
             Ok(0)
         }
         ioctl_req::TIOCSPGRP => {
             if argp == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let pgrp = unsafe { *(argp as *const i32) };
+            let pgrp = copy_value_from_user::<i32>(argp)?;
             tty_ops::tcsetpgrp(fd, pgrp)
         }
         ioctl_req::FIONREAD => {
@@ -918,9 +926,7 @@ pub fn ioctl(fd: Fd, request: u64, argp: u64) -> LinuxResult<i32> {
                 return Err(LinuxError::EFAULT);
             }
             let pending = tty_ops::tty_pending_read(fd).unwrap_or(0);
-            unsafe {
-                *(argp as *mut i32) = pending as i32;
-            }
+            copy_value_to_user::<i32>(argp, &(pending as i32))?;
             Ok(0)
         }
         req if crate::vfs::drmfs::is_drm_ioctl(req) => {
@@ -995,14 +1001,12 @@ fn handle_rtc_ioctl(request: u64, argp: u64) -> LinuxResult<i32> {
         // RTC_RD_TIME
         0x80247009 => {
             let time = crate::drivers::rtc::read_time().map_err(|_| LinuxError::EIO)?;
-            unsafe {
-                *(argp as *mut crate::drivers::rtc::RtcTime) = time;
-            }
+            copy_value_to_user::<crate::drivers::rtc::RtcTime>(argp, &(time))?;
             Ok(0)
         }
         // RTC_SET_TIME
         0x4024700a => {
-            let time = unsafe { *(argp as *const crate::drivers::rtc::RtcTime) };
+            let time = copy_value_from_user::<crate::drivers::rtc::RtcTime>(argp)?;
             crate::drivers::rtc::write_time(&time).map_err(|_| LinuxError::EIO)?;
             Ok(0)
         }
@@ -1018,9 +1022,7 @@ fn handle_watchdog_ioctl(request: u64, argp: u64) -> LinuxResult<i32> {
                 return Err(LinuxError::EFAULT);
             }
             let timeout = crate::drivers::watchdog::get_timeout() as i32;
-            unsafe {
-                *(argp as *mut i32) = timeout;
-            }
+            copy_value_to_user::<i32>(argp, &(timeout))?;
             Ok(0)
         }
         // WDIOC_SETTIMEOUT
@@ -1028,14 +1030,12 @@ fn handle_watchdog_ioctl(request: u64, argp: u64) -> LinuxResult<i32> {
             if argp == 0 {
                 return Err(LinuxError::EFAULT);
             }
-            let timeout = unsafe { *(argp as *const i32) };
+            let timeout = copy_value_from_user::<i32>(argp)?;
             if timeout <= 0 {
                 return Err(LinuxError::EINVAL);
             }
             crate::drivers::watchdog::set_timeout(timeout as u32);
-            unsafe {
-                *(argp as *mut i32) = timeout; // Return the new timeout
-            }
+            copy_value_to_user::<i32>(argp, &timeout)?;
             Ok(0)
         }
         // WDIOC_KEEPALIVE

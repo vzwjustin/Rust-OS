@@ -376,12 +376,16 @@ pub fn fanotify_mark(fanotify_fd: i32, flags: u32, mask: u64, dirfd: i32, path: 
     let path_str = if path.is_null() {
         return -14; // EFAULT
     } else {
-        let mut len = 0;
-        while unsafe { *path.add(len) } != 0 {
-            len += 1;
+        // Read up to PATH_MAX (4096) bytes looking for NUL.
+        const PATH_MAX: usize = 4096;
+        let mut buf = alloc::vec![0u8; PATH_MAX];
+        if let Err(_) =
+            crate::memory::user_space::UserSpaceMemory::copy_from_user(path as u64, &mut buf)
+        {
+            return -14;
         }
-        let bytes = unsafe { core::slice::from_raw_parts(path, len) };
-        String::from_utf8_lossy(bytes).into_owned()
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(PATH_MAX);
+        String::from_utf8_lossy(&buf[..len]).into_owned()
     };
 
     // Handle dirfd for relative paths
@@ -458,6 +462,8 @@ pub fn read_events(fd: i32, buf: &mut [u8]) -> isize {
     while count < max_events {
         match inst.event_queue.pop_front() {
             Some(event) => {
+                // SAFETY: `event` is a stack-local `Copy` struct; the pointer
+                // is valid and the length is `event_size`.
                 let bytes = unsafe {
                     core::slice::from_raw_parts(&event as *const _ as *const u8, event_size)
                 };

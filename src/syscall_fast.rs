@@ -85,6 +85,9 @@ pub fn init() {
 }
 
 /// Read from a Model-Specific Register
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model.
 unsafe fn read_msr(msr: u32) -> u64 {
     let low: u32;
     let high: u32;
@@ -101,6 +104,9 @@ unsafe fn read_msr(msr: u32) -> u64 {
 }
 
 /// Write to a Model-Specific Register
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model.
 unsafe fn write_msr(msr: u32, value: u64) {
     let low = value as u32;
     let high = (value >> 32) as u32;
@@ -234,11 +240,38 @@ struct SyscallFrame {
 /// prologue may already have reused the SysV arg registers.
 #[no_mangle]
 extern "C" fn syscall_handler_wrapper(frame: *const SyscallFrame) -> i64 {
-    // ponytail: arg mapping follows the Linux x86_64 syscall convention —
+    // ponytail: arg mapping follows the Linux x86_64 syscall convention -
     // num=rax, arg1=rdi, arg2=rsi, arg3=rdx, arg4=r10, arg5=r8, arg6=r9.
     let f = unsafe { &*frame };
 
-    crate::syscall_handler::dispatch_syscall(f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9)
+    let result =
+        crate::syscall_handler::dispatch_syscall(f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9);
+
+    if matches!(f.rax, 60 | 231) {
+        if let Some((rip, rsp)) = crate::user_sched::take_user_resume() {
+            crate::serial_println!(
+                "user_sched: fast-exit handoff syscall={} resume={:#x} rsp={:#x}",
+                f.rax,
+                rip,
+                rsp
+            );
+            // SAFETY: `take_user_resume` only returns the bootstrap kernel entry and stack
+            // armed by `user_sched` for the current one-shot user task. `jmp` is noreturn,
+            // and the target is responsible for re-enabling interrupts before resuming the
+            // kernel idle/session loop.
+            unsafe {
+                asm!(
+                    "mov rsp, {resume_rsp}",
+                    "jmp {resume_rip}",
+                    resume_rsp = in(reg) rsp,
+                    resume_rip = in(reg) rip,
+                    options(noreturn)
+                );
+            }
+        }
+    }
+
+    result
 }
 
 /// Check if SYSCALL/SYSRET instructions are supported

@@ -31,13 +31,23 @@ pub const IO_BITMAP_BYTES: usize = 8192;
 #[repr(align(16))]
 struct AlignedStack([u8; STACK_SIZE]);
 
-/// Interrupt stack for double fault handler
+/// Interrupt stack for double fault handler.
+///
+/// SAFETY: `static mut` is required here because the CPU itself reads and
+/// writes this memory during exception handling — it jumps to the stack
+/// pointer loaded from the TSS IST entry without acquiring any Rust lock.
+/// Wrapping in `Mutex`/`RwLock` is impossible because the CPU cannot lock.
+/// Rust code only takes the address (via `addr_of!`) to populate the TSS;
+/// it never reads or writes the stack contents directly.
 static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 /// Dedicated stack for the page fault handler.
+/// SAFETY: Same rationale as `DOUBLE_FAULT_STACK` — CPU-addressed, lock-free.
 static mut PAGE_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 /// Dedicated stack for the general-protection fault handler.
+/// SAFETY: Same rationale as `DOUBLE_FAULT_STACK` — CPU-addressed, lock-free.
 static mut GP_FAULT_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 /// Ring-0 stack used when interrupts/syscalls arrive from Ring 3.
+/// SAFETY: Same rationale as `DOUBLE_FAULT_STACK` — CPU-addressed, lock-free.
 static mut RING0_STACK: AlignedStack = AlignedStack([0; STACK_SIZE]);
 
 /// Task State Segment (mutable for stack updates)
@@ -56,6 +66,11 @@ impl TssWithIoBitmap {
     }
 }
 
+/// SAFETY: `static mut` is required because the CPU reads the TSS directly
+/// during task switches and IST-based exception entry — it cannot acquire a
+/// Rust lock. Rust code mutates the TSS only during GDT initialization
+/// (single-threaded boot) and when updating the I/O bitmap, both of which
+/// happen before the TSS is loaded into the CPU via `ltr`.
 static mut TSS: TssWithIoBitmap = TssWithIoBitmap::new();
 
 fn tss_descriptor_with_io_bitmap() -> Descriptor {
@@ -205,6 +220,9 @@ pub fn deny_all_io_ports() {
     }
 }
 
+/// # Safety
+/// The caller must ensure `kernel_stack` is a valid, mapped kernel stack
+/// address used for privilege level transitions (e.g., interrupt entry).
 pub unsafe fn set_kernel_stack_pointer(kernel_stack: u64) {
     if kernel_stack != 0 {
         TSS.tss.privilege_stack_table[0] = VirtAddr::new(kernel_stack);
@@ -381,6 +399,7 @@ pub fn get_segment_info(selector: GdtSegmentSelector) -> Option<SegmentInfo> {
     // The selector index points to the descriptor (index * 8 bytes)
     let index = (selector.0 >> 3) as usize;
     let entry_ptr = unsafe { gdt_base.add(index * 8) };
+    // SAFETY: entry_ptr points into the GDT, which is a valid mapped array of u64 entries.
     let entry: u64 = unsafe { core::ptr::read(entry_ptr as *const u64) };
 
     // A null descriptor (all zeros) is not a valid segment

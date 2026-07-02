@@ -15,7 +15,7 @@ pub mod stress_tests;
 pub mod system_validation;
 
 use crate::testing_framework::{
-    create_default_test_suites, get_test_framework, init_testing_framework, TestStats, TestSuite,
+    create_default_test_suites, init_testing_framework, TestStats, TestSuite,
 };
 use alloc::{string::String, vec::Vec};
 
@@ -32,16 +32,17 @@ pub fn init_testing_system() -> Result<(), &'static str> {
 
 /// Run all comprehensive tests
 pub fn run_comprehensive_tests() -> TestStats {
-    let framework = get_test_framework();
+    init_testing_framework();
 
     // Add all test suites
     let test_suites = get_all_test_suites();
-    for suite in test_suites {
-        framework.add_suite(suite);
-    }
+    crate::testing_framework::with_test_framework(move |framework| {
+        for suite in test_suites {
+            framework.add_suite(suite);
+        }
+    });
 
-    // Run all tests
-    framework.run_all_tests()
+    crate::testing_framework::run_loaded_tests()
 }
 
 /// Get all available test suites
@@ -71,7 +72,7 @@ pub fn get_all_test_suites() -> Vec<TestSuite> {
 
 /// Run specific test category
 pub fn run_test_category(category: &str) -> TestStats {
-    let framework = get_test_framework();
+    init_testing_framework();
 
     let suites = match category {
         "unit" => create_default_test_suites(),
@@ -93,17 +94,20 @@ pub fn run_test_category(category: &str) -> TestStats {
         }
     };
 
-    for suite in suites {
-        framework.add_suite(suite);
-    }
+    crate::testing_framework::with_test_framework(move |framework| {
+        for suite in suites {
+            framework.add_suite(suite);
+        }
+    });
 
-    framework.run_all_tests()
+    crate::testing_framework::run_loaded_tests()
 }
 
 /// Get test results summary
 pub fn get_test_summary() -> String {
-    let framework = get_test_framework();
-    let results = framework.get_results();
+    let results =
+        crate::testing_framework::with_test_framework(|framework| framework.get_results())
+            .unwrap_or_default();
 
     let mut summary = String::new();
     summary.push_str("=== RustOS Test Results Summary ===\n");

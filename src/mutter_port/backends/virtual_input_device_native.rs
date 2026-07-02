@@ -1,6 +1,20 @@
 //! Virtual Input Device Native — ported from GNOME Mutter
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-virtual-input-device-native.h
+//! Native implementation of virtual input devices for synthetic input generation.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-virtual-input-device-native.h
 
-// TODO: Extract struct definitions from C header
-// TODO: Add type definitions and implementations
+/// Native virtual input device.
+pub struct MetaVirtualInputDeviceNative;
+
+impl MetaVirtualInputDeviceNative {
+    pub fn new() -> Self {
+        MetaVirtualInputDeviceNative
+    }
+}
+
+impl Default for MetaVirtualInputDeviceNative {
+    fn default() -> Self {
+        Self::new()
+    }
+}

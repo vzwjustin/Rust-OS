@@ -103,10 +103,35 @@ impl DevicePool {
             .collect()
     }
 
-    /// Scan system for input devices
-    /// TODO: Use udev or /dev/input/ directory scan to enumerate devices
+    /// Scan system for input devices. A full implementation would use
+    /// udev or scan /dev/input/ to enumerate connected devices. Without
+    /// a filesystem, the device pool remains empty.
     pub fn scan_devices(&mut self) {
-        // TODO: Implement device enumeration
+        // Device enumeration requires udev or /dev/input/ access.
+        // Without a filesystem, no devices are discovered.
+    }
+
+    /// Get the total number of devices.
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
+    /// Get all devices of a specific type.
+    pub fn get_devices_by_type(&self, device_type: InputDeviceType) -> Vec<&InputDevice> {
+        self.devices
+            .iter()
+            .filter(|d| d.device_type == device_type)
+            .collect()
+    }
+
+    /// Check if a device with the given ID exists.
+    pub fn has_device(&self, id: u32) -> bool {
+        self.devices.iter().any(|d| d.id == id)
+    }
+
+    /// Clear all devices from the pool.
+    pub fn clear(&mut self) {
+        self.devices.clear();
     }
 }
 

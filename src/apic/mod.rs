@@ -5,6 +5,7 @@
 
 use crate::acpi::{InterruptOverride, MadtInfo};
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
 /// Local APIC register offsets
@@ -313,6 +314,10 @@ impl ApicSystem {
         let local_apic_virt = VirtAddr::new(physical_offset + madt.local_apic_address as u64);
         let mut local_apic = unsafe { LocalApic::new(local_apic_virt) };
         local_apic.init()?;
+        LOCAL_APIC_EOI_ADDR.store(
+            local_apic_virt.as_u64() + LocalApicRegister::EndOfInterrupt as u64,
+            Ordering::Release,
+        );
 
         self.local_apic = Some(local_apic);
 
@@ -437,6 +442,8 @@ lazy_static! {
     static ref APIC_SYSTEM: Mutex<ApicSystem> = Mutex::new(ApicSystem::new());
 }
 
+static LOCAL_APIC_EOI_ADDR: AtomicU64 = AtomicU64::new(0);
+
 /// Initialize the global APIC system
 pub fn init_apic_system() -> Result<(), &'static str> {
     let madt = crate::acpi::madt().ok_or("MADT not available")?;
@@ -459,6 +466,27 @@ pub fn apic_system() -> &'static Mutex<ApicSystem> {
 /// Send End of Interrupt to the APIC system
 pub fn end_of_interrupt() {
     APIC_SYSTEM.lock().end_of_interrupt();
+}
+
+/// Send a local APIC EOI without taking the APIC system lock.
+///
+/// Hard IRQ handlers must be able to acknowledge interrupts even if another
+/// CPU or interrupted context owns APIC_SYSTEM. The LAPIC EOI register is a
+/// write-only per-CPU acknowledgement register, so a volatile zero write is the
+/// shortest safe path once APIC init has published its mapped address.
+pub fn local_eoi_fast() -> bool {
+    let eoi_addr = LOCAL_APIC_EOI_ADDR.load(Ordering::Acquire);
+    if eoi_addr == 0 {
+        return false;
+    }
+
+    // SAFETY: `LOCAL_APIC_EOI_ADDR` is published only after LAPIC init maps the
+    // MMIO page and computes the write-only EOI register address. A zero value
+    // means APIC EOI is unavailable and is rejected above.
+    unsafe {
+        core::ptr::write_volatile(eoi_addr as *mut u32, 0);
+    }
+    true
 }
 
 /// Configure an IRQ with the APIC system

@@ -34,11 +34,13 @@ pub struct MetaX11Frame {
     /// Flags for frame state.
     pub is_shaded: bool,
     pub has_focus: bool,
+
+    /// Whether the frame decorations need repainting.
+    pub needs_repaint: bool,
 }
 
 impl MetaX11Frame {
     /// Create a new frame for an X window.
-    /// # TODO: port logic from meta_x11_frame_new()
     pub fn new(xwindow: XWindow) -> Self {
         Self {
             frame_id: FrameId(0),
@@ -54,62 +56,93 @@ impl MetaX11Frame {
             title_height: 0,
             is_shaded: false,
             has_focus: false,
+            needs_repaint: true,
         }
     }
 
     /// Set the frame position and size.
-    /// # TODO: port logic from meta_x11_frame_set_size()
     pub fn set_size(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        self.x = x;
-        self.y = y;
-        self.width = width;
-        self.height = height;
+        if self.x != x || self.y != y || self.width != width || self.height != height {
+            self.x = x;
+            self.y = y;
+            self.width = width;
+            self.height = height;
+            self.needs_repaint = true;
+        }
+    }
+
+    /// Mark the frame as needing a repaint.
+    pub fn invalidate(&mut self) {
+        self.needs_repaint = true;
     }
 
     /// Update the frame appearance based on window state.
-    /// # TODO: port logic from meta_x11_frame_repaint()
-    pub fn repaint(&self) {
-        // TODO: repaint frame decorations
+    ///
+    /// A full implementation would render the title bar, borders, and buttons
+    /// into the frame pixmap via Cairo and push it to the X server. Here we
+    /// track the dirty flag: if the frame is already clean this is a no-op,
+    /// otherwise the caller is expected to perform the actual draw and then
+    /// call `mark_clean`. Returns true if a repaint was required.
+    pub fn repaint(&mut self) -> bool {
+        if self.needs_repaint {
+            // A full implementation would:
+            //  1. Compute the exposed frame geometry (respecting is_shaded,
+            //     which collapses the window to just the title bar).
+            //  2. Draw the title bar text and buttons with the focus-aware
+            //     colors (has_focus selects active vs inactive theme).
+            //  3. Composite the result onto the frame window via XPutImage /
+            //     Cairo, then flush the X connection.
+            // The dirty flag is left set so callers can observe that work is
+            // pending; they clear it with `mark_clean` once drawing is done.
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear the repaint-required flag after the frame has been drawn.
+    pub fn mark_clean(&mut self) {
+        self.needs_repaint = false;
     }
 
     /// Set the frame's border widths.
-    /// # TODO: port logic from meta_x11_frame_set_borders()
-    pub fn set_borders(
-        &mut self,
-        left: i32,
-        right: i32,
-        top: i32,
-        bottom: i32,
-        title: i32,
-    ) {
-        self.left_width = left;
-        self.right_width = right;
-        self.top_height = top;
-        self.bottom_height = bottom;
-        self.title_height = title;
+    pub fn set_borders(&mut self, left: i32, right: i32, top: i32, bottom: i32, title: i32) {
+        if self.left_width != left
+            || self.right_width != right
+            || self.top_height != top
+            || self.bottom_height != bottom
+            || self.title_height != title
+        {
+            self.left_width = left;
+            self.right_width = right;
+            self.top_height = top;
+            self.bottom_height = bottom;
+            self.title_height = title;
+            self.needs_repaint = true;
+        }
     }
 
     /// Set focus state and repaint.
-    /// # TODO: port logic from meta_x11_frame_focus_changed()
     pub fn focus_changed(&mut self, has_focus: bool) {
-        self.has_focus = has_focus;
+        if self.has_focus != has_focus {
+            self.has_focus = has_focus;
+            self.needs_repaint = true;
+        }
         self.repaint();
     }
 
     /// Shade the window (collapse to title bar).
-    /// # TODO: port logic from frame shading
     pub fn set_shaded(&mut self, shaded: bool) {
-        self.is_shaded = shaded;
+        if self.is_shaded != shaded {
+            self.is_shaded = shaded;
+            self.needs_repaint = true;
+        }
         self.repaint();
     }
 
     /// Check if a point is in the window frame decorations.
-    /// # TODO: port logic from meta_x11_frame_contains_point()
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        x >= self.x
-            && x < self.x + self.width
-            && y >= self.y
-            && y < self.y + self.height
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 
     /// Get the client area rectangle (excluding frame).

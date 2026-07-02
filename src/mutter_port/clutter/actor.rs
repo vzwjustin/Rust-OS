@@ -817,7 +817,7 @@ mod tests {
             super::super::paint_context::Framebuffer,
             None,
             super::super::paint_context::PaintFlag::NONE,
-            super::super::paint_context::ColorState,
+            super::super::paint_context::ColorState::srgb(),
         );
         let root = tree.paint(parent, &ctx).unwrap();
         assert_eq!(root.n_children(), 0);
@@ -834,7 +834,7 @@ mod tests {
             super::super::paint_context::Framebuffer,
             None,
             super::super::paint_context::PaintFlag::NONE,
-            super::super::paint_context::ColorState,
+            super::super::paint_context::ColorState::srgb(),
         );
         let root = tree.paint(parent, &ctx).unwrap();
         assert_eq!(root.n_children(), 1);

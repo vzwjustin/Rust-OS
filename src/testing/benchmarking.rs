@@ -346,9 +346,7 @@ impl BenchmarkSuite {
             _ => {
                 // Default operation
                 for _ in 0..100 {
-                    unsafe {
-                        core::arch::asm!("nop");
-                    }
+                    core::hint::spin_loop();
                 }
             }
         }
@@ -392,9 +390,7 @@ impl BenchmarkSuite {
                 }
                 _ => {
                     // Default operation
-                    unsafe {
-                        core::arch::asm!("nop");
-                    }
+                    core::hint::spin_loop();
                 }
             }
             operations += 1;
@@ -614,21 +610,21 @@ pub fn create_performance_benchmark_suite() -> TestSuite {
 
 // Setup and teardown functions
 fn setup_all_performance_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_all_performance_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_performance_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_performance_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 // Benchmark test implementations
@@ -735,9 +731,7 @@ fn benchmark_interrupt_latency() -> TestResult {
     // Wait for several timer interrupts to occur
     let measurement_duration = 50000; // 50ms
     while crate::time::uptime_us() - start_time < measurement_duration {
-        unsafe {
-            core::arch::asm!("pause");
-        }
+        core::hint::spin_loop();
     }
 
     let end_tsc = crate::performance_monitor::read_tsc();
@@ -824,28 +818,22 @@ fn benchmark_io_throughput() -> TestResult {
 }
 
 /// Global performance monitor instance
-static mut GLOBAL_PERFORMANCE_MONITOR: Option<PerformanceMonitor> = None;
+static GLOBAL_PERFORMANCE_MONITOR: spin::Mutex<Option<PerformanceMonitor>> = spin::Mutex::new(None);
 
 /// Initialize global performance monitoring
 pub fn init_performance_monitoring() -> Result<(), &'static str> {
-    unsafe {
-        GLOBAL_PERFORMANCE_MONITOR = PerformanceMonitor::new();
-        if GLOBAL_PERFORMANCE_MONITOR.is_some() {
-            Ok(())
-        } else {
-            Err("Failed to initialize performance monitor")
-        }
+    let mut guard = GLOBAL_PERFORMANCE_MONITOR.lock();
+    *guard = PerformanceMonitor::new();
+    if guard.is_some() {
+        Ok(())
+    } else {
+        Err("Failed to initialize performance monitor")
     }
-}
-
-/// Get global performance monitor
-pub fn get_performance_monitor() -> Option<&'static PerformanceMonitor> {
-    unsafe { GLOBAL_PERFORMANCE_MONITOR.as_ref() }
 }
 
 /// Record a performance sample globally
 pub fn record_performance_sample(sample: PerformanceSample) {
-    if let Some(monitor) = get_performance_monitor() {
+    if let Some(monitor) = GLOBAL_PERFORMANCE_MONITOR.lock().as_ref() {
         monitor.record_sample(sample);
     }
 }

@@ -9,10 +9,24 @@
 //! 4. move_mount() attaches the mount to the filesystem tree
 //! 5. fspick() creates a context from an existing mount for reconfiguration
 
+use crate::memory::user_space::UserSpaceMemory;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+
+/// Safely read a NUL-terminated C string from userspace.
+/// Returns None on EFAULT or if no NUL is found within PATH_MAX bytes.
+fn read_cstring_from_user(ptr: *const u8) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    const PATH_MAX: usize = 4096;
+    let mut buf = alloc::vec![0u8; PATH_MAX];
+    UserSpaceMemory::copy_from_user(ptr as u64, &mut buf).ok()?;
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(PATH_MAX);
+    Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
 use spin::{Mutex, RwLock};
 
 // ── fsconfig commands ───────────────────────────────────────────────────
@@ -177,12 +191,10 @@ pub fn fsopen(fs_type: *const u8, flags: u32) -> i32 {
         return -22; // EINVAL
     }
 
-    let mut len = 0;
-    while unsafe { *fs_type.add(len) } != 0 {
-        len += 1;
-    }
-    let bytes = unsafe { core::slice::from_raw_parts(fs_type, len) };
-    let fs_type_str = String::from_utf8_lossy(bytes).into_owned();
+    let fs_type_str = match read_cstring_from_user(fs_type) {
+        Some(s) => s,
+        None => return -14,
+    };
 
     // Validate filesystem type
     let known_types = [
@@ -238,21 +250,19 @@ pub fn fsconfig(fd: i32, cmd: u32, key: *const u8, value: *const u8, _aux: i32) 
     let key_str = if key.is_null() {
         String::new()
     } else {
-        let mut len = 0;
-        while unsafe { *key.add(len) } != 0 {
-            len += 1;
+        match read_cstring_from_user(key) {
+            Some(s) => s,
+            None => return -14,
         }
-        String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(key, len) }).into_owned()
     };
 
     let value_str = if value.is_null() {
         String::new()
     } else {
-        let mut len = 0;
-        while unsafe { *value.add(len) } != 0 {
-            len += 1;
+        match read_cstring_from_user(value) {
+            Some(s) => s,
+            None => return -14,
         }
-        String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(value, len) }).into_owned()
     };
 
     match cmd {
@@ -361,12 +371,10 @@ pub fn fspick(path: *const u8, flags: u32) -> i32 {
         return -22;
     }
 
-    let mut len = 0;
-    while unsafe { *path.add(len) } != 0 {
-        len += 1;
-    }
-    let path_str =
-        String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(path, len) }).into_owned();
+    let path_str = match read_cstring_from_user(path) {
+        Some(s) => s,
+        None => return -14,
+    };
 
     // Verify the path is a mount point
     let vfs = crate::vfs::get_vfs();
@@ -427,13 +435,10 @@ pub fn move_mount(
         return -95;
     }
 
-    let mut to_len = 0;
-    while unsafe { *to_path.add(to_len) } != 0 {
-        to_len += 1;
-    }
-    let to_path_str =
-        String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(to_path, to_len) })
-            .into_owned();
+    let to_path_str = match read_cstring_from_user(to_path) {
+        Some(s) => s,
+        None => return -14,
+    };
 
     // Get the fs context from the from_dfd
     let ctx_id = crate::linux_compat::special_fd::get_fs_context_id(from_dfd)
@@ -517,12 +522,10 @@ pub fn open_tree(_dfd: i32, path: *const u8, flags: u32) -> i32 {
         return -95;
     }
 
-    let mut len = 0;
-    while unsafe { *path.add(len) } != 0 {
-        len += 1;
-    }
-    let path_str =
-        String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(path, len) }).into_owned();
+    let path_str = match read_cstring_from_user(path) {
+        Some(s) => s,
+        None => return -14,
+    };
 
     // Verify path exists
     let vfs = crate::vfs::get_vfs();
@@ -569,12 +572,10 @@ pub fn mount_setattr(_dfd: i32, path: *const u8, flags: u32, attr: u64, size: u6
         return -22;
     }
 
-    let mut len = 0;
-    while unsafe { *path.add(len) } != 0 {
-        len += 1;
-    }
-    let path_str =
-        String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(path, len) }).into_owned();
+    let path_str = match read_cstring_from_user(path) {
+        Some(s) => s,
+        None => return -14,
+    };
 
     if attr == 0 || size == 0 {
         return -22;
@@ -597,6 +598,8 @@ pub fn mount_setattr(_dfd: i32, path: *const u8, flags: u32, attr: u64, size: u6
         propagation: 0,
     };
     {
+        // SAFETY: `mount_attr` is a stack-local `Copy` struct; the pointer is
+        // valid for writes and the length is `size_of::<MountAttr>()`.
         let bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 (&mut mount_attr as *mut MountAttr) as *mut u8,

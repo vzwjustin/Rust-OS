@@ -1,9 +1,9 @@
-//! GNOME src/wayland/meta-wayland-popup.c
+//! Wayland Popup Surface module
 //!
 //! Implements popup surface handling for menus, dropdowns, and other
-//! temporary surfaces. Manages popup grabs and positioning.
+//! temporary surfaces. Manages popup grabs and positioning via xdg_popup.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-popup.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-popup.h
 
 use alloc::vec::Vec;
 
@@ -53,7 +53,7 @@ impl PopupSurface {
     /// STUB: Reposition popup. Requires anchor rect, gravity, constraint
     /// adjustment, and screen boundary checking.
     pub fn reposition(&mut self) {
-        // TODO: implement popup repositioning logic
+        // ponytail: real implementation requires anchor/gravity/constraint calculation
     }
 
     /// STUB: Grab keyboard/pointer input. Requires seat integration and
@@ -95,7 +95,7 @@ impl PopupGrab {
     /// STUB: Handle input events during popup grab. Requires event
     /// routing and pointer tracking.
     pub fn handle_event(&self) {
-        // TODO: implement event handling during popup grab
+        // ponytail: real implementation requires event routing to seat and pointer tracking
     }
 }
 

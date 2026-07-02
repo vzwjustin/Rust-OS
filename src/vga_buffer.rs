@@ -198,6 +198,7 @@ lazy_static! {
         column_position: 0,
         row_position: 0,
         color_code: ColorCode::new(Color::White, Color::Black),
+        // SAFETY: 0xb8000 is the fixed VGA text buffer MMIO address, always mapped in the kernel. Buffer is repr(transparent) over a 2D array.
         buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
     });
 }

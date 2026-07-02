@@ -897,6 +897,8 @@ impl DynamicLinker {
                     let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
                     let value = base_address.as_u64() + reloc.addend as u64;
 
+                    // SAFETY: the relocation address is a valid mapped user-space
+                    // address within the ELF segment.
                     unsafe {
                         self.write_relocation_value(target, value)?;
                     }
@@ -907,6 +909,8 @@ impl DynamicLinker {
 
                     // Resolve symbol by index
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value(target, symbol_addr.as_u64())?;
                         }
@@ -930,6 +934,8 @@ impl DynamicLinker {
                     // binding is correct and avoids leaving GOT entries unresolved,
                     // which would fault on first call.
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value(target, symbol_addr.as_u64())?;
                         }
@@ -951,6 +957,8 @@ impl DynamicLinker {
                     // Resolve symbol and add addend
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
                         let value = symbol_addr.as_u64() + reloc.addend as u64;
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value(target, value)?;
                         }
@@ -967,6 +975,8 @@ impl DynamicLinker {
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
                         let value = (symbol_addr.as_u64() as i64 + reloc.addend
                             - target.as_u64() as i64) as u32;
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value_32(target, value)?;
                         }
@@ -983,6 +993,8 @@ impl DynamicLinker {
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
                         let value = (symbol_addr.as_u64() as i64 + reloc.addend
                             - target.as_u64() as i64) as u32;
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value_32(target, value)?;
                         }
@@ -1001,6 +1013,8 @@ impl DynamicLinker {
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
                         let value = (symbol_addr.as_u64() as i64 + reloc.addend
                             - target.as_u64() as i64) as u32;
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value_32(target, value)?;
                         }
@@ -1016,6 +1030,8 @@ impl DynamicLinker {
                     let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
                         let value = (symbol_addr.as_u64() as i64 + reloc.addend) as u32;
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value_32(target, value)?;
                         }
@@ -1031,6 +1047,8 @@ impl DynamicLinker {
                     let target = VirtAddr::new(base_address.as_u64() + reloc.offset.as_u64());
                     if let Some(symbol_addr) = self.resolve_symbol_by_index(reloc.symbol) {
                         let value = (symbol_addr.as_u64() as i64 + reloc.addend) as u32;
+                        // SAFETY: the relocation address is a valid mapped user-space
+                        // address within the ELF segment.
                         unsafe {
                             self.write_relocation_value_32(target, value)?;
                         }
@@ -1160,6 +1178,8 @@ impl DynamicLinker {
             for i in 0..count {
                 let entry_addr =
                     array_addr.as_u64() + ((i as u64) * core::mem::size_of::<u64>() as u64);
+                // SAFETY: the pointer is within a valid mapped ELF section;
+                // read_volatile performs a volatile load from the preinit array.
                 let func_ptr = unsafe { core::ptr::read_volatile(entry_addr as *const u64) };
                 if func_ptr != 0 {
                     // SAFETY: the function pointer comes from the binary's
@@ -1177,6 +1197,10 @@ impl DynamicLinker {
         if let Some(init_addr) = info.init {
             let func_ptr = init_addr.as_u64();
             if func_ptr != 0 {
+                // SAFETY: `func_ptr` is the DT_INIT entry from the dynamic
+                // section of a loaded, relocated ELF object. Relocation has
+                // resolved all symbols, so the address points to a valid
+                // `extern "C" fn()` with the C calling convention.
                 unsafe {
                     let init_fn: extern "C" fn() = core::mem::transmute(func_ptr);
                     init_fn();
@@ -1190,6 +1214,8 @@ impl DynamicLinker {
             for i in 0..count {
                 let entry_addr =
                     array_addr.as_u64() + ((i as u64) * core::mem::size_of::<u64>() as u64);
+                // SAFETY: the pointer is within a valid mapped ELF section;
+                // read_volatile performs a volatile load from the init array.
                 let func_ptr = unsafe { core::ptr::read_volatile(entry_addr as *const u64) };
                 if func_ptr != 0 {
                     // SAFETY: the function pointer comes from the binary's
@@ -1218,8 +1244,13 @@ impl DynamicLinker {
             for i in (0..count).rev() {
                 let entry_addr =
                     array_addr.as_u64() + ((i as u64) * core::mem::size_of::<u64>() as u64);
+                // SAFETY: the pointer is within a valid mapped ELF section;
+                // read_volatile performs a volatile load from the fini array.
                 let func_ptr = unsafe { core::ptr::read_volatile(entry_addr as *const u64) };
                 if func_ptr != 0 {
+                    // SAFETY: `func_ptr` comes from the DT_FINI_ARRAY entry
+                    // of a loaded, relocated ELF object. The address points to
+                    // a valid `extern "C" fn()` destructor.
                     unsafe {
                         let fini_fn: extern "C" fn() = core::mem::transmute(func_ptr);
                         fini_fn();
@@ -1232,6 +1263,9 @@ impl DynamicLinker {
         if let Some(fini_addr) = info.fini {
             let func_ptr = fini_addr.as_u64();
             if func_ptr != 0 {
+                // SAFETY: `func_ptr` is the DT_FINI entry from the dynamic
+                // section of a loaded, relocated ELF object. The address points
+                // to a valid `extern "C" fn()` finalizer.
                 unsafe {
                     let fini_fn: extern "C" fn() = core::mem::transmute(func_ptr);
                     fini_fn();
@@ -1427,8 +1461,10 @@ impl DynamicLinker {
             }
 
             // Parse symbol entry
+            // SAFETY: the pointer is within a valid mapped ELF section;
+            // read_unaligned handles misalignment.
             let symbol = unsafe {
-                core::ptr::read(binary_data[sym_offset..].as_ptr() as *const Elf64Symbol)
+                core::ptr::read_unaligned(binary_data[sym_offset..].as_ptr() as *const Elf64Symbol)
             };
 
             // Skip undefined symbols
@@ -1533,8 +1569,10 @@ impl DynamicLinker {
             }
 
             // Parse symbol entry
+            // SAFETY: the pointer is within a valid mapped ELF section;
+            // read_unaligned handles misalignment.
             let symbol = unsafe {
-                core::ptr::read(binary_data[sym_offset..].as_ptr() as *const Elf64Symbol)
+                core::ptr::read_unaligned(binary_data[sym_offset..].as_ptr() as *const Elf64Symbol)
             };
 
             // Get symbol name
@@ -1699,8 +1737,12 @@ impl DynamicLinker {
                 let sym_struct_offset =
                     symtab_offset + sym_idx as usize * core::mem::size_of::<Elf64Symbol>();
                 if sym_struct_offset + core::mem::size_of::<Elf64Symbol>() <= binary_data.len() {
+                    // SAFETY: `binary_data` is a `&[u8]` (1-byte aligned) but
+                    // `Elf64Symbol` contains `u64` fields (align 8). A plain
+                    // `ptr::read` would be UB on a misaligned pointer; use
+                    // `read_unaligned` which performs an unaligned load.
                     let symbol = unsafe {
-                        core::ptr::read(
+                        core::ptr::read_unaligned(
                             binary_data[sym_struct_offset..].as_ptr() as *const Elf64Symbol
                         )
                     };
@@ -1854,16 +1896,23 @@ impl DynamicLinker {
             if offset + core::mem::size_of::<Elf64Verdef>() > binary_data.len() {
                 break;
             }
-            let verdef =
-                unsafe { core::ptr::read(binary_data[offset..].as_ptr() as *const Elf64Verdef) };
+            // SAFETY: the pointer is within a valid mapped ELF section;
+            // read_unaligned handles misalignment.
+            let verdef = unsafe {
+                core::ptr::read_unaligned(binary_data[offset..].as_ptr() as *const Elf64Verdef)
+            };
             if verdef.vd_ndx == version_idx {
                 // Read the first Verdaux entry for the version name
                 let aux_offset = offset + verdef.vd_aux as usize;
                 if aux_offset + core::mem::size_of::<Elf64Verdaux>() > binary_data.len() {
                     break;
                 }
+                // SAFETY: the pointer is within a valid mapped ELF section;
+                // read_unaligned handles misalignment.
                 let verdaux = unsafe {
-                    core::ptr::read(binary_data[aux_offset..].as_ptr() as *const Elf64Verdaux)
+                    core::ptr::read_unaligned(
+                        binary_data[aux_offset..].as_ptr() as *const Elf64Verdaux
+                    )
                 };
                 let name_offset = strtab_offset + verdaux.vda_name as usize;
                 if name_offset < binary_data.len() && name_offset + strtab_size <= binary_data.len()
@@ -1910,8 +1959,12 @@ impl DynamicLinker {
             let sym_struct_offset =
                 symtab_offset + sym_idx as usize * core::mem::size_of::<Elf64Symbol>();
             if sym_struct_offset + core::mem::size_of::<Elf64Symbol>() <= binary_data.len() {
+                // SAFETY: the pointer is within a valid mapped ELF section;
+                // read_unaligned handles misalignment.
                 let symbol = unsafe {
-                    core::ptr::read(binary_data[sym_struct_offset..].as_ptr() as *const Elf64Symbol)
+                    core::ptr::read_unaligned(
+                        binary_data[sym_struct_offset..].as_ptr() as *const Elf64Symbol
+                    )
                 };
                 if symbol.is_defined() {
                     return Some((sym_idx, VirtAddr::new(symbol.st_value)));

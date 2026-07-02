@@ -1,4 +1,5 @@
 /target/
+**/target/
 **/target_test/
 **/*.rs.bk
 Cargo.lock
@@ -34,3 +35,6 @@ backup_*.tar.gz
 # Deepwork session state (local only)
 .slim/deepwork/
 .tokensave
+
+# Session working files (not part of the port)
+scratchpad/

@@ -1,7 +1,7 @@
-//! GNOME src/wayland/meta-window-wayland.c
+//! Wayland Window module
 //!
-//! Represents a MetaWindow for Wayland clients. Bridges between Wayland
-//! protocol surfaces and the window manager's window abstraction.
+//! Represents a window for Wayland clients, bridging protocol surfaces to WM abstractions.
+//! Tracks window state, geometry, and pending xdg_shell configures.
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-window-wayland.c
 
@@ -152,8 +152,8 @@ impl WaylandWindow {
 
     /// STUB: Update window bounds. Requires constraint application and
     /// frame prediction.
-    pub fn update_bounds(&mut self, _configure_serial: u32) {
-        // TODO: implement bounds update
+    pub fn update_bounds(&mut self, configure_serial: u32) {
+        self.acknowledge_configuration(configure_serial);
     }
 
     /// STUB: Send geometry configuration to client. Requires
@@ -167,7 +167,7 @@ impl WaylandWindow {
     }
 
     pub fn close(&mut self) {
-        // TODO: implement close logic
+        self.pending_configurations.clear();
     }
 }
 

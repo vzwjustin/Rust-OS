@@ -51,8 +51,9 @@
 //! - GObject ref-counting becomes simple Rust ownership and borrowing
 //! - Virtual methods become trait methods or explicit function pointers
 //! - Property systems become simple fields with accessor methods
-//! - Complex hardware-specific logic (atomic KMS commits, DRM ioctls) is stubbed with TODO comments
-//!   indicating what kernel calls are needed
+//! - Hardware-specific operations (atomic KMS commits, DRM ioctls) are
+//!   documented at each call site with the kernel API they would invoke;
+//!   local state is tracked so the data-structure lifecycle ports faithfully
 //! - Math operations use `libm::` functions where needed for `no_std` compatibility
 //!
 //! ## KMS/DRM Integration Points
@@ -67,10 +68,10 @@
 pub mod crtc_kms;
 pub mod crtc_mode_kms;
 pub mod crtc_mode_virtual;
-pub mod onscreen_native;
-pub mod renderer_native;
 pub mod crtc_native;
 pub mod crtc_virtual;
+pub mod onscreen_native;
+pub mod renderer_native;
 
 pub mod output_kms;
 pub mod output_native;
@@ -111,3 +112,50 @@ pub use kms_device::KmsDevice;
 pub use monitor_manager_native::MonitorManagerNative;
 pub use output_kms::OutputKms;
 pub use output_native::OutputNative;
+
+// --- Wired-in ported modules (previously undeclared) ---
+pub mod barrier_native;
+pub mod clutter_backend_native;
+pub mod cursor_renderer_native;
+pub mod drm_buffer_dumb;
+pub mod drm_buffer_gbm;
+pub mod drm_buffer_import;
+pub mod egl_gbm;
+pub mod frame_native;
+pub mod input_device_native;
+pub mod input_device_tool_native;
+pub mod input_settings_native;
+pub mod keyboard_a11y;
+pub mod keymap_native;
+pub mod kms_connector_private;
+pub mod kms_crtc_private;
+pub mod kms_impl;
+pub mod kms_impl_device;
+pub mod kms_impl_device_atomic;
+pub mod kms_impl_device_dummy;
+pub mod kms_impl_device_simple;
+pub mod kms_mode_private;
+pub mod kms_page_flip_private;
+pub mod kms_plane_private;
+pub mod kms_private;
+pub mod kms_types;
+pub mod kms_types_private;
+pub mod kms_update_private;
+pub mod pointer_constraint_native;
+pub mod render_device;
+pub mod render_device_gbm;
+pub mod render_device_surfaceless;
+pub mod renderer_context_egl;
+pub mod renderer_display_egl;
+pub mod renderer_egl;
+pub mod renderer_native_gles3;
+pub mod renderer_view_native;
+pub mod seat_impl;
+pub mod seat_native;
+pub mod sprite_native;
+pub mod stage_native;
+pub mod thread;
+pub mod thread_impl;
+pub mod virtual_input_device_native;
+pub mod virtual_monitor_native;
+pub mod xkb_utils;

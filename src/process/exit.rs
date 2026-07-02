@@ -282,11 +282,10 @@ pub fn do_exit(code: i32) -> ! {
     // 0. Clear child TID and futex-wake if CLONE_CHILD_CLEARTID was set.
     let clear_tid_addr = pm.get_process(pid).map(|p| p.clear_child_tid).unwrap_or(0);
     if clear_tid_addr != 0 {
-        // SAFETY: the address was provided by a userspace clone() call and
-        // is valid for writing a single zero word.
-        unsafe {
-            core::ptr::write_volatile(clear_tid_addr as *mut u32, 0);
-        }
+        let _ = crate::memory::user_space::UserSpaceMemory::copy_to_user(
+            clear_tid_addr,
+            &0u32.to_ne_bytes(),
+        );
         // Futex wake: wake any thread waiting on this address.
         let _ = crate::futex::futex_wake(clear_tid_addr as *mut i32, 1, 0xffff_ffff);
     }
@@ -550,8 +549,10 @@ pub fn sys_wait4(
     match do_wait(caller_pid, pid as i64, options) {
         Ok(Some(result)) => {
             if !stat_addr.is_null() {
-                // Safety: caller guarantees a valid userspace pointer.
-                unsafe { stat_addr.write_volatile(result.wstatus) };
+                let _ = crate::memory::user_space::UserSpaceMemory::copy_to_user(
+                    stat_addr as u64,
+                    &result.wstatus.to_ne_bytes(),
+                );
             }
             // Write rusage from the child's PCB accounting fields.
             if !ru.is_null() {
@@ -579,14 +580,15 @@ pub fn sys_wait4(
                     ru_nvcsw: 0,
                     ru_nivcsw: 0,
                 };
-                // Safety: caller guarantees a valid userspace pointer for
-                // sizeof(struct rusage) bytes.
-                unsafe {
-                    core::ptr::write_unaligned(
-                        ru as *mut crate::linux_compat::types::Rusage,
-                        rusage,
-                    );
-                }
+                // SAFETY: `rusage` is a stack-local `Copy` struct; the pointer is
+                // valid and the length is `size_of::<Rusage>()`.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &rusage as *const _ as *const u8,
+                        core::mem::size_of::<crate::linux_compat::types::Rusage>(),
+                    )
+                };
+                let _ = crate::memory::user_space::UserSpaceMemory::copy_to_user(ru as u64, bytes);
             }
             result.pid as i64
         }

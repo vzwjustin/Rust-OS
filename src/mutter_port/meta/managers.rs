@@ -1,58 +1,107 @@
 //! Mutter manager types for various subsystems
 //! Ported from meta/meta-*-manager.h
-use alloc::{string::String, vec::Vec, format};
+//!
+//! Managers coordinate device input, orientation, workspaces, and system state.
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use crate::mutter_port::meta::types::*;
+// Use the rich workspace type (types::* only provides an opaque stub); this
+// matches what `meta::MetaWorkspace` re-exports.
+use crate::mutter_port::meta::workspace::MetaWorkspace;
 
 /// Manages idle detection and timeouts
 pub struct MetaIdleMonitor {
-    // TODO: port idle monitor fields
+    idle_time_ms: u32,
+    /// Active watches as `(watch_id, timeout_ms)` pairs.
+    watches: Vec<(u32, u32)>,
+    /// Monotonic source of unique watch ids (0 is never handed out).
+    next_watch_id: u32,
 }
 
 impl MetaIdleMonitor {
+    /// Create a new MetaIdleMonitor
+    pub fn new() -> Self {
+        Self {
+            idle_time_ms: 0,
+            watches: Vec::new(),
+            next_watch_id: 1,
+        }
+    }
+
     /// Get idle time in milliseconds
     pub fn get_idle_time(&self) -> u32 {
-        // TODO: implement
-        0
+        self.idle_time_ms
     }
 
-    /// Add idle watch callback
-    pub fn add_watch(&mut self, _timeout_ms: u32) {
-        // TODO: implement
+    /// Register an idle watch that fires after `timeout_ms`; returns its id.
+    pub fn add_watch(&mut self, timeout_ms: u32) -> u32 {
+        let id = self.next_watch_id;
+        self.next_watch_id += 1;
+        self.watches.push((id, timeout_ms));
+        id
     }
 
-    /// Remove idle watch
-    pub fn remove_watch(&mut self, _watch_id: u32) {
-        // TODO: implement
+    /// Remove the idle watch with the given id (no-op if unknown).
+    pub fn remove_watch(&mut self, watch_id: u32) {
+        self.watches.retain(|&(id, _)| id != watch_id);
     }
 
-    /// Reset idle timer
+    /// Number of currently-registered watches.
+    pub fn watch_count(&self) -> usize {
+        self.watches.len()
+    }
+
+    /// Reset the idle timer to zero. Registered watches are kept.
     pub fn reset(&mut self) {
-        // TODO: implement
+        self.idle_time_ms = 0;
+    }
+}
+
+impl Default for MetaIdleMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 /// Manages screen orientation/rotation
 pub struct MetaOrientationManager {
-    // TODO: port orientation manager fields
+    orientation: MetaOrientation,
+    has_lock: bool,
 }
 
 impl MetaOrientationManager {
+    /// Create a new MetaOrientationManager
+    pub fn new() -> Self {
+        Self {
+            orientation: MetaOrientation::Normal,
+            has_lock: false,
+        }
+    }
+
     /// Get current screen orientation
     pub fn get_orientation(&self) -> MetaOrientation {
-        // TODO: implement
-        MetaOrientation::Normal
+        self.orientation
     }
 
     /// Set screen orientation
-    pub fn set_orientation(&mut self, _orientation: MetaOrientation) {
-        // TODO: implement
+    pub fn set_orientation(&mut self, orientation: MetaOrientation) {
+        self.orientation = orientation;
     }
 
-    /// Check if orientation auto-rotation is enabled
+    /// Check if orientation auto-rotation is locked.
     pub fn has_orientation_lock(&self) -> bool {
-        // TODO: implement
-        false
+        self.has_lock
+    }
+
+    /// Set whether orientation auto-rotation is locked.
+    pub fn set_orientation_lock(&mut self, locked: bool) {
+        self.has_lock = locked;
+    }
+}
+
+impl Default for MetaOrientationManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -67,72 +116,228 @@ pub enum MetaOrientation {
 
 /// Manages workspace switching and properties
 pub struct MetaWorkspaceManager {
-    // TODO: port workspace manager fields
+    display: Option<Box<MetaDisplay>>,
+    workspaces: Vec<Box<MetaWorkspace>>,
+    active_index: u32,
 }
 
 impl MetaWorkspaceManager {
+    /// Create a new MetaWorkspaceManager
+    pub fn new() -> Self {
+        Self {
+            display: None,
+            workspaces: Vec::new(),
+            active_index: 0,
+        }
+    }
+
     /// Get the display this manager belongs to
     pub fn get_display(&self) -> Option<&MetaDisplay> {
-        // TODO: implement
-        None
+        self.display.as_ref().map(|b| &**b)
     }
 
     /// Get workspace count
     pub fn get_n_workspaces(&self) -> u32 {
-        // TODO: implement
-        1
+        self.workspaces.len() as u32
     }
 
     /// Get workspace by index
-    pub fn get_workspace_by_index(&self, _index: u32) -> Option<&MetaWorkspace> {
-        // TODO: implement
-        None
+    pub fn get_workspace_by_index(&self, index: u32) -> Option<&MetaWorkspace> {
+        self.workspaces.get(index as usize).map(|w| w.as_ref())
     }
 
     /// Get active workspace
     pub fn get_active_workspace(&self) -> Option<&MetaWorkspace> {
-        // TODO: implement
-        None
+        self.workspaces
+            .get(self.active_index as usize)
+            .map(|w| w.as_ref())
     }
 
-    /// Create new workspace
-    pub fn create_workspace(&mut self, _name: Option<&str>) {
-        // TODO: implement
+    /// Create a new workspace, appended at the end, and return its index.
+    pub fn create_workspace(&mut self, name: Option<&str>) -> u32 {
+        let index = self.workspaces.len() as u32;
+        let mut ws = MetaWorkspace::new(index);
+        if let Some(n) = name {
+            ws.set_name(Some(String::from(n)));
+        }
+        self.workspaces.push(Box::new(ws));
+        index
     }
 
-    /// Remove workspace
-    pub fn remove_workspace(&mut self, _workspace: &MetaWorkspace) {
-        // TODO: implement
+    /// Remove the given workspace (matched by identity). Clamps the active
+    /// index if it now points past the end.
+    pub fn remove_workspace(&mut self, workspace: &MetaWorkspace) {
+        if let Some(pos) = self
+            .workspaces
+            .iter()
+            .position(|w| core::ptr::eq(w.as_ref(), workspace))
+        {
+            self.workspaces.remove(pos);
+            if self.active_index as usize >= self.workspaces.len() {
+                self.active_index = (self.workspaces.len().saturating_sub(1)) as u32;
+            }
+        }
     }
 
-    /// Reorder workspaces
-    pub fn reorder_workspace(&mut self, _from: u32, _to: u32) {
-        // TODO: implement
+    /// Move the workspace at `from` to position `to`, keeping the active
+    /// workspace pointing at the same workspace. Out-of-range or no-op moves
+    /// are ignored.
+    pub fn reorder_workspace(&mut self, from: u32, to: u32) {
+        let len = self.workspaces.len();
+        let (from, to) = (from as usize, to as usize);
+        if from >= len || to >= len || from == to {
+            return;
+        }
+
+        let ws = self.workspaces.remove(from);
+        self.workspaces.insert(to, ws);
+
+        // Track where the previously-active index lands after remove+insert.
+        let active = self.active_index as usize;
+        self.active_index = if active == from {
+            to as u32
+        } else {
+            let mut a = active;
+            if a > from {
+                a -= 1; // removal shifted it left
+            }
+            if a >= to {
+                a += 1; // insertion shifted it right
+            }
+            a as u32
+        };
+    }
+}
+
+impl Default for MetaWorkspaceManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 /// Debug and development control
 pub struct MetaDebugControl {
-    // TODO: port debug control fields
+    is_enabled: bool,
+    debug_log: Vec<String>,
 }
 
 impl MetaDebugControl {
+    /// Create a new MetaDebugControl
+    pub fn new() -> Self {
+        Self {
+            is_enabled: false,
+            debug_log: Vec::new(),
+        }
+    }
+
     /// Enable debug mode
-    pub fn set_debug_mode(&mut self, _enabled: bool) {
-        // TODO: implement
+    pub fn set_debug_mode(&mut self, enabled: bool) {
+        self.is_enabled = enabled;
     }
 
     /// Get debug status
     pub fn is_debug_enabled(&self) -> bool {
-        // TODO: implement
-        false
+        self.is_enabled
     }
 
     /// Get debug log
     pub fn get_debug_log(&self) -> Option<Vec<String>> {
-        // TODO: implement
-        None
+        if self.debug_log.is_empty() {
+            None
+        } else {
+            Some(self.debug_log.clone())
+        }
     }
 }
 
-// TODO: port remaining manager functions
+impl Default for MetaDebugControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_and_index_workspaces() {
+        let mut m = MetaWorkspaceManager::new();
+        assert_eq!(m.get_n_workspaces(), 0);
+        assert!(m.get_active_workspace().is_none());
+
+        assert_eq!(m.create_workspace(Some("one")), 0);
+        assert_eq!(m.create_workspace(Some("two")), 1);
+        assert_eq!(m.get_n_workspaces(), 2);
+
+        assert_eq!(
+            m.get_workspace_by_index(0).and_then(|w| w.get_name()),
+            Some("one")
+        );
+        assert_eq!(
+            m.get_workspace_by_index(1).and_then(|w| w.get_name()),
+            Some("two")
+        );
+        assert!(m.get_workspace_by_index(2).is_none());
+        // active_index defaults to 0.
+        assert_eq!(
+            m.get_active_workspace().and_then(|w| w.get_name()),
+            Some("one")
+        );
+    }
+
+    #[test]
+    fn test_reorder_workspace_tracks_active() {
+        let mut m = MetaWorkspaceManager::new();
+        for n in ["a", "b", "c", "d"] {
+            m.create_workspace(Some(n));
+        }
+        // active defaults to index 0 ("a"); move it to index 2.
+        m.reorder_workspace(0, 2);
+        assert_eq!(
+            m.get_workspace_by_index(0).and_then(|w| w.get_name()),
+            Some("b")
+        );
+        assert_eq!(
+            m.get_workspace_by_index(2).and_then(|w| w.get_name()),
+            Some("a")
+        );
+        // The active workspace still resolves to "a" at its new index.
+        assert_eq!(
+            m.get_active_workspace().and_then(|w| w.get_name()),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn test_orientation_lock_setter() {
+        let mut o = MetaOrientationManager::new();
+        assert!(!o.has_orientation_lock());
+        o.set_orientation_lock(true);
+        assert!(o.has_orientation_lock());
+    }
+
+    #[test]
+    fn test_idle_monitor_watches() {
+        let mut m = MetaIdleMonitor::new();
+        let a = m.add_watch(1000);
+        let b = m.add_watch(2000);
+        assert_ne!(a, b);
+        assert_eq!(m.watch_count(), 2);
+        m.remove_watch(a);
+        assert_eq!(m.watch_count(), 1);
+        m.remove_watch(9999); // unknown id: no-op
+        assert_eq!(m.watch_count(), 1);
+    }
+
+    #[test]
+    fn test_remove_non_member_is_noop() {
+        let mut m = MetaWorkspaceManager::new();
+        m.create_workspace(Some("a"));
+        m.create_workspace(Some("b"));
+        // A workspace the manager doesn't own must not be removed.
+        let stray = MetaWorkspace::new(99);
+        m.remove_workspace(&stray);
+        assert_eq!(m.get_n_workspaces(), 2);
+    }
+}

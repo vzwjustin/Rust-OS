@@ -120,6 +120,7 @@ pub struct HealthMonitor {
     monitoring_enabled: AtomicBool,
     last_health_check: AtomicU64,
     last_interrupt_count: AtomicU64,
+    last_pressure_report: AtomicU64,
     health_check_interval: AtomicU64, // milliseconds
 }
 
@@ -140,6 +141,7 @@ impl HealthMonitor {
             monitoring_enabled: AtomicBool::new(true),
             last_health_check: AtomicU64::new(0),
             last_interrupt_count: AtomicU64::new(0),
+            last_pressure_report: AtomicU64::new(0),
             health_check_interval: AtomicU64::new(5000), // 5 seconds
         }
     }
@@ -238,10 +240,21 @@ impl HealthMonitor {
     }
 
     fn get_memory_usage(&self) -> u8 {
-        // Get memory statistics from memory manager
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            if stats.total_memory > 0 {
+                return ((stats.allocated_memory.saturating_mul(100)) / stats.total_memory).min(100)
+                    as u8;
+            }
+        }
+
+        // Boot-map stats describe physical address availability, not live allocation pressure.
+        // Reserved firmware/MMIO ranges must not be counted as consumed kernel memory.
         if let Ok(stats) = crate::memory_basic::get_memory_stats() {
-            let used = stats.total_memory - stats.usable_memory;
-            ((used * 100) / stats.total_memory.max(1)) as u8
+            if stats.usable_memory == 0 {
+                100
+            } else {
+                0
+            }
         } else {
             50 // Default estimate if stats unavailable
         }
@@ -385,7 +398,7 @@ impl HealthMonitor {
 
         // Check CPU usage
         if metrics.cpu_usage >= thresholds.critical_cpu_usage {
-            self.handle_critical_condition("CPU usage critical", metrics.cpu_usage as u32);
+            self.handle_pressure_condition("CPU usage critical", metrics.cpu_usage as u32);
         }
 
         // Check memory usage
@@ -409,6 +422,19 @@ impl HealthMonitor {
         if metrics.health_score < 30 {
             self.handle_critical_condition("System health critical", metrics.health_score as u32);
         }
+    }
+
+    fn handle_pressure_condition(&self, condition: &str, value: u32) {
+        const PRESSURE_REPORT_INTERVAL_MS: u64 = 30_000;
+
+        let now = crate::time::get_system_time_ms();
+        let last = self.last_pressure_report.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < PRESSURE_REPORT_INTERVAL_MS {
+            return;
+        }
+
+        self.last_pressure_report.store(now, Ordering::Relaxed);
+        crate::serial_println!("HEALTH WARNING: {} (value: {})", condition, value);
     }
 
     fn handle_critical_condition(&self, condition: &str, value: u32) {

@@ -195,7 +195,7 @@ pub fn select_node_for_alloc(mode: i32, nodemask: u64) -> u32 {
 /// Initialize single-node NUMA (node 0) from available physical memory.
 pub fn init() {
     let mem_kb = crate::memory::get_memory_manager()
-        .map(|m| m.memory_stats().total_memory as u64 / 1024)
+        .map(|g| g.memory_stats().total_memory as u64 / 1024)
         .unwrap_or(512 * 1024);
     register_node(NumaNode {
         id: 0,

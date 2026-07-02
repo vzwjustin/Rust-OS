@@ -967,19 +967,17 @@ pub mod utils {
 }
 
 /// Global network driver manager
-static mut NETWORK_DRIVER_MANAGER: Option<NetworkDriverManager> = None;
+static NETWORK_DRIVER_MANAGER: spin::Mutex<Option<NetworkDriverManager>> = spin::Mutex::new(None);
 
 /// Initialize global network driver manager
 pub fn init_global_network_drivers() -> Result<(), NetworkError> {
-    unsafe {
-        NETWORK_DRIVER_MANAGER = Some(init_network_drivers()?);
-    }
+    *NETWORK_DRIVER_MANAGER.lock() = Some(init_network_drivers()?);
     Ok(())
 }
 
-/// Get global network driver manager
-pub fn get_network_driver_manager() -> Option<&'static mut NetworkDriverManager> {
-    unsafe { NETWORK_DRIVER_MANAGER.as_mut() }
+/// Run `f` with the global network driver manager, if initialized.
+pub fn with_network_driver_manager<R>(f: impl FnOnce(&mut NetworkDriverManager) -> R) -> Option<R> {
+    NETWORK_DRIVER_MANAGER.lock().as_mut().map(f)
 }
 
 /// Network driver detection and loading

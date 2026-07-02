@@ -339,6 +339,8 @@ fn setup_vhost_blk() -> Result<u32, &'static str> {
         reserved: 0,
         sector: 1,
     };
+    // SAFETY: `hdr` is a stack-local `Copy` struct; the pointer is valid
+    // and the length is `size_of::<BlkReqHdr>()`.
     let hdr_bytes = unsafe {
         core::slice::from_raw_parts(
             &hdr as *const BlkReqHdr as *const u8,

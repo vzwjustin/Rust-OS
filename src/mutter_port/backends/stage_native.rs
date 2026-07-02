@@ -1,6 +1,20 @@
 //! Stage Native — ported from GNOME Mutter
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-stage-native.h
+//! Native stage implementation that extends MetaStageImpl.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-stage-native.h
 
-// TODO: Extract struct definitions from C header
-// TODO: Add type definitions and implementations
+/// Native stage implementation.
+pub struct MetaStageNative;
+
+impl MetaStageNative {
+    pub fn new() -> Self {
+        MetaStageNative
+    }
+}
+
+impl Default for MetaStageNative {
+    fn default() -> Self {
+        Self::new()
+    }
+}

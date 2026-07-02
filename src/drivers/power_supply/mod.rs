@@ -133,16 +133,16 @@ pub static MAINS_OPS: PowerSupplyOps = PowerSupplyOps {
 
 // ── Battery power supply ────────────────────────────────────────────────
 
-static mut BATT_CAPACITY: u8 = 75;
-static mut BATT_STATUS: PowerSupplyStatus = PowerSupplyStatus::Discharging;
+const BATT_CAPACITY: u8 = 75;
+const BATT_STATUS: PowerSupplyStatus = PowerSupplyStatus::Discharging;
 
 fn battery_get_props() -> PowerSupplyProperties {
     let mut props = PowerSupplyProperties::default();
-    props.status = unsafe { BATT_STATUS };
+    props.status = BATT_STATUS;
     props.health = PowerSupplyHealth::Good;
-    props.capacity = unsafe { BATT_CAPACITY };
+    props.capacity = BATT_CAPACITY;
     props.voltage_now_uv = 12_000_000; // 12V
-    props.current_now_ua = if unsafe { BATT_STATUS } == PowerSupplyStatus::Discharging {
+    props.current_now_ua = if BATT_STATUS == PowerSupplyStatus::Discharging {
         -500_000 // -0.5A discharging
     } else {
         1_000_000 // 1A charging

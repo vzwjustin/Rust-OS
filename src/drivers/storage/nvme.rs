@@ -2,6 +2,16 @@
 //!
 //! Non-Volatile Memory Express (NVMe) driver for high-performance SSD storage.
 //! Supports PCIe-based NVMe controllers with queue-based command processing.
+//!
+//! # Safety
+//!
+//! All `unsafe` blocks perform either:
+//! - NVMe MMIO register access (volatile reads/writes to controller registers
+//!   mapped via PCI BAR0; offsets per NVMe 1.4 spec)
+//! - Submission/completion queue ring manipulation (queues allocated from
+//!   coherent DMA memory; doorbell writes synchronized by queue tail index)
+//! - `unsafe impl Send/Sync` for controller handle — register access is
+//!   naturally atomic; queue ownership managed by doorbell protocol
 
 use super::{
     StorageCapabilities, StorageDeviceState, StorageDeviceType, StorageDriver, StorageError,
@@ -529,7 +539,8 @@ impl NvmeDriver {
     fn dma_phys(virt: usize) -> Result<u64, StorageError> {
         use crate::memory::get_memory_manager;
         use x86_64::VirtAddr;
-        let mm = get_memory_manager().ok_or(StorageError::HardwareError)?;
+        let mm_guard = get_memory_manager().ok_or(StorageError::HardwareError)?;
+        let mm = &*mm_guard;
         mm.translate_addr(VirtAddr::new(virt as u64))
             .ok_or(StorageError::HardwareError)
             .map(|p| p.as_u64())

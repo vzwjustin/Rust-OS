@@ -29,7 +29,7 @@ struct XaNode<T> {
 impl<T> XaNode<T> {
     fn new() -> Box<Self> {
         Box::new(XaNode {
-            slots: unsafe { core::mem::zeroed() },
+            slots: [const { None }; XA_CHUNK_SIZE],
             marks: [[0u64; 1]; 3],
             count: 0,
         })

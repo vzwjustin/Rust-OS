@@ -12,11 +12,11 @@
 //!
 //! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-renderer-native.c
 
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use super::onscreen_native::MetaOnscreenNative;
-use crate::mutter_port::core::drm_format::{DrmFormat, formats, pick_best_format};
+use crate::mutter_port::core::drm_format::{formats, pick_best_format, DrmFormat};
 use alloc::vec;
 
 /// Renderer mode, mirroring the Cogl renderer mode selection.
@@ -250,7 +250,9 @@ impl MetaRendererNative {
         let active_crtcs: Vec<u32> = crtc_configs.iter().map(|(id, _, _)| *id).collect();
 
         // Remove onscreens for inactive CRTCs.
-        let to_remove: Vec<u32> = self.onscreens.keys()
+        let to_remove: Vec<u32> = self
+            .onscreens
+            .keys()
             .filter(|id| !active_crtcs.contains(id))
             .copied()
             .collect();

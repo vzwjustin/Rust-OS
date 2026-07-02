@@ -6,7 +6,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -54,6 +54,7 @@ impl ExtconType {
 }
 
 /// Cable state.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CableState {
     Disconnected,
@@ -78,25 +79,27 @@ struct ExtconDevice {
 
 // ── Platform extcon (USB + charger) ─────────────────────────────────────
 
-static mut PLAT_USB_STATE: CableState = CableState::Disconnected;
-static mut PLAT_CHARGER_STATE: CableState = CableState::Connected;
+static PLAT_USB_STATE: AtomicU8 = AtomicU8::new(CableState::Disconnected as u8);
+static PLAT_CHARGER_STATE: AtomicU8 = AtomicU8::new(CableState::Connected as u8);
 
 fn plat_get_state(cable: ExtconType) -> CableState {
     match cable {
-        ExtconType::Usb => unsafe { PLAT_USB_STATE },
-        ExtconType::Charger => unsafe { PLAT_CHARGER_STATE },
+        ExtconType::Usb => match PLAT_USB_STATE.load(Ordering::Relaxed) {
+            1 => CableState::Connected,
+            _ => CableState::Disconnected,
+        },
+        ExtconType::Charger => match PLAT_CHARGER_STATE.load(Ordering::Relaxed) {
+            1 => CableState::Connected,
+            _ => CableState::Disconnected,
+        },
         _ => CableState::Disconnected,
     }
 }
 
 fn plat_set_state(cable: ExtconType, state: CableState) -> Result<(), &'static str> {
     match cable {
-        ExtconType::Usb => unsafe {
-            PLAT_USB_STATE = state;
-        },
-        ExtconType::Charger => unsafe {
-            PLAT_CHARGER_STATE = state;
-        },
+        ExtconType::Usb => PLAT_USB_STATE.store(state as u8, Ordering::Relaxed),
+        ExtconType::Charger => PLAT_CHARGER_STATE.store(state as u8, Ordering::Relaxed),
         _ => return Err("Unsupported cable type"),
     }
     Ok(())

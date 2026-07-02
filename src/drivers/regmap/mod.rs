@@ -8,7 +8,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -136,10 +136,10 @@ unsafe fn mmio_write_raw(addr: u64, value: u64, size: usize) {
     }
 }
 
-static mut MMIO_BACKEND_BASE: u64 = 0;
+static MMIO_BACKEND_BASE: AtomicU64 = AtomicU64::new(0);
 
 fn mmio_read(reg: u32, val_size: usize) -> Result<u64, &'static str> {
-    let base = unsafe { MMIO_BACKEND_BASE };
+    let base = MMIO_BACKEND_BASE.load(Ordering::Relaxed);
     if base == 0 {
         return Err("MMIO regmap base not configured");
     }
@@ -148,7 +148,7 @@ fn mmio_read(reg: u32, val_size: usize) -> Result<u64, &'static str> {
 }
 
 fn mmio_write(reg: u32, val: u64, val_size: usize) -> Result<(), &'static str> {
-    let base = unsafe { MMIO_BACKEND_BASE };
+    let base = MMIO_BACKEND_BASE.load(Ordering::Relaxed);
     if base == 0 {
         return Err("MMIO regmap base not configured");
     }
@@ -169,12 +169,12 @@ pub static MMIO_BUS: RegmapBus = RegmapBus {
 
 // ── I2C-backed regmap ───────────────────────────────────────────────────
 
-static mut I2C_REGMAP_ADAPTER: u32 = 0;
-static mut I2C_REGMAP_ADDR: u16 = 0;
+static I2C_REGMAP_ADAPTER: AtomicU32 = AtomicU32::new(0);
+static I2C_REGMAP_ADDR: AtomicU16 = AtomicU16::new(0);
 
 fn i2c_regmap_read(reg: u32, val_size: usize) -> Result<u64, &'static str> {
-    let adapter = unsafe { I2C_REGMAP_ADAPTER };
-    let addr = unsafe { I2C_REGMAP_ADDR };
+    let adapter = I2C_REGMAP_ADAPTER.load(Ordering::Relaxed);
+    let addr = I2C_REGMAP_ADDR.load(Ordering::Relaxed);
     let data = crate::drivers::i2c::i2c_read(adapter, addr, reg as u8, val_size)?;
     let mut value: u64 = 0;
     for (i, &byte) in data.iter().enumerate() {
@@ -184,8 +184,8 @@ fn i2c_regmap_read(reg: u32, val_size: usize) -> Result<u64, &'static str> {
 }
 
 fn i2c_regmap_write(reg: u32, val: u64, val_size: usize) -> Result<(), &'static str> {
-    let adapter = unsafe { I2C_REGMAP_ADAPTER };
-    let addr = unsafe { I2C_REGMAP_ADDR };
+    let adapter = I2C_REGMAP_ADAPTER.load(Ordering::Relaxed);
+    let addr = I2C_REGMAP_ADDR.load(Ordering::Relaxed);
     let mut buf = Vec::with_capacity(val_size);
     for i in 0..val_size {
         buf.push((val >> (i * 8)) as u8);
@@ -232,9 +232,7 @@ fn from_endian(value: u64, size: usize, endian: RegmapEndian) -> u64 {
 
 /// Initialize an MMIO-backed regmap (Linux devm_regmap_init_mmio).
 pub fn init_mmio(name: &str, base_addr: u64, config: RegmapConfig) -> Result<u32, &'static str> {
-    unsafe {
-        MMIO_BACKEND_BASE = base_addr;
-    }
+    MMIO_BACKEND_BASE.store(base_addr, Ordering::Relaxed);
     let id = NEXT_REGMAP_ID.fetch_add(1, Ordering::SeqCst);
     REGMAPS.write().insert(
         id,
@@ -256,10 +254,8 @@ pub fn init_i2c(
     device_addr: u16,
     config: RegmapConfig,
 ) -> Result<u32, &'static str> {
-    unsafe {
-        I2C_REGMAP_ADAPTER = adapter_id;
-        I2C_REGMAP_ADDR = device_addr;
-    }
+    I2C_REGMAP_ADAPTER.store(adapter_id, Ordering::Relaxed);
+    I2C_REGMAP_ADDR.store(device_addr, Ordering::Relaxed);
     let id = NEXT_REGMAP_ID.fetch_add(1, Ordering::SeqCst);
     REGMAPS.write().insert(
         id,

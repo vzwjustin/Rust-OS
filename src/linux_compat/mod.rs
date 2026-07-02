@@ -198,6 +198,45 @@ impl LinuxError {
     }
 }
 
+/// View any `Copy` value as its raw byte representation.
+///
+/// SAFETY: `T: Copy` guarantees no destructors/invalid bit patterns are
+/// introduced by aliasing the value as bytes; the slice is scoped to
+/// `size_of::<T>()` so it never reads out of bounds.
+pub fn as_bytes<T: Copy>(v: &T) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(v as *const T as *const u8, core::mem::size_of::<T>()) }
+}
+
+/// View any `Copy` value as its mutable raw byte representation. See [`as_bytes`] for safety.
+pub fn as_bytes_mut<T: Copy>(v: &mut T) -> &mut [u8] {
+    unsafe { core::slice::from_raw_parts_mut(v as *mut T as *mut u8, core::mem::size_of::<T>()) }
+}
+
+/// Copy a plain old data value from userspace without exposing raw pointer reads to callers.
+pub fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    if src.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    let bytes = as_bytes_mut(&mut value);
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(src as u64, bytes)
+        .map_err(|_| LinuxError::EFAULT)?;
+
+    // SAFETY: copy_from_user succeeded after filling exactly size_of::<T>() bytes.
+    Ok(unsafe { value.assume_init() })
+}
+
+/// Copy a plain old data value to userspace.
+pub fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    if dst.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(dst as u64, as_bytes(value))
+        .map_err(|_| LinuxError::EFAULT)
+}
+
 /// Initialize Linux compatibility layer
 pub fn init_linux_compat() {
     // Initialize subsystems

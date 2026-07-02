@@ -3,7 +3,7 @@
 //! This module provides syscall interface for userspace package management operations.
 
 use crate::memory::user_space::UserSpaceMemory;
-use crate::package::{PackageManager, PackageManagerType, PackageOperation, PackageResult};
+use crate::package::{PackageManager, PackageManagerType, PackageOperation};
 use crate::syscall::SyscallError;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -33,22 +33,16 @@ pub mod syscall_numbers {
 }
 
 /// Global package manager instance
-static mut PACKAGE_MANAGER: Option<PackageManager> = None;
+static PACKAGE_MANAGER: spin::Mutex<Option<PackageManager>> = spin::Mutex::new(None);
 
 /// Initialize the package manager
 pub fn init_package_manager(manager_type: PackageManagerType) {
-    unsafe {
-        PACKAGE_MANAGER = Some(PackageManager::new(manager_type));
-    }
+    *PACKAGE_MANAGER.lock() = Some(PackageManager::new(manager_type));
 }
 
-/// Get a reference to the package manager
-fn get_package_manager() -> PackageResult<&'static mut PackageManager> {
-    unsafe {
-        PACKAGE_MANAGER.as_mut().ok_or_else(|| {
-            crate::package::PackageError::InvalidOperation("Package manager not initialized".into())
-        })
-    }
+/// Run a closure with the package manager, returning `None` if uninitialized
+fn with_package_manager<R>(f: impl FnOnce(&mut PackageManager) -> R) -> Option<R> {
+    PACKAGE_MANAGER.lock().as_mut().map(f)
 }
 
 /// Handle package management syscalls
@@ -64,79 +58,66 @@ pub fn handle_package_syscall(
     match syscall_number {
         SYS_PKG_INSTALL => {
             let name = unsafe { read_string_from_user(arg1, arg2)? };
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            pm.execute_operation(PackageOperation::Install, &name)
+            with_package_manager(|pm| pm.execute_operation(PackageOperation::Install, &name))
+                .ok_or("Package manager not initialized")?
                 .map(|_| 0)
                 .map_err(|_| "Package installation failed")
         }
 
         SYS_PKG_REMOVE => {
             let name = unsafe { read_string_from_user(arg1, arg2)? };
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            pm.execute_operation(PackageOperation::Remove, &name)
+            with_package_manager(|pm| pm.execute_operation(PackageOperation::Remove, &name))
+                .ok_or("Package manager not initialized")?
                 .map(|_| 0)
                 .map_err(|_| "Package removal failed")
         }
 
         SYS_PKG_SEARCH => {
             let query = unsafe { read_string_from_user(arg1, arg2)? };
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            match pm.execute_operation(PackageOperation::Search, &query) {
-                Ok(result) => {
-                    unsafe {
-                        write_string_to_user(arg3, arg4, &result)?;
-                    }
-                    Ok(result.len() as isize)
-                }
-                Err(_) => Err("Package search failed"),
+            let result =
+                with_package_manager(|pm| pm.execute_operation(PackageOperation::Search, &query))
+                    .ok_or("Package manager not initialized")?
+                    .map_err(|_| "Package search failed")?;
+            unsafe {
+                write_string_to_user(arg3, arg4, &result)?;
             }
+            Ok(result.len() as isize)
         }
 
         SYS_PKG_INFO => {
             let name = unsafe { read_string_from_user(arg1, arg2)? };
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            match pm.execute_operation(PackageOperation::Info, &name) {
-                Ok(result) => {
-                    unsafe {
-                        write_string_to_user(arg3, arg4, &result)?;
-                    }
-                    Ok(result.len() as isize)
-                }
-                Err(_) => Err("Package info failed"),
+            let result =
+                with_package_manager(|pm| pm.execute_operation(PackageOperation::Info, &name))
+                    .ok_or("Package manager not initialized")?
+                    .map_err(|_| "Package info failed")?;
+            unsafe {
+                write_string_to_user(arg3, arg4, &result)?;
             }
+            Ok(result.len() as isize)
         }
 
         SYS_PKG_LIST => {
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            match pm.execute_operation(PackageOperation::List, "") {
-                Ok(result) => {
-                    unsafe {
-                        write_string_to_user(arg1, arg2, &result)?;
-                    }
-                    Ok(result.len() as isize)
-                }
-                Err(_) => Err("Package list failed"),
+            let result =
+                with_package_manager(|pm| pm.execute_operation(PackageOperation::List, ""))
+                    .ok_or("Package manager not initialized")?
+                    .map_err(|_| "Package list failed")?;
+            unsafe {
+                write_string_to_user(arg1, arg2, &result)?;
             }
+            Ok(result.len() as isize)
         }
 
         SYS_PKG_UPDATE => {
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            pm.execute_operation(PackageOperation::Update, "")
+            with_package_manager(|pm| pm.execute_operation(PackageOperation::Update, ""))
+                .ok_or("Package manager not initialized")?
                 .map(|_| 0)
                 .map_err(|_| "Package update failed")
         }
 
         SYS_PKG_UPGRADE => {
             let name = unsafe { read_string_from_user(arg1, arg2)? };
-            let pm = get_package_manager().map_err(|_| "Package manager not initialized")?;
-
-            pm.execute_operation(PackageOperation::Upgrade, &name)
+            with_package_manager(|pm| pm.execute_operation(PackageOperation::Upgrade, &name))
+                .ok_or("Package manager not initialized")?
                 .map(|_| 0)
                 .map_err(|_| "Package upgrade failed")
         }

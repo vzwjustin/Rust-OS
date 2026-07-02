@@ -5,6 +5,16 @@
 //! bootloader does not provide. The driver performs full state management and
 //! validation; DMA ring access for packet TX/RX and firmware association
 //! require a bootloader with PCI BAR mapping support.
+//!
+//! # Safety
+//!
+//! All `unsafe` blocks in this module perform either:
+//! - MMIO register access via volatile read/write to PCI BAR-mapped addresses
+//!   (validated during device probe; offsets per Atheros AR9xxx hardware spec)
+//! - DMA descriptor ring manipulation (descriptors allocated from coherent
+//!   memory, ring indices bounded by ring size)
+//! - `unsafe impl Send/Sync` for hardware handle types (device registers are
+//!   accessed atomically; no shared mutable Rust state across CPUs)
 
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
@@ -267,7 +277,7 @@ impl AtherosWifiDriver {
         }
 
         // Open networks pass an empty password; WPA networks require one.
-        if password.is_some() && password.unwrap().is_empty() {
+        if matches!(password, Some(passphrase) if passphrase.is_empty()) {
             return Err("Password must not be empty when provided");
         }
 

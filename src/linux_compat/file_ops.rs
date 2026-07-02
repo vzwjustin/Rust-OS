@@ -28,6 +28,21 @@ const S_IALLUGO: u64 = 0o7777;
 const O_DSYNC: u64 = 1 << 12;
 const FASYNC: u64 = 1 << 13;
 const O_DIRECT: u64 = 1 << 14;
+
+fn blocks_512(size: u64) -> u64 {
+    (size / 512).saturating_add(if size % 512 != 0 { 1 } else { 0 })
+}
+
+fn size_to_off_saturating(size: u64) -> Off {
+    core::cmp::min(size, i64::MAX as u64) as Off
+}
+
+fn size_to_off_checked(size: u64) -> LinuxResult<Off> {
+    if size > i64::MAX as u64 {
+        return Err(LinuxError::EFBIG);
+    }
+    Ok(size as Off)
+}
 const O_LARGEFILE: u64 = 1 << 15;
 const O_NOATIME: u64 = 1 << 18;
 const O_SYNC: u64 = (1 << 20) | O_DSYNC;
@@ -125,15 +140,12 @@ fn stat_dev(vfs_stat: &vfs::Stat) -> u64 {
     }
 }
 
-fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
-    if dst.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
+}
 
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
 }
 
 fn populate_linux_stat(statbuf: *mut Stat, vfs_stat: &vfs::Stat) -> LinuxResult<()> {
@@ -148,9 +160,9 @@ fn populate_linux_stat(statbuf: *mut Stat, vfs_stat: &vfs::Stat) -> LinuxResult<
         InodeType::CharDevice | InodeType::BlockDevice => vfs_stat.rdev,
         _ => 0,
     };
-    stat.st_size = vfs_stat.size as Off;
+    stat.st_size = size_to_off_saturating(vfs_stat.size);
     stat.st_blksize = 4096;
-    stat.st_blocks = ((vfs_stat.size + 511) / 512) as i64;
+    stat.st_blocks = blocks_512(vfs_stat.size) as i64;
     stat.st_atime = vfs_stat.atime as Time;
     stat.st_mtime = vfs_stat.mtime as Time;
     stat.st_ctime = vfs_stat.ctime as Time;
@@ -825,9 +837,8 @@ pub fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> LinuxResult<isi
         Ok(target) => {
             let bytes = target.as_bytes();
             let n = core::cmp::min(bytes.len(), bufsiz);
-            unsafe {
-                core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
-            }
+            UserSpaceMemory::copy_to_user(buf as u64, &bytes[..n])
+                .map_err(|_| LinuxError::EFAULT)?;
             Ok(n as isize)
         }
         Err(e) => Err(vfs_error_to_linux(e)),
@@ -1051,15 +1062,20 @@ pub fn getdents(fd: Fd, dirp: *mut Dirent, count: usize) -> LinuxResult<isize> {
     let (entries, cookie) = vfs::vfs_readdir_fd(fd).map_err(vfs_error_to_linux)?;
 
     let mut written = 0usize;
-    let mut index = cookie as usize;
+    let mut index = usize::try_from(cookie).map_err(|_| LinuxError::EOVERFLOW)?;
 
     while index < entries.len() {
         let entry = &entries[index];
         let name_bytes = entry.name.as_bytes();
         let reclen = core::mem::size_of::<Dirent>() as u16;
-        if written + reclen as usize > count {
+        let next_written = written
+            .checked_add(usize::from(reclen))
+            .ok_or(LinuxError::EOVERFLOW)?;
+        if next_written > count {
             break;
         }
+        let next_index = index.checked_add(1).ok_or(LinuxError::EOVERFLOW)?;
+        let next_cookie = Off::try_from(next_index).map_err(|_| LinuxError::EOVERFLOW)?;
 
         let d_type = match entry.inode_type {
             InodeType::Directory => 4,
@@ -1071,26 +1087,32 @@ pub fn getdents(fd: Fd, dirp: *mut Dirent, count: usize) -> LinuxResult<isize> {
             InodeType::Socket => 12,
         };
 
-        let mut dent = unsafe { core::mem::MaybeUninit::<Dirent>::zeroed().assume_init() };
-        dent.d_ino = entry.ino as Ino;
-        dent.d_off = (index + 1) as Off;
-        dent.d_reclen = reclen;
-        dent.d_type = d_type;
+        let mut dent = Dirent {
+            d_ino: entry.ino as Ino,
+            d_off: next_cookie,
+            d_reclen: reclen,
+            d_type,
+            d_name: [0; 256],
+        };
         let name_len = core::cmp::min(name_bytes.len(), 255);
         dent.d_name[..name_len].copy_from_slice(&name_bytes[..name_len]);
         if name_len < 256 {
             dent.d_name[name_len] = 0;
         }
 
-        let dst = unsafe { dirp.add(written) as *mut Dirent };
+        let dst_addr = (dirp as u64)
+            .checked_add(written as u64)
+            .ok_or(LinuxError::EINVAL)?;
+        let dst = dst_addr as *mut Dirent;
         copy_struct_to_user(dst, &dent)?;
 
-        written += reclen as usize;
-        index += 1;
+        written = next_written;
+        index = next_index;
     }
 
-    let _ = vfs::vfs_set_dir_cookie(fd, index as u64);
-    Ok(written as isize)
+    let final_cookie = u64::try_from(index).map_err(|_| LinuxError::EOVERFLOW)?;
+    let _ = vfs::vfs_set_dir_cookie(fd, final_cookie);
+    isize::try_from(written).map_err(|_| LinuxError::EOVERFLOW)
 }
 
 /// mkdir - create a directory
@@ -1227,14 +1249,16 @@ pub fn getcwd(buf: *mut u8, size: usize) -> LinuxResult<*mut u8> {
         .unwrap_or_else(|| String::from("/"));
     let cwd_bytes = cwd.as_bytes();
 
-    if size < cwd_bytes.len() + 1 {
+    let required = cwd_bytes.len().checked_add(1).ok_or(LinuxError::EINVAL)?;
+    if size < required {
         return Err(LinuxError::ERANGE);
     }
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(cwd_bytes.as_ptr(), buf, cwd_bytes.len());
-        *buf.add(cwd_bytes.len()) = 0;
-    }
+    UserSpaceMemory::copy_to_user(buf as u64, cwd_bytes).map_err(|_| LinuxError::EFAULT)?;
+    let nul_addr = (buf as u64)
+        .checked_add(cwd_bytes.len() as u64)
+        .ok_or(LinuxError::EINVAL)?;
+    UserSpaceMemory::copy_to_user(nul_addr, &[0]).map_err(|_| LinuxError::EFAULT)?;
 
     Ok(buf)
 }
@@ -1317,8 +1341,17 @@ fn copy_open_how_from_user(how: *const OpenHow, size: usize) -> LinuxResult<Open
     let mut fixed = [0u8; OPEN_HOW_SIZE_VER0];
     fixed.copy_from_slice(&raw[..OPEN_HOW_SIZE_VER0]);
 
-    let open_how = unsafe { core::ptr::read_unaligned(fixed.as_ptr() as *const OpenHow) };
-    Ok(open_how)
+    let read_u64 = |offset: usize| {
+        let mut field = [0u8; core::mem::size_of::<u64>()];
+        field.copy_from_slice(&fixed[offset..offset + core::mem::size_of::<u64>()]);
+        u64::from_ne_bytes(field)
+    };
+
+    Ok(OpenHow {
+        flags: read_u64(0),
+        mode: read_u64(8),
+        resolve: read_u64(16),
+    })
 }
 
 fn validate_openat2_how(how: &OpenHow) -> LinuxResult<()> {
@@ -1352,7 +1385,7 @@ fn validate_openat2_how(how: &OpenHow) -> LinuxResult<()> {
 }
 
 fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) -> LinuxResult<()> {
-    let mut statx = unsafe { core::mem::MaybeUninit::<Statx>::zeroed().assume_init() };
+    let mut statx = Statx::default();
     let s = &mut statx;
     s.stx_mask = 0x7ff; // STATX_BASIC_STATS
     s.stx_blksize = 4096;
@@ -1362,7 +1395,7 @@ fn populate_statx(vfs_stat: &vfs::Stat, statxbuf: *mut Statx) -> LinuxResult<()>
     s.stx_mode = vfs_stat.mode as u16;
     s.stx_ino = vfs_stat.ino;
     s.stx_size = vfs_stat.size;
-    s.stx_blocks = ((vfs_stat.size + 511) / 512) as u64;
+    s.stx_blocks = blocks_512(vfs_stat.size);
 
     // Device IDs: stx_dev for the containing device, stx_rdev for
     // the file itself if it's a char/block device.
@@ -1464,7 +1497,7 @@ pub fn statx(
                 Err(e) => return Err(vfs_error_to_linux(e)),
             }
         }
-    } else if is_empty_path && unsafe { *pathname == 0 } {
+    } else if is_empty_path && copy_struct_from_user(pathname)? == 0 {
         if dirfd == AT_FDCWD {
             let pid = process::current_pid();
             let cwd = process::get_process_manager()
@@ -1782,9 +1815,7 @@ pub fn utimensat(
     let (new_atime, new_mtime) = if times.is_null() {
         (now, now)
     } else {
-        // SAFETY: times is non-null; caller must provide a readable two-element array
-        // per the Linux utimensat ABI.
-        let ts = unsafe { &*times };
+        let ts = copy_struct_from_user(times)?;
         let atime = if ts[0].tv_nsec == UTIME_OMIT {
             stat.atime
         } else if ts[0].tv_nsec == UTIME_NOW {
@@ -1820,9 +1851,7 @@ pub fn utimes(dirfd: i32, path: *const u8, times: *const [TimeVal; 2]) -> LinuxR
         tv_nsec: 0,
     }; 2];
     if !times.is_null() {
-        // SAFETY: times is non-null; caller must provide a readable two-element array
-        // per the Linux utimes ABI.
-        let tv = unsafe { &*times };
+        let tv = copy_struct_from_user(times)?;
         for i in 0..2 {
             ts[i].tv_sec = tv[i].tv_sec;
             ts[i].tv_nsec = tv[i].tv_usec as i64 * 1000;
@@ -1833,6 +1862,7 @@ pub fn utimes(dirfd: i32, path: *const u8, times: *const [TimeVal; 2]) -> LinuxR
 
 /// UtimBuf — Linux struct utimbuf for the utime syscall
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct UtimBuf {
     pub actime: i64,
     pub modtime: i64,
@@ -1847,8 +1877,7 @@ pub fn utime(path: *const u8, times: *const UtimBuf) -> LinuxResult<i32> {
     }
 
     let ts = if !times.is_null() {
-        // SAFETY: times is non-null; caller provides a valid UtimBuf per ABI.
-        let tb = unsafe { &*times };
+        let tb = copy_struct_from_user(times)?;
         [
             TimeSpec {
                 tv_sec: tb.actime,
@@ -2023,7 +2052,7 @@ pub fn fallocate(fd: Fd, mode: i32, offset: Off, len: Off) -> LinuxResult<i32> {
     // extend when the range is beyond EOF (matching Linux semantics
     // where the file size is not changed but blocks are allocated).
     let stat = vfs::vfs_fstat(fd).map_err(vfs_error_to_linux)?;
-    let current_size = stat.size as i64;
+    let current_size = size_to_off_checked(stat.size)?;
     let new_end = offset.checked_add(len).ok_or(LinuxError::EFBIG)?;
 
     if new_end > current_size && !keep_size {

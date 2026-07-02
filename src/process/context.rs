@@ -452,10 +452,21 @@ pub fn create_process_context(
     context
 }
 
-/// Global context switcher instance
+/// Global context switcher instance.
+///
+/// Deliberately kept as `static mut` rather than a `spin::Mutex` wrapper.
+/// `switch_context` does not return until the outgoing task is scheduled back
+/// in (it jumps to another task's stack mid-call), so a lock taken here would
+/// be held across the switch and never released before the next task tries to
+/// switch — an unconditional scheduler deadlock. Context switching is already
+/// serialized per core (only one switch can be in flight on a CPU at a time),
+/// so the `static mut` access is sound. Do not "fix" this into a Mutex.
 static mut CONTEXT_SWITCHER: ContextSwitcher = ContextSwitcher::new();
 
-/// Get the global context switcher
+/// Get the global context switcher.
+///
+/// See [`CONTEXT_SWITCHER`] for why this returns a raw `&'static mut` instead
+/// of a lock guard.
 pub fn get_context_switcher() -> &'static mut ContextSwitcher {
     unsafe { &mut *core::ptr::addr_of_mut!(CONTEXT_SWITCHER) }
 }

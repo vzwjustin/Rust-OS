@@ -10,6 +10,43 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, RwLock};
 
+/// Safely read a u32 from a userspace address.
+fn read_user_u32(addr: u64) -> i32 {
+    let mut buf = [0u8; 4];
+    match UserSpaceMemory::copy_from_user(addr, &mut buf) {
+        Ok(()) => i32::from_ne_bytes(buf) as i32,
+        Err(_) => -14, // EFAULT
+    }
+}
+
+/// Safely read a raw u32 value from a userspace address.
+fn read_user_u32_raw(addr: u64) -> Option<u32> {
+    let mut buf = [0u8; 4];
+    UserSpaceMemory::copy_from_user(addr, &mut buf).ok()?;
+    Some(u32::from_ne_bytes(buf))
+}
+
+/// Safely write a u32 to a userspace address.
+fn write_user_u32(addr: u64, val: u32) -> i32 {
+    match UserSpaceMemory::copy_to_user(addr, &val.to_ne_bytes()) {
+        Ok(()) => 0,
+        Err(_) => -14, // EFAULT
+    }
+}
+
+/// Safely read a struct from a userspace address via byte copy.
+fn read_user_struct<T: Copy>(addr: u64, size: u32) -> Option<T> {
+    if (size as usize) < core::mem::size_of::<T>() {
+        return None;
+    }
+    let mut buf = alloc::vec![0u8; core::mem::size_of::<T>()];
+    UserSpaceMemory::copy_from_user(addr, &mut buf).ok()?;
+    // SAFETY: T is Copy and we've filled exactly size_of::<T>() bytes.
+    // read_unaligned because buf is a Vec<u8> (1-byte aligned) but T may
+    // require higher alignment.
+    Some(unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const T) })
+}
+
 // ── BPF commands ────────────────────────────────────────────────────────
 
 pub const BPF_MAP_CREATE: u32 = 0;
@@ -162,12 +199,7 @@ fn copy_struct_from_user<T: Copy + Default>(addr: u64) -> Result<T, i32> {
     }
 
     let mut value = T::default();
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            (&mut value as *mut T).cast::<u8>(),
-            core::mem::size_of::<T>(),
-        )
-    };
+    let bytes = crate::linux_compat::as_bytes_mut(&mut value);
     UserSpaceMemory::copy_from_user(addr, bytes).map_err(|_| -14)?;
     Ok(value)
 }
@@ -770,35 +802,34 @@ pub fn bpf(cmd: u32, attr: u64, size: u32) -> i32 {
         BPF_MAP_FREEZE => bpf_map_freeze(attr, size),
         BPF_OBJ_GET_INFO_BY_FD => bpf_obj_get_info_by_fd(attr, size),
         BPF_PROG_GET_NEXT_ID => {
-            let start = unsafe { *(attr as *const u32) };
+            let start = match read_user_u32_raw(attr) {
+                Some(v) => v,
+                None => return -14,
+            };
             let progs = PROGS.read();
             let next = progs.keys().find(|&&k| k > start).copied();
             match next {
-                Some(id) => {
-                    unsafe {
-                        *(attr as *mut u32) = id;
-                    }
-                    0
-                }
+                Some(id) => write_user_u32(attr, id),
                 None => -2, // ENOENT
             }
         }
         BPF_MAP_GET_NEXT_ID => {
-            let start = unsafe { *(attr as *const u32) };
+            let start = match read_user_u32_raw(attr) {
+                Some(v) => v,
+                None => return -14,
+            };
             let maps = MAPS.read();
             let next = maps.keys().find(|&&k| k > start).copied();
             match next {
-                Some(id) => {
-                    unsafe {
-                        *(attr as *mut u32) = id;
-                    }
-                    0
-                }
+                Some(id) => write_user_u32(attr, id),
                 None => -2,
             }
         }
         BPF_PROG_GET_FD_BY_ID => {
-            let id = unsafe { *(attr as *const u32) };
+            let id = match read_user_u32_raw(attr) {
+                Some(v) => v,
+                None => return -14,
+            };
             let progs = PROGS.read();
             if progs.contains_key(&id) {
                 crate::linux_compat::special_fd::register_bpf_prog(id, crate::vfs::OpenFlags::RDWR)
@@ -807,7 +838,10 @@ pub fn bpf(cmd: u32, attr: u64, size: u32) -> i32 {
             }
         }
         BPF_MAP_GET_FD_BY_ID => {
-            let id = unsafe { *(attr as *const u32) };
+            let id = match read_user_u32_raw(attr) {
+                Some(v) => v,
+                None => return -14,
+            };
             let maps = MAPS.read();
             if maps.contains_key(&id) {
                 crate::linux_compat::special_fd::register_bpf_map(id, crate::vfs::OpenFlags::RDWR)
@@ -836,7 +870,10 @@ pub fn bpf(cmd: u32, attr: u64, size: u32) -> i32 {
             if size < core::mem::size_of::<TestRunAttr>() as u32 {
                 return -22;
             }
-            let a = unsafe { *(attr as *const TestRunAttr) };
+            let a = match read_user_struct::<TestRunAttr>(attr, size) {
+                Some(v) => v,
+                None => return -14,
+            };
             if a.data_in != 0
                 || a.data_size_in != 0
                 || a.data_out != 0
@@ -877,13 +914,26 @@ pub fn bpf(cmd: u32, attr: u64, size: u32) -> i32 {
             }
 
             // Write retval back to the attr struct
-            unsafe {
-                let attr_ptr = attr as *mut TestRunAttr;
-                (*attr_ptr).retval = last_ret as u32;
-                (*attr_ptr).data_size_out = 0;
-                (*attr_ptr).ctx_size_out = 0;
-                (*attr_ptr).duration = 0;
-            }
+            // Write retval at offset 4, data_size_out at offset 20,
+            // ctx_size_out at offset 36, duration at offset 40.
+            let _ = UserSpaceMemory::copy_to_user(
+                attr + core::mem::offset_of!(TestRunAttr, retval) as u64,
+                &(last_ret as u32).to_ne_bytes(),
+            );
+            let zero4 = [0u8; 4];
+            let _ = UserSpaceMemory::copy_to_user(
+                attr + core::mem::offset_of!(TestRunAttr, data_size_out) as u64,
+                &zero4,
+            );
+            let _ = UserSpaceMemory::copy_to_user(
+                attr + core::mem::offset_of!(TestRunAttr, ctx_size_out) as u64,
+                &zero4,
+            );
+            let zero8 = [0u8; 8];
+            let _ = UserSpaceMemory::copy_to_user(
+                attr + core::mem::offset_of!(TestRunAttr, duration) as u64,
+                &zero8,
+            );
             0
         }
         BPF_PROG_ATTACH
@@ -921,7 +971,10 @@ fn bpf_map_create(attr: u64, size: u32) -> i32 {
     if size < core::mem::size_of::<BpfMapCreateAttr>() as u32 {
         return -22;
     }
-    let a = unsafe { *(attr as *const BpfMapCreateAttr) };
+    let a = match read_user_struct::<BpfMapCreateAttr>(attr, size) {
+        Some(v) => v,
+        None => return -14,
+    };
 
     // Validate map type
     let valid_types = [
@@ -1209,7 +1262,10 @@ fn bpf_prog_load(attr: u64, size: u32) -> i32 {
 }
 
 fn bpf_map_freeze(attr: u64, _size: u32) -> i32 {
-    let map_fd = unsafe { *(attr as *const u32) };
+    let map_fd = match read_user_u32_raw(attr) {
+        Some(v) => v,
+        None => return -14,
+    };
     let map_id = match crate::linux_compat::special_fd::get_bpf_map_id(map_fd as i32) {
         Some(id) => id,
         None => return -9,
@@ -1232,7 +1288,10 @@ fn bpf_obj_get_info_by_fd(attr: u64, _size: u32) -> i32 {
         info_len: u32,
         info: u64,
     }
-    let a = unsafe { *(attr as *const InfoAttr) };
+    let a = match read_user_struct::<InfoAttr>(attr, _size) {
+        Some(v) => v,
+        None => return -14,
+    };
 
     // Try map first, then prog
     if let Some(map_id) = crate::linux_compat::special_fd::get_bpf_map_id(a.bpf_fd as i32) {
@@ -1241,6 +1300,7 @@ fn bpf_obj_get_info_by_fd(attr: u64, _size: u32) -> i32 {
             let map = map_mutex.lock();
             // Write minimal map info
             #[repr(C)]
+            #[derive(Clone, Copy)]
             struct BpfMapInfo {
                 map_type: u32,
                 id: u32,
@@ -1265,12 +1325,9 @@ fn bpf_obj_get_info_by_fd(attr: u64, _size: u32) -> i32 {
             };
             let info_bytes = core::mem::size_of::<BpfMapInfo>() as u32;
             let copy_len = core::cmp::min(a.info_len, info_bytes) as usize;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    &info as *const BpfMapInfo as *const u8,
-                    a.info as *mut u8,
-                    copy_len,
-                );
+            let info_slice = crate::linux_compat::as_bytes(&info);
+            if UserSpaceMemory::copy_to_user(a.info, &info_slice[..copy_len]).is_err() {
+                return -14;
             }
             return 0;
         }
@@ -1280,6 +1337,7 @@ fn bpf_obj_get_info_by_fd(attr: u64, _size: u32) -> i32 {
         if let Some(prog_mutex) = progs.get(&prog_id) {
             let prog = prog_mutex.lock();
             #[repr(C)]
+            #[derive(Clone, Copy)]
             struct BpfProgInfo {
                 prog_type: u32,
                 id: u32,
@@ -1310,12 +1368,9 @@ fn bpf_obj_get_info_by_fd(attr: u64, _size: u32) -> i32 {
             };
             let info_bytes = core::mem::size_of::<BpfProgInfo>() as u32;
             let copy_len = core::cmp::min(a.info_len, info_bytes) as usize;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    &info as *const BpfProgInfo as *const u8,
-                    a.info as *mut u8,
-                    copy_len,
-                );
+            let info_slice = crate::linux_compat::as_bytes(&info);
+            if UserSpaceMemory::copy_to_user(a.info, &info_slice[..copy_len]).is_err() {
+                return -14;
             }
             return 0;
         }

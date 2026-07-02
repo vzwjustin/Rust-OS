@@ -1281,16 +1281,12 @@ pub fn run_desktop() -> ! {
         // Sleep between updates to prevent excessive CPU usage
         let mut si: u32 = 0;
         while si < 100_000 {
-            unsafe {
-                core::arch::asm!("nop");
-            }
+            core::hint::spin_loop();
             si = si.wrapping_add(1);
         }
 
         // Halt CPU until next interrupt
-        unsafe {
-            core::arch::asm!("hlt");
-        }
+        x86_64::instructions::hlt();
     }
 }
 

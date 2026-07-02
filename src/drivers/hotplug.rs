@@ -371,7 +371,10 @@ impl HotplugManager {
 
         for driver_match in driver_matches.iter() {
             if driver_match.matches(&device_info) {
-                if best_match.is_none() || driver_match.priority > best_match.unwrap().priority {
+                if best_match
+                    .map(|best| driver_match.priority > best.priority)
+                    .unwrap_or(true)
+                {
                     best_match = Some(driver_match);
                 }
             }

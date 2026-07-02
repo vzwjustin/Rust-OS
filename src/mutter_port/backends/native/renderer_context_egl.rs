@@ -1,7 +1,12 @@
-use alloc::{boxed::Box, string::String, vec::Vec};
+//! Renderer Context EGL — OpenGL ES rendering context.
+//!
+//! Wraps EGL context for GPU-accelerated rendering (inherits from CoglContextEGL).
+//! Upstream has no public fields beyond the parent class.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/native/meta-renderer-context-egl.c
 
 pub struct RendererContextEgl {
-    // TODO: port RendererContextEgl from meta-renderer-context-egl.c
+    // Inherits from CoglContextEGL; no additional public fields in upstream.
 }
 
 impl RendererContextEgl {

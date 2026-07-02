@@ -188,6 +188,7 @@ pub fn smoke_check_foundation() -> Result<GnomeReadiness, &'static str> {
 pub fn log_boot_readiness() {
     let readiness = probe();
 
+    // SAFETY: COM1 serial port is initialized.
     unsafe {
         crate::early_serial_write_str("RustOS: GNOME profile probe active\r\n");
         log_capability("GLib/GIO", readiness.glib_gio);
@@ -213,6 +214,9 @@ pub fn log_boot_readiness() {
     }
 }
 
+/// # Safety
+/// The caller must ensure COM1 serial is initialized and I/O port
+/// access is valid.
 unsafe fn log_capability(name: &'static str, state: GnomeCapabilityState) {
     crate::early_serial_write_str("RustOS: GNOME ");
     crate::early_serial_write_str(name);

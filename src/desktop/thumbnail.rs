@@ -128,11 +128,9 @@ impl ThumbnailFactory {
         let uri = thumbnail.uri.clone();
         self.cache.retain(|(u, _)| u != &uri);
         self.cache.push((uri, thumbnail));
-        unsafe {
-            crate::early_serial_write_str("thumbnail: saved ");
-            crate::early_serial_write_str(&path);
-            crate::early_serial_write_str("\n");
-        }
+        crate::early_serial_write_str("thumbnail: saved ");
+        crate::early_serial_write_str(&path);
+        crate::early_serial_write_str("\n");
         true
     }
 

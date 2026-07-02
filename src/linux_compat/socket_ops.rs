@@ -19,6 +19,7 @@ use crate::vfs::{self, FdKind};
 static SOCKET_OPS_COUNT: AtomicU64 = AtomicU64::new(0);
 const MAX_SOCKET_RW_CHUNK: usize = 64 * 1024;
 const MAX_SOCKET_IOV: usize = 1024;
+const MAX_SOCKET_CONTROL_FDS: usize = 253;
 const LINUX_MSGHDR_SIZE: usize = 56;
 const LINUX_MMSGHDR_SIZE: usize = 64;
 const LINUX_MMSGHDR_MSG_LEN_OFFSET: usize = LINUX_MSGHDR_SIZE;
@@ -83,10 +84,28 @@ fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
     // msghdr layout: name(8), namelen(4), pad(4), iov(8), iovlen(8), control(8), controllen(8), flags(4)
     let mut header = [0u8; 48];
     UserSpaceMemory::copy_from_user(msg as u64, &mut header).map_err(|_| LinuxError::EFAULT)?;
-    let msg_control = usize::from_ne_bytes(header[32..40].try_into().unwrap()) as *mut u8;
-    let msg_controllen = usize::from_ne_bytes(header[40..48].try_into().unwrap());
+    let mut control_ptr_bytes = [0u8; core::mem::size_of::<usize>()];
+    control_ptr_bytes.copy_from_slice(&header[32..40]);
+    let msg_control = usize::from_ne_bytes(control_ptr_bytes) as *mut u8;
+    let mut control_len_bytes = [0u8; core::mem::size_of::<usize>()];
+    control_len_bytes.copy_from_slice(&header[40..48]);
+    let msg_controllen = usize::from_ne_bytes(control_len_bytes);
     if msg_control.is_null() || msg_controllen == 0 {
         return Ok(());
+    }
+
+    if pending.len() > MAX_SOCKET_CONTROL_FDS {
+        return Err(LinuxError::EINVAL);
+    }
+    let fd_size = core::mem::size_of::<i32>();
+    let payload_len = pending
+        .len()
+        .checked_mul(fd_size)
+        .ok_or(LinuxError::EINVAL)?;
+    let cmsg_space = 16usize.checked_add(payload_len).ok_or(LinuxError::EINVAL)?; // CMSG_SPACE approximation on Linux/x86_64
+    let cmsg_len = 12usize.checked_add(payload_len).ok_or(LinuxError::EINVAL)?;
+    if msg_controllen < cmsg_space {
+        return Err(LinuxError::EINVAL);
     }
 
     let mut delivered = Vec::new();
@@ -99,15 +118,9 @@ fn deliver_out_of_band_fds(sockfd: Fd, msg: *mut u8) -> LinuxResult<()> {
     }
 
     // SCM_RIGHTS: cmsghdr { len, level=SOL_SOCKET(1), type=SCM_RIGHTS(1) } + aligned fd array
-    let payload_len = delivered.len() * core::mem::size_of::<i32>();
-    let cmsg_space = 16 + payload_len; // CMSG_SPACE approximation on Linux/x86_64
-    if msg_controllen < cmsg_space {
-        return Err(LinuxError::EINVAL);
-    }
-
     let mut control = vec![0u8; cmsg_space];
-    let cmsg_len = 12 + payload_len;
-    control[0..4].copy_from_slice(&(cmsg_len as u32).to_le_bytes());
+    let cmsg_len_u32 = u32::try_from(cmsg_len).map_err(|_| LinuxError::EINVAL)?;
+    control[0..4].copy_from_slice(&cmsg_len_u32.to_le_bytes());
     control[4..8].copy_from_slice(&1u32.to_le_bytes()); // SOL_SOCKET
     control[8..12].copy_from_slice(&1u32.to_le_bytes()); // SCM_RIGHTS
     for (idx, fd) in delivered.iter().enumerate() {
@@ -142,15 +155,22 @@ fn inc_ops() {
     SOCKET_OPS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-fn copy_struct_to_user<T>(dst: *mut T, value: &T) -> LinuxResult<()> {
-    if dst.is_null() {
-        return Err(LinuxError::EFAULT);
-    }
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
+}
 
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
-    UserSpaceMemory::copy_to_user(dst as u64, bytes).map_err(|_| LinuxError::EFAULT)
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
+}
+
+fn saturating_timeout_ms(seconds: i64, fractional_ms: i64) -> i32 {
+    if seconds < 0 {
+        return 0;
+    }
+    let millis = seconds
+        .saturating_mul(1000)
+        .saturating_add(fractional_ms.max(0));
+    millis.min(i32::MAX as i64) as i32
 }
 
 /// Map a network error to a Linux error code.
@@ -198,22 +218,13 @@ fn register_socket_fd(socket_id: u32) -> LinuxResult<Fd> {
 }
 
 fn copy_iovec_from_user(iov_ptr: *const IoVec, index: usize) -> LinuxResult<IoVec> {
-    let mut iov = IoVec {
-        iov_base: core::ptr::null_mut(),
-        iov_len: 0,
-    };
-    let iov_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            &mut iov as *mut IoVec as *mut u8,
-            core::mem::size_of::<IoVec>(),
-        )
-    };
-    UserSpaceMemory::copy_from_user(
-        (iov_ptr as u64) + (index * core::mem::size_of::<IoVec>()) as u64,
-        iov_bytes,
-    )
-    .map_err(|_| LinuxError::EFAULT)?;
-    Ok(iov)
+    let offset = index
+        .checked_mul(core::mem::size_of::<IoVec>())
+        .ok_or(LinuxError::EINVAL)?;
+    let addr = (iov_ptr as u64)
+        .checked_add(offset as u64)
+        .ok_or(LinuxError::EINVAL)?;
+    copy_struct_from_user(addr as *const IoVec)
 }
 
 fn read_msghdr_fields(msg: *const u8) -> LinuxResult<(*const u8, u32, *const IoVec, usize)> {
@@ -266,17 +277,7 @@ fn parse_sockaddr(addr: *const SockAddr, _addrlen: u32) -> LinuxResult<SocketAdd
     if addr.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let mut sa = SockAddr {
-        sa_family: 0,
-        sa_data: [0; 14],
-    };
-    let sa_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            &mut sa as *mut SockAddr as *mut u8,
-            core::mem::size_of::<SockAddr>(),
-        )
-    };
-    UserSpaceMemory::copy_from_user(addr as u64, sa_bytes).map_err(|_| LinuxError::EFAULT)?;
+    let sa: SockAddr = copy_struct_from_user(addr)?;
 
     match sa.sa_family {
         1 => {
@@ -329,16 +330,8 @@ fn write_sockaddr(addr: *mut SockAddr, addrlen: *mut u32, sa: &SocketAddress) ->
             out.sa_data[4] = ip[2];
             out.sa_data[5] = ip[3];
 
-            let out_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    &out as *const SockAddr as *const u8,
-                    core::mem::size_of::<SockAddr>(),
-                )
-            };
-            UserSpaceMemory::copy_to_user(addr as u64, out_bytes)
-                .map_err(|_| LinuxError::EFAULT)?;
-            UserSpaceMemory::copy_to_user(addrlen as u64, &needed.to_ne_bytes())
-                .map_err(|_| LinuxError::EFAULT)?;
+            copy_struct_to_user(addr, &out)?;
+            copy_struct_to_user(addrlen, &needed)?;
             Ok(())
         }
         _ => Err(LinuxError::EAFNOSUPPORT),
@@ -846,14 +839,16 @@ pub fn getsockopt(
         }
     };
 
-    let avail = unsafe { *optlen };
+    let mut optlen_bytes = [0u8; core::mem::size_of::<u32>()];
+    UserSpaceMemory::copy_from_user(optlen as u64, &mut optlen_bytes)
+        .map_err(|_| LinuxError::EFAULT)?;
+    let avail = u32::from_ne_bytes(optlen_bytes);
     if (avail as usize) < len {
         return Err(LinuxError::EINVAL);
     }
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), optval, len);
-        *optlen = len as u32;
-    }
+    UserSpaceMemory::copy_to_user(optval as u64, &bytes[..len]).map_err(|_| LinuxError::EFAULT)?;
+    UserSpaceMemory::copy_to_user(optlen as u64, &(len as u32).to_ne_bytes())
+        .map_err(|_| LinuxError::EFAULT)?;
     Ok(0)
 }
 
@@ -879,7 +874,10 @@ pub fn setsockopt(
     }
 
     let val = if optlen >= 4 {
-        unsafe { *(optval as *const i32) }
+        let mut bytes = [0u8; core::mem::size_of::<i32>()];
+        UserSpaceMemory::copy_from_user(optval as u64, &mut bytes)
+            .map_err(|_| LinuxError::EFAULT)?;
+        i32::from_ne_bytes(bytes)
     } else {
         return Err(LinuxError::EINVAL);
     };
@@ -992,17 +990,44 @@ pub fn select(
     let timeout_ms = if timeout.is_null() {
         -1i32 // infinite
     } else {
-        let tv = unsafe { &*timeout };
-        let ms = tv.tv_sec as i32 * 1000 + tv.tv_usec as i32 / 1000;
-        if ms < 0 {
-            0
-        } else {
-            ms
-        }
+        let tv = copy_struct_from_user(timeout)?;
+        saturating_timeout_ms(tv.tv_sec, tv.tv_usec / 1000)
     };
+
+    select_with_timeout_ms(nfds, readfds, writefds, exceptfds, timeout_ms)
+}
+
+fn select_with_timeout_ms(
+    nfds: i32,
+    readfds: *mut u64,
+    writefds: *mut u64,
+    exceptfds: *mut u64,
+    timeout_ms: i32,
+) -> LinuxResult<i32> {
+    if nfds < 0 {
+        return Err(LinuxError::EINVAL);
+    }
 
     // FD_SETSIZE is typically 1024, each fd_set is 1024/64 = 16 u64s
     const FD_SETSIZE_DWORDS: usize = 16;
+    let read_fdset_word = |fdset: *mut u64, word: usize| -> LinuxResult<u64> {
+        let offset = word
+            .checked_mul(core::mem::size_of::<u64>())
+            .ok_or(LinuxError::EINVAL)?;
+        let addr = (fdset as u64)
+            .checked_add(offset as u64)
+            .ok_or(LinuxError::EINVAL)?;
+        copy_struct_from_user(addr as *const u64)
+    };
+    let write_fdset_word = |fdset: *mut u64, word: usize, value: u64| -> LinuxResult<()> {
+        let offset = word
+            .checked_mul(core::mem::size_of::<u64>())
+            .ok_or(LinuxError::EINVAL)?;
+        let addr = (fdset as u64)
+            .checked_add(offset as u64)
+            .ok_or(LinuxError::EINVAL)?;
+        copy_struct_to_user(addr as *mut u64, &value)
+    };
 
     // Build pollfd array from fd_sets
     let mut pollfds: [PollFd; 128] = [PollFd {
@@ -1010,6 +1035,8 @@ pub fn select(
         events: 0,
         revents: 0,
     }; 128];
+    let mut out_readfds = [0u64; FD_SETSIZE_DWORDS];
+    let mut out_writefds = [0u64; FD_SETSIZE_DWORDS];
     let mut count = 0usize;
 
     for fd in 0..nfds {
@@ -1022,17 +1049,13 @@ pub fn select(
 
         let mut events = 0i16;
         if !readfds.is_null() {
-            unsafe {
-                if *readfds.add(word) & (1u64 << bit) != 0 {
-                    events |= 0x001; // POLLIN
-                }
+            if read_fdset_word(readfds, word)? & (1u64 << bit) != 0 {
+                events |= 0x001; // POLLIN
             }
         }
         if !writefds.is_null() {
-            unsafe {
-                if *writefds.add(word) & (1u64 << bit) != 0 {
-                    events |= 0x004; // POLLOUT
-                }
+            if read_fdset_word(writefds, word)? & (1u64 << bit) != 0 {
+                events |= 0x004; // POLLOUT
             }
         }
         // exceptfds not mapped (rarely used)
@@ -1054,22 +1077,6 @@ pub fn select(
 
     let _n = super::special_fd::poll(pollfds.as_mut_ptr(), count as u64, timeout_ms)?;
 
-    // Clear fd_sets and set revents
-    if !readfds.is_null() {
-        unsafe {
-            for i in 0..FD_SETSIZE_DWORDS {
-                *readfds.add(i) = 0;
-            }
-        }
-    }
-    if !writefds.is_null() {
-        unsafe {
-            for i in 0..FD_SETSIZE_DWORDS {
-                *writefds.add(i) = 0;
-            }
-        }
-    }
-
     let mut ready = 0i32;
     for i in 0..count {
         if pollfds[i].revents != 0 {
@@ -1079,18 +1086,30 @@ pub fn select(
                 let bit = fd as usize % 64;
                 if word < FD_SETSIZE_DWORDS {
                     if !readfds.is_null() && pollfds[i].revents & 0x001 != 0 {
-                        unsafe {
-                            *readfds.add(word) |= 1u64 << bit;
-                        }
+                        out_readfds[word] |= 1u64 << bit;
                     }
                     if !writefds.is_null() && pollfds[i].revents & 0x004 != 0 {
-                        unsafe {
-                            *writefds.add(word) |= 1u64 << bit;
-                        }
+                        out_writefds[word] |= 1u64 << bit;
                     }
                 }
                 ready += 1;
             }
+        }
+    }
+
+    if !readfds.is_null() {
+        for (word, value) in out_readfds.iter().copied().enumerate() {
+            write_fdset_word(readfds, word, value)?;
+        }
+    }
+    if !writefds.is_null() {
+        for (word, value) in out_writefds.iter().copied().enumerate() {
+            write_fdset_word(writefds, word, value)?;
+        }
+    }
+    if !exceptfds.is_null() {
+        for word in 0..FD_SETSIZE_DWORDS {
+            write_fdset_word(exceptfds, word, 0)?;
         }
     }
 
@@ -1130,21 +1149,20 @@ pub fn pselect(
             tv_usec: 0,
         }
     } else {
-        let ts = unsafe { &*timeout };
+        let ts = copy_struct_from_user(timeout)?;
         TimeVal {
             tv_sec: ts.tv_sec,
             tv_usec: (ts.tv_nsec / 1000) as i64,
         }
     };
 
-    // If timeout is null, we want infinite wait. select with null timeout = infinite.
-    let tv_ptr = if timeout.is_null() {
-        core::ptr::null_mut()
+    let timeout_ms = if timeout.is_null() {
+        -1
     } else {
-        &tv as *const TimeVal as *mut TimeVal
+        saturating_timeout_ms(tv.tv_sec, tv.tv_usec / 1000)
     };
 
-    let result = select(nfds, readfds, writefds, exceptfds, tv_ptr);
+    let result = select_with_timeout_ms(nfds, readfds, writefds, exceptfds, timeout_ms);
 
     if applied_mask {
         super::signal_ops::sigprocmask(
@@ -1173,30 +1191,17 @@ pub fn pselect6(
     timeout: *const TimeSpec,
     sigmask: *const u8,
 ) -> LinuxResult<i32> {
-    let mut mask_value: SigSet = 0;
     let mask_ptr = if sigmask.is_null() {
         core::ptr::null()
     } else {
-        let mut raw = Pselect6Sigmask::default();
-        let raw_bytes = unsafe {
-            core::slice::from_raw_parts_mut(
-                (&mut raw as *mut Pselect6Sigmask) as *mut u8,
-                core::mem::size_of::<Pselect6Sigmask>(),
-            )
-        };
-        UserSpaceMemory::copy_from_user(sigmask as u64, raw_bytes)
-            .map_err(|_| LinuxError::EFAULT)?;
+        let raw: Pselect6Sigmask = copy_struct_from_user(sigmask as *const Pselect6Sigmask)?;
         if raw.ss == 0 {
             core::ptr::null()
         } else {
             if raw.ss_len != core::mem::size_of::<SigSet>() {
                 return Err(LinuxError::EINVAL);
             }
-            let mut mask_bytes = [0u8; core::mem::size_of::<SigSet>()];
-            UserSpaceMemory::copy_from_user(raw.ss, &mut mask_bytes)
-                .map_err(|_| LinuxError::EFAULT)?;
-            mask_value = SigSet::from_ne_bytes(mask_bytes);
-            &mask_value as *const SigSet
+            raw.ss as *const SigSet
         }
     };
 
@@ -1564,13 +1569,11 @@ pub fn socketpair(domain: i32, sock_type: i32, _protocol: i32, sv: *mut i32) -> 
     .map_err(unix_err)?;
 
     let fds = [fd0, fd1];
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            fds.as_ptr().cast::<u8>(),
-            fds.len() * core::mem::size_of::<i32>(),
-        )
-    };
-    UserSpaceMemory::copy_to_user(sv as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
+    if let Err(err) = copy_struct_to_user(sv as *mut [i32; 2], &fds) {
+        let _ = vfs::vfs_close(fd0);
+        let _ = vfs::vfs_close(fd1);
+        return Err(err);
+    }
     Ok(0)
 }
 
@@ -1581,16 +1584,28 @@ pub fn sendmmsg(sockfd: Fd, msgvec: *mut u8, vlen: u32, flags: i32) -> LinuxResu
     if sockfd < 0 {
         return Err(LinuxError::EBADF);
     }
+    if msgvec.is_null() && vlen > 0 {
+        return Err(LinuxError::EFAULT);
+    }
 
     // Linux x86_64 mmsghdr is msghdr (56 bytes), msg_len (u32), then padding.
     // Process up to vlen messages
     let mut sent = 0i32;
     for i in 0..vlen {
-        let msg_ptr = unsafe { msgvec.add((i as usize) * LINUX_MMSGHDR_SIZE) };
+        let msg_offset = (i as usize)
+            .checked_mul(LINUX_MMSGHDR_SIZE)
+            .ok_or(LinuxError::EINVAL)?;
+        let msg_addr = (msgvec as u64)
+            .checked_add(msg_offset as u64)
+            .ok_or(LinuxError::EINVAL)?;
+        let msg_ptr = msg_addr as *mut u8;
         match sendmsg(sockfd, msg_ptr, flags) {
             Ok(n) => {
                 let msg_len = n as u32;
-                let len_ptr = unsafe { msg_ptr.add(LINUX_MMSGHDR_MSG_LEN_OFFSET) as *mut u32 };
+                let len_addr = msg_addr
+                    .checked_add(LINUX_MMSGHDR_MSG_LEN_OFFSET as u64)
+                    .ok_or(LinuxError::EINVAL)?;
+                let len_ptr = len_addr as *mut u32;
                 copy_struct_to_user(len_ptr, &msg_len)?;
                 sent += 1;
             }
@@ -1613,16 +1628,28 @@ pub fn recvmmsg(
     if sockfd < 0 {
         return Err(LinuxError::EBADF);
     }
+    if msgvec.is_null() && vlen > 0 {
+        return Err(LinuxError::EFAULT);
+    }
 
     let _ = timeout;
 
     let mut received = 0i32;
     for i in 0..vlen {
-        let msg_ptr = unsafe { msgvec.add((i as usize) * LINUX_MMSGHDR_SIZE) };
+        let msg_offset = (i as usize)
+            .checked_mul(LINUX_MMSGHDR_SIZE)
+            .ok_or(LinuxError::EINVAL)?;
+        let msg_addr = (msgvec as u64)
+            .checked_add(msg_offset as u64)
+            .ok_or(LinuxError::EINVAL)?;
+        let msg_ptr = msg_addr as *mut u8;
         match recvmsg(sockfd, msg_ptr, flags) {
             Ok(n) => {
                 let msg_len = n as u32;
-                let len_ptr = unsafe { msg_ptr.add(LINUX_MMSGHDR_MSG_LEN_OFFSET) as *mut u32 };
+                let len_addr = msg_addr
+                    .checked_add(LINUX_MMSGHDR_MSG_LEN_OFFSET as u64)
+                    .ok_or(LinuxError::EINVAL)?;
+                let len_ptr = len_addr as *mut u32;
                 copy_struct_to_user(len_ptr, &msg_len)?;
                 received += 1;
                 if n == 0 {
@@ -1636,12 +1663,15 @@ pub fn recvmmsg(
 }
 
 /// Convert a timespec pointer to a poll/epoll timeout in milliseconds.
-fn timespec_to_timeout_ms(ts: *const TimeSpec) -> i32 {
+fn timespec_to_timeout_ms(ts: *const TimeSpec) -> LinuxResult<i32> {
     if ts.is_null() {
-        -1
+        Ok(-1)
     } else {
-        let timespec = unsafe { &*ts };
-        timespec.tv_sec as i32 * 1000 + timespec.tv_nsec as i32 / 1_000_000
+        let timespec = copy_struct_from_user(ts)?;
+        Ok(saturating_timeout_ms(
+            timespec.tv_sec,
+            timespec.tv_nsec / 1_000_000,
+        ))
     }
 }
 
@@ -1665,7 +1695,7 @@ pub fn ppoll(
         )?;
     }
 
-    let result = poll(fds, nfds, timespec_to_timeout_ms(ts));
+    let result = poll(fds, nfds, timespec_to_timeout_ms(ts)?);
 
     if applied_mask {
         super::signal_ops::sigprocmask(
@@ -1733,7 +1763,7 @@ pub fn epoll_pwait2(
         )?;
     }
 
-    let timeout_ms = timespec_to_timeout_ms(timeout as *const TimeSpec);
+    let timeout_ms = timespec_to_timeout_ms(timeout as *const TimeSpec)?;
     let result = epoll_wait(epfd, events, maxevents, timeout_ms);
 
     if applied_mask {

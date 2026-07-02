@@ -1,10 +1,22 @@
 //! Clutter Backend Native ported from GNOME Mutter's src/backends/
 //!
-//! TODO: Add detailed description and porting notes.
+//! Native Clutter graphics backend integration for DRM/KMS rendering and event handling.
 //!
-//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-clutter-backend-native.c
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-clutter-backend-native.h
+//! Upstream header not found; minimal stub.
 
-// TODO: port public API from upstream
-// pub fn TODO() {
-//     // TODO: implement
-// }
+/// Opaque Clutter backend native implementation.
+pub struct ClutterBackendNative;
+
+impl ClutterBackendNative {
+    /// Create a new Clutter backend native.
+    pub fn new() -> Self {
+        ClutterBackendNative
+    }
+}
+
+impl Default for ClutterBackendNative {
+    fn default() -> Self {
+        Self::new()
+    }
+}

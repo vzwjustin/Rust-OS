@@ -72,18 +72,17 @@ impl InstallerState {
     }
 }
 
-static mut INSTALLER: Option<InstallerState> = None;
+static INSTALLER: spin::Mutex<Option<InstallerState>> = spin::Mutex::new(None);
 
 fn with_installer<F, R>(f: F) -> R
 where
     F: FnOnce(&mut InstallerState) -> R,
 {
-    unsafe {
-        if INSTALLER.is_none() {
-            INSTALLER = Some(InstallerState::new());
-        }
-        f(INSTALLER.as_mut().unwrap())
+    let mut guard = INSTALLER.lock();
+    if guard.is_none() {
+        *guard = Some(InstallerState::new());
     }
+    f(guard.as_mut().unwrap())
 }
 
 /// Initialize installer subsystem (storage FS scan + procfs).

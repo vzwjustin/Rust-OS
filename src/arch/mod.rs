@@ -53,39 +53,37 @@ pub struct CpuFeatures {
 }
 
 /// Global CPU information (cached)
-static mut CPU_INFO: Option<CpuInfo> = None;
-static mut CPU_FEATURES: Option<CpuFeatures> = None;
+static CPU_INFO: spin::Mutex<Option<CpuInfo>> = spin::Mutex::new(None);
+static CPU_FEATURES: spin::Mutex<Option<CpuFeatures>> = spin::Mutex::new(None);
 
 /// Initialize CPU detection
 pub fn init() -> Result<(), &'static str> {
-    detect_cpu_info();
-    detect_cpu_features();
+    cpu_info();
+    cpu_features();
     Ok(())
 }
 
 /// Get CPU information
 pub fn cpu_info() -> CpuInfo {
-    unsafe {
-        CPU_INFO.clone().unwrap_or_else(|| {
-            detect_cpu_info();
-            CPU_INFO.clone().unwrap()
-        })
+    let mut guard = CPU_INFO.lock();
+    if guard.is_none() {
+        *guard = Some(detect_cpu_info());
     }
+    guard.clone().unwrap()
 }
 
 /// Get CPU features
 pub fn cpu_features() -> CpuFeatures {
-    unsafe {
-        CPU_FEATURES.unwrap_or_else(|| {
-            detect_cpu_features();
-            CPU_FEATURES.unwrap()
-        })
+    let mut guard = CPU_FEATURES.lock();
+    if guard.is_none() {
+        *guard = Some(detect_cpu_features());
     }
+    guard.unwrap()
 }
 
 /// Detect CPU information using CPUID
-fn detect_cpu_info() {
-    unsafe {
+fn detect_cpu_info() -> CpuInfo {
+    {
         let cpuid = __cpuid(0);
         let max_cpuid = cpuid.eax;
 
@@ -133,7 +131,7 @@ fn detect_cpu_info() {
             "Unknown CPU".to_string()
         };
 
-        CPU_INFO = Some(CpuInfo {
+        CpuInfo {
             vendor: vendor_str,
             brand,
             family,
@@ -141,17 +139,21 @@ fn detect_cpu_info() {
             stepping,
             max_cpuid,
             max_extended_cpuid: max_extended,
-        });
+        }
     }
 }
 
 /// Detect CPU features using CPUID
-fn detect_cpu_features() {
+fn detect_cpu_features() -> CpuFeatures {
+    let max_cpuid = cpu_info().max_cpuid;
     unsafe {
         let cpuid1 = __cpuid(1);
-        let cpuid7 = if CPU_INFO.as_ref().map_or(false, |i| i.max_cpuid >= 7) {
+        let cpuid7 = if max_cpuid >= 7 {
             __cpuid_count(7, 0)
         } else {
+            // SAFETY: CpuidResult is a struct of four u32 values; all-zero
+            // is a valid bit pattern (used as a fallback when CPUID.07H
+            // is not available).
             core::mem::zeroed()
         };
 
@@ -191,7 +193,7 @@ fn detect_cpu_features() {
             smap: cpuid7.ebx & (1 << 20) != 0,
         };
 
-        CPU_FEATURES = Some(features);
+        features
     }
 }
 
@@ -213,7 +215,5 @@ pub fn current_cpu_id() -> u32 {
 /// CPU relax hint (PAUSE instruction)
 #[inline(always)]
 pub fn cpu_relax() {
-    unsafe {
-        core::arch::asm!("pause");
-    }
+    core::hint::spin_loop();
 }

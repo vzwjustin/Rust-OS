@@ -59,6 +59,14 @@ pub struct Fat32BootSector {
     pub signature: u16,          // Boot sector signature (0xAA55)
 }
 
+impl Default for Fat32BootSector {
+    fn default() -> Self {
+        // SAFETY: All-zero bit pattern is valid for this repr(C, packed) struct
+        // containing only integers and arrays of integers.
+        unsafe { mem::zeroed() }
+    }
+}
+
 /// FAT32 FSInfo structure
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -72,9 +80,17 @@ pub struct Fat32FsInfo {
     pub trail_signature: u32,  // 0xAA550000
 }
 
+impl Default for Fat32FsInfo {
+    fn default() -> Self {
+        // SAFETY: All-zero bit pattern is valid for this repr(C, packed) struct
+        // containing only integers and arrays of integers.
+        unsafe { mem::zeroed() }
+    }
+}
+
 /// FAT32 directory entry
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Fat32DirEntry {
     pub name: [u8; 11],        // 8.3 filename
     pub attr: u8,              // File attributes
@@ -147,8 +163,8 @@ impl Fat32FileSystem {
         let mut fs = Self {
             device_id,
             sector_base,
-            boot_sector: unsafe { mem::zeroed() },
-            fs_info: unsafe { mem::zeroed() },
+            boot_sector: Fat32BootSector::default(),
+            fs_info: Fat32FsInfo::default(),
             bytes_per_sector: 0,
             sectors_per_cluster: 0,
             bytes_per_cluster: 0,
@@ -226,7 +242,7 @@ impl Fat32FileSystem {
             || self.fs_info.struct_signature != FAT32_FSINFO_SIGNATURE2
         {
             // Invalid FSInfo, but not fatal
-            self.fs_info = unsafe { mem::zeroed() };
+            self.fs_info = Fat32FsInfo::default();
         }
 
         Ok(())
@@ -876,6 +892,8 @@ impl Fat32FileSystem {
         if offset + mem::size_of::<Fat32DirEntry>() > data.len() {
             return Err(FsError::InvalidArgument);
         }
+        // SAFETY: `entry` is a `&Fat32DirEntry` reference (a `Copy` struct);
+        // the pointer is valid and the length is `size_of::<Fat32DirEntry>()`.
         let entry_bytes = unsafe {
             core::slice::from_raw_parts(
                 entry as *const Fat32DirEntry as *const u8,
@@ -898,7 +916,7 @@ impl Fat32FileSystem {
         Self::validate_short_name(name)?;
         let (slot_cluster, slot_offset) = self.find_free_dir_slot(parent_cluster)?;
 
-        let mut entry: Fat32DirEntry = unsafe { mem::zeroed() };
+        let mut entry: Fat32DirEntry = Fat32DirEntry::default();
         entry.name = Self::name_to_83(name);
         entry.attr = if is_dir {
             Fat32Attr::DIRECTORY.bits()
@@ -1017,6 +1035,8 @@ impl Fat32FileSystem {
         let mut data = self.read_cluster(cluster)?;
         let entry_size = mem::size_of::<Fat32DirEntry>();
         if offset + entry_size <= data.len() {
+            // SAFETY: `entry` is a `&Fat32DirEntry` reference (a `Copy` struct);
+            // the pointer is valid and the length is `entry_size`.
             let entry_bytes = unsafe {
                 core::slice::from_raw_parts(entry as *const Fat32DirEntry as *const u8, entry_size)
             };
@@ -1471,22 +1491,26 @@ impl FileSystem for Fat32FileSystem {
         let mut dir_data = vec![0u8; self.bytes_per_cluster as usize];
 
         // "." entry — points to the directory itself
-        let mut dot_entry: Fat32DirEntry = unsafe { mem::zeroed() };
+        let mut dot_entry: Fat32DirEntry = Fat32DirEntry::default();
         dot_entry.name = Self::name_to_83(".");
         dot_entry.attr = Fat32Attr::DIRECTORY.bits();
         dot_entry.first_cluster_hi = (new_cluster >> 16) as u16;
         dot_entry.first_cluster_lo = (new_cluster & 0xFFFF) as u16;
+        // SAFETY: `dot_entry` is a stack-local `Copy` struct; the pointer is
+        // valid and the length is `entry_size`.
         let dot_bytes = unsafe {
             core::slice::from_raw_parts(&dot_entry as *const Fat32DirEntry as *const u8, entry_size)
         };
         dir_data[0..entry_size].copy_from_slice(dot_bytes);
 
         // ".." entry — points to the parent directory
-        let mut dotdot_entry: Fat32DirEntry = unsafe { mem::zeroed() };
+        let mut dotdot_entry: Fat32DirEntry = Fat32DirEntry::default();
         dotdot_entry.name = Self::name_to_83("..");
         dotdot_entry.attr = Fat32Attr::DIRECTORY.bits();
         dotdot_entry.first_cluster_hi = (parent_cluster >> 16) as u16;
         dotdot_entry.first_cluster_lo = (parent_cluster & 0xFFFF) as u16;
+        // SAFETY: `dotdot_entry` is a stack-local `Copy` struct; the pointer
+        // is valid and the length is `entry_size`.
         let dotdot_bytes = unsafe {
             core::slice::from_raw_parts(
                 &dotdot_entry as *const Fat32DirEntry as *const u8,
@@ -1660,6 +1684,8 @@ impl FileSystem for Fat32FileSystem {
                 };
                 dotdot.first_cluster_hi = (new_parent_cluster >> 16) as u16;
                 dotdot.first_cluster_lo = (new_parent_cluster & 0xFFFF) as u16;
+                // SAFETY: `dotdot` is a stack-local `Copy` struct; the pointer
+                // is valid and the length is `entry_size`.
                 let dotdot_bytes = unsafe {
                     core::slice::from_raw_parts(
                         &dotdot as *const Fat32DirEntry as *const u8,

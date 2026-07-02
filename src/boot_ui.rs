@@ -46,7 +46,7 @@ impl Default for BootConfig {
 }
 
 /// Global boot configuration
-static mut BOOT_CONFIG: BootConfig = BootConfig {
+static BOOT_CONFIG: spin::Mutex<BootConfig> = spin::Mutex::new(BootConfig {
     fast_boot: true,
     safe_mode: false,
     verbose: false,
@@ -55,13 +55,11 @@ static mut BOOT_CONFIG: BootConfig = BootConfig {
     install_mode: false,
     live_mode: false,
     interactive_debug_console: false,
-};
+});
 
 /// Set the global boot configuration
 pub fn set_boot_config(config: BootConfig) {
-    unsafe {
-        BOOT_CONFIG = config;
-    }
+    *BOOT_CONFIG.lock() = config;
 }
 
 // ============================================================================
@@ -101,45 +99,60 @@ impl BootLogEntry {
 }
 
 /// Circular boot log buffer
-static mut BOOT_LOG: [BootLogEntry; BOOT_LOG_CAPACITY] = [BootLogEntry::empty(); BOOT_LOG_CAPACITY];
-static mut BOOT_LOG_HEAD: usize = 0;
-static mut BOOT_LOG_COUNT: usize = 0;
-static mut BOOT_LOG_CURRENT_STAGE: u8 = 0;
+struct BootLogState {
+    entries: [BootLogEntry; BOOT_LOG_CAPACITY],
+    head: usize,
+    count: usize,
+    current_stage: u8,
+}
+
+impl BootLogState {
+    const fn new() -> Self {
+        Self {
+            entries: [BootLogEntry::empty(); BOOT_LOG_CAPACITY],
+            head: 0,
+            count: 0,
+            current_stage: 0,
+        }
+    }
+}
+
+static BOOT_LOG: spin::Mutex<BootLogState> = spin::Mutex::new(BootLogState::new());
 
 /// Log a boot message to the diagnostics buffer
 pub fn boot_log(msg: &str) {
-    unsafe {
-        let idx = (BOOT_LOG_HEAD + BOOT_LOG_COUNT) % BOOT_LOG_CAPACITY;
-        BOOT_LOG[idx].set(msg, BOOT_LOG_CURRENT_STAGE);
-        if BOOT_LOG_COUNT < BOOT_LOG_CAPACITY {
-            BOOT_LOG_COUNT += 1;
-        } else {
-            BOOT_LOG_HEAD = (BOOT_LOG_HEAD + 1) % BOOT_LOG_CAPACITY;
-        }
+    let mut state = BOOT_LOG.lock();
+    let idx = (state.head + state.count) % BOOT_LOG_CAPACITY;
+    let stage = state.current_stage;
+    state.entries[idx].set(msg, stage);
+    if state.count < BOOT_LOG_CAPACITY {
+        state.count += 1;
+    } else {
+        state.head = (state.head + 1) % BOOT_LOG_CAPACITY;
     }
 }
 
 /// Set the current boot stage for log tagging
 pub fn boot_log_set_stage(stage: u8) {
-    unsafe {
-        BOOT_LOG_CURRENT_STAGE = stage;
-    }
+    BOOT_LOG.lock().current_stage = stage;
 }
 
 /// Get the number of boot log entries
 pub fn boot_log_count() -> usize {
-    unsafe { BOOT_LOG_COUNT }
+    BOOT_LOG.lock().count
 }
 
-/// Get a boot log entry by index (0 = oldest)
-pub fn boot_log_entry(index: usize) -> Option<(u8, &'static str)> {
-    unsafe {
-        if index >= BOOT_LOG_COUNT {
-            return None;
-        }
-        let idx = (BOOT_LOG_HEAD + index) % BOOT_LOG_CAPACITY;
-        Some((BOOT_LOG[idx].stage, BOOT_LOG[idx].as_str()))
+/// Get a boot log entry by index (0 = oldest). Returns owned data.
+fn boot_log_entry(index: usize) -> Option<(u8, String)> {
+    let state = BOOT_LOG.lock();
+    if index >= state.count {
+        return None;
     }
+    let idx = (state.head + index) % BOOT_LOG_CAPACITY;
+    Some((
+        state.entries[idx].stage,
+        String::from(state.entries[idx].as_str()),
+    ))
 }
 
 /// Dump the entire boot log to serial output
@@ -155,8 +168,8 @@ pub fn boot_log_dump_serial() {
 }
 
 /// Get a reference to the global boot configuration
-pub fn boot_config() -> &'static BootConfig {
-    unsafe { &BOOT_CONFIG }
+pub fn boot_config() -> BootConfig {
+    BOOT_CONFIG.lock().clone()
 }
 
 /// Framebuffer info extracted from the bootloader
@@ -168,14 +181,18 @@ pub struct BootloaderFramebufferInfo {
     pub bytes_per_pixel: usize,
 }
 
+// SAFETY: `BootloaderFramebufferInfo` holds a raw pointer to the bootloader's
+// framebuffer, which is mapped write-combining and accessed only from the
+// boot thread. The pointer is never dereferenced through this type — it is
+// only passed to `SimpleFramebuffer::new` during init.
+unsafe impl Send for BootloaderFramebufferInfo {}
+
 /// Global bootloader framebuffer info
-static mut BOOTLOADER_FB: Option<BootloaderFramebufferInfo> = None;
+static BOOTLOADER_FB: spin::Mutex<Option<BootloaderFramebufferInfo>> = spin::Mutex::new(None);
 
 /// Set bootloader framebuffer info for graphics init
 pub fn set_bootloader_framebuffer(info: BootloaderFramebufferInfo) {
-    unsafe {
-        BOOTLOADER_FB = Some(info);
-    }
+    *BOOTLOADER_FB.lock() = Some(info);
 }
 
 /// Boot stage enumeration for tracking progress
@@ -303,11 +320,11 @@ impl BootProgress {
 }
 
 /// Global boot progress state
-static mut BOOT_PROGRESS: BootProgress = BootProgress::new();
+static BOOT_PROGRESS: spin::Mutex<BootProgress> = spin::Mutex::new(BootProgress::new());
 
 /// Get mutable reference to boot progress
-pub fn boot_progress() -> &'static mut BootProgress {
-    unsafe { &mut BOOT_PROGRESS }
+pub fn boot_progress() -> spin::MutexGuard<'static, BootProgress> {
+    BOOT_PROGRESS.lock()
 }
 
 // ============================================================================
@@ -350,10 +367,12 @@ pub fn show_boot_splash() {
 
 /// Begin a new boot stage with visual feedback
 pub fn begin_stage(stage: BootStage, substage_total: usize) {
-    let progress = boot_progress();
-    progress.current_stage = stage;
-    progress.substage_current = 0;
-    progress.substage_total = substage_total;
+    {
+        let mut progress = boot_progress();
+        progress.current_stage = stage;
+        progress.substage_current = 0;
+        progress.substage_total = substage_total;
+    }
 
     boot_log_set_stage(stage.number() as u8);
     boot_log(&format!("BEGIN: {}", stage.name()));
@@ -367,7 +386,7 @@ pub fn begin_stage(stage: BootStage, substage_total: usize) {
 
 /// Show the header for a boot stage
 fn show_stage_header(stage: BootStage) {
-    let progress = boot_progress();
+    let mut progress = boot_progress();
     let total = BootStage::total_stages();
     let current = stage.number();
     let percentage = (current * 100) / total;
@@ -411,13 +430,16 @@ fn show_stage_header(stage: BootStage) {
 
 /// Update substage progress within current stage
 pub fn update_substage(current: usize, message: &str) {
-    let progress = boot_progress();
-    progress.substage_current = current;
-    progress.last_message = Some(String::from(message));
+    let substage_total = {
+        let mut progress = boot_progress();
+        progress.substage_current = current;
+        progress.last_message = Some(String::from(message));
+        progress.substage_total
+    };
 
     boot_log(&format!(
         "[{}/{}] {}",
-        current, progress.substage_total, message
+        current, substage_total, message
     ));
 
     if is_graphical_boot() {
@@ -425,8 +447,8 @@ pub fn update_substage(current: usize, message: &str) {
     } else {
         set_color(Color::Cyan, Color::Black);
         print!("      ");
-        if progress.substage_total > 0 {
-            print!("[{}/{}] ", current, progress.substage_total);
+        if substage_total > 0 {
+            print!("[{}/{}] ", current, substage_total);
         }
         set_color(Color::LightGray, Color::Black);
         println!("{}", message);
@@ -450,8 +472,10 @@ pub fn report_success(component: &str) {
 
 /// Report a warning within current stage
 pub fn report_warning(component: &str, reason: &str) {
-    let progress = boot_progress();
-    progress.warnings_encountered += 1;
+    {
+        let mut progress = boot_progress();
+        progress.warnings_encountered += 1;
+    }
 
     boot_log(&format!("WARN: {} - {}", component, reason));
 
@@ -470,8 +494,10 @@ pub fn report_warning(component: &str, reason: &str) {
 
 /// Report an error within current stage
 pub fn report_error(component: &str, error: &str) {
-    let progress = boot_progress();
-    progress.errors_encountered += 1;
+    {
+        let mut progress = boot_progress();
+        progress.errors_encountered += 1;
+    }
 
     boot_log(&format!("FAIL: {} - {}", component, error));
 
@@ -490,14 +516,21 @@ pub fn report_error(component: &str, error: &str) {
 
 /// Complete current stage
 pub fn complete_stage(stage: BootStage) {
-    let progress = boot_progress();
-    if progress.current_stage != stage {
-        return;
-    }
+    let stage_completed = {
+        let mut progress = boot_progress();
+        if progress.current_stage != stage {
+            false
+        } else {
+            let idx = stage.number().saturating_sub(1);
+            if idx < progress.completed_stages.len() {
+                progress.completed_stages[idx] = true;
+            }
+            true
+        }
+    };
 
-    let idx = stage.number().saturating_sub(1);
-    if idx < progress.completed_stages.len() {
-        progress.completed_stages[idx] = true;
+    if !stage_completed {
+        return;
     }
 
     if is_graphical_boot() {
@@ -1156,9 +1189,7 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     if let Err(e) = crate::drivers::usb::init() {
         report_warning("USB", e);
     }
-    unsafe {
-        crate::early_serial_write_str("BOOTUI:usb-done\n");
-    }
+    crate::early_serial_write_str("BOOTUI:usb-done\n");
 
     update_substage(8, "Initializing SCSI mid-layer...");
     let scsi = crate::drivers::scsi::init();
@@ -1167,9 +1198,7 @@ pub fn driver_loading_progress() -> DriverLoadResult {
     } else {
         let _ = scsi;
     }
-    unsafe {
-        crate::early_serial_write_str("BOOTUI:scsi-done\n");
-    }
+    crate::early_serial_write_str("BOOTUI:scsi-done\n");
 
     let md = crate::md::init();
     if md.arrays_registered > 0 {
@@ -1355,7 +1384,7 @@ pub fn graphics_init_progress() -> GraphicsInitResult {
     let mut result = GraphicsInitResult::new();
 
     // Try to initialize framebuffer from bootloader info
-    let fb_info = unsafe { BOOTLOADER_FB };
+    let fb_info = *BOOTLOADER_FB.lock();
     let config = boot_config();
 
     if !config.force_text_mode && !config.safe_mode {
@@ -1544,7 +1573,7 @@ impl DesktopInitResult {
 pub fn boot_complete_summary() {
     begin_stage(BootStage::BootComplete, 1);
 
-    let progress = boot_progress();
+    let mut progress = boot_progress();
     let overall = progress.overall_progress();
 
     println!();
@@ -1775,9 +1804,7 @@ pub fn boot_delay_short() {
     }
     let mut i: u32 = 0;
     while i < 5_000_000 {
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
         i = i.wrapping_add(1);
     }
 }
@@ -1789,9 +1816,7 @@ pub fn boot_delay_medium() {
     }
     let mut i: u32 = 0;
     while i < 10_000_000 {
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
         i = i.wrapping_add(1);
     }
 }
@@ -1803,9 +1828,7 @@ pub fn boot_delay_long() {
     }
     let mut i: u32 = 0;
     while i < 20_000_000 {
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
         i = i.wrapping_add(1);
     }
 }
@@ -1830,7 +1853,7 @@ pub fn render_graphical_boot_progress() {
         None => return,
     };
 
-    let progress = boot_progress();
+    let mut progress = boot_progress();
     let overall = progress.overall_progress();
 
     // GNOME-style gradient background
@@ -2192,9 +2215,7 @@ fn poll_boot_menu_selection(timeout_iters: u32, storage_available: bool) -> Boot
         if current_second != last_second && current_second < 3 {
             last_second = current_second;
         }
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
         iter += 1;
     }
     BootMenuSelection::NormalBoot
@@ -2341,9 +2362,7 @@ pub fn show_boot_menu() -> BootMenuSelection {
         }
 
         // Small delay to avoid 100% CPU spin
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        core::hint::spin_loop();
         iter += 1;
     }
 
@@ -2437,7 +2456,7 @@ pub fn show_graphical_splash() {
     );
 
     // Initial fill (0% — will be updated by render_graphical_boot_progress)
-    let progress = boot_progress();
+    let mut progress = boot_progress();
     let overall = progress.overall_progress();
     let fill_width = (bar_width * overall) / 100;
     if fill_width > 0 {

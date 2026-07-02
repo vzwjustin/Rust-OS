@@ -104,6 +104,27 @@ fn copy_to_user_buffer(user_ptr: u64, buffer: &[u8]) -> LinuxResult<()> {
     }
 }
 
+fn copy_struct_from_user<T: Copy>(src: *const T) -> LinuxResult<T> {
+    super::copy_struct_from_user(src)
+}
+
+fn copy_struct_to_user<T: Copy>(dst: *mut T, value: &T) -> LinuxResult<()> {
+    super::copy_struct_to_user(dst, value)
+}
+
+fn user_ptr_add<T>(base: *mut T, offset: usize) -> LinuxResult<u64> {
+    if base.is_null() {
+        return Err(LinuxError::EFAULT);
+    }
+
+    let byte_offset = offset
+        .checked_mul(core::mem::size_of::<T>())
+        .ok_or(LinuxError::EINVAL)?;
+    (base as u64)
+        .checked_add(byte_offset as u64)
+        .ok_or(LinuxError::EINVAL)
+}
+
 // ============================================================================
 // System Information Structures
 // ============================================================================
@@ -224,7 +245,7 @@ pub fn sysinfo(info: *mut SysInfo) -> LinuxResult<i32> {
     }
 
     // Get actual system information from kernel subsystems
-    unsafe {
+    {
         let mut si = SysInfo::zero();
 
         si.uptime = crate::time::uptime_ms() as i64 / 1000;
@@ -251,15 +272,15 @@ pub fn sysinfo(info: *mut SysInfo) -> LinuxResult<i32> {
             si.totalram = stats.total_memory as u64;
             si.freeram = stats.free_memory as u64;
             si.bufferram = stats.allocated_memory as u64;
-            si.totalswap = (stats.swap_stats.total_slots as u64) * 4096;
-            si.freeswap = (stats.swap_stats.free_slots as u64) * 4096;
+            si.totalswap = (stats.swap_stats.total_slots as u64).saturating_mul(4096);
+            si.freeswap = (stats.swap_stats.free_slots as u64).saturating_mul(4096);
         }
         si.sharedram = 0;
         si.mem_unit = 1;
 
         si.procs = crate::process::get_process_manager().process_count() as u16;
 
-        *info = si;
+        copy_struct_to_user(info, &si)?;
     }
 
     Ok(0)
@@ -274,16 +295,14 @@ pub fn uname(buf: *mut UtsName) -> LinuxResult<i32> {
     }
 
     // Return real kernel information
-    unsafe {
-        let mut uts = UtsName::default();
-        copy_str(&mut uts.sysname, b"RustOS");
-        copy_str(&mut uts.nodename, b"rustos");
-        copy_str(&mut uts.release, b"0.1.0");
-        copy_str(&mut uts.version, b"RustOS 0.1.0 (x86_64)");
-        copy_str(&mut uts.machine, b"x86_64");
-        copy_str(&mut uts.domainname, b"(none)");
-        *buf = uts;
-    }
+    let mut uts = UtsName::default();
+    copy_str(&mut uts.sysname, b"RustOS");
+    copy_str(&mut uts.nodename, b"rustos");
+    copy_str(&mut uts.release, b"0.1.0");
+    copy_str(&mut uts.version, b"RustOS 0.1.0 (x86_64)");
+    copy_str(&mut uts.machine, b"x86_64");
+    copy_str(&mut uts.domainname, b"(none)");
+    copy_struct_to_user(buf, &uts)?;
 
     Ok(0)
 }
@@ -354,7 +373,7 @@ pub fn gethostname(name: *mut u8, len: usize) -> LinuxResult<i32> {
 
     copy_to_user_buffer(name as u64, &hn[..copy_len])?;
     if copy_len < len {
-        copy_to_user_buffer(name.wrapping_add(copy_len) as u64, &[0])?;
+        copy_to_user_buffer(user_ptr_add(name, copy_len)?, &[0])?;
     }
 
     Ok(0)
@@ -400,7 +419,7 @@ pub fn getdomainname(name: *mut u8, len: usize) -> LinuxResult<i32> {
 
     copy_to_user_buffer(name as u64, &dn[..copy_len])?;
     if copy_len < len {
-        copy_to_user_buffer(name.wrapping_add(copy_len) as u64, &[0])?;
+        copy_to_user_buffer(user_ptr_add(name, copy_len)?, &[0])?;
     }
 
     Ok(0)
@@ -412,6 +431,7 @@ pub fn getdomainname(name: *mut u8, len: usize) -> LinuxResult<i32> {
 
 /// Old Linux sysctl argument block
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct SysctlArgs {
     name: *mut i32,
     nlen: i32,
@@ -494,21 +514,7 @@ pub fn sysctl(args: *mut u8) -> LinuxResult<i32> {
         return Err(LinuxError::EFAULT);
     }
 
-    let mut params = SysctlArgs {
-        name: core::ptr::null_mut(),
-        nlen: 0,
-        oldval: core::ptr::null_mut(),
-        oldlenp: core::ptr::null_mut(),
-        newval: core::ptr::null_mut(),
-        newlen: 0,
-    };
-    let params_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            &mut params as *mut SysctlArgs as *mut u8,
-            core::mem::size_of::<SysctlArgs>(),
-        )
-    };
-    copy_from_user_buffer(args as u64, params_bytes)?;
+    let params: SysctlArgs = copy_struct_from_user(args as *const SysctlArgs)?;
 
     if params.name.is_null() || params.nlen <= 0 || params.nlen > 256 {
         return Err(LinuxError::EINVAL);
@@ -519,13 +525,14 @@ pub fn sysctl(args: *mut u8) -> LinuxResult<i32> {
     }
 
     let mut name = vec![0i32; params.nlen as usize];
-    let name_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            name.as_mut_ptr() as *mut u8,
-            name.len() * core::mem::size_of::<i32>(),
-        )
-    };
-    copy_from_user_buffer(params.name as u64, name_bytes)?;
+    for (index, value) in name.iter_mut().enumerate() {
+        let src = (params.name as u64)
+            .checked_add((index * core::mem::size_of::<i32>()) as u64)
+            .ok_or(LinuxError::EFAULT)?;
+        let mut bytes = [0u8; core::mem::size_of::<i32>()];
+        copy_from_user_buffer(src, &mut bytes)?;
+        *value = i32::from_ne_bytes(bytes);
+    }
 
     match sysctl_lookup(&name) {
         Ok(SysctlValue::Int(v)) => sysctl_read_int(v, params.oldval, params.oldlenp),
@@ -570,6 +577,7 @@ pub fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> LinuxResult<isize> 
 
     // Early boot / test fallback: TSC-based PRNG (safe in QEMU without RDRAND).
     for (i, byte) in buffer.iter_mut().enumerate() {
+        // SAFETY: `_rdtsc` reads the CPU timestamp counter and has no memory safety impact.
         let tsc = unsafe { core::arch::x86_64::_rdtsc() };
         *byte = (tsc.wrapping_shr((i % 8) as u32) as u8).wrapping_add(i as u8);
     }
@@ -603,22 +611,26 @@ pub fn syslog(log_type: i32, bufp: *mut u8, _len: i32) -> LinuxResult<i32> {
                 return Err(LinuxError::EFAULT);
             }
             let logs = crate::logging::get_recent_logs();
-            let mut written = 0;
+            let mut written: usize = 0;
             for entry in &logs {
                 let line = alloc::format!("{}\n", entry);
                 let bytes = line.as_bytes();
-                if written + bytes.len() > _len as usize {
+                let next_written = written
+                    .checked_add(bytes.len())
+                    .ok_or(LinuxError::EOVERFLOW)?;
+                if next_written > _len as usize {
                     break;
                 }
-                unsafe {
-                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), bufp.add(written), bytes.len());
-                }
-                written += bytes.len();
+                let dst = (bufp as u64)
+                    .checked_add(written as u64)
+                    .ok_or(LinuxError::EFAULT)?;
+                copy_to_user_buffer(dst, bytes)?;
+                written = next_written;
             }
             if log_type == SYSLOG_ACTION_READ_CLEAR {
                 crate::logging::flush_logs();
             }
-            Ok(written as i32)
+            Ok(core::cmp::min(written, i32::MAX as usize) as i32)
         }
         SYSLOG_ACTION_CLEAR => {
             crate::logging::flush_logs();
@@ -626,8 +638,10 @@ pub fn syslog(log_type: i32, bufp: *mut u8, _len: i32) -> LinuxResult<i32> {
         }
         SYSLOG_ACTION_SIZE_UNREAD => {
             let logs = crate::logging::get_recent_logs();
-            let total: usize = logs.iter().map(|e| alloc::format!("{}\n", e).len()).sum();
-            Ok(total as i32)
+            let total = logs.iter().fold(0usize, |sum, entry| {
+                sum.saturating_add(alloc::format!("{}\n", entry).len())
+            });
+            Ok(core::cmp::min(total, i32::MAX as usize) as i32)
         }
         SYSLOG_ACTION_SIZE_BUFFER => Ok(16384),
         _ => Err(LinuxError::EINVAL),

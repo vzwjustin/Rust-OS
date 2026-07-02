@@ -62,6 +62,8 @@ fn parse_nfit(virt: usize, length: u32) -> Vec<NvdimmRegion> {
         return out;
     }
 
+    // SAFETY: `virt` is a mapped NFIT table address and `length` is validated
+    // to be >= 40 before this point.
     let data = unsafe { core::slice::from_raw_parts(virt as *const u8, length as usize) };
     let header_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
     if header_len < 40 || header_len > data.len() {
@@ -155,7 +157,7 @@ pub fn scan_acpi_nfit() -> usize {
 
 fn register_fallback_dram() {
     let mem_bytes = crate::memory::get_memory_manager()
-        .map(|m| m.memory_stats().total_memory as u64)
+        .map(|g| g.memory_stats().total_memory as u64)
         .unwrap_or(512 * 1024 * 1024);
     register_region(NvdimmRegion {
         handle: 0,

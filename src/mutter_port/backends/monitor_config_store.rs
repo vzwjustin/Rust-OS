@@ -11,14 +11,16 @@ pub struct MetaMonitorConfigPolicy {
 }
 
 impl MetaMonitorConfigPolicy {
-    /// TODO: port logic from meta_monitor_config_store_new
-    pub fn _new(&self) {
-        todo!()
+    /// Create a new monitor config policy.
+    pub fn _new(&self) -> Self {
+        Self {
+            enable_dbus: self.enable_dbus,
+        }
     }
 
-    /// TODO: port logic from meta_monitor_config_store_lookup
-    pub fn _lookup(&self) {
-        todo!()
+    /// Look up a stored monitor configuration by key.
+    /// Without a persistent store backend, returns None.
+    pub fn _lookup(&self) -> Option<Self> {
+        None
     }
-
 }

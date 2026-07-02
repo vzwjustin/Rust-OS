@@ -205,7 +205,8 @@ impl SharedMemory {
                 // allocate_memory returns a virtual address; translate to
                 // physical if possible, otherwise use the virtual address
                 // as the backing store reference.
-                if let Some(mm) = crate::memory::get_memory_manager() {
+                if let Some(mm_guard) = crate::memory::get_memory_manager() {
+                    let mm = &*mm_guard;
                     mm.translate_addr(vaddr)
                         .unwrap_or(PhysAddr::new(vaddr.as_u64()))
                 } else {

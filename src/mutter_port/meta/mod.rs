@@ -24,6 +24,7 @@ pub mod misc;
 pub mod monitor;
 pub mod other;
 pub mod plugin;
+pub mod registry;
 pub mod selection;
 pub mod types;
 pub mod util;
@@ -55,6 +56,10 @@ pub use other::{
     MetaWindowGroup,
 };
 pub use plugin::MetaPlugin;
+pub use registry::{
+    CompositorId, DisplayId, MonitorId, Registry, WaylandSurfaceId, WindowId, WorkspaceId,
+    X11DisplayId,
+};
 pub use selection::{
     MetaSelection, MetaSelectionSource, MetaSelectionSourceMemory, MetaSelectionType,
 };

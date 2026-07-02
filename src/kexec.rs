@@ -124,6 +124,8 @@ fn copy_from_user<T: Copy + Default>(addr: u64) -> Result<T, LinuxError> {
         return Err(LinuxError::EFAULT);
     }
     let mut value = T::default();
+    // SAFETY: `value` is a stack-local `Default` value and `T` is `Copy`; the
+    // pointer is valid for writes and the length is `size_of::<T>()`.
     let bytes = unsafe {
         core::slice::from_raw_parts_mut(
             (&mut value as *mut T) as *mut u8,
@@ -554,7 +556,8 @@ fn prepare_segment_image(image: &KexecImage) -> Result<PreparedKexec, LinuxError
         return Err(LinuxError::EINVAL);
     }
 
-    let memory_manager = crate::memory::get_memory_manager().ok_or(LinuxError::ENOMEM)?;
+    let memory_manager_guard = crate::memory::get_memory_manager().ok_or(LinuxError::ENOMEM)?;
+    let memory_manager = &*memory_manager_guard;
     let mut page_table_manager = memory_manager.page_table_manager.lock();
     let mut frame_allocator = memory_manager.frame_allocator.lock();
 
@@ -632,6 +635,10 @@ fn commit_segments(image: &KexecImage) -> Result<(), LinuxError> {
     Ok(())
 }
 
+/// # Safety
+/// The caller must ensure `entry` is a valid kernel entry point and
+/// `stack_top` is a valid stack address. This function never returns
+/// and performs a destructive transition to a new kernel image.
 unsafe fn jump_to_image(entry: u64, stack_top: u64) -> ! {
     unsafe {
         core::arch::asm!(

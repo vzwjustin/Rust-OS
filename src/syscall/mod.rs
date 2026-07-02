@@ -195,7 +195,7 @@ impl SecurityValidator {
 }
 
 /// System call statistics
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SyscallStats {
     pub total_calls: u64,
     pub successful_calls: u64,
@@ -214,7 +214,7 @@ impl Default for SyscallStats {
     }
 }
 
-static mut SYSCALL_STATS: SyscallStats = SyscallStats {
+static SYSCALL_STATS: SyscallStats = SyscallStats {
     total_calls: 0,
     successful_calls: 0,
     failed_calls: 0,
@@ -365,6 +365,7 @@ fn sys_exit(exit_code: i32) -> SyscallResult {
             // the actual context switch to the next task. This loop never returns,
             // which is the correct exit(2) behaviour.
             loop {
+                // SAFETY: hlt is a safe instruction; this loop runs after process exit with no pending work.
                 unsafe {
                     asm!("sti; hlt", options(nomem, nostack, preserves_flags));
                 }
@@ -1362,6 +1363,8 @@ fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64
                 let mut copied = 0usize;
                 while copied < to_read {
                     let chunk_len = core::cmp::min(PAGE_SIZE, to_read - copied);
+                    // SAFETY: `base_ptr` is a kernel-allocated buffer and `chunk_len`
+                    // is bounded by `PAGE_SIZE`, staying within the buffer.
                     let dst =
                         unsafe { core::slice::from_raw_parts_mut(base_ptr.add(copied), chunk_len) };
                     match fd_entry.read(dst) {
@@ -1381,6 +1384,7 @@ fn sys_mmap(_addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: u64
         };
 
         if copied < length as usize {
+            // SAFETY: base_ptr is a kernel-allocated buffer of sufficient length.
             unsafe {
                 core::ptr::write_bytes(base_ptr.add(copied), 0u8, length as usize - copied);
             }
@@ -1793,6 +1797,7 @@ fn sys_uname(buf: u64) -> SyscallResult {
 
     // struct utsname definition (POSIX compatible)
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct UtsName {
         sysname: [u8; 65],
         nodename: [u8; 65],
@@ -1823,8 +1828,7 @@ fn sys_uname(buf: u64) -> SyscallResult {
     copy_str_to_array(&mut utsname.machine, "x86_64");
 
     // Copy to user space
-    let utsname_bytes =
-        unsafe { core::slice::from_raw_parts(&utsname as *const _ as *const u8, UTSNAME_SIZE) };
+    let utsname_bytes = crate::linux_compat::as_bytes(&utsname);
 
     SecurityValidator::copy_to_user(buf, utsname_bytes)?;
     Ok(0)
@@ -1865,7 +1869,7 @@ fn get_process_cwd(pid: Pid) -> Option<String> {
 
 /// Get system call statistics
 pub fn get_syscall_stats() -> SyscallStats {
-    unsafe { core::ptr::addr_of!(SYSCALL_STATS).read() }
+    SYSCALL_STATS
 }
 
 /// User-space system call wrapper macro
@@ -1891,6 +1895,7 @@ macro_rules! syscall {
     };
     ($num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
         let result: u64;
+        // SAFETY: the syscall number and arguments are validated; the kernel is in a state ready for the syscall.
         unsafe {
             core::arch::asm!(
                 "mov rax, {num:r}",

@@ -95,6 +95,7 @@ impl PitTimer {
 impl HardwareTimer for PitTimer {
     fn init(&mut self) -> Result<(), &'static str> {
         // Configure PIT channel 0
+        // SAFETY: the I/O port is a valid hardware register for the PIT/CMOS device.
         unsafe {
             let mut cmd = Port::<u8>::new(0x43);
             let mut data = Port::<u8>::new(0x40);
@@ -137,6 +138,7 @@ impl HardwareTimer for PitTimer {
     fn disable(&mut self) {
         self.enabled = false;
         // Disable PIT by setting maximum divisor
+        // SAFETY: the I/O port is a valid hardware register for the PIT/CMOS device.
         unsafe {
             let mut cmd = Port::<u8>::new(0x43);
             let mut data = Port::<u8>::new(0x40);
@@ -152,6 +154,7 @@ impl HardwareTimer for PitTimer {
     }
 
     fn read_counter(&self) -> u64 {
+        // SAFETY: the I/O port is a valid hardware register for the PIT/CMOS device.
         unsafe {
             let mut cmd = Port::<u8>::new(0x43);
             let mut data = Port::<u8>::new(0x40);
@@ -198,6 +201,7 @@ impl ApicTimer {
         let calibration_ms = 10; // 10ms calibration period
 
         // Set up PIT for calibration (channel 2, one-shot mode)
+        // SAFETY: the I/O port is a valid hardware register for the PIT/CMOS device.
         unsafe {
             let mut cmd = Port::<u8>::new(0x43);
             let mut data = Port::<u8>::new(0x42);
@@ -215,6 +219,7 @@ impl ApicTimer {
         self.write_register(0x380, 0xFFFFFFFF);
 
         // Start PIT channel 2
+        // SAFETY: the I/O port is a valid hardware register.
         unsafe {
             let mut port61 = Port::<u8>::new(0x61);
             let val = port61.read();
@@ -233,6 +238,7 @@ impl ApicTimer {
             }
         } else {
             // Fallback: busy wait with PIT status check
+            // SAFETY: the I/O port is a valid hardware register.
             unsafe {
                 let mut port61 = Port::<u8>::new(0x61);
                 while (port61.read() & 0x20) == 0 {
@@ -262,6 +268,7 @@ impl ApicTimer {
 
     fn write_register(&self, offset: u32, value: u32) {
         if let Some(base) = self.base_address {
+            // SAFETY: the address is a valid mapped APIC MMIO register.
             unsafe {
                 let addr = base.as_u64() + offset as u64;
                 core::ptr::write_volatile(addr as *mut u32, value);
@@ -271,6 +278,7 @@ impl ApicTimer {
 
     fn read_register(&self, offset: u32) -> u32 {
         if let Some(base) = self.base_address {
+            // SAFETY: the address is a valid mapped APIC MMIO register.
             unsafe {
                 let addr = base.as_u64() + offset as u64;
                 core::ptr::read_volatile(addr as *const u32)
@@ -373,6 +381,7 @@ impl HpetTimer {
 
     fn write_register(&self, offset: HpetRegister, value: u64) {
         if let Some(base) = self.base_address {
+            // SAFETY: the address is a valid mapped HPET MMIO register.
             unsafe {
                 let addr = base.as_u64() + offset as u64;
                 core::ptr::write_volatile(addr as *mut u64, value);
@@ -382,6 +391,7 @@ impl HpetTimer {
 
     fn read_register(&self, offset: HpetRegister) -> u64 {
         if let Some(base) = self.base_address {
+            // SAFETY: the address is a valid mapped HPET MMIO register.
             unsafe {
                 let addr = base.as_u64() + offset as u64;
                 core::ptr::read_volatile(addr as *const u64)
@@ -882,6 +892,7 @@ pub fn get_tsc_frequency() -> Option<u64> {
 
 /// Read the Time Stamp Counter
 pub fn read_tsc() -> u64 {
+    // SAFETY: rdtsc is a safe instruction that reads the timestamp counter; no side effects.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
@@ -908,6 +919,7 @@ fn calibrate_tsc_with_pit() {
     let calibration_ms = 50; // 50ms calibration period for good accuracy
 
     // Configure PIT channel 2 for one-shot mode
+    // SAFETY: the I/O port is a valid hardware register for the PIT/CMOS device.
     unsafe {
         let mut cmd = Port::<u8>::new(0x43);
         let mut data = Port::<u8>::new(0x42);
@@ -930,6 +942,7 @@ fn calibrate_tsc_with_pit() {
     let start_tsc = read_tsc();
 
     // Wait for PIT to complete
+    // SAFETY: the I/O port is a valid hardware register.
     unsafe {
         let mut port61 = Port::<u8>::new(0x61);
         while (port61.read() & 0x20) == 0 {
@@ -1111,6 +1124,7 @@ pub fn init_system_time_from_rtc() -> Result<(), &'static str> {
 fn read_rtc_time() -> Result<u64, &'static str> {
     use x86_64::instructions::port::Port;
 
+    // SAFETY: the I/O port is a valid hardware register for the PIT/CMOS device.
     unsafe {
         let mut cmos_address = Port::<u8>::new(0x70);
         let mut cmos_data = Port::<u8>::new(0x71);

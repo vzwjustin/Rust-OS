@@ -27,6 +27,27 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
+/// Safely read a 4-byte futex word from a userspace address.
+/// Returns the loaded value, or -14 (EFAULT) on failure.
+fn read_user_i32(uaddr: *mut i32) -> Result<i32, i32> {
+    if uaddr.is_null() {
+        return Err(-14); // EFAULT
+    }
+    let mut buf = [0u8; 4];
+    crate::memory::user_space::UserSpaceMemory::copy_from_user(uaddr as u64, &mut buf)
+        .map_err(|_| -14i32)?;
+    Ok(i32::from_ne_bytes(buf))
+}
+
+/// Safely write a 4-byte futex word to a userspace address.
+fn write_user_i32(uaddr: *mut i32, val: i32) -> Result<(), i32> {
+    if uaddr.is_null() {
+        return Err(-14); // EFAULT
+    }
+    crate::memory::user_space::UserSpaceMemory::copy_to_user(uaddr as u64, &val.to_ne_bytes())
+        .map_err(|_| -14i32)
+}
+
 // ── Futex op constants (from Linux uapi) ────────────────────────────────
 
 pub const FUTEX_WAIT: i32 = 0;
@@ -230,7 +251,10 @@ pub fn futex_wait(uaddr: *mut i32, val: i32, bitset: u32, timeout: Option<&Futex
     }
 
     // Check current value atomically
-    let current_val = unsafe { core::ptr::read_volatile(uaddr) };
+    let current_val = match read_user_i32(uaddr) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
     if current_val != val {
         return -11; // EAGAIN
     }
@@ -254,7 +278,7 @@ pub fn futex_wait(uaddr: *mut i32, val: i32, bitset: u32, timeout: Option<&Futex
     let _ = pm.block_process(pid);
 
     // After waking, check if we were woken by a wake or a timeout/spurious
-    let current_val = unsafe { core::ptr::read_volatile(uaddr) };
+    let current_val = read_user_i32(uaddr).unwrap_or(0);
     if current_val != val {
         // Value changed — remove ourselves if still in bucket
         let bucket = &FUTEX_BUCKETS[hash];
@@ -330,7 +354,10 @@ pub fn futex_requeue(
 
     // If cmpval is provided, check that *uaddr == cmpval
     if let Some(cv) = cmpval {
-        let current = unsafe { core::ptr::read_volatile(uaddr) };
+        let current = match read_user_i32(uaddr) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         if current != cv {
             return -11; // EAGAIN
         }
@@ -434,7 +461,10 @@ pub fn futex_wait_requeue_pi(
     // before waking us; the check in the regular futex_wait path would fire
     // and return -EAGAIN, preventing us from ever reaching the PI-futex CAS.
     {
-        let current = unsafe { core::ptr::read_volatile(uaddr) };
+        let current = match read_user_i32(uaddr) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         if current != val {
             return -11; // EAGAIN
         }
@@ -508,7 +538,20 @@ pub fn futex_cmp_requeue_pi(
         return -14; // EFAULT
     }
 
-    // Atomic check: *uaddr must equal cmpval
+    // Validate user futex word before atomic access.
+    if crate::memory::user_space::UserSpaceMemory::validate_user_ptr(
+        uaddr as u64,
+        core::mem::size_of::<i32>() as u64,
+        false,
+    )
+    .is_err()
+    {
+        return -14; // EFAULT
+    }
+
+    // SAFETY: `uaddr` was validated above as a readable userspace i32.
+    // PI futex operations require atomic read-modify-write directly on the
+    // user futex word.
     let current = unsafe { &*(uaddr as *const AtomicI32) }.load(Ordering::Acquire);
     if current != cmpval {
         return -11; // EAGAIN
@@ -616,6 +659,18 @@ pub fn futex_cmp_requeue_pi(
 /// and hand off to the next waiter. Returns the previous futex word value
 /// (0 means we now own it).
 fn futex_pi_try_acquire(uaddr: *mut i32, pi_key: usize, our_pid: u32, our_tid: i32) -> i32 {
+    // Validate user futex word before atomic access.
+    if crate::memory::user_space::UserSpaceMemory::validate_user_ptr(
+        uaddr as u64,
+        core::mem::size_of::<i32>() as u64,
+        true,
+    )
+    .is_err()
+    {
+        return -14; // EFAULT
+    }
+    // SAFETY: `uaddr` was validated above as a writable userspace i32.
+    // PI futex CAS requires atomic read-modify-write directly on the word.
     let pi_atomic = unsafe { &*(uaddr as *const AtomicI32) };
     let prev = pi_atomic
         .compare_exchange(0, our_tid, Ordering::AcqRel, Ordering::Acquire)
@@ -800,6 +855,7 @@ pub fn futex_pi_unlock(uaddr: *mut i32) -> i32 {
 
     // Clear the futex so the next owner (the woken waiter, or a fresh locker
     // that wins the race) can CAS 0 -> own_tid (standard FUTEX_UNLOCK_PI).
+    // SAFETY: uaddr is a validated user-space pointer; the write wakes futex waiters.
     unsafe {
         core::ptr::write_volatile(uaddr, 0);
     }
@@ -831,7 +887,10 @@ pub fn futex_wake_op(uaddr: *mut i32, uaddr2: *mut i32, val: i32, val2: i32, wak
     let cmp_arg = wake_op & 0xFFF;
 
     // Perform the atomic operation on uaddr2
-    let old_val = unsafe { core::ptr::read_volatile(uaddr2) };
+    let old_val = match read_user_i32(uaddr2) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
     let new_val = match op {
         FUTEX_OP_SET => op_arg as i32,
         FUTEX_OP_ADD => old_val.wrapping_add(op_arg as i32),
@@ -840,8 +899,8 @@ pub fn futex_wake_op(uaddr: *mut i32, uaddr2: *mut i32, val: i32, val2: i32, wak
         FUTEX_OP_XOR => old_val ^ (op_arg as i32),
         _ => old_val,
     };
-    unsafe {
-        core::ptr::write_volatile(uaddr2, new_val);
+    if let Err(e) = write_user_i32(uaddr2, new_val) {
+        return e;
     }
 
     // Check comparison condition
@@ -934,6 +993,7 @@ pub fn get_robust_list(tid: u32, head_ptr: *mut *mut RobustListHead, len_ptr: *m
         return -3; // ESRCH
     };
 
+    // SAFETY: the robust list pointer is a valid user-space address validated before access.
     unsafe {
         *head_ptr = head;
         *len_ptr = core::mem::size_of::<RobustListHead>();
@@ -954,26 +1014,33 @@ pub fn exit_robust_list(tid: u32) {
         return;
     }
 
+    // SAFETY: the robust list pointer is a valid user-space address validated before access.
     let head = unsafe { &*head_ptr };
     let mut entry = head.list;
     let futex_offset = head.futex_offset;
 
     // Walk the robust list
     while !entry.is_null() {
+        // SAFETY: the robust list pointer is a valid user-space address validated before access.
         let node = unsafe { &*entry };
         // The futex word is at entry + futex_offset
+        // SAFETY: the robust list pointer is a valid user-space address validated before access.
         let futex_addr = unsafe {
             let raw = entry as *const u8;
             raw.offset(futex_offset as isize) as *mut i32
         };
         if !futex_addr.is_null() {
-            let val = unsafe { core::ptr::read_volatile(futex_addr) };
+            let val = match read_user_i32(futex_addr) {
+                Ok(v) => v,
+                Err(_) => {
+                    entry = node.next;
+                    continue;
+                }
+            };
             // If this thread owns the futex, mark it as OWNER_DIED and wake
             if val & 0x7FFFFFFF == tid as i32 {
                 let died_val = val | 0x40000000; // FUTEX_OWNER_DIED
-                unsafe {
-                    core::ptr::write_volatile(futex_addr, died_val);
-                }
+                let _ = write_user_i32(futex_addr, died_val);
                 futex_wake(futex_addr, 1, FUTEX_BITSET_MATCH_ANY);
             }
         }

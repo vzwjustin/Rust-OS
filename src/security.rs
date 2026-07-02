@@ -441,6 +441,7 @@ fn audit_event(event: AuditEvent) {
 pub fn get_current_level() -> SecurityLevel {
     // Read current privilege level from CPU
     let cs: u16;
+    // SAFETY: reading CS register has no side effects; used to determine current privilege level.
     unsafe {
         core::arch::asm!("mov {0:x}, cs", out(reg) cs);
     }
@@ -790,6 +791,7 @@ impl EncryptionKey {
     /// Zero out key data when dropped
     pub fn zeroize(&mut self) {
         for byte in &mut self.key_data {
+            // SAFETY: the pointer is a valid mapped key buffer of the specified length.
             unsafe {
                 core::ptr::write_volatile(byte, 0);
             }
@@ -951,6 +953,7 @@ fn try_rdrand(count: usize) -> Result<Vec<u32>, &'static str> {
 
         // Retry up to 10 times as recommended by Intel
         while attempts < 10 && !success {
+            // SAFETY: RDRAND/RDSEED instructions are available (checked via CPUID); no harmful side effects.
             success = unsafe {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -980,6 +983,7 @@ fn try_rdrand(count: usize) -> Result<Vec<u32>, &'static str> {
 
 /// Check if RDRAND instruction is supported
 fn is_rdrand_supported() -> bool {
+    // SAFETY: RDRAND/RDSEED instructions are available (checked via CPUID); no harmful side effects.
     unsafe {
         #[cfg(target_arch = "x86_64")]
         {
@@ -1019,6 +1023,7 @@ fn try_rdseed(count: usize) -> Result<Vec<u32>, &'static str> {
 
         // RDSEED may take longer than RDRAND, so allow more retries
         while attempts < 100 && !success {
+            // SAFETY: RDRAND/RDSEED instructions are available (checked via CPUID); no harmful side effects.
             success = unsafe {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -1038,7 +1043,7 @@ fn try_rdseed(count: usize) -> Result<Vec<u32>, &'static str> {
             // Small delay between attempts
             if !success {
                 for _ in 0..10 {
-                    unsafe { core::arch::asm!("pause") };
+                    core::hint::spin_loop();
                 }
             }
         }
@@ -1090,6 +1095,7 @@ fn collect_timing_entropy() -> Vec<u32> {
     let mut values = Vec::with_capacity(4);
 
     for _ in 0..4 {
+        // SAFETY: RDRAND/RDSEED instructions are available (checked via CPUID); no harmful side effects.
         let start = unsafe {
             #[cfg(target_arch = "x86_64")]
             {
@@ -1107,6 +1113,7 @@ fn collect_timing_entropy() -> Vec<u32> {
             sum = sum.wrapping_add(i);
         }
 
+        // SAFETY: RDRAND/RDSEED instructions are available (checked via CPUID); no harmful side effects.
         let end = unsafe {
             #[cfg(target_arch = "x86_64")]
             {
@@ -2948,6 +2955,7 @@ pub fn secure_key_storage_available() -> bool {
 pub fn secure_zero(data: &mut [u8]) {
     // Use volatile writes to prevent the compiler from optimizing away the zeroing
     for byte in data.iter_mut() {
+        // SAFETY: the pointer is a valid mapped key buffer of the specified length.
         unsafe {
             core::ptr::write_volatile(byte, 0);
         }

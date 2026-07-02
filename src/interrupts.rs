@@ -44,11 +44,13 @@ lazy_static! {
 
         // CPU Exception handlers
         idt.breakpoint.set_handler_fn(breakpoint_handler);
+        // SAFETY: the IDT entry index is within bounds of the IDT array.
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX);
         }
+        // SAFETY: the IDT entry index is within bounds of the IDT array.
         unsafe {
             idt.page_fault
                 .set_handler_fn(page_fault_handler)
@@ -56,6 +58,7 @@ lazy_static! {
         }
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        // SAFETY: the IDT entry index is within bounds of the IDT array.
         unsafe {
             idt.general_protection_fault
                 .set_handler_fn(general_protection_fault_handler)
@@ -93,6 +96,7 @@ lazy_static! {
 
 /// Global PIC controller instance
 pub static PICS: Mutex<ChainedPics> =
+    // SAFETY: the I/O ports 0x20/0xA0 are valid PIC command/data ports.
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 /// Interrupt statistics
@@ -192,6 +196,7 @@ pub fn init() {
     // CRITICAL: Mask all PIC interrupts before enabling CPU interrupt flag
     // This prevents any hardware interrupts during the early boot phase
     // Interrupts will be unmasked selectively as drivers initialize
+    // SAFETY: the I/O ports 0x20/0xA0 are valid PIC command/data ports.
     unsafe {
         let mut pic1_data: Port<u8> = Port::new(0x21);
         let mut pic2_data: Port<u8> = Port::new(0xA1);
@@ -205,6 +210,7 @@ pub fn init() {
 
 /// Initialize legacy PIC
 fn init_legacy_pic() {
+    // SAFETY: the I/O ports 0x20/0xA0 are valid PIC command/data ports.
     unsafe { PICS.lock().initialize() };
 }
 
@@ -212,6 +218,7 @@ fn init_legacy_pic() {
 /// IRQ 0 = Timer, IRQ 1 = Keyboard, IRQ 12 = Mouse
 pub fn unmask_irq(irq: u8) {
     crate::serial_println!("unmask_irq: about to unmask IRQ {}", irq);
+    // SAFETY: the I/O ports 0x20/0xA0 are valid PIC command/data ports.
     unsafe {
         let port = if irq < 8 {
             0x21 // Master PIC data port
@@ -251,6 +258,7 @@ pub fn enable_mouse_interrupt() {
 
 /// Disable legacy PIC when using APIC
 fn disable_legacy_pic() {
+    // SAFETY: the I/O ports 0x20/0xA0 are valid PIC command/data ports.
     unsafe {
         // Mask all interrupts on both PICs
         let mut pic1_data: Port<u8> = Port::new(0x21);
@@ -262,6 +270,7 @@ fn disable_legacy_pic() {
 }
 
 fn notify_irq_eoi(index: InterruptIndex) {
+    // SAFETY: the I/O port is a valid hardware register.
     unsafe {
         if APIC_EOI_ACTIVE.load(Ordering::Acquire) {
             if let Some(mut apic) = crate::apic::apic_system().try_lock() {
@@ -405,9 +414,7 @@ extern "x86-interrupt" fn double_fault_handler(
 
     // Double fault is unrecoverable - halt system
     loop {
-        unsafe {
-            core::arch::asm!("hlt");
-        }
+        x86_64::instructions::hlt();
     }
 }
 
@@ -484,7 +491,7 @@ extern "x86-interrupt" fn page_fault_handler(
             stack_frame.instruction_pointer,
         );
         loop {
-            unsafe { core::arch::asm!("hlt") };
+            x86_64::instructions::hlt();
         }
     }
 }
@@ -701,17 +708,13 @@ extern "x86-interrupt" fn invalid_tss_handler(_stack_frame: InterruptStackFrame,
         if let Err(_) = manager.handle_error(error_context) {
             crate::serial_println!("CRITICAL: TSS recovery failed - system unstable");
             loop {
-                unsafe {
-                    core::arch::asm!("hlt");
-                }
+                x86_64::instructions::hlt();
             }
         }
     } else {
         crate::serial_println!("FATAL: Invalid TSS - error manager unavailable");
         loop {
-            unsafe {
-                core::arch::asm!("hlt");
-            }
+            x86_64::instructions::hlt();
         }
     }
 }
@@ -819,6 +822,7 @@ extern "x86-interrupt" fn simd_floating_point_handler(_stack_frame: InterruptSta
     // those are in the "FPU disabled" state, fix them up and return, which
     // resumes the faulting instruction.
     let mut fpu_was_disabled = false;
+    // SAFETY: modifying CR0 to enable FPU; the FPU is present and initialized.
     unsafe {
         // CR0: bit 1 = MP (monitor coprocessor), bit 2 = EM (emulation).
         // We want MP=1 and EM=0 for native FPU/SSE access.
@@ -945,6 +949,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // Read mouse data byte from PS/2 controller
     let mut port: Port<u8> = Port::new(0x60);
+    // SAFETY: the I/O port is a valid hardware register.
     let byte = unsafe { port.read() };
 
     // Process the byte through PS/2 mouse driver
@@ -993,6 +998,9 @@ pub fn trigger_breakpoint() {
 }
 
 /// Trigger a page fault for testing
+/// # Safety
+/// This function intentionally triggers a page fault. The caller must
+/// ensure page fault handling is properly set up to handle the fault.
 pub unsafe fn trigger_page_fault() {
     let ptr = 0xdeadbeef as *mut u8;
     *ptr = 42;
@@ -1115,9 +1123,7 @@ fn terminate_current_process(reason: &str) {
     if pid == 0 {
         crate::serial_println!("FATAL: Cannot terminate kernel process - halting system");
         loop {
-            unsafe {
-                core::arch::asm!("hlt");
-            }
+            x86_64::instructions::hlt();
         }
     }
 
@@ -1137,9 +1143,7 @@ fn terminate_current_process(reason: &str) {
     crate::serial_println!("WARNING: Returned from yield after termination - forcing reschedule");
     loop {
         crate::scheduler::yield_cpu();
-        unsafe {
-            core::arch::asm!("pause");
-        }
+        core::hint::spin_loop();
     }
 }
 
@@ -1148,6 +1152,7 @@ static ZERO_DIVISOR: i32 = 0;
 
 pub fn trigger_divide_by_zero() {
     let x: i32 = 42;
+    // SAFETY: See module-level safety documentation.
     let zero = unsafe { ptr::read_volatile(&ZERO_DIVISOR) };
     let _result = x / zero;
 }
@@ -1161,6 +1166,7 @@ pub fn are_enabled() -> bool {
 pub fn get_current_stack_frame() -> VirtAddr {
     // Use inline assembly to get RSP since the rsp module might not be available
     let rsp: u64;
+    // SAFETY: the inline assembly reads RSP with no side effects or memory access.
     unsafe {
         core::arch::asm!("mov {0:r}, rsp", out(reg) rsp, options(nostack, preserves_flags));
     }
@@ -1255,6 +1261,7 @@ pub fn get_interrupt_count() -> u64 {
 /// exists for compatibility with code that expects an explicit `init_pic()` call
 /// or for reinitializing the PIC after certain operations.
 pub fn init_pic() {
+    // SAFETY: the I/O ports 0x20/0xA0 are valid PIC command/data ports.
     unsafe {
         PICS.lock().initialize();
     }

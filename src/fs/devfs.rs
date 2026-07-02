@@ -462,6 +462,8 @@ impl FileSystem for DevFs {
             }
             DeviceType::Rtc => {
                 let time = crate::drivers::rtc::read_time().map_err(|_| FsError::IoError)?;
+                // SAFETY: `time` is a stack-local `Copy` struct; the pointer
+                // is valid and the length is `size_of::<RtcTime>()`.
                 let bytes = unsafe {
                     core::slice::from_raw_parts(
                         &time as *const crate::drivers::rtc::RtcTime as *const u8,
@@ -560,6 +562,7 @@ impl FileSystem for DevFs {
                 if buffer.len() < core::mem::size_of::<crate::drivers::rtc::RtcTime>() {
                     return Err(FsError::InvalidArgument);
                 }
+                // SAFETY: buffer is a &[u8] with at least size_of::<RtcTime>() bytes (checked above); RtcTime is repr(C) Copy.
                 let time = unsafe { *(buffer.as_ptr() as *const crate::drivers::rtc::RtcTime) };
                 crate::drivers::rtc::write_time(&time).map_err(|_| FsError::IoError)?;
                 Ok(core::mem::size_of::<crate::drivers::rtc::RtcTime>())

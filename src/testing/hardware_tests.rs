@@ -62,47 +62,47 @@ pub fn create_hardware_test_suite() -> TestSuite {
 
 // Setup and teardown functions
 fn setup_all_hardware_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
 }
 
 fn teardown_all_hardware_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_hardware_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
 }
 
 fn teardown_hardware_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_acpi_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_acpi_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_interrupt_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_interrupt_controller().reset();
 }
 
 fn teardown_interrupt_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 fn setup_timer_tests() {
-    crate::testing_framework::get_test_framework().enable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.enable_mocks());
     crate::testing_framework::mocks::get_mock_timer().reset();
 }
 
 fn teardown_timer_tests() {
-    crate::testing_framework::get_test_framework().disable_mocks();
+    crate::testing_framework::with_test_framework(|f| f.disable_mocks());
 }
 
 // Hardware test implementations
@@ -248,9 +248,7 @@ fn test_hardware_interrupt_handling() -> TestResult {
     let start_time = crate::time::uptime_us();
     while crate::time::uptime_us() - start_time < 100_000 {
         // 100ms
-        unsafe {
-            core::arch::asm!("hlt");
-        }
+        x86_64::instructions::hlt();
     }
 
     let final_timer_count = crate::interrupts::get_stats().timer_count;
@@ -369,9 +367,7 @@ fn test_timer_scheduling() -> bool {
             // 2 second timeout
             break;
         }
-        unsafe {
-            core::arch::asm!("hlt");
-        }
+        x86_64::instructions::hlt();
     }
 
     let timer_fired = TIMER_FIRED.load(Ordering::Acquire);

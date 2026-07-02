@@ -274,9 +274,7 @@ fn copy_to_user<T: Copy>(addr: *mut u8, value: &T) -> LinuxResult<()> {
     if addr.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let bytes = unsafe {
-        core::slice::from_raw_parts(value as *const T as *const u8, core::mem::size_of::<T>())
-    };
+    let bytes = crate::linux_compat::as_bytes(value);
     UserSpaceMemory::copy_to_user(addr as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     Ok(())
 }
@@ -285,9 +283,7 @@ fn copy_from_user<T: Copy>(addr: *mut u8, value: &mut T) -> LinuxResult<()> {
     if addr.is_null() {
         return Err(LinuxError::EFAULT);
     }
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(value as *mut T as *mut u8, core::mem::size_of::<T>())
-    };
+    let bytes = crate::linux_compat::as_bytes_mut(value);
     UserSpaceMemory::copy_from_user(addr as u64, bytes).map_err(|_| LinuxError::EFAULT)?;
     Ok(())
 }

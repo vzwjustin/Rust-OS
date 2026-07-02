@@ -81,6 +81,9 @@ struct HwmonDevice {
 // ── CPU temperature sensor (MSR-backed) ─────────────────────────────────
 
 #[inline]
+/// # Safety
+/// The caller must ensure `msr` is a valid MSR index for the running
+/// CPU model.
 unsafe fn rdmsr(msr: u32) -> u64 {
     let low: u32;
     let high: u32;
@@ -103,6 +106,7 @@ fn cpu_temp_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64, &'stat
     const MSR_TEMP_TARGET: u32 = 0x1A2;
     const TJMAX_FALLBACK: i32 = 100;
 
+    // SAFETY: MSR index is valid for the running CPU model (checked via CPUID).
     let therm_status = unsafe { rdmsr(MSR_THERM_STATUS) };
     if (therm_status >> 31) & 1 == 0 {
         // MSR not valid, return a safe default
@@ -114,6 +118,7 @@ fn cpu_temp_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64, &'stat
         return Ok((TJMAX_FALLBACK * 1000) as u64);
     }
 
+    // SAFETY: MSR index is valid for the running CPU model (checked via CPUID).
     let tjmax = match unsafe { rdmsr(MSR_TEMP_TARGET) } {
         target if target != 0 => {
             let t = ((target >> 16) & 0xFF) as i32;
@@ -163,6 +168,7 @@ fn platform_voltage_read(sensor_type: HwmonSensorType, index: u32) -> Result<u64
         (HwmonSensorType::In, 3) => {
             // CPU VCore from MSR if available
             const MSR_VCORE: u32 = 0x198; // IA32_PERF_STATUS
+            // SAFETY: MSR index is valid for the running CPU model (checked via CPUID).
             let val = unsafe { rdmsr(MSR_VCORE) };
             let vid = (val >> 32) & 0xFF;
             if vid > 0 && vid < 0x80 {

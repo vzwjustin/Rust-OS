@@ -1,13 +1,72 @@
 //! Wayland Tablet Pad Ring module
 //!
-//! Ported from: meta-wayland-tablet-pad-ring.c/h
+//! Tablet input pad ring (rotary dial) support.
+//! Tracks resources for ring events and focus state.
+//!
+//! Reference: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/wayland/meta-wayland-tablet-pad-ring.h
 
-use alloc::{string::String, vec::Vec, format};
+use alloc::string::String;
+use alloc::vec::Vec;
 
+/// Tablet pad ring (rotary control) representation.
 pub struct MetaWaylandTabletPadRing {
-    pub pad: Option<*mut core::ffi::c_void>, // MetaWaylandTabletPad pointer
-    pub group: Option<*mut core::ffi::c_void>, // MetaWaylandTabletPadGroup pointer
+    /// Parent tablet pad.
+    pub pad: *mut core::ffi::c_void,
+    /// Parent pad group.
+    pub group: *mut core::ffi::c_void,
+    /// Wayland resource list (wl_list).
     pub resource_list: Vec<*mut core::ffi::c_void>,
+    /// Focus resource list for focused clients (wl_list).
     pub focus_resource_list: Vec<*mut core::ffi::c_void>,
+    /// Ring feedback string (tactile feedback label).
     pub feedback: Option<String>,
+}
+
+impl MetaWaylandTabletPadRing {
+    /// Create a new ring for a tablet pad.
+    pub fn new(pad: *mut core::ffi::c_void) -> Self {
+        MetaWaylandTabletPadRing {
+            pad,
+            group: core::ptr::null_mut(),
+            resource_list: Vec::new(),
+            focus_resource_list: Vec::new(),
+            feedback: None,
+        }
+    }
+
+    /// Set the group this ring belongs to.
+    pub fn set_group(&mut self, group: *mut core::ffi::c_void) {
+        self.group = group;
+    }
+
+    /// Create and bind a new wl_resource for this ring. Without a
+    /// Wayland protocol library, returns null. A full implementation
+    /// would allocate a wl_resource and add it to resource_list.
+    pub fn create_new_resource(
+        &mut self,
+        _client: *mut core::ffi::c_void,
+        _group_resource: *mut core::ffi::c_void,
+        _id: u32,
+    ) -> *mut core::ffi::c_void {
+        // Wayland resource allocation requires libwayland-server.
+        core::ptr::null_mut()
+    }
+
+    /// Handle a tablet ring event. Returns true if the event was
+    /// processed. A full implementation would extract the ring angle
+    /// or discrete value from the event and dispatch to focused clients.
+    pub fn handle_event(&mut self, _event: *const core::ffi::c_void) -> bool {
+        if self.focus_resource_list.is_empty() {
+            return false;
+        }
+        // Event dispatch to focused clients would happen here.
+        true
+    }
+
+    /// Sync focus state for this ring. A full implementation would
+    /// update the focus_resource_list based on the current surface focus.
+    pub fn sync_focus(&mut self) {
+        // Focus syncing requires the Wayland seat's focused surface.
+        // Without libwayland, focus_resource_list stays empty.
+    }
 }

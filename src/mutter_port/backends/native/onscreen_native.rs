@@ -15,7 +15,7 @@
 
 use alloc::vec::Vec;
 
-use crate::mutter_port::core::drm_format::{DrmFormat, DrmModifier, formats, modifiers};
+use crate::mutter_port::core::drm_format::{formats, modifiers, DrmFormat, DrmModifier};
 
 /// Swap buffer state. Mirrors MetaOnscreenNativeState (simplified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,11 +161,7 @@ impl MetaOnscreenNative {
 
     /// Assign the front and back buffers. Mirrors the buffer assignment
     /// in meta_onscreen_native_allocate().
-    pub fn assign_buffers(
-        &mut self,
-        front: SwapBuffer,
-        back: SwapBuffer,
-    ) {
+    pub fn assign_buffers(&mut self, front: SwapBuffer, back: SwapBuffer) {
         self.front_buffer = Some(front);
         self.back_buffer = Some(back);
         self.state = OnscreenState::Ready;
@@ -322,10 +318,7 @@ mod tests {
     #[test]
     fn test_assign_buffers() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
         assert_eq!(onscreen.state(), OnscreenState::Ready);
         assert!(onscreen.front_buffer().is_some());
         assert!(onscreen.back_buffer().is_some());
@@ -334,10 +327,7 @@ mod tests {
     #[test]
     fn test_swap_buffers() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
 
         assert!(onscreen.swap_buffers().is_ok());
         assert_eq!(onscreen.state(), OnscreenState::Flipping);
@@ -350,10 +340,7 @@ mod tests {
     #[test]
     fn test_page_flip_done() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
         onscreen.swap_buffers().unwrap();
 
         // Add an idle buffer so the back buffer can be re-acquired.
@@ -374,10 +361,7 @@ mod tests {
     #[test]
     fn test_double_swap_fails() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
         onscreen.swap_buffers().unwrap();
         assert!(onscreen.swap_buffers().is_err()); // Flip pending.
     }
@@ -385,10 +369,7 @@ mod tests {
     #[test]
     fn test_resize() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
 
         onscreen.resize(2560, 1440);
         assert_eq!(onscreen.width(), 2560);
@@ -401,10 +382,7 @@ mod tests {
     #[test]
     fn test_close() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
 
         onscreen.close();
         assert!(onscreen.is_closed());
@@ -422,10 +400,7 @@ mod tests {
     #[test]
     fn test_pending_close() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
         onscreen.swap_buffers().unwrap();
 
         onscreen.schedule_close();
@@ -454,10 +429,7 @@ mod tests {
     #[test]
     fn test_multiple_frames() {
         let mut onscreen = MetaOnscreenNative::new(1, 1920, 1080, formats::XRGB8888);
-        onscreen.assign_buffers(
-            make_buffer(1, 1920, 1080),
-            make_buffer(2, 1920, 1080),
-        );
+        onscreen.assign_buffers(make_buffer(1, 1920, 1080), make_buffer(2, 1920, 1080));
 
         // Frame 1.
         onscreen.swap_buffers().unwrap();

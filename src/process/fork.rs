@@ -340,8 +340,10 @@ pub fn copy_process(
     // ── 5. CLONE_PARENT_SETTID / CLONE_CHILD_SETTID ─────────────────────────
 
     if flags & CLONE_PARENT_SETTID != 0 && !parent_tid.is_null() {
-        // Safety: caller is responsible for a valid user-space pointer.
-        unsafe { parent_tid.write_volatile(child_pid) };
+        let _ = crate::memory::user_space::UserSpaceMemory::copy_to_user(
+            parent_tid as u64,
+            &child_pid.to_ne_bytes(),
+        );
     }
     if flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID) != 0 && !child_tid.is_null() {
         // Store the futex address so do_exit can clear it via futex wake.

@@ -134,20 +134,18 @@ fn read_header(ptr: *const u8) -> Result<FdtHeader, FdtError> {
     if ptr.is_null() {
         return Err(FdtError::Truncated);
     }
-    unsafe {
-        Ok(FdtHeader {
-            magic: read_be_u32_at(ptr, 0).ok_or(FdtError::Truncated)?,
-            totalsize: read_be_u32_at(ptr, 4).ok_or(FdtError::Truncated)?,
-            off_dt_struct: read_be_u32_at(ptr, 8).ok_or(FdtError::Truncated)?,
-            off_dt_strings: read_be_u32_at(ptr, 12).ok_or(FdtError::Truncated)?,
-            off_mem_rsvmap: read_be_u32_at(ptr, 16).ok_or(FdtError::Truncated)?,
-            version: read_be_u32_at(ptr, 20).ok_or(FdtError::Truncated)?,
-            last_comp_version: read_be_u32_at(ptr, 24).ok_or(FdtError::Truncated)?,
-            boot_cpuid_phys: read_be_u32_at(ptr, 28).ok_or(FdtError::Truncated)?,
-            size_dt_strings: read_be_u32_at(ptr, 32).ok_or(FdtError::Truncated)?,
-            size_dt_struct: read_be_u32_at(ptr, 36).ok_or(FdtError::Truncated)?,
-        })
-    }
+    Ok(FdtHeader {
+        magic: read_be_u32_at(ptr, 0).ok_or(FdtError::Truncated)?,
+        totalsize: read_be_u32_at(ptr, 4).ok_or(FdtError::Truncated)?,
+        off_dt_struct: read_be_u32_at(ptr, 8).ok_or(FdtError::Truncated)?,
+        off_dt_strings: read_be_u32_at(ptr, 12).ok_or(FdtError::Truncated)?,
+        off_mem_rsvmap: read_be_u32_at(ptr, 16).ok_or(FdtError::Truncated)?,
+        version: read_be_u32_at(ptr, 20).ok_or(FdtError::Truncated)?,
+        last_comp_version: read_be_u32_at(ptr, 24).ok_or(FdtError::Truncated)?,
+        boot_cpuid_phys: read_be_u32_at(ptr, 28).ok_or(FdtError::Truncated)?,
+        size_dt_strings: read_be_u32_at(ptr, 32).ok_or(FdtError::Truncated)?,
+        size_dt_struct: read_be_u32_at(ptr, 36).ok_or(FdtError::Truncated)?,
+    })
 }
 
 fn parse_mem_reserve(ptr: *const u8, offset: usize) -> Result<Vec<(u64, u64)>, FdtError> {
@@ -284,6 +282,9 @@ fn align4(offset: usize) -> usize {
 static PARSED: spin::RwLock<Option<DeviceTree>> = spin::RwLock::new(None);
 
 /// Parse and cache a DTB pointer (no-op when `ptr` is null).
+/// # Safety
+/// The caller must ensure `ptr` is either null or points to a valid
+/// device tree blob (DTB) in mapped memory.
 pub unsafe fn init_from_dtb(ptr: *const u8) -> bool {
     if ptr.is_null() {
         crate::serial_println!("[of] no device tree provided");
