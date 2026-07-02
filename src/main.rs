@@ -1218,6 +1218,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         early_serial_write_str("RustOS: Phase 8 complete\r\n");
 
+        // Enable timer interrupt now that filesystem init is done
+        early_serial_write_str("RustOS: Enabling timer interrupt...\r\n");
+        interrupts::enable_timer_interrupt();
+        early_serial_write_str("RustOS: Timer interrupt enabled\r\n");
+
         // Initialize Linux compatibility layer (file_ops, process_ops, etc.)
         early_serial_write_str("RustOS: Initializing Linux compatibility layer...\r\n");
         linux_compat::init_linux_compat();
