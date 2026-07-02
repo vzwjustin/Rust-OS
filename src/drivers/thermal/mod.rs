@@ -82,10 +82,23 @@ unsafe fn rdmsr(msr: u32) -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
+/// CPUID leaf 6, EAX bit 0: Digital Thermal Sensor support. Reading
+/// IA32_THERM_STATUS/IA32_TEMP_TARGET on hardware/hypervisors that don't
+/// report this bit (e.g. QEMU's default `qemu64` CPU model) raises #GP,
+/// which this kernel cannot recover from — so probe before touching the MSRs.
+fn cpu_has_digital_thermal_sensor() -> bool {
+    let leaf = unsafe { core::arch::x86_64::__cpuid(6) };
+    leaf.eax & 1 != 0
+}
+
 fn read_cpu_msr_temp() -> Result<i32, &'static str> {
     const MSR_THERM_STATUS: u32 = 0x19C;
     const MSR_TEMP_TARGET: u32 = 0x1A2;
     const TJMAX_FALLBACK: i32 = 100;
+
+    if !cpu_has_digital_thermal_sensor() {
+        return Err("CPU digital thermal sensor not supported");
+    }
 
     let therm_status = unsafe { rdmsr(MSR_THERM_STATUS) };
     if (therm_status >> 31) & 1 == 0 {

@@ -47,7 +47,10 @@ cmd = [
     "-serial", "stdio",
     "-display", "none",
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-machine", "pc,accel=tcg",
+    # Prefer KVM hardware acceleration, falling back to TCG automatically
+    # if /dev/kvm isn't available (QEMU's "kvm:tcg" fallback syntax).
+    # Override with RUSTOS_QEMU_ACCEL=tcg to force software emulation.
+    "-machine", f"pc,accel={os.environ.get('RUSTOS_QEMU_ACCEL', 'kvm:tcg')}",
     "-cpu", os.environ.get("RUSTOS_QEMU_CPU", "qemu64,+apic,+rdrand"),
     "-no-reboot",
     "-no-shutdown",

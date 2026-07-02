@@ -1021,14 +1021,20 @@ pub fn wait4(pid: Pid, wstatus: *mut i32, options: i32, rusage: *mut Rusage) -> 
 pub fn exit(status: i32) -> i64 {
     inc_ops();
 
+    // The bootstrap Ring-3 entry path resumes into a specific kernel iretq
+    // target rather than going through the normal scheduler teardown; handle
+    // that special case first before falling through to the general path.
     if crate::user_sched::complete_user_exit_if_pending(status) {
         return 0;
     }
 
-    let pid = process::current_pid();
-    let _ = process::get_process_manager().terminate_process(pid, status);
-
-    0
+    // Route through the real `do_exit()` teardown path so subsystem state
+    // (most importantly `exit_mm()`, which releases the ELF code/data/heap
+    // mappings) is actually released. Calling `terminate_process()` directly
+    // skipped all of that, leaving fixed-address userspace mappings (e.g.
+    // `USER_SPACE_START`) permanently occupied and causing later execs at
+    // the same address to fail with `MemoryAllocationFailed`.
+    process::exit::do_exit(status)
 }
 
 //

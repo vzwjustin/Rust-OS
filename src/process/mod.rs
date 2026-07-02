@@ -329,12 +329,11 @@ pub struct ProcessControlBlock {
     pub restart_info: Option<(u64, [u64; 6])>,
     /// Address to clear and futex-wake on thread exit (set by CLONE_CHILD_CLEARTID)
     pub clear_child_tid: u64,
-    /// Namespace handle set for this process (a snapshot of the per-process
-    /// NsProxy maintained by `crate::namespace`). Wired up during fork by
-    /// `fork::copy_namespaces`; `None` means the process has not been
-    /// associated with an explicit namespace set yet (it falls back to the
-    /// global namespace table keyed by PID).
-    pub nsproxy: Option<crate::namespace::NsProxy>,
+    /// Per-process namespace proxy (PID, mount, net, UTS, IPC, user, cgroup).
+    /// Wired in by `fork::copy_namespaces()` from the parent's current
+    /// namespace set; the global `namespace::NS_PROXIES` map stays in sync so
+    /// that `unshare`/`setns`/`get_nsproxy` continue to work at runtime.
+    pub nsproxy: crate::namespace::NsProxy,
 }
 
 /// File descriptor information
@@ -666,7 +665,7 @@ impl ProcessControlBlock {
             alarm_interval: 0,
             restart_info: None,
             clear_child_tid: 0,
-            nsproxy: None,
+            nsproxy: crate::namespace::NsProxy::default(),
         };
 
         // Set process name
@@ -969,6 +968,12 @@ impl ProcessManager {
     ///
     /// Used for fork/exec smoke-test children whose address-space ownership stays
     /// with the POSIX process manager; this avoids full kernel cleanup paths.
+    ///
+    /// Still frees the process's mapped code/data/heap regions via `exit_mm()`
+    /// (see its doc comment): without this, every retired process permanently
+    /// leaks its fixed-address user segments in the global `MemoryManager`
+    /// regions map, eventually colliding with (and blocking) later execs that
+    /// need the same fixed address.
     pub fn retire_spawned_process(&self, pid: Pid, exit_status: i32) -> Result<(), &'static str> {
         {
             let mut processes = self.processes.write();
@@ -979,6 +984,8 @@ impl ProcessManager {
             pcb.exit_status = Some(exit_status);
             pcb.exit_code = Some(exit_status);
         }
+
+        exit::exit_mm(pid);
 
         crate::ptrace::exit_event(pid, exit_status);
         crate::rseq::clear_for_pid(pid);
@@ -991,6 +998,11 @@ impl ProcessManager {
     }
 
     /// Terminate a process
+    ///
+    /// Frees the process's mapped code/data/heap regions via `exit_mm()`
+    /// before removing it from the scheduler (see `exit_mm()`'s doc comment
+    /// for why this is required to avoid leaking fixed-address user
+    /// mappings across the single global `MemoryManager` regions map).
     pub fn terminate_process(&self, pid: Pid, exit_status: i32) -> Result<(), &'static str> {
         {
             let mut processes = self.processes.write();
@@ -1002,6 +1014,8 @@ impl ProcessManager {
                 return Err("Process not found");
             }
         }
+
+        exit::exit_mm(pid);
 
         crate::ptrace::exit_event(pid, exit_status);
         crate::rseq::clear_for_pid(pid);

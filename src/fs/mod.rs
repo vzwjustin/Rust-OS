@@ -7,8 +7,10 @@
 //! - File descriptor management
 //! - Path resolution and caching
 
+pub mod autofs;
 pub mod btrfs;
 pub mod buffer;
+pub mod cachefiles;
 pub mod cifs;
 pub mod configfs;
 pub mod cramfs;
@@ -37,6 +39,7 @@ pub mod ntfs3;
 pub mod ocfs2;
 pub mod overlayfs;
 pub mod proc;
+pub mod pstore;
 pub mod ramfs;
 pub mod romfs;
 pub mod smb;
@@ -107,22 +110,22 @@ pub enum FileSystemType {
     Udf,
     /// ROMFS read-only filesystem
     RomFs,
-    /// procfs virtual filesystem (process introspection)
+    /// procfs virtual filesystem (/proc)
     Proc,
-    /// JBD2 journaling block-device layer
-    Jbd2,
-    /// iomap I/O mapping helper filesystem
-    Iomap,
-    /// CRAMFS compressed ROM filesystem
-    Cramfs,
-    /// debugfs debug filesystem
-    Debugfs,
-    /// GFS2 cluster filesystem
-    Gfs2,
-    /// autofs automount filesystem
+    /// debugfs virtual filesystem
+    DebugFs,
+    /// devpts pseudoterminal filesystem
+    DevPts,
+    /// configfs virtual filesystem
+    ConfigFs,
+    /// FUSE (Filesystem in Userspace)
+    Fuse,
+    /// Persistent store filesystem (pstore)
+    PStore,
+    /// Automounter filesystem (autofs)
     AutoFs,
-    /// efivarfs EFI variable filesystem
-    Efivarfs,
+    /// FS-Cache backing cache (cachefiles)
+    CacheFiles,
 }
 
 impl fmt::Display for FileSystemType {
@@ -148,13 +151,13 @@ impl fmt::Display for FileSystemType {
             FileSystemType::Udf => write!(f, "udf"),
             FileSystemType::RomFs => write!(f, "romfs"),
             FileSystemType::Proc => write!(f, "proc"),
-            FileSystemType::Jbd2 => write!(f, "jbd2"),
-            FileSystemType::Iomap => write!(f, "iomap"),
-            FileSystemType::Cramfs => write!(f, "cramfs"),
-            FileSystemType::Debugfs => write!(f, "debugfs"),
-            FileSystemType::Gfs2 => write!(f, "gfs2"),
+            FileSystemType::DebugFs => write!(f, "debugfs"),
+            FileSystemType::DevPts => write!(f, "devpts"),
+            FileSystemType::ConfigFs => write!(f, "configfs"),
+            FileSystemType::Fuse => write!(f, "fuse"),
+            FileSystemType::PStore => write!(f, "pstore"),
             FileSystemType::AutoFs => write!(f, "autofs"),
-            FileSystemType::Efivarfs => write!(f, "efivarfs"),
+            FileSystemType::CacheFiles => write!(f, "cachefiles"),
         }
     }
 }
@@ -355,10 +358,6 @@ pub enum FsError {
     TooManySymlinks,
     /// Filename too long
     NameTooLong,
-    /// Path is invalid (empty, malformed, or out of bounds)
-    InvalidPath,
-    /// Operation requires a symbolic link but the target is not one
-    NotASymlink,
 }
 
 impl fmt::Display for FsError {
@@ -379,8 +378,6 @@ impl fmt::Display for FsError {
             FsError::CrossDevice => write!(f, "Cross-device link"),
             FsError::TooManySymlinks => write!(f, "Too many levels of symbolic links"),
             FsError::NameTooLong => write!(f, "File name too long"),
-            FsError::InvalidPath => write!(f, "Invalid path"),
-            FsError::NotASymlink => write!(f, "Not a symbolic link"),
         }
     }
 }

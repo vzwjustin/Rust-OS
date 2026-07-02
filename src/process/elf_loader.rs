@@ -410,7 +410,15 @@ impl ElfLoader {
         } else {
             allocate_memory(aligned_size, region_type, load_protection)
         }
-        .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
+        .map_err(|e| {
+            crate::serial_println!(
+                "load_segment: alloc failed vaddr={:?} size={} err={:?}",
+                map_address,
+                aligned_size,
+                e
+            );
+            ElfLoaderError::MemoryAllocationFailed
+        })?;
 
         // Copy file data to memory if present
         if phdr.p_filesz > 0 {
@@ -527,7 +535,10 @@ impl ElfLoader {
             MemoryRegionType::UserHeap,
             MemoryProtection::USER_DATA,
         )
-        .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
+        .map_err(|e| {
+            crate::serial_println!("load_elf_binary: heap alloc failed err={:?}", e);
+            ElfLoaderError::MemoryAllocationFailed
+        })?;
 
         // Commit a small initial stack. Linux reserves a grow-down stack VMA and
         // faults pages in lazily; this VM layer maps eagerly, so committing the
@@ -538,7 +549,10 @@ impl ElfLoader {
             MemoryRegionType::UserStack,
             MemoryProtection::USER_DATA,
         )
-        .map_err(|_| ElfLoaderError::MemoryAllocationFailed)?;
+        .map_err(|e| {
+            crate::serial_println!("load_elf_binary: stack alloc failed err={:?}", e);
+            ElfLoaderError::MemoryAllocationFailed
+        })?;
 
         let stack_top = VirtAddr::new(stack_bottom.as_u64() + stack_size as u64);
 

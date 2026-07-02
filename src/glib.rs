@@ -5319,6 +5319,7 @@ pub fn smoke_check_spawn() -> Result<(), &'static str> {
             if result.stdout.is_none() || result.stderr.is_none() {
                 return Err("GSpawn sync capture");
             }
+            cleanup_spawn_smoke_child(result.pid);
         }
         Err(err) => return Err(spawn_error_name(err)),
     }
@@ -5326,8 +5327,21 @@ pub fn smoke_check_spawn() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Retire a smoke-test spawn child.
+///
+/// Neither `ProcessManager::exit()`/`terminate_process()` nor
+/// `retire_spawned_process()` release the process's mapped memory — they
+/// only touch PCB/scheduler state. We must explicitly call
+/// `process::exit::exit_mm()` to reclaim the real code/data/heap regions the
+/// exec mapped. Without that, every call to this smoke test (invoked
+/// repeatedly via `gnome::probe()`) would permanently leak a mapping at the
+/// fixed test-binary load address (`USER_SPACE_START`, see
+/// `glib_spawn.rs::LOAD_ADDR`), eventually blocking any *real* userspace
+/// binary (e.g. `/init`) that needs that same fixed address with
+/// `MemoryError::RegionOverlap`, and leaking physical frames on every call.
 fn cleanup_spawn_smoke_child(pid: i32) {
     let pid = pid as u32;
+    crate::process::exit::exit_mm(pid);
     let _ = crate::process_manager::get_process_manager().exit(pid, 0);
     let _ = crate::process::get_process_manager().retire_spawned_process(pid, 0);
 }

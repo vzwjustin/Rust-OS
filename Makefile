@@ -20,7 +20,11 @@ BOOTIMAGE_RELEASE = $(BOOTIMAGE_RELEASE_BIOS)
 
 # QEMU configuration with bootloader_api support
 QEMU_MEMORY ?= 512M
-QEMU_ARGS = -m $(QEMU_MEMORY) -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -cpu qemu64,+apic -machine pc,accel=tcg
+# Prefer KVM hardware acceleration when available, falling back to TCG
+# software emulation automatically (QEMU's built-in "kvm:tcg" fallback
+# syntax) so this works unmodified in sandboxes without /dev/kvm access.
+QEMU_ACCEL ?= kvm:tcg
+QEMU_ARGS = -m $(QEMU_MEMORY) -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -cpu qemu64,+apic -machine pc,accel=$(QEMU_ACCEL)
 QEMU_X86 = qemu-system-x86_64
 QEMU_ARM = qemu-system-aarch64
 
@@ -56,10 +60,10 @@ help:
 	@echo "  $(GREEN)test-glib-native$(NC) - Run glib-native host unit tests"
 	@echo "  $(GREEN)check-glib-native$(NC) - Check glib-native on host (no kernel target)"
 	@echo "  $(GREEN)build-glib-static$(NC) - Build glib-native C static library (host)"
-	@echo "  $(GREEN)build-mutter$(NC)     - Build upstream GNOME Mutter into userspace/rootfs"
-	@echo "  $(GREEN)gnome-shell$(NC)      - Install Alpine gnome-shell into userspace/rootfs"
+	@echo "  $(GREEN)build-mutter$(NC)     - [LEGACY, see docs/boot-to-desktop-in-rust.md] Build upstream GNOME Mutter into userspace/rootfs"
+	@echo "  $(GREEN)gnome-shell$(NC)      - [LEGACY, see docs/boot-to-desktop-in-rust.md] Install Alpine gnome-shell into userspace/rootfs"
 	@echo "  $(GREEN)initramfs$(NC)        - Rebuild userspace/initramfs.cpio from userspace/rootfs"
-	@echo "  $(GREEN)desktop-rootfs$(NC)   - Install gnome-shell + mutter and rebuild initramfs"
+	@echo "  $(GREEN)desktop-rootfs$(NC)   - [LEGACY, see docs/boot-to-desktop-in-rust.md] Install gnome-shell + mutter and rebuild initramfs"
 	@echo "  $(GREEN)installer-rootfs$(NC) - Build minimal installer rootfs (~30 MB)"
 	@echo "  $(GREEN)installer-initramfs$(NC) - Pack installer initramfs cpio"
 	@echo "  $(GREEN)live-squashfs$(NC)    - Build compressed live rootfs image"
@@ -128,14 +132,17 @@ bootimage-release: build-release
 	@echo "$(BLUE)[INFO]$(NC) Creating bootable image (release)..."
 	@$(BUILD_SCRIPT) --release --bootimage
 
+# LEGACY: superseded by native in-kernel compositor (see docs/boot-to-desktop-in-rust.md). Do not extend.
 build-mutter:
 	@$(MAKE) mutter
 
+# LEGACY: superseded by native in-kernel compositor (see docs/boot-to-desktop-in-rust.md). Do not extend.
 gnome-shell build-gnome-shell:
 	@echo "$(BLUE)[INFO]$(NC) Installing gnome-shell into userspace/rootfs..."
 	@chmod +x ./scripts/build-gnome-shell.sh
 	@./scripts/build-gnome-shell.sh
 
+# LEGACY: superseded by native in-kernel compositor (see docs/boot-to-desktop-in-rust.md). Do not extend.
 desktop-rootfs: gnome-shell installer-gtk initramfs
 	@$(MAKE) mutter || echo "$(YELLOW)[WARN]$(NC) Source Mutter build skipped; using Alpine mutter from gnome-shell install"
 
@@ -151,6 +158,7 @@ run: bootimage
 	@$(BUILD_SCRIPT) --qemu
 
 # Build Mutter as a userspace binary and install into rootfs
+# LEGACY: superseded by native in-kernel compositor (see docs/boot-to-desktop-in-rust.md). Do not extend.
 mutter:
 	@echo "$(BLUE)[INFO]$(NC) Building Mutter userspace binary..."
 	@./scripts/build-mutter.sh

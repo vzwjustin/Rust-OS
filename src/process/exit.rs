@@ -116,25 +116,76 @@ impl WaitOptions {
 
 /// Release the process's memory map.
 ///
-/// Mirrors `exit_mm()` in Linux.  Walks the VMM's region list and
-/// unmaps each region, then zeroes the PCB's `MemoryInfo`.
+/// Mirrors `exit_mm()` in Linux.  Frees the code/data/heap regions the ELF
+/// loader actually mapped for this process, then zeroes the PCB's
+/// `MemoryInfo` so future accesses fault.
+///
+/// # Fidelity note
+/// `crate::process::elf_loader::load_elf_binary()` maps user segments via
+/// `crate::memory::allocate_memory[_at]()` — the single global
+/// `crate::memory::MemoryManager` singleton that owns the real page tables
+/// and the `regions` map consulted by every exec (see
+/// `elf_loader.rs::load_segment`). It is *not* the same object as
+/// `crate::memory_manager::get_virtual_memory_manager()`'s
+/// `VirtualMemoryManager`, which this function used to unmap instead — that
+/// mismatch meant `exit_mm()` freed nothing a real process had actually
+/// mapped, silently leaking every exited process's code/data/heap regions
+/// forever. Because there is only one *global* `regions` map (no
+/// per-process address-space isolation), those leaked regions permanently
+/// occupy their fixed virtual addresses, so any later exec that needs the
+/// same fixed address (e.g. native single-segment userspace binaries linked
+/// at `USER_SPACE_START`) fails with `MemoryError::RegionOverlap` — this is
+/// exactly what broke `/init` startup. `code_start`/`data_start`/
+/// `heap_start` are recorded as exact mapped addresses by
+/// `exec_elf_binary()`/`apply_loaded_binary()`, so freeing them here by
+/// address is safe. `stack_start`/`stack_size` are deliberately *not* freed
+/// here: they record a logical/lazily-grown stack region, not the small
+/// eagerly-committed initial mapping `load_elf_binary()` creates via
+/// `allocate_memory_with_guards()`, so there is no reliable address to
+/// reclaim from the PCB alone.
+///
+/// # Known follow-up (not fixed here)
+/// `PCB::MemoryInfo` only stores a single `code_start`/`data_start` address
+/// each, not the full `Vec<VirtualMemoryRegion>` that
+/// `elf_loader::load_elf_binary()` can produce (one entry per PT_LOAD
+/// segment; see `LoadedBinary::code_regions`/`data_regions`). If a binary
+/// ever has more than one executable or more than one non-executable
+/// `PT_LOAD` segment, only the *first* region of each kind is freed here —
+/// any additional regions leak. Today this is low-risk because
+/// `load_elf_binary()` explicitly documents multi-segment ET_EXEC images as
+/// unsupported (single PT_LOAD is the norm for native userspace binaries,
+/// as confirmed for `/init`), and `stack_start` in the PCB does not even
+/// match the actual stack allocation address (`exec_elf_binary()` computes
+/// `stack_top - 8MiB` while `load_elf_binary()` actually commits only a
+/// `64KiB` guarded region ending at `stack_top`), so the stack mapping also
+/// leaks on every exit. Properly fixing both requires threading the real
+/// `Vec<VirtualMemoryRegion>` (including the stack's actual base address)
+/// through into `PCB::MemoryInfo` so `exit_mm()` can free every mapped
+/// region by its true address — deferred as a follow-up to avoid widening
+/// this fix's blast radius.
 pub fn exit_mm(pid: Pid) {
     let pm = crate::process::get_process_manager();
 
-    // Unmap all VMM regions for this process.
-    let vmm = crate::memory_manager::get_virtual_memory_manager();
-    let mut vmm_guard = vmm.lock();
-    if let Some(ref mut vm) = *vmm_guard {
-        let regions = vm.dump_memory_map();
-        for (start, _end, _prot, _typ) in &regions {
-            let _ = vm.munmap(start.as_u64() as usize, 4096);
+    let memory = pm.get_process(pid).map(|pcb| pcb.memory);
+    if let Some(memory) = memory {
+        if memory.code_size > 0 {
+            let _ = crate::memory::deallocate_memory(x86_64::VirtAddr::new(memory.code_start));
+        }
+        if memory.data_size > 0 {
+            let _ = crate::memory::deallocate_memory(x86_64::VirtAddr::new(memory.data_start));
+        }
+        if memory.heap_size > 0 {
+            let _ = crate::memory::deallocate_memory(x86_64::VirtAddr::new(memory.heap_start));
         }
     }
-    drop(vmm_guard);
 
     pm.with_process_mut(pid, |pcb| {
-        // Zero out the virtual memory descriptor so future accesses fault.
+        // Zero out the virtual memory descriptor so future accesses fault,
+        // and so a second exit_mm() call (e.g. from a caller that also
+        // retires the process directly) is a safe no-op.
         pcb.memory.vm_size = 0;
+        pcb.memory.code_size = 0;
+        pcb.memory.data_size = 0;
         pcb.memory.heap_size = 0;
         pcb.memory.stack_size = 0;
     });

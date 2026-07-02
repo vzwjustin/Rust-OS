@@ -1,501 +1,419 @@
-//! Procfs (process introspection) virtual filesystem
+//! Procfs virtual filesystem implementation
 //!
-//! Provides a read-only view of the running process table, mirroring the
-//! layout of a Linux `/proc` mount: a root directory containing one
-//! subdirectory per PID plus a handful of pseudo-files (`cpuinfo`, `meminfo`,
-//! `uptime`, `version`) and the `self` symlink. Each per-PID directory exposes
-//! `status`, `cmdline` and `maps` files whose contents are generated on demand
-//! from an in-memory process registry.
+//! This module implements a stateless procfs that dynamically generates
+//! per-PID directories backed by the process table and a small set of
+//! static kernel-info files. The inode scheme is deterministic so that
+//! lookups never need to allocate persistent state:
 //!
-//! The registry is self-contained so the filesystem can be exercised without a
-//! live scheduler; `register_process`/`unregister_process` keep it in sync with
-//! the rest of the kernel.
+//! - root directory ...................... inode 1
+//! - static files (cpuinfo, meminfo, ...) inode 2..255
+//! - `/proc/self` symlink ................. inode 6
+//! - per-PID directory ................... inode 0x10000 + pid
+//! - per-PID regular files ............... inode 0x1000000 + pid*256 + idx
+//!
+//! All mutating operations return `Err(FsError::ReadOnly)` because procfs
+//! is a read-only view of kernel state.
 
 use super::{
     get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
     FileSystemType, FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
-use alloc::{
-    collections::BTreeMap,
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
-use lazy_static::lazy_static;
-use spin::RwLock;
+use alloc::{format, string::{String, ToString}, vec::Vec};
 
-// ---------------------------------------------------------------------------
-// Inode numbering
-// ---------------------------------------------------------------------------
-//
-// Inode numbers are derived deterministically from the kind of entry so that
-// lookups never need to allocate or mutate state for the common read path.
-//
-//   1                 root (/proc)
-//   2                 /proc/self        (symbolic link)
-//   3                 /proc/cpuinfo
-//   4                 /proc/meminfo
-//   5                 /proc/uptime
-//   6                 /proc/version
-//   1000 + pid*16     /proc/<pid>       (directory)
-//   1000 + pid*16 + 1 /proc/<pid>/status
-//   1000 + pid*16 + 2 /proc/<pid>/cmdline
-//   1000 + pid*16 + 3 /proc/<pid>/maps
-
+/// Root directory inode.
 const ROOT_INODE: InodeNumber = 1;
-const SELF_INODE: InodeNumber = 2;
-const CPUINFO_INODE: InodeNumber = 3;
-const MEMINFO_INODE: InodeNumber = 4;
-const UPTIME_INODE: InodeNumber = 5;
-const VERSION_INODE: InodeNumber = 6;
-const PID_BASE: InodeNumber = 1000;
-const PID_STRIDE: InodeNumber = 16;
 
-/// Kind of procfs entry, recoverable from an inode number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProcKind {
-    Root,
-    SelfLink,
-    CpuInfo,
-    MemInfo,
-    Uptime,
-    Version,
-    PidDir(u32),
-    Status(u32),
-    Cmdline(u32),
-    Maps(u32),
-}
+/// Inode reserved for the `/proc/self` symlink.
+const SELF_INODE: InodeNumber = 6;
 
-impl ProcKind {
-    /// Compute the inode number for this kind.
-    fn to_inode(self) -> InodeNumber {
-        match self {
-            ProcKind::Root => ROOT_INODE,
-            ProcKind::SelfLink => SELF_INODE,
-            ProcKind::CpuInfo => CPUINFO_INODE,
-            ProcKind::MemInfo => MEMINFO_INODE,
-            ProcKind::Uptime => UPTIME_INODE,
-            ProcKind::Version => VERSION_INODE,
-            ProcKind::PidDir(pid) => PID_BASE + (pid as InodeNumber) * PID_STRIDE,
-            ProcKind::Status(pid) => PID_BASE + (pid as InodeNumber) * PID_STRIDE + 1,
-            ProcKind::Cmdline(pid) => PID_BASE + (pid as InodeNumber) * PID_STRIDE + 2,
-            ProcKind::Maps(pid) => PID_BASE + (pid as InodeNumber) * PID_STRIDE + 3,
-        }
-    }
+/// Base for per-PID directory inodes: `0x10000 + pid`.
+const PID_DIR_BASE: InodeNumber = 0x10000;
 
-    /// Recover the kind from an inode number, or `None` if it is not a valid
-    /// procfs inode.
-    fn from_inode(inode: InodeNumber) -> Option<ProcKind> {
-        match inode {
-            ROOT_INODE => Some(ProcKind::Root),
-            SELF_INODE => Some(ProcKind::SelfLink),
-            CPUINFO_INODE => Some(ProcKind::CpuInfo),
-            MEMINFO_INODE => Some(ProcKind::MemInfo),
-            UPTIME_INODE => Some(ProcKind::Uptime),
-            VERSION_INODE => Some(ProcKind::Version),
-            n if n >= PID_BASE => {
-                let offset = n - PID_BASE;
-                let pid = (offset / PID_STRIDE) as u32;
-                let rem = offset % PID_STRIDE;
-                match rem {
-                    0 => Some(ProcKind::PidDir(pid)),
-                    1 => Some(ProcKind::Status(pid)),
-                    2 => Some(ProcKind::Cmdline(pid)),
-                    3 => Some(ProcKind::Maps(pid)),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
+/// Base for per-PID file inodes: `0x1000000 + pid*256 + file_index`.
+const PID_FILE_BASE: InodeNumber = 0x1000000;
 
-    fn is_dir(self) -> bool {
-        matches!(self, ProcKind::Root | ProcKind::PidDir(_))
-    }
+/// Static top-level files exposed under `/proc`.
+const STATIC_FILES: &[(&str, InodeNumber)] = &[
+    ("cpuinfo", 2),
+    ("meminfo", 3),
+    ("uptime", 4),
+    ("version", 5),
+];
 
-    fn file_type(self) -> FileType {
-        match self {
-            ProcKind::SelfLink => FileType::SymbolicLink,
-            ProcKind::Root | ProcKind::PidDir(_) => FileType::Directory,
-            _ => FileType::Regular,
-        }
-    }
-}
+/// Per-PID regular files exposed under `/proc/<pid>/`.
+const PID_FILES: &[(&str, u8)] = &[
+    ("status", 0),
+    ("cmdline", 1),
+    ("stat", 2),
+    ("io", 3),
+    ("maps", 4),
+];
 
-// ---------------------------------------------------------------------------
-// In-memory process registry
-// ---------------------------------------------------------------------------
-
-/// A snapshot of a process tracked by procfs.
-#[derive(Debug, Clone)]
-pub struct ProcEntry {
-    /// Process ID.
-    pub pid: u32,
-    /// Human-readable process name.
-    pub name: String,
-    /// Single-character Linux-style state code (e.g. "R", "S", "Z").
-    pub state: String,
-    /// Command line as a single string (arguments joined by spaces).
-    pub cmdline: String,
-    /// Owner user ID.
-    pub uid: u32,
-    /// Owner group ID.
-    pub gid: u32,
-    /// Parent PID (0 for the init/kernel process).
-    pub parent_pid: u32,
-    /// Number of threads in the process.
-    pub threads: u32,
-    /// Virtual memory size in bytes.
-    pub vm_size: u64,
-    /// Resident set size in bytes.
-    pub vm_rss: u64,
-    /// Pre-formatted `/proc/<pid>/maps` body.
-    pub maps: String,
-}
-
-lazy_static! {
-    /// Global registry of processes visible through procfs.
-    static ref PROC_REGISTRY: RwLock<Vec<ProcEntry>> = RwLock::new(Vec::new());
-}
-
-/// Register or replace a process entry in the procfs registry.
-pub fn register_process(entry: ProcEntry) {
-    let mut registry = PROC_REGISTRY.write();
-    if let Some(existing) = registry.iter_mut().find(|e| e.pid == entry.pid) {
-        *existing = entry;
-    } else {
-        registry.push(entry);
-        registry.sort_by_key(|e| e.pid);
-    }
-}
-
-/// Remove a process entry from the procfs registry.
-pub fn unregister_process(pid: u32) {
-    let mut registry = PROC_REGISTRY.write();
-    registry.retain(|e| e.pid != pid);
-}
-
-/// Look up a process entry by PID.
-fn lookup_process(pid: u32) -> Option<ProcEntry> {
-    PROC_REGISTRY.read().iter().find(|e| e.pid == pid).cloned()
-}
-
-/// Snapshot of all registered processes, sorted by PID.
-fn all_processes() -> Vec<ProcEntry> {
-    PROC_REGISTRY.read().clone()
-}
-
-// ---------------------------------------------------------------------------
-// Filesystem
-// ---------------------------------------------------------------------------
-
-/// Procfs virtual filesystem.
+/// Procfs filesystem — stateless, all content is generated on demand.
 #[derive(Debug)]
-pub struct ProcFileSystem {
-    /// Cached metadata for the small set of static root inodes. Per-PID
-    /// inodes are derived from `ProcKind` and need not be stored.
-    inodes: RwLock<BTreeMap<InodeNumber, FileMetadata>>,
-}
+pub struct ProcFileSystem;
 
 impl ProcFileSystem {
     /// Create a new procfs instance.
     pub fn new() -> FsResult<Self> {
-        let mut inodes = BTreeMap::new();
-        inodes.insert(
-            ROOT_INODE,
-            Self::base_metadata(ROOT_INODE, FileType::Directory, 0),
-        );
-        inodes.insert(
-            SELF_INODE,
-            Self::base_metadata(SELF_INODE, FileType::SymbolicLink, 0),
-        );
-        inodes.insert(
-            CPUINFO_INODE,
-            Self::base_metadata(CPUINFO_INODE, FileType::Regular, 0),
-        );
-        inodes.insert(
-            MEMINFO_INODE,
-            Self::base_metadata(MEMINFO_INODE, FileType::Regular, 0),
-        );
-        inodes.insert(
-            UPTIME_INODE,
-            Self::base_metadata(UPTIME_INODE, FileType::Regular, 0),
-        );
-        inodes.insert(
-            VERSION_INODE,
-            Self::base_metadata(VERSION_INODE, FileType::Regular, 0),
-        );
-        Ok(Self {
-            inodes: RwLock::new(inodes),
+        Ok(Self)
+    }
+
+    /// Build the inode for a given PID's directory.
+    fn pid_dir_inode(pid: u32) -> InodeNumber {
+        PID_DIR_BASE + pid as InodeNumber
+    }
+
+    /// Recover the PID from a PID-directory inode.
+    fn pid_from_dir_inode(inode: InodeNumber) -> Option<u32> {
+        if inode >= PID_DIR_BASE && inode < PID_FILE_BASE {
+            let pid = (inode - PID_DIR_BASE) as u32;
+            if pid != 0 {
+                Some(pid)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Build the inode for a per-PID file.
+    fn pid_file_inode(pid: u32, file_index: u8) -> InodeNumber {
+        PID_FILE_BASE + (pid as InodeNumber) * 256 + file_index as InodeNumber
+    }
+
+    /// Recover (pid, file_index) from a per-PID-file inode.
+    fn pid_file_from_inode(inode: InodeNumber) -> Option<(u32, u8)> {
+        if inode >= PID_FILE_BASE {
+            let rel = inode - PID_FILE_BASE;
+            let pid = (rel / 256) as u32;
+            let idx = (rel % 256) as u8;
+            if pid != 0 && (idx as usize) < PID_FILES.len() {
+                Some((pid, idx))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Look up a static file name and return its inode.
+    fn static_file_inode(name: &str) -> Option<InodeNumber> {
+        STATIC_FILES.iter().find(|(n, _)| *n == name).map(|(_, i)| *i)
+    }
+
+    /// Return the name of a static file given its inode.
+    fn static_file_name(inode: InodeNumber) -> Option<&'static str> {
+        STATIC_FILES.iter().find(|(_, i)| *i == inode).map(|(n, _)| *n)
+    }
+
+    /// Return the name of a per-PID file given its file index.
+    fn pid_file_name(file_index: u8) -> Option<&'static str> {
+        PID_FILES
+            .iter()
+            .find(|(_, i)| *i == file_index)
+            .map(|(n, _)| *n)
+    }
+
+    /// Generate the full content for a static file.
+    fn generate_static(name: &str) -> String {
+        match name {
+            "cpuinfo" => Self::generate_cpuinfo(),
+            "meminfo" => Self::generate_meminfo(),
+            "uptime" => Self::generate_uptime(),
+            "version" => Self::generate_version(),
+            _ => String::new(),
+        }
+    }
+
+    /// Generate the full content for a per-PID file.
+    fn generate_pid_file(pid: u32, file_index: u8) -> Option<String> {
+        let pcb = crate::process::get_process_manager().get_process(pid)?;
+        let name = Self::pid_file_name(file_index)?;
+        Some(match name {
+            "status" => Self::generate_status(&pcb),
+            "cmdline" => Self::generate_cmdline(&pcb),
+            "stat" => Self::generate_stat(&pcb),
+            "io" => Self::generate_io(&pcb),
+            "maps" => Self::generate_maps(&pcb),
+            _ => String::new(),
         })
     }
 
-    fn base_metadata(inode: InodeNumber, file_type: FileType, size: u64) -> FileMetadata {
-        let permissions = match file_type {
-            FileType::Directory => FilePermissions::default_directory(),
-            FileType::SymbolicLink => FilePermissions::from_octal(0o777),
-            _ => FilePermissions::from_octal(0o444),
-        };
-        FileMetadata {
-            inode,
-            file_type,
-            size,
-            permissions,
-            uid: 0,
-            gid: 0,
-            created: 0,
-            modified: 0,
-            accessed: 0,
-            link_count: 1,
-            device_id: None,
+    fn generate_cpuinfo() -> String {
+        let mut out = String::new();
+        // Single logical CPU entry; matches the Linux /proc/cpuinfo layout.
+        out.push_str("processor\t: 0\n");
+        out.push_str("vendor_id\t: GenuineIntel\n");
+        out.push_str("cpu family\t: 6\n");
+        out.push_str("model\t\t: 158\n");
+        out.push_str("model name\t: RustOS Virtual CPU\n");
+        out.push_str("stepping\t: 1\n");
+        out.push_str("cpu MHz\t\t: 2000.000\n");
+        out.push_str("cache size\t: 256 KB\n");
+        out.push_str("flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr\n");
+        out.push_str("bogomips\t: 4000.00\n");
+        out
+    }
+
+    fn generate_meminfo() -> String {
+        let mut out = String::new();
+        if let Some(stats) = crate::memory::get_memory_stats() {
+            let total_kb = (stats.total_memory / 1024) as u64;
+            let free_kb = (stats.free_memory / 1024) as u64;
+            let used_kb = (stats.allocated_memory / 1024) as u64;
+            out.push_str(&format!("MemTotal:       {} kB\n", total_kb));
+            out.push_str(&format!("MemFree:        {} kB\n", free_kb));
+            out.push_str(&format!("MemAvailable:   {} kB\n", free_kb));
+            out.push_str(&format!("Buffers:        0 kB\n"));
+            out.push_str(&format!("Cached:         0 kB\n"));
+            out.push_str(&format!("SwapCached:     0 kB\n"));
+            out.push_str(&format!("Active:         {} kB\n", used_kb));
+            out.push_str(&format!("Inactive:       {} kB\n", free_kb));
+            out.push_str(&format!("SwapTotal:      0 kB\n"));
+            out.push_str(&format!("SwapFree:       0 kB\n"));
+        } else {
+            out.push_str("MemTotal:       0 kB\n");
+            out.push_str("MemFree:        0 kB\n");
+        }
+        out
+    }
+
+    fn generate_uptime() -> String {
+        let now = crate::time::get_system_time_ms();
+        // Uptime in seconds with two decimal places (idle == uptime for a
+        // single-CPU stub).
+        let secs = (now as f64) / 1000.0;
+        format!("{:.2} {:.2}\n", secs, secs)
+    }
+
+    fn generate_version() -> String {
+        let mut out = String::new();
+        out.push_str("RustOS 1.0.0 (rustos@kernel) #1 SMP\n");
+        out.push_str("Build: release\n");
+        out.push_str("Architecture: x86_64\n");
+        out.push_str("Compiler: rustc (nightly)\n");
+        out
+    }
+
+    fn state_name(state: crate::process::ProcessState) -> char {
+        use crate::process::ProcessState::*;
+        match state {
+            Running => 'R',
+            Ready => 'R',
+            Blocked => 'D',
+            Sleeping => 'S',
+            Terminated => 'Z',
+            Zombie => 'Z',
+            Dead => 'X',
         }
     }
 
-    /// Resolve a path relative to the procfs root into a `ProcKind`.
-    fn resolve(&self, path: &str) -> FsResult<ProcKind> {
-        let components: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
-        if components.is_empty() {
-            return Ok(ProcKind::Root);
+    fn generate_status(pcb: &crate::process::ProcessControlBlock) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("Name:\t{}\n", pcb.name_str()));
+        out.push_str(&format!("Umask:\t0022\n"));
+        out.push_str(&format!(
+            "State:\t{} ({}{})\n",
+            Self::state_name(pcb.state),
+            match pcb.state {
+                crate::process::ProcessState::Running => "running",
+                crate::process::ProcessState::Ready => "runnable",
+                crate::process::ProcessState::Blocked => "blocked",
+                crate::process::ProcessState::Sleeping => "sleeping",
+                crate::process::ProcessState::Terminated => "terminated",
+                crate::process::ProcessState::Zombie => "zombie",
+                crate::process::ProcessState::Dead => "dead",
+            },
+            ""
+        ));
+        out.push_str(&format!("Tgid:\t{}\n", pcb.pid));
+        out.push_str(&format!("Pid:\t{}\n", pcb.pid));
+        out.push_str(&format!(
+            "PPid:\t{}\n",
+            pcb.parent_pid.unwrap_or(0)
+        ));
+        out.push_str(&format!("Uid:\t{}\n", pcb.uid));
+        out.push_str(&format!("Gid:\t{}\n", pcb.gid));
+        out.push_str(&format!("VmSize:\t{} kB\n", pcb.memory.vm_size / 1024));
+        out.push_str(&format!("VmRSS:\t{} kB\n", pcb.memory.heap_size / 1024));
+        out.push_str(&format!("VmData:\t{} kB\n", pcb.memory.data_size / 1024));
+        out.push_str(&format!("VmStk:\t{} kB\n", pcb.memory.stack_size / 1024));
+        out.push_str(&format!("Threads:\t1\n"));
+        out
+    }
+
+    fn generate_cmdline(pcb: &crate::process::ProcessControlBlock) -> String {
+        // /proc/<pid>/cmdline is NUL-separated argv with a trailing NUL.
+        let mut out = Vec::new();
+        if !pcb.exec_path.is_empty() {
+            out.extend_from_slice(pcb.exec_path.as_bytes());
+            out.push(0);
+        } else {
+            out.extend_from_slice(pcb.name_str().as_bytes());
+            out.push(0);
+        }
+        // Safety: we just built this from valid UTF-8 segments with NULs.
+        unsafe { String::from_utf8_unchecked(out) }
+    }
+
+    fn generate_stat(pcb: &crate::process::ProcessControlBlock) -> String {
+        // Fields mirror Linux /proc/<pid>/stat (subset).
+        format!(
+            "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+            pcb.pid,
+            pcb.name_str(),
+            Self::state_name(pcb.state),
+            pcb.parent_pid.unwrap_or(0),
+            pcb.pgid,
+            pcb.sid,
+            pcb.user_time_ticks,
+            pcb.system_time_ticks,
+        )
+    }
+
+    fn generate_io(pcb: &crate::process::ProcessControlBlock) -> String {
+        let mut out = String::new();
+        out.push_str("rchar: 0\n");
+        out.push_str("wchar: 0\n");
+        out.push_str("syscr: 0\n");
+        out.push_str("syscw: 0\n");
+        out.push_str("read_bytes: 0\n");
+        out.push_str("write_bytes: 0\n");
+        out.push_str("cancelled_write_bytes: 0\n");
+        // cpu_time is in microseconds; report as nanoseconds for parity.
+        let _ = pcb.cpu_time;
+        out
+    }
+
+    fn generate_maps(pcb: &crate::process::ProcessControlBlock) -> String {
+        let mut out = String::new();
+        let m = &pcb.memory;
+        if m.code_size > 0 {
+            out.push_str(&format!(
+                "{:016x}-{:016x} r-xp {:08x} 00:00 0  [code]\n",
+                m.code_start,
+                m.code_start + m.code_size,
+                0
+            ));
+        }
+        if m.data_size > 0 {
+            out.push_str(&format!(
+                "{:016x}-{:016x} rw-p {:08x} 00:00 0  [data]\n",
+                m.data_start,
+                m.data_start + m.data_size,
+                0
+            ));
+        }
+        if m.heap_size > 0 {
+            out.push_str(&format!(
+                "{:016x}-{:016x} rw-p {:08x} 00:00 0  [heap]\n",
+                m.heap_start,
+                m.heap_start + m.heap_size,
+                0
+            ));
+        }
+        if m.stack_size > 0 {
+            out.push_str(&format!(
+                "{:016x}-{:016x} rw-p {:08x} 00:00 0  [stack]\n",
+                m.stack_start.saturating_sub(m.stack_size),
+                m.stack_start,
+                0
+            ));
+        }
+        out
+    }
+
+    /// Resolve a path like `/cpuinfo` or `/12/status` to an inode number.
+    fn resolve(&self, path: &str) -> FsResult<InodeNumber> {
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.is_empty() {
+            return Ok(ROOT_INODE);
         }
 
-        match components[0] {
-            "self" => {
-                if components.len() == 1 {
-                    Ok(ProcKind::SelfLink)
-                } else {
-                    // /proc/self/<file> resolves through the current PID.
-                    let pid = current_pid();
-                    resolve_pid_file(pid, &components[1..])
+        let first = parts[0];
+
+        // /proc/self -> symlink to current PID's directory.
+        if first == "self" {
+            if parts.len() == 1 {
+                return Ok(SELF_INODE);
+            }
+            // /proc/self/<file> — resolve to the live PID.
+            let pid = crate::process::get_process_manager().current_process();
+            if pid == 0 {
+                return Err(FsError::NotFound);
+            }
+            if parts.len() == 2 {
+                return self.resolve_pid_file(pid, parts[1]);
+            }
+            return Err(FsError::NotFound);
+        }
+
+        // Static top-level file?
+        if parts.len() == 1 {
+            if let Some(inode) = Self::static_file_inode(first) {
+                return Ok(inode);
+            }
+        }
+
+        // Numeric PID directory: /proc/<pid> or /proc/<pid>/<file>
+        if let Ok(pid) = first.parse::<u32>() {
+            if parts.len() == 1 {
+                // Verify the process exists.
+                if crate::process::get_process_manager()
+                    .get_process(pid)
+                    .is_some()
+                {
+                    return Ok(Self::pid_dir_inode(pid));
                 }
+                return Err(FsError::NotFound);
             }
-            "cpuinfo" if components.len() == 1 => Ok(ProcKind::CpuInfo),
-            "meminfo" if components.len() == 1 => Ok(ProcKind::MemInfo),
-            "uptime" if components.len() == 1 => Ok(ProcKind::Uptime),
-            "version" if components.len() == 1 => Ok(ProcKind::Version),
-            name => {
-                let pid = name.parse::<u32>().map_err(|_| FsError::NotFound)?;
-                let entry = lookup_process(pid).ok_or(FsError::NotFound)?;
-                // Validate the PID is known, then resolve the remainder.
-                resolve_pid_file(entry.pid, &components[1..])
+            if parts.len() == 2 {
+                return self.resolve_pid_file(pid, parts[1]);
             }
         }
+
+        Err(FsError::NotFound)
     }
 
-    /// Generate the byte content for a non-directory inode.
-    fn generate_content(&self, kind: ProcKind) -> FsResult<Vec<u8>> {
-        let text = match kind {
-            ProcKind::Root | ProcKind::PidDir(_) => {
-                return Err(FsError::IsADirectory);
-            }
-            ProcKind::SelfLink => {
-                // Symlink target: the current PID directory.
-                return Ok(format!("{}", current_pid()).into_bytes());
-            }
-            ProcKind::CpuInfo => generate_cpuinfo(),
-            ProcKind::MemInfo => generate_meminfo(),
-            ProcKind::Uptime => generate_uptime(),
-            ProcKind::Version => generate_version(),
-            ProcKind::Status(pid) => {
-                let entry = lookup_process(pid).ok_or(FsError::NotFound)?;
-                generate_status(&entry)
-            }
-            ProcKind::Cmdline(pid) => {
-                let entry = lookup_process(pid).ok_or(FsError::NotFound)?;
-                // Linux stores cmdline with NUL separators; mirror that.
-                let mut bytes = Vec::new();
-                for arg in entry.cmdline.split_whitespace() {
-                    bytes.extend_from_slice(arg.as_bytes());
-                    bytes.push(0);
-                }
-                String::from_utf8(bytes).unwrap_or_default()
-            }
-            ProcKind::Maps(pid) => {
-                let entry = lookup_process(pid).ok_or(FsError::NotFound)?;
-                entry.maps.clone()
-            }
-        };
-        Ok(text.into_bytes())
-    }
-
-    /// Build the directory listing for a directory inode.
-    fn list_dir(&self, kind: ProcKind) -> FsResult<Vec<DirectoryEntry>> {
-        match kind {
-            ProcKind::Root => {
-                let mut entries = Vec::new();
-                entries.push(DirectoryEntry {
-                    name: "self".to_string(),
-                    inode: SELF_INODE,
-                    file_type: FileType::SymbolicLink,
-                });
-                entries.push(DirectoryEntry {
-                    name: "cpuinfo".to_string(),
-                    inode: CPUINFO_INODE,
-                    file_type: FileType::Regular,
-                });
-                entries.push(DirectoryEntry {
-                    name: "meminfo".to_string(),
-                    inode: MEMINFO_INODE,
-                    file_type: FileType::Regular,
-                });
-                entries.push(DirectoryEntry {
-                    name: "uptime".to_string(),
-                    inode: UPTIME_INODE,
-                    file_type: FileType::Regular,
-                });
-                entries.push(DirectoryEntry {
-                    name: "version".to_string(),
-                    inode: VERSION_INODE,
-                    file_type: FileType::Regular,
-                });
-                for entry in all_processes() {
-                    entries.push(DirectoryEntry {
-                        name: format!("{}", entry.pid),
-                        inode: ProcKind::PidDir(entry.pid).to_inode(),
-                        file_type: FileType::Directory,
-                    });
-                }
-                Ok(entries)
-            }
-            ProcKind::PidDir(pid) => {
-                // Confirm the PID exists.
-                let _ = lookup_process(pid).ok_or(FsError::NotFound)?;
-                Ok(alloc::vec![
-                    DirectoryEntry {
-                        name: "status".to_string(),
-                        inode: ProcKind::Status(pid).to_inode(),
-                        file_type: FileType::Regular,
-                    },
-                    DirectoryEntry {
-                        name: "cmdline".to_string(),
-                        inode: ProcKind::Cmdline(pid).to_inode(),
-                        file_type: FileType::Regular,
-                    },
-                    DirectoryEntry {
-                        name: "maps".to_string(),
-                        inode: ProcKind::Maps(pid).to_inode(),
-                        file_type: FileType::Regular,
-                    },
-                ])
-            }
-            _ => Err(FsError::NotADirectory),
+    /// Resolve `/proc/<pid>/<file>` to a per-PID file inode.
+    fn resolve_pid_file(&self, pid: u32, file: &str) -> FsResult<InodeNumber> {
+        if crate::process::get_process_manager()
+            .get_process(pid)
+            .is_none()
+        {
+            return Err(FsError::NotFound);
         }
+        for (name, idx) in PID_FILES.iter() {
+            if *name == file {
+                return Ok(Self::pid_file_inode(pid, *idx));
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    /// Generate content for an inode, returning the full byte string.
+    fn generate_content(&self, inode: InodeNumber) -> FsResult<Vec<u8>> {
+        if inode == SELF_INODE {
+            let pid = crate::process::get_process_manager().current_process();
+            return Ok(format!("{}\0", pid).into_bytes());
+        }
+
+        if let Some(name) = Self::static_file_name(inode) {
+            return Ok(Self::generate_static(name).into_bytes());
+        }
+
+        if let Some((pid, idx)) = Self::pid_file_from_inode(inode) {
+            let content = Self::generate_pid_file(pid, idx)
+                .ok_or(FsError::NotFound)?;
+            return Ok(content.into_bytes());
+        }
+
+        Err(FsError::NotFound)
     }
 }
-
-/// Resolve `<pid>/<file>` (already split into components) to a kind.
-fn resolve_pid_file(pid: u32, rest: &[&str]) -> FsResult<ProcKind> {
-    if rest.is_empty() {
-        return Ok(ProcKind::PidDir(pid));
-    }
-    match rest[0] {
-        "status" if rest.len() == 1 => Ok(ProcKind::Status(pid)),
-        "cmdline" if rest.len() == 1 => Ok(ProcKind::Cmdline(pid)),
-        "maps" if rest.len() == 1 => Ok(ProcKind::Maps(pid)),
-        _ => Err(FsError::NotFound),
-    }
-}
-
-/// Best-effort current PID: pulls from the process subsystem when available,
-/// otherwise falls back to PID 1 so `self` always resolves.
-fn current_pid() -> u32 {
-    // Avoid a hard dependency on the scheduler; use the global accessor if the
-    // process subsystem is wired up, else default to 1.
-    crate::process::current_pid()
-}
-
-// ---------------------------------------------------------------------------
-// Content generators
-// ---------------------------------------------------------------------------
-
-fn generate_status(entry: &ProcEntry) -> String {
-    let now = get_current_time();
-    format!(
-        "Name:\t{name}\n\
-         Umask:\t0022\n\
-         State:\t{state}\n\
-         Tgid:\t{pid}\n\
-         Ngid:\t0\n\
-         Pid:\t{pid}\n\
-         PPid:\t{ppid}\n\
-         TracerPid:\t0\n\
-         Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n\
-         Gid:\t{gid}\t{gid}\t{gid}\t{gid}\n\
-         FDSize:\t64\n\
-         NStgid:\t0\n\
-         NSpid:\t0\n\
-         NSpgid:\t0\n\
-         NSsid:\t0\n\
-         Threads:\t{threads}\n\
-         VmSize:\t{vm_size} kB\n\
-         VmRSS:\t{vm_rss} kB\n\
-         VmPeak:\t{vm_size} kB\n\
-         State2:\t{state}\n\
-         starttime:\t{now}\n",
-        name = entry.name,
-        state = entry.state,
-        pid = entry.pid,
-        ppid = entry.parent_pid,
-        uid = entry.uid,
-        gid = entry.gid,
-        threads = entry.threads,
-        vm_size = entry.vm_size / 1024,
-        vm_rss = entry.vm_rss / 1024,
-        now = now,
-    )
-}
-
-fn generate_cpuinfo() -> String {
-    let mut out = String::new();
-    // Report a single generic CPU; a real kernel would enumerate cores.
-    out.push_str("processor\t: 0\n");
-    out.push_str("vendor_id\t: GenuineRustOS\n");
-    out.push_str("cpu family\t: 6\n");
-    out.push_str("model\t\t: 0\n");
-    out.push_str("model name\t: RustOS Virtual CPU\n");
-    out.push_str("stepping\t: 1\n");
-    out.push_str("cpu MHz\t\t: 2000.000\n");
-    out.push_str("cache size\t: 256 KB\n");
-    out.push_str("flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic\n");
-    out.push_str("bogomips\t: 4000.00\n");
-    out
-}
-
-fn generate_meminfo() -> String {
-    let procs = all_processes();
-    let used: u64 = procs.iter().map(|e| e.vm_rss).sum();
-    let total: u64 = 256 * 1024 * 1024; // 256 MiB hypothetical physical memory
-    let free = total.saturating_sub(used);
-    format!(
-        "MemTotal:\t{total} kB\n\
-         MemFree:\t{free} kB\n\
-         MemAvailable:\t{free} kB\n\
-         Buffers:\t0 kB\n\
-         Cached:\t0 kB\n\
-         SwapTotal:\t0 kB\n\
-         SwapFree:\t0 kB\n",
-        total = total / 1024,
-        free = free / 1024,
-    )
-}
-
-fn generate_uptime() -> String {
-    let now = get_current_time();
-    // `now` is in milliseconds; uptime is reported in seconds with two
-    // decimals followed by the idle time.
-    let seconds = now as f64 / 1000.0;
-    format!("{seconds:.2} {seconds:.2}\n", seconds = seconds)
-}
-
-fn generate_version() -> String {
-    "RustOS 0.1.0 (procfs) #1 SMP\n\
-     Compiled with rustc nightly\n\
-     \n"
-    .to_string()
-}
-
-// ---------------------------------------------------------------------------
-// FileSystem trait impl
-// ---------------------------------------------------------------------------
 
 impl FileSystem for ProcFileSystem {
     fn fs_type(&self) -> FileSystemType {
@@ -503,50 +421,34 @@ impl FileSystem for ProcFileSystem {
     }
 
     fn statfs(&self) -> FsResult<FileSystemStats> {
-        let count = all_processes().len() as u64;
+        let proc_count = crate::process::get_process_manager().process_count() as u64;
         Ok(FileSystemStats {
             total_blocks: 0,
             free_blocks: 0,
             available_blocks: 0,
-            total_inodes: 4096,
-            free_inodes: 4096u64.saturating_sub(count + 6),
+            total_inodes: STATIC_FILES.len() as u64 + proc_count + 1,
+            free_inodes: 0,
             block_size: 4096,
             max_filename_length: 255,
         })
     }
 
     fn create(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        // procfs is read-only.
         Err(FsError::ReadOnly)
     }
 
     fn open(&self, path: &str, _flags: OpenFlags) -> FsResult<InodeNumber> {
-        let kind = self.resolve(path)?;
-        // For per-PID entries, confirm existence so `open` fails on stale PIDs.
-        match kind {
-            ProcKind::PidDir(pid)
-            | ProcKind::Status(pid)
-            | ProcKind::Cmdline(pid)
-            | ProcKind::Maps(pid) => {
-                let _ = lookup_process(pid).ok_or(FsError::NotFound)?;
-            }
-            _ => {}
-        }
-        Ok(kind.to_inode())
+        self.resolve(path)
     }
 
     fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
-        let kind = ProcKind::from_inode(inode).ok_or(FsError::NotFound)?;
-        if kind.is_dir() {
-            return Err(FsError::IsADirectory);
-        }
-        let content = self.generate_content(kind)?;
+        let content = self.generate_content(inode)?;
         let len = content.len() as u64;
         if offset >= len {
             return Ok(0);
         }
         let start = offset as usize;
-        let end = core::cmp::min(start + buffer.len(), content.len());
+        let end = core::cmp::min(content.len(), start + buffer.len());
         let n = end - start;
         buffer[..n].copy_from_slice(&content[start..end]);
         Ok(n)
@@ -557,35 +459,97 @@ impl FileSystem for ProcFileSystem {
     }
 
     fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
-        let kind = ProcKind::from_inode(inode).ok_or(FsError::NotFound)?;
-        let file_type = kind.file_type();
-
-        // Compute size: directories report 0; symlinks report target length;
-        // regular files report their generated content length.
-        let size = match kind {
-            ProcKind::Root | ProcKind::PidDir(_) => 0,
-            ProcKind::SelfLink => format!("{}", current_pid()).len() as u64,
-            ProcKind::CpuInfo | ProcKind::MemInfo | ProcKind::Uptime | ProcKind::Version => {
-                self.generate_content(kind)?.len() as u64
-            }
-            ProcKind::Status(pid) | ProcKind::Cmdline(pid) | ProcKind::Maps(pid) => {
-                let _ = lookup_process(pid).ok_or(FsError::NotFound)?;
-                self.generate_content(kind)?.len() as u64
-            }
-        };
-
-        // Use cached metadata for the static root inodes when available so
-        // timestamps stay stable, otherwise synthesize fresh metadata.
-        if let Some(cached) = self.inodes.read().get(&inode).cloned() {
-            if size == cached.size {
-                return Ok(cached);
-            }
-            let mut md = cached;
-            md.size = size;
-            return Ok(md);
+        if inode == ROOT_INODE {
+            return Ok(FileMetadata {
+                inode,
+                file_type: FileType::Directory,
+                size: 0,
+                permissions: FilePermissions::default_directory(),
+                uid: 0,
+                gid: 0,
+                created: 0,
+                modified: 0,
+                accessed: 0,
+                link_count: 2,
+                device_id: None,
+            });
         }
 
-        Ok(Self::base_metadata(inode, file_type, size))
+        if inode == SELF_INODE {
+            return Ok(FileMetadata {
+                inode,
+                file_type: FileType::SymbolicLink,
+                size: 0,
+                permissions: FilePermissions::from_octal(0o777),
+                uid: 0,
+                gid: 0,
+                created: 0,
+                modified: 0,
+                accessed: 0,
+                link_count: 1,
+                device_id: None,
+            });
+        }
+
+        if let Some(name) = Self::static_file_name(inode) {
+            let content = Self::generate_static(name);
+            return Ok(FileMetadata {
+                inode,
+                file_type: FileType::Regular,
+                size: content.len() as u64,
+                permissions: FilePermissions::from_octal(0o444),
+                uid: 0,
+                gid: 0,
+                created: 0,
+                modified: 0,
+                accessed: 0,
+                link_count: 1,
+                device_id: None,
+            });
+        }
+
+        if let Some(pid) = Self::pid_from_dir_inode(inode) {
+            if crate::process::get_process_manager()
+                .get_process(pid)
+                .is_none()
+            {
+                return Err(FsError::NotFound);
+            }
+            return Ok(FileMetadata {
+                inode,
+                file_type: FileType::Directory,
+                size: 0,
+                permissions: FilePermissions::default_directory(),
+                uid: 0,
+                gid: 0,
+                created: 0,
+                modified: 0,
+                accessed: 0,
+                link_count: 2,
+                device_id: None,
+            });
+        }
+
+        if let Some((pid, idx)) = Self::pid_file_from_inode(inode) {
+            let size = Self::generate_pid_file(pid, idx)
+                .map(|s| s.len() as u64)
+                .unwrap_or(0);
+            return Ok(FileMetadata {
+                inode,
+                file_type: FileType::Regular,
+                size,
+                permissions: FilePermissions::from_octal(0o444),
+                uid: 0,
+                gid: 0,
+                created: 0,
+                modified: 0,
+                accessed: 0,
+                link_count: 1,
+                device_id: None,
+            });
+        }
+
+        Err(FsError::NotFound)
     }
 
     fn set_metadata(&self, _inode: InodeNumber, _metadata: &FileMetadata) -> FsResult<()> {
@@ -605,8 +569,74 @@ impl FileSystem for ProcFileSystem {
     }
 
     fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
-        let kind = ProcKind::from_inode(inode).ok_or(FsError::NotFound)?;
-        self.list_dir(kind)
+        if inode == ROOT_INODE {
+            let mut entries = Vec::new();
+            entries.push(DirectoryEntry {
+                name: ".".to_string(),
+                inode: ROOT_INODE,
+                file_type: FileType::Directory,
+            });
+            entries.push(DirectoryEntry {
+                name: "..".to_string(),
+                inode: ROOT_INODE,
+                file_type: FileType::Directory,
+            });
+            // /proc/self symlink
+            entries.push(DirectoryEntry {
+                name: "self".to_string(),
+                inode: SELF_INODE,
+                file_type: FileType::SymbolicLink,
+            });
+            // Static files
+            for (name, ino) in STATIC_FILES.iter() {
+                entries.push(DirectoryEntry {
+                    name: (*name).to_string(),
+                    inode: *ino,
+                    file_type: FileType::Regular,
+                });
+            }
+            // Live PID directories
+            for (pid, _name, _state, _prio) in
+                crate::process::get_process_manager().list_processes()
+            {
+                entries.push(DirectoryEntry {
+                    name: format!("{}", pid),
+                    inode: Self::pid_dir_inode(pid),
+                    file_type: FileType::Directory,
+                });
+            }
+            return Ok(entries);
+        }
+
+        if let Some(pid) = Self::pid_from_dir_inode(inode) {
+            if crate::process::get_process_manager()
+                .get_process(pid)
+                .is_none()
+            {
+                return Err(FsError::NotFound);
+            }
+            let mut entries = Vec::new();
+            entries.push(DirectoryEntry {
+                name: ".".to_string(),
+                inode,
+                file_type: FileType::Directory,
+            });
+            entries.push(DirectoryEntry {
+                name: "..".to_string(),
+                inode: ROOT_INODE,
+                file_type: FileType::Directory,
+            });
+            for (name, idx) in PID_FILES.iter() {
+                entries.push(DirectoryEntry {
+                    name: (*name).to_string(),
+                    inode: Self::pid_file_inode(pid, *idx),
+                    file_type: FileType::Regular,
+                });
+            }
+            return Ok(entries);
+        }
+
+        Err(FsError::NotADirectory)
     }
 
     fn rename(&self, _old_path: &str, _new_path: &str) -> FsResult<()> {
@@ -614,19 +644,21 @@ impl FileSystem for ProcFileSystem {
     }
 
     fn symlink(&self, _target: &str, _link_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+        Err(FsError::NotSupported)
     }
 
     fn readlink(&self, path: &str) -> FsResult<String> {
-        let kind = self.resolve(path)?;
-        match kind {
-            ProcKind::SelfLink => Ok(format!("{}", current_pid())),
-            _ => Err(FsError::InvalidArgument),
+        let inode = self.resolve(path)?;
+        if inode != SELF_INODE {
+            return Err(FsError::InvalidArgument);
         }
+        let pid = crate::process::get_process_manager().current_process();
+        Ok(format!("{}", pid))
     }
 
     fn sync(&self) -> FsResult<()> {
-        // procfs is virtual; nothing to sync.
+        // Procfs is virtual, no syncing needed.
+        let _ = get_current_time();
         Ok(())
     }
 }

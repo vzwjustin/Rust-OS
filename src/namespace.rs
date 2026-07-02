@@ -349,7 +349,7 @@ pub fn get_nsproxy(pid: u32) -> NsProxy {
 }
 
 /// Set the NsProxy for a process.
-fn set_nsproxy(pid: u32, ns: NsProxy) {
+pub fn set_nsproxy(pid: u32, ns: NsProxy) {
     NS_PROXIES.write().insert(pid, ns);
 }
 
@@ -518,10 +518,18 @@ pub fn setns(fd: i32, nstype: u32) -> i32 {
     0
 }
 
-/// clone_ns — create new namespaces for a child process (called from clone).
-pub fn clone_ns(parent_pid: u32, child_pid: u32, clone_flags: u64) {
+/// Copy or share namespaces from a parent NsProxy for a child process.
+///
+/// For each `CLONE_NEW*` bit set in `clone_flags`, a fresh namespace of that
+/// type is created (with the parent namespace recorded as its parent).
+/// Without the flag the child shares the parent's namespace (Arc clone).
+/// When `CLONE_NEWPID` is set, the child is assigned local PID 1 in the new
+/// PID namespace.
+///
+/// Returns the child's `NsProxy`.
+pub fn copy_namespaces(clone_flags: u64, parent: &NsProxy, child_pid: u32) -> NsProxy {
     let ns_flags = clone_flags as u32;
-    if ns_flags
+    let any_new = ns_flags
         & (CLONE_NEWNS
             | CLONE_NEWUTS
             | CLONE_NEWIPC
@@ -529,43 +537,44 @@ pub fn clone_ns(parent_pid: u32, child_pid: u32, clone_flags: u64) {
             | CLONE_NEWPID
             | CLONE_NEWNET
             | CLONE_NEWCGROUP)
-        == 0
-    {
-        // No new namespaces requested — child shares parent's
-        let parent_ns = get_nsproxy(parent_pid);
-        set_nsproxy(child_pid, parent_ns);
-        return;
+        != 0;
+
+    if !any_new {
+        // No new namespaces requested — child shares parent's.
+        return parent.clone();
     }
 
-    let parent_ns = get_nsproxy(parent_pid);
-    let child_ns = {
-        let ns = parent_ns.clone();
-        let mut current = ns.clone();
+    let mut current = parent.clone();
 
-        let ns_types = [
-            (CLONE_NEWNS, NsType::Mount),
-            (CLONE_NEWUTS, NsType::Uts),
-            (CLONE_NEWIPC, NsType::Ipc),
-            (CLONE_NEWUSER, NsType::User),
-            (CLONE_NEWPID, NsType::Pid),
-            (CLONE_NEWNET, NsType::Net),
-            (CLONE_NEWCGROUP, NsType::Cgroup),
-        ];
+    let ns_types = [
+        (CLONE_NEWNS, NsType::Mount),
+        (CLONE_NEWUTS, NsType::Uts),
+        (CLONE_NEWIPC, NsType::Ipc),
+        (CLONE_NEWUSER, NsType::User),
+        (CLONE_NEWPID, NsType::Pid),
+        (CLONE_NEWNET, NsType::Net),
+        (CLONE_NEWCGROUP, NsType::Cgroup),
+    ];
 
-        for (flag, ns_type) in &ns_types {
-            if ns_flags & flag != 0 {
-                current = create_namespace(*ns_type, &current);
-            }
+    for (flag, ns_type) in &ns_types {
+        if ns_flags & flag != 0 {
+            current = create_namespace(*ns_type, &current);
         }
-
-        current
-    };
-
-    // If CLONE_NEWPID, assign local PID 1 to the child
-    if ns_flags & CLONE_NEWPID != 0 {
-        child_ns.pid.lock().assign_local_pid(child_pid);
     }
 
+    // If CLONE_NEWPID, assign local PID 1 to the child (it becomes "init"
+    // inside the new PID namespace).
+    if ns_flags & CLONE_NEWPID != 0 {
+        current.pid.lock().assign_local_pid(child_pid);
+    }
+
+    current
+}
+
+/// clone_ns — create new namespaces for a child process (called from clone).
+pub fn clone_ns(parent_pid: u32, child_pid: u32, clone_flags: u64) {
+    let parent_ns = get_nsproxy(parent_pid);
+    let child_ns = copy_namespaces(clone_flags, &parent_ns, child_pid);
     set_nsproxy(child_pid, child_ns);
 }
 

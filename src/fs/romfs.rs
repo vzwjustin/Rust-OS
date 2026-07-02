@@ -1,335 +1,247 @@
-//! ROMFS read-only filesystem implementation.
+//! ROMFS read-only filesystem implementation
 //!
-//! In-memory VFS implementation of ROMFS mount state. It models the ROMFS
-//! file header and data layout as in-RAM structures so that read-only
-//! traversal works without a block device. ROMFS is a simple, read-only
-//! filesystem commonly used in embedded systems and initramfs.
+//! This module implements a real ROMFS format parser. ROMFS is a simple,
+//! read-only filesystem commonly used in embedded systems and initramfs.
+//!
+//! On-disk layout:
+//! - Superblock: 8-byte magic `-rom1fs-`, big-endian total size (u32),
+//!   checksum (u32), then the volume name (null-terminated, 16-byte aligned).
+//! - Each node has a 16-byte-aligned header:
+//!   `next` (u32 BE, low 4 bits = type, high 28 bits = next-sibling offset),
+//!   `spec.info` (u32 BE, type-specific), `checksum` (u32 BE), then the
+//!   null-terminated name padded to a 16-byte boundary.
+//! - File data follows the header, 16-byte aligned.
+//!
+//! Inode numbers are byte offsets into the image, matching Linux ROMFS.
 
 use super::{
-    get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
-    FileSystemType, FileType, FsError, FsResult, InodeNumber, OpenFlags,
+    DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats, FileSystemType,
+    FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
 use alloc::{
-    collections::BTreeMap,
+    format,
     string::{String, ToString},
     vec::Vec,
 };
-use core::cmp;
-use spin::RwLock;
 
-/// ROMFS magic string ("-rom1fs-").
+/// ROMFS magic identifier.
 const ROMFS_MAGIC: &[u8] = b"-rom1fs-";
-/// ROMFS block size (every header is 16-byte aligned).
-const ROMFS_BLOCK_SIZE: u32 = 16;
 
-/// In-memory ROMFS file header.
-#[derive(Debug, Clone)]
-struct RomfsHeader {
-    /// Offset of the header within the image (simulated).
-    offset: u32,
-    /// Next-file offset (0 means last in this directory).
-    next: u32,
-    /// File type/spec bits (mode).
-    spec: u32,
-    /// Size of the file data in bytes.
-    size: u32,
-    /// Checksum of the header.
-    checksum: u32,
+/// ROMFS node type codes (low nibble of the `next` field).
+const ROMFH_HRD: u32 = 0; // hard link
+const ROMFH_DIR: u32 = 1; // directory
+const ROMFH_REG: u32 = 2; // regular file
+const ROMFH_LNK: u32 = 3; // symbolic link
+const ROMFH_BLK: u32 = 4; // block device
+const ROMFH_CHR: u32 = 5; // character device
+const ROMFH_SCK: u32 = 6; // socket
+const ROMFH_FIF: u32 = 7; // fifo
+
+/// Round `x` up to the next 16-byte boundary.
+fn align16(x: usize) -> usize {
+    (x + 15) & !15
 }
 
-/// In-memory ROMFS inode.
-#[derive(Debug, Clone)]
-struct RomfsInode {
-    metadata: FileMetadata,
-    /// Parsed header.
-    header: RomfsHeader,
-    /// File data payload (regular files).
-    content: Vec<u8>,
-    /// Directory entries (directories only).
-    entries: BTreeMap<String, InodeNumber>,
-    /// Symbolic link target.
-    symlink_target: Option<String>,
-}
-
-impl RomfsInode {
-    fn new_file(inode: InodeNumber, offset: u32, content: Vec<u8>) -> Self {
-        let size = content.len() as u32;
-        let next = offset + 16 + ((size + 15) & !15);
-        Self {
-            metadata: FileMetadata {
-                inode,
-                file_type: FileType::Regular,
-                size: size as u64,
-                permissions: FilePermissions::from_octal(0o444),
-                uid: 0,
-                gid: 0,
-                created: 0,
-                modified: 0,
-                accessed: 0,
-                link_count: 1,
-                device_id: None,
-            },
-            header: RomfsHeader {
-                offset,
-                next,
-                spec: 0o100_000, // regular file
-                size,
-                checksum: 0,
-            },
-            content,
-            entries: BTreeMap::new(),
-            symlink_target: None,
-        }
-    }
-
-    fn new_directory(inode: InodeNumber, offset: u32) -> Self {
-        let mut entries = BTreeMap::new();
-        entries.insert(".".to_string(), inode);
-        Self {
-            metadata: FileMetadata {
-                inode,
-                file_type: FileType::Directory,
-                size: 0,
-                permissions: FilePermissions::from_octal(0o555),
-                uid: 0,
-                gid: 0,
-                created: 0,
-                modified: 0,
-                accessed: 0,
-                link_count: 2,
-                device_id: None,
-            },
-            header: RomfsHeader {
-                offset,
-                next: 0,
-                spec: 0o040_000, // directory
-                size: 0,
-                checksum: 0,
-            },
-            content: Vec::new(),
-            entries,
-            symlink_target: None,
-        }
-    }
-
-    fn new_symlink(inode: InodeNumber, offset: u32, target: &str) -> Self {
-        let size = target.len() as u32;
-        Self {
-            metadata: FileMetadata {
-                inode,
-                file_type: FileType::SymbolicLink,
-                size: size as u64,
-                permissions: FilePermissions::from_octal(0o777),
-                uid: 0,
-                gid: 0,
-                created: 0,
-                modified: 0,
-                accessed: 0,
-                link_count: 1,
-                device_id: None,
-            },
-            header: RomfsHeader {
-                offset,
-                next: offset + 16 + ((size + 15) & !15),
-                spec: 0o120_000, // symlink
-                size,
-                checksum: 0,
-            },
-            content: Vec::new(),
-            entries: BTreeMap::new(),
-            symlink_target: Some(target.to_string()),
-        }
-    }
-}
-
-/// ROMFS filesystem — in-memory, read-only.
+/// ROMFS filesystem instance backed by an in-memory image.
 #[derive(Debug)]
 pub struct RomfsFileSystem {
-    /// Magic bytes tracked for validation.
-    magic: [u8; 8],
-    /// Total simulated image size in bytes.
-    image_size: RwLock<u32>,
-    /// All inodes keyed by inode number.
-    inodes: RwLock<BTreeMap<InodeNumber, RomfsInode>>,
-    /// Path -> inode cache.
-    path_map: RwLock<BTreeMap<String, InodeNumber>>,
-    /// Next inode number to allocate.
-    next_inode: RwLock<InodeNumber>,
-    /// Next free offset within the simulated image.
-    next_offset: RwLock<u32>,
-    /// Root directory inode.
+    /// Device identifier (for device files).
+    device_id: u32,
+    /// The full ROMFS image.
+    image: &'static [u8],
+    /// Total size of the filesystem in bytes (from the superblock).
+    total_size: u32,
+    /// Inode (byte offset) of the root directory entry.
     root_inode: InodeNumber,
 }
 
-impl RomfsFileSystem {
-    /// Create a new, empty ROMFS filesystem instance.
-    pub fn new(_device_id: u32) -> FsResult<Self> {
-        let root_inode = 1;
-        let mut inodes = BTreeMap::new();
-        let mut path_map = BTreeMap::new();
-        // The root header sits at offset 16 (after the 16-byte superblock).
-        let root = RomfsInode::new_directory(root_inode, 16);
-        inodes.insert(root_inode, root);
-        path_map.insert("/".to_string(), root_inode);
+/// Parsed node header.
+#[derive(Debug, Clone, Copy)]
+struct RomNode {
+    /// Byte offset of this node in the image.
+    offset: usize,
+    /// `next` field (raw, including type bits).
+    next: u32,
+    /// `spec.info` field.
+    spec: u32,
+    /// File type code (low nibble of `next`).
+    node_type: u32,
+}
 
-        let mut magic = [0u8; 8];
-        magic.copy_from_slice(ROMFS_MAGIC);
-
-        Ok(Self {
-            magic,
-            image_size: RwLock::new(16),
-            inodes: RwLock::new(inodes),
-            path_map: RwLock::new(path_map),
-            next_inode: RwLock::new(2),
-            next_offset: RwLock::new(32),
-            root_inode,
-        })
+impl RomNode {
+    /// Offset of the next sibling (0 means end of chain).
+    fn next_offset(&self) -> usize {
+        (self.next & !0xf) as usize
     }
 
-    /// Validate the tracked magic bytes.
-    pub fn validate_magic(&self) -> bool {
-        &self.magic == ROMFS_MAGIC
+    /// True if this is the last entry in its sibling chain.
+    fn is_last(&self) -> bool {
+        self.next_offset() == 0
     }
 
-    /// Insert a file at an absolute path with the given content.
-    pub fn insert_file(&self, path: &str, content: Vec<u8>) -> FsResult<InodeNumber> {
-        if !path.starts_with('/') {
-            return Err(FsError::InvalidArgument);
-        }
-        let (parent_path, name) = split_parent(path)?;
-        let parent_inode = self.resolve_path(&parent_path)?;
-        let offset = {
-            let mut off = self.next_offset.write();
-            let cur = *off;
-            *off = cur + 16 + ((content.len() as u32 + 15) & !15);
-            cur
-        };
-        let mut inodes = self.inodes.write();
-        let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
-        if parent.metadata.file_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-        if parent.entries.contains_key(&name) {
-            return Err(FsError::AlreadyExists);
-        }
-        let new_inode = self.allocate_inode();
-        let entry = RomfsInode::new_file(new_inode, offset, content);
-        parent.entries.insert(name.clone(), new_inode);
-        parent.metadata.modified = get_current_time();
-        inodes.insert(new_inode, entry);
-        self.path_map.write().insert(path.to_string(), new_inode);
-        let mut img = self.image_size.write();
-        *img = (*img).max(offset + 16);
-        Ok(new_inode)
+    /// File size for regular files / symlinks (stored in `spec.info`).
+    fn size(&self) -> u64 {
+        self.spec as u64
     }
 
-    /// Insert a directory at an absolute path.
-    pub fn insert_directory(&self, path: &str) -> FsResult<InodeNumber> {
-        if !path.starts_with('/') || path == "/" {
-            return Err(FsError::InvalidArgument);
-        }
-        let (parent_path, name) = split_parent(path)?;
-        let parent_inode = self.resolve_path(&parent_path)?;
-        let offset = {
-            let mut off = self.next_offset.write();
-            let cur = *off;
-            *off = cur + 16;
-            cur
-        };
-        let mut inodes = self.inodes.write();
-        let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
-        if parent.metadata.file_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-        if parent.entries.contains_key(&name) {
-            return Err(FsError::AlreadyExists);
-        }
-        let new_inode = self.allocate_inode();
-        let mut dir = RomfsInode::new_directory(new_inode, offset);
-        dir.entries.insert("..".to_string(), parent_inode);
-        parent.entries.insert(name.clone(), new_inode);
-        parent.metadata.modified = get_current_time();
-        parent.metadata.link_count += 1;
-        inodes.insert(new_inode, dir);
-        self.path_map.write().insert(path.to_string(), new_inode);
-        let mut img = self.image_size.write();
-        *img = (*img).max(offset + 16);
-        Ok(new_inode)
+    /// Offset of the first child for directories (stored in `spec.info`).
+    fn child_offset(&self) -> usize {
+        self.spec as usize
     }
 
-    /// Insert a symbolic link.
-    pub fn insert_symlink(&self, path: &str, target: &str) -> FsResult<InodeNumber> {
-        if !path.starts_with('/') {
-            return Err(FsError::InvalidArgument);
+    /// Map the ROMFS type code to a `FileType`.
+    fn file_type(&self) -> FileType {
+        match self.node_type {
+            ROMFH_DIR => FileType::Directory,
+            ROMFH_REG => FileType::Regular,
+            ROMFH_LNK => FileType::SymbolicLink,
+            ROMFH_BLK => FileType::BlockDevice,
+            ROMFH_CHR => FileType::CharacterDevice,
+            ROMFH_FIF => FileType::NamedPipe,
+            ROMFH_SCK => FileType::Socket,
+            _ => FileType::Regular,
         }
-        let (parent_path, name) = split_parent(path)?;
-        let parent_inode = self.resolve_path(&parent_path)?;
-        let offset = {
-            let mut off = self.next_offset.write();
-            let cur = *off;
-            *off = cur + 16 + ((target.len() as u32 + 15) & !15);
-            cur
-        };
-        let mut inodes = self.inodes.write();
-        let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
-        if parent.metadata.file_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-        if parent.entries.contains_key(&name) {
-            return Err(FsError::AlreadyExists);
-        }
-        let new_inode = self.allocate_inode();
-        let sym = RomfsInode::new_symlink(new_inode, offset, target);
-        parent.entries.insert(name.clone(), new_inode);
-        parent.metadata.modified = get_current_time();
-        inodes.insert(new_inode, sym);
-        self.path_map.write().insert(path.to_string(), new_inode);
-        let mut img = self.image_size.write();
-        *img = (*img).max(offset + 16);
-        Ok(new_inode)
     }
 
-    fn allocate_inode(&self) -> InodeNumber {
-        let mut next = self.next_inode.write();
-        let inode = *next;
-        *next += 1;
-        inode
+    /// Byte offset where file data begins (after the aligned name).
+    fn data_offset(&self, image: &[u8]) -> usize {
+        let name_len = Self::name_len(image, self.offset);
+        self.offset + align16(12 + name_len + 1)
     }
 
-    fn resolve_path(&self, path: &str) -> FsResult<InodeNumber> {
-        if let Some(&ino) = self.path_map.read().get(path) {
-            return Ok(ino);
-        }
-        if path == "/" {
-            return Ok(self.root_inode);
-        }
-        let components: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
-        let inodes = self.inodes.read();
-        let mut current = self.root_inode;
-        for component in components {
-            let entry = inodes.get(&current).ok_or(FsError::NotFound)?;
-            if entry.metadata.file_type != FileType::Directory {
-                return Err(FsError::NotADirectory);
+    /// Length of the null-terminated name (excluding the null byte).
+    fn name_len(image: &[u8], offset: usize) -> usize {
+        let mut i = offset + 12;
+        while i < image.len() {
+            if image[i] == 0 {
+                return i - (offset + 12);
             }
-            current = *entry.entries.get(component).ok_or(FsError::NotFound)?;
+            i += 1;
         }
-        Ok(current)
+        image.len() - (offset + 12)
+    }
+
+    /// Read the null-terminated name as a `String`.
+    fn name(&self, image: &[u8]) -> String {
+        let start = self.offset + 12;
+        let len = Self::name_len(image, self.offset);
+        core::str::from_utf8(&image[start..start + len])
+            .unwrap_or("")
+            .to_string()
     }
 }
 
-fn split_parent(path: &str) -> FsResult<(String, String)> {
-    let trimmed = path.trim_end_matches('/');
-    let idx = trimmed.rfind('/').ok_or(FsError::InvalidArgument)?;
-    let parent = if idx == 0 {
-        "/".to_string()
-    } else {
-        trimmed[..idx].to_string()
-    };
-    let name = trimmed[idx + 1..].to_string();
-    if name.is_empty() {
-        return Err(FsError::InvalidArgument);
+impl RomfsFileSystem {
+    /// Create a new ROMFS filesystem instance from a static image.
+    ///
+    /// Validates the magic, reads the big-endian total size, and locates
+    /// the root directory entry past the volume name.
+    pub fn new(device_id: u32, image: &'static [u8]) -> FsResult<Self> {
+        if image.len() < 16 + 8 {
+            return Err(FsError::InvalidArgument);
+        }
+        if &image[0..8] != ROMFS_MAGIC {
+            return Err(FsError::IoError);
+        }
+
+        // Big-endian total size.
+        let total_size = Self::read_be_u32(image, 8);
+
+        // Volume name starts at offset 16, null-terminated, 16-byte aligned.
+        let volname_start = 16;
+        let mut name_end = volname_start;
+        while name_end < image.len() && image[name_end] != 0 {
+            name_end += 1;
+        }
+        if name_end >= image.len() {
+            return Err(FsError::IoError);
+        }
+        let volname_field_len = name_end - volname_start + 1; // include null
+        let root_offset = volname_start + align16(volname_field_len);
+
+        if root_offset + 16 > image.len() {
+            return Err(FsError::IoError);
+        }
+
+        Ok(Self {
+            device_id,
+            image,
+            total_size,
+            root_inode: root_offset as InodeNumber,
+        })
     }
-    Ok((parent, name))
+
+    /// Read a big-endian u32 from the image.
+    fn read_be_u32(image: &[u8], offset: usize) -> u32 {
+        ((image[offset] as u32) << 24)
+            | ((image[offset + 1] as u32) << 16)
+            | ((image[offset + 2] as u32) << 8)
+            | (image[offset + 3] as u32)
+    }
+
+    /// Parse the node header at the given byte offset.
+    fn read_node(&self, offset: usize) -> FsResult<RomNode> {
+        if offset + 12 > self.image.len() {
+            return Err(FsError::NotFound);
+        }
+        let next = Self::read_be_u32(self.image, offset);
+        let spec = Self::read_be_u32(self.image, offset + 4);
+        Ok(RomNode {
+            offset,
+            next,
+            spec,
+            node_type: next & 0xf,
+        })
+    }
+
+    /// Iterate over the children of a directory node.
+    ///
+    /// `dir_offset` is the byte offset of the directory entry. The first
+    /// child is at `spec.info`; siblings are chained via the `next` field.
+    fn iter_children(&self, dir_offset: usize) -> Vec<RomNode> {
+        let mut children = Vec::new();
+        let dir = match self.read_node(dir_offset) {
+            Ok(d) => d,
+            Err(_) => return children,
+        };
+        let mut cur = dir.child_offset();
+        while cur != 0 && cur + 12 <= self.image.len() {
+            let node = match self.read_node(cur) {
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            children.push(node);
+            if node.is_last() {
+                break;
+            }
+            cur = node.next_offset();
+        }
+        children
+    }
+
+    /// Look up a single name within a directory's children.
+    fn lookup_in_dir(&self, dir_offset: usize, name: &str) -> FsResult<usize> {
+        for child in self.iter_children(dir_offset) {
+            if child.name(self.image) == name {
+                return Ok(child.offset);
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    /// Walk a path from the root and return the resulting node offset.
+    fn resolve(&self, path: &str) -> FsResult<usize> {
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut current = self.root_inode as usize;
+        for part in parts {
+            let node = self.read_node(current)?;
+            if node.node_type != ROMFH_DIR {
+                return Err(FsError::NotADirectory);
+            }
+            current = self.lookup_in_dir(current, part)?;
+        }
+        Ok(current)
+    }
 }
 
 impl FileSystem for RomfsFileSystem {
@@ -338,17 +250,15 @@ impl FileSystem for RomfsFileSystem {
     }
 
     fn statfs(&self) -> FsResult<FileSystemStats> {
-        let inodes = self.inodes.read();
-        let used = inodes.len() as u64;
-        let img = *self.image_size.read() as u64;
-        let total_blocks = (img + ROMFS_BLOCK_SIZE as u64 - 1) / ROMFS_BLOCK_SIZE as u64;
+        let block_size = 512u32;
+        let total_blocks = (self.total_size as u64) / block_size as u64;
         Ok(FileSystemStats {
-            total_blocks: total_blocks.max(used),
+            total_blocks,
             free_blocks: 0,
             available_blocks: 0,
-            total_inodes: used,
+            total_inodes: 0,
             free_inodes: 0,
-            block_size: ROMFS_BLOCK_SIZE,
+            block_size,
             max_filename_length: 255,
         })
     }
@@ -358,24 +268,28 @@ impl FileSystem for RomfsFileSystem {
     }
 
     fn open(&self, path: &str, _flags: OpenFlags) -> FsResult<InodeNumber> {
-        self.resolve_path(path)
+        let offset = self.resolve(path)?;
+        Ok(offset as InodeNumber)
     }
 
     fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
-        let inodes = self.inodes.read();
-        let entry = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        if entry.metadata.file_type != FileType::Regular {
+        let node = self.read_node(inode as usize)?;
+        if node.node_type == ROMFH_DIR {
             return Err(FsError::IsADirectory);
         }
-        let len = entry.content.len() as u64;
-        if offset >= len {
+        let data_off = node.data_offset(self.image);
+        let size = node.size();
+        if offset >= size {
             return Ok(0);
         }
-        let start = offset as usize;
-        let end = cmp::min(start + buffer.len(), entry.content.len());
-        let n = end - start;
-        buffer[..n].copy_from_slice(&entry.content[start..end]);
-        Ok(n)
+        let remaining = (size - offset) as usize;
+        let to_read = core::cmp::min(buffer.len(), remaining);
+        let src_start = data_off + offset as usize;
+        if src_start + to_read > self.image.len() {
+            return Err(FsError::IoError);
+        }
+        buffer[..to_read].copy_from_slice(&self.image[src_start..src_start + to_read]);
+        Ok(to_read)
     }
 
     fn write(&self, _inode: InodeNumber, _offset: u64, _buffer: &[u8]) -> FsResult<usize> {
@@ -383,9 +297,37 @@ impl FileSystem for RomfsFileSystem {
     }
 
     fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
-        let inodes = self.inodes.read();
-        let entry = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        Ok(entry.metadata.clone())
+        let node = self.read_node(inode as usize)?;
+        let file_type = node.file_type();
+        let size = if file_type == FileType::Directory {
+            0
+        } else {
+            node.size()
+        };
+        let permissions = match file_type {
+            FileType::Directory => FilePermissions::default_directory(),
+            FileType::SymbolicLink => FilePermissions::from_octal(0o777),
+            _ => FilePermissions::from_octal(0o444),
+        };
+        let device_id = match file_type {
+            FileType::BlockDevice | FileType::CharacterDevice => {
+                Some((node.spec >> 16) as u32)
+            }
+            _ => None,
+        };
+        Ok(FileMetadata {
+            inode,
+            file_type,
+            size,
+            permissions,
+            uid: 0,
+            gid: 0,
+            created: 0,
+            modified: 0,
+            accessed: 0,
+            link_count: 1,
+            device_id,
+        })
     }
 
     fn set_metadata(&self, _inode: InodeNumber, _metadata: &FileMetadata) -> FsResult<()> {
@@ -405,22 +347,19 @@ impl FileSystem for RomfsFileSystem {
     }
 
     fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
-        let inodes = self.inodes.read();
-        let dir = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        if dir.metadata.file_type != FileType::Directory {
+        let node = self.read_node(inode as usize)?;
+        if node.node_type != ROMFH_DIR {
             return Err(FsError::NotADirectory);
         }
-        let mut out = Vec::new();
-        for (name, &child_inode) in dir.entries.iter() {
-            if let Some(child) = inodes.get(&child_inode) {
-                out.push(DirectoryEntry {
-                    name: name.clone(),
-                    inode: child_inode,
-                    file_type: child.metadata.file_type,
-                });
-            }
+        let mut entries = Vec::new();
+        for child in self.iter_children(inode as usize) {
+            entries.push(DirectoryEntry {
+                name: child.name(self.image),
+                inode: child.offset as InodeNumber,
+                file_type: child.file_type(),
+            });
         }
-        Ok(out)
+        Ok(entries)
     }
 
     fn rename(&self, _old_path: &str, _new_path: &str) -> FsResult<()> {
@@ -432,16 +371,32 @@ impl FileSystem for RomfsFileSystem {
     }
 
     fn readlink(&self, path: &str) -> FsResult<String> {
-        let inode = self.resolve_path(path)?;
-        let inodes = self.inodes.read();
-        let entry = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        if entry.metadata.file_type != FileType::SymbolicLink {
+        let offset = self.resolve(path)?;
+        let node = self.read_node(offset)?;
+        if node.node_type != ROMFH_LNK {
             return Err(FsError::InvalidArgument);
         }
-        entry.symlink_target.clone().ok_or(FsError::IoError)
+        let data_off = node.data_offset(self.image);
+        let size = node.size() as usize;
+        if data_off + size > self.image.len() {
+            return Err(FsError::IoError);
+        }
+        let bytes = &self.image[data_off..data_off + size];
+        core::str::from_utf8(bytes)
+            .map(|s| s.to_string())
+            .map_err(|_| FsError::IoError)
     }
 
     fn sync(&self) -> FsResult<()> {
+        // ROMFS is read-only; nothing to sync.
         Ok(())
+    }
+}
+
+/// Expose the device id for callers that need it.
+impl RomfsFileSystem {
+    /// Return the device id this filesystem was mounted with.
+    pub fn device_id(&self) -> u32 {
+        self.device_id
     }
 }

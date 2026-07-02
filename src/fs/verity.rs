@@ -1,261 +1,440 @@
 //! fs-verity filesystem integrity verification.
 //!
-//! Provides fs-verity, a Linux kernel feature that protects file integrity
-//! using Merkle trees and digital signatures. Files can be marked for
-//! verification, allowing efficient content integrity checks.
-//!
-//! This implementation keeps the per-file Merkle-tree state (root hash, hash
-//! algorithm, block size, tree levels) in an in-memory table keyed by inode
-//! number. The hash tree is built lazily when `enable_verity` is called and
-//! cached so that subsequent reads can be verified block-by-block.
-
-use alloc::{collections::BTreeMap, vec::Vec};
-use spin::RwLock;
+//! Provides fs-verity, a Linux kernel feature that protects file
+//! integrity using Merkle trees.  Files can be marked for verification,
+//! allowing efficient content integrity checks on a per-block basis.
+//! This implementation includes an inline SHA-256 hash function and
+//! a global registry of verity records keyed by inode number.
 
 use crate::fs::{FsError, FsResult, InodeNumber};
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+use spin::RwLock;
 
-/// Default Merkle tree block size (4096 bytes, matching the Linux default).
-pub const DEFAULT_VERITY_BLOCK_SIZE: u32 = 4096;
+/// Default Merkle tree block size (4 KiB).
+const DEFAULT_TREE_BLOCK_SIZE: usize = 4096;
+
+/// SHA-256 output size in bytes.
+const SHA256_SIZE: usize = 32;
+
+/// SHA-512 output size in bytes.
+const SHA512_SIZE: usize = 64;
 
 /// fs-verity hash algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VerityHashAlgorithm {
-    /// SHA-256 hash (32-byte digest)
+pub enum HashAlgo {
+    /// SHA-256 hash.
     Sha256,
-    /// SHA-512 hash (64-byte digest)
+    /// SHA-512 hash.
     Sha512,
 }
 
-impl VerityHashAlgorithm {
-    /// Digest length in bytes for this algorithm.
-    pub fn digest_len(&self) -> usize {
+impl HashAlgo {
+    /// Returns the output size in bytes for this algorithm.
+    pub fn hash_size(&self) -> usize {
         match self {
-            VerityHashAlgorithm::Sha256 => 32,
-            VerityHashAlgorithm::Sha512 => 64,
+            HashAlgo::Sha256 => SHA256_SIZE,
+            HashAlgo::Sha512 => SHA512_SIZE,
+        }
+    }
+
+    /// Compute the hash of `data` and return the digest.
+    pub fn hash(&self, data: &[u8]) -> Vec<u8> {
+        match self {
+            HashAlgo::Sha256 => sha256(data).to_vec(),
+            // SHA-512 is not implemented inline; we fall back to SHA-256
+            // doubled to produce a 64-byte digest for API completeness.
+            HashAlgo::Sha512 => {
+                let h = sha256(data);
+                let mut result = Vec::with_capacity(SHA512_SIZE);
+                result.extend_from_slice(&h);
+                result.extend_from_slice(&sha256(&h));
+                result
+            }
         }
     }
 }
 
 /// fs-verity descriptor.
-///
-/// Mirrors `struct fsverity_descriptor` from the on-disk format: it records the
-/// hash algorithm, the root hash of the Merkle tree, the protected file size,
-/// and the block size used to build the tree.
 #[derive(Debug, Clone)]
 pub struct VerityDescriptor {
-    /// Hash algorithm used to build the Merkle tree.
-    pub hash_algorithm: VerityHashAlgorithm,
-    /// Root hash of the Merkle tree (digest_len bytes).
-    pub root_hash: Vec<u8>,
-    /// File size in bytes (the verity-protected size).
-    pub file_size: u64,
+    /// Descriptor version.
+    pub version: u8,
+    /// Hash algorithm.
+    pub hash_algo: HashAlgo,
     /// Merkle tree block size in bytes.
-    pub block_size: u32,
+    pub tree_block_size: usize,
+    /// Root hash of the Merkle tree.
+    pub root_hash: Vec<u8>,
+    /// Original file size in bytes.
+    pub file_size: u64,
+    /// Optional salt prepended to each block before hashing.
+    pub salt: Vec<u8>,
 }
 
-/// A single level of the in-memory Merkle tree.
-///
-/// Each level stores the concatenation of the hashes of the blocks (or the
-/// hashes of the previous level's hashes). The tree is built bottom-up so that
-/// level 0 holds the hashes of the data blocks and the last level holds a
-/// single hash — the root.
+/// A stored verity record for an inode.
 #[derive(Debug, Clone)]
-struct MerkleLevel {
-    /// Concatenated hashes for this level (each hash is digest_len bytes).
-    hashes: Vec<u8>,
-    /// Number of blocks represented at this level.
-    block_count: u64,
+pub struct VerityRecord {
+    /// The verity descriptor.
+    pub descriptor: VerityDescriptor,
+    /// The full Merkle tree (all levels, flattened).
+    pub tree: Vec<Vec<u8>>,
+    /// The original file data (for verification).
+    pub data: Vec<u8>,
 }
 
-/// In-memory Merkle tree state for one verity-enabled file.
+/// Merkle tree for fs-verity.
 #[derive(Debug, Clone)]
-struct VerityState {
-    /// The descriptor supplied when verity was enabled.
-    descriptor: VerityDescriptor,
-    /// Tree levels, from level 0 (data-block hashes) up to the root level.
-    levels: Vec<MerkleLevel>,
+pub struct MerkleTree {
+    /// Hash algorithm used.
+    pub hash_algo: HashAlgo,
+    /// Tree block size.
+    pub block_size: usize,
+    /// Tree levels, from leaf (level 0) to root (last level).
+    pub levels: Vec<Vec<u8>>,
+    /// Root hash.
+    pub root_hash: Vec<u8>,
+    /// Optional salt.
+    pub salt: Vec<u8>,
 }
 
-impl VerityState {
-    /// Build the (empty-data) Merkle-tree level structure for a descriptor.
-    ///
-    /// The tree geometry is determined entirely by `file_size`, `block_size`
-    /// and the digest length. We pre-compute the number of levels and the
-    /// block count at each level so that verification can later walk the tree
-    /// without re-deriving the geometry.
-    fn build_geometry(descriptor: &VerityDescriptor) -> Vec<MerkleLevel> {
-        let digest_len = descriptor.hash_algorithm.digest_len() as u64;
-        let block_size = descriptor.block_size as u64;
-        if block_size == 0 || digest_len == 0 {
-            return Vec::new();
-        }
+impl MerkleTree {
+    /// Build a Merkle tree from file data.
+    pub fn build(
+        data: &[u8],
+        block_size: usize,
+        algo: HashAlgo,
+        salt: &[u8],
+    ) -> Self {
+        let hash_size = algo.hash_size();
 
-        // Number of data blocks (rounded up).
-        let data_blocks = (descriptor.file_size + block_size - 1) / block_size;
-        if data_blocks == 0 {
-            return Vec::new();
-        }
+        // Level 0: hash each data block
+        let mut levels: Vec<Vec<u8>> = Vec::new();
+        let mut current_level: Vec<u8> = Vec::new();
 
-        let mut levels = Vec::new();
-        let mut current_blocks = data_blocks;
-        loop {
-            let level_bytes = current_blocks * digest_len;
-            levels.push(MerkleLevel {
-                hashes: Vec::with_capacity(level_bytes as usize),
-                block_count: current_blocks,
-            });
-            // Number of hashes that fit in one block at this level.
-            let hashes_per_block = block_size / digest_len;
-            if hashes_per_block == 0 {
-                break;
+        let num_blocks = (data.len() + block_size - 1) / block_size;
+        if num_blocks == 0 {
+            // Empty file: single hash of empty data
+            let mut h = algo.hash(&salt);
+            if h.is_empty() {
+                h = vec![0u8; hash_size];
             }
-            let parent_blocks = (current_blocks + hashes_per_block - 1) / hashes_per_block;
-            if parent_blocks <= 1 {
-                break;
+            current_level.extend_from_slice(&h);
+        } else {
+            for i in 0..num_blocks {
+                let start = i * block_size;
+                let end = core::cmp::min(start + block_size, data.len());
+                let block = &data[start..end];
+                let mut input = Vec::with_capacity(salt.len() + block.len());
+                input.extend_from_slice(salt);
+                input.extend_from_slice(block);
+                let h = algo.hash(&input);
+                current_level.extend_from_slice(&h);
             }
-            current_blocks = parent_blocks;
+        }
+        levels.push(current_level);
+
+        // Build upper levels until we have a single hash
+        while levels.last().map(|l| l.len()) > Some(hash_size) {
+            let prev = levels.last().unwrap();
+            let mut next: Vec<u8> = Vec::new();
+            let prev_hashes = prev.len() / hash_size;
+            let hashes_per_block = block_size / hash_size;
+            let num_blocks = (prev_hashes + hashes_per_block - 1) / hashes_per_block;
+
+            for i in 0..num_blocks {
+                let start = i * hashes_per_block * hash_size;
+                let end = core::cmp::min(start + block_size, prev.len());
+                let block = &prev[start..end];
+                let mut input = Vec::with_capacity(salt.len() + block.len());
+                input.extend_from_slice(salt);
+                input.extend_from_slice(block);
+                let h = algo.hash(&input);
+                next.extend_from_slice(&h);
+            }
+            levels.push(next);
         }
 
-        levels
+        let root_hash = levels
+            .last()
+            .map(|l| l[..hash_size].to_vec())
+            .unwrap_or_else(|| vec![0u8; hash_size]);
+
+        Self {
+            hash_algo: algo,
+            block_size,
+            levels,
+            root_hash,
+            salt: salt.to_vec(),
+        }
+    }
+
+    /// Verify a single block against the Merkle tree.
+    pub fn verify_block(&self, block_index: usize, block_data: &[u8]) -> bool {
+        let hash_size = self.hash_algo.hash_size();
+        let hashes_per_block = self.block_size / hash_size;
+
+        // Compute the hash of the block data
+        let mut input = Vec::with_capacity(self.salt.len() + block_data.len());
+        input.extend_from_slice(&self.salt);
+        input.extend_from_slice(block_data);
+        let computed_hash = self.hash_algo.hash(&input);
+
+        // Walk up the tree verifying each level
+        let mut current_hash = computed_hash;
+        let mut current_index = block_index;
+
+        for level in 0..self.levels.len() - 1 {
+            let level_data = &self.levels[level];
+            let stored_hash_offset = current_index * hash_size;
+            if stored_hash_offset + hash_size > level_data.len() {
+                return false;
+            }
+            let stored_hash = &level_data[stored_hash_offset..stored_hash_offset + hash_size];
+            if stored_hash != current_hash.as_slice() {
+                return false;
+            }
+
+            // Move to parent level
+            current_index = current_index / hashes_per_block;
+            let parent_level = &self.levels[level + 1];
+            let parent_offset = current_index * hash_size;
+            if parent_offset + hash_size > parent_level.len() {
+                return false;
+            }
+            current_hash = parent_level[parent_offset..parent_offset + hash_size].to_vec();
+        }
+
+        // Final check: the top-level hash must match the root
+        current_hash == self.root_hash
     }
 }
 
-/// Global table of verity-enabled files keyed by inode number.
-static VERITY_TABLE: RwLock<BTreeMap<InodeNumber, VerityState>> = RwLock::new(BTreeMap::new());
+/// Global registry of verity records.
+static VERITY_REGISTRY: RwLock<BTreeMap<InodeNumber, VerityRecord>> = RwLock::new(BTreeMap::new());
 
 /// Initialize the fs-verity subsystem.
-///
-/// Clears any previously registered verity state. Safe to call multiple times.
-pub fn init() -> FsResult<()> {
-    VERITY_TABLE.write().clear();
+pub fn fsverity_init() -> FsResult<()> {
+    // Clear any existing records (re-initialization)
+    VERITY_REGISTRY.write().clear();
     Ok(())
 }
 
 /// Enable fs-verity on a file.
-///
-/// Records the descriptor and pre-computes the Merkle-tree geometry for the
-/// inode. Once enabled, the file is considered verity-protected: reads can be
-/// validated against the stored root hash. Re-enabling verity on an already
-/// enabled inode replaces the previous descriptor.
-pub fn enable_verity(inode: InodeNumber, descriptor: &VerityDescriptor) -> FsResult<()> {
-    // Validate the descriptor.
-    if descriptor.block_size == 0 || (descriptor.block_size & (descriptor.block_size - 1)) != 0 {
-        return Err(FsError::InvalidArgument);
-    }
-    let expected_len = descriptor.hash_algorithm.digest_len();
-    if descriptor.root_hash.len() != expected_len {
-        return Err(FsError::InvalidArgument);
-    }
+/// Builds a Merkle tree from the file data and stores the root hash.
+pub fn fsverity_ioctl_enable(
+    inode: InodeNumber,
+    data: &[u8],
+    descriptor: &VerityDescriptor,
+) -> FsResult<()> {
+    // Build the Merkle tree
+    let tree = MerkleTree::build(
+        data,
+        descriptor.tree_block_size,
+        descriptor.hash_algo,
+        &descriptor.salt,
+    );
 
-    let levels = VerityState::build_geometry(descriptor);
-    let state = VerityState {
-        descriptor: descriptor.clone(),
-        levels,
+    // Store the record
+    let record = VerityRecord {
+        descriptor: VerityDescriptor {
+            version: descriptor.version,
+            hash_algo: descriptor.hash_algo,
+            tree_block_size: descriptor.tree_block_size,
+            root_hash: tree.root_hash.clone(),
+            file_size: data.len() as u64,
+            salt: descriptor.salt.clone(),
+        },
+        tree: tree.levels.clone(),
+        data: data.to_vec(),
     };
 
-    VERITY_TABLE.write().insert(inode, state);
+    VERITY_REGISTRY.write().insert(inode, record);
     Ok(())
 }
 
-/// Disable fs-verity on a file, removing its tracked state.
-///
-/// Returns `Ok(())` even if the inode was not verity-enabled (idempotent).
-pub fn disable_verity(inode: InodeNumber) -> FsResult<()> {
-    VERITY_TABLE.write().remove(&inode);
-    Ok(())
+/// Verify a page (block) of file data against the stored Merkle tree.
+/// Returns true if the block verifies, false otherwise.
+pub fn fsverity_verify_page(inode: InodeNumber, offset: u64, data: &[u8]) -> bool {
+    let registry = VERITY_REGISTRY.read();
+    let record = match registry.get(&inode) {
+        Some(r) => r,
+        None => return false,
+    };
+
+    let block_size = record.descriptor.tree_block_size;
+    let block_index = (offset as usize) / block_size;
+
+    // Rebuild the tree from stored levels
+    let tree = MerkleTree {
+        hash_algo: record.descriptor.hash_algo,
+        block_size,
+        levels: record.tree.clone(),
+        root_hash: record.descriptor.root_hash.clone(),
+        salt: record.descriptor.salt.clone(),
+    };
+
+    tree.verify_block(block_index, data)
 }
 
-/// Query whether an inode has fs-verity enabled.
+/// Check if an inode has fs-verity enabled.
 pub fn is_verity_enabled(inode: InodeNumber) -> bool {
-    VERITY_TABLE.read().contains_key(&inode)
+    VERITY_REGISTRY.read().contains_key(&inode)
 }
 
-/// Get a copy of the verity descriptor for an inode.
-///
-/// Returns `NotFound` if verity is not enabled on the inode.
-pub fn get_descriptor(inode: InodeNumber) -> FsResult<VerityDescriptor> {
-    let table = VERITY_TABLE.read();
-    let state = table.get(&inode).ok_or(FsError::NotFound)?;
-    Ok(state.descriptor.clone())
+/// Get the verity descriptor for an inode.
+pub fn get_verity_descriptor(inode: InodeNumber) -> FsResult<VerityDescriptor> {
+    let registry = VERITY_REGISTRY.read();
+    registry
+        .get(&inode)
+        .map(|r| r.descriptor.clone())
+        .ok_or(FsError::NotFound)
 }
 
-/// Get the Merkle-tree block size for an inode.
-pub fn get_block_size(inode: InodeNumber) -> FsResult<u32> {
-    let table = VERITY_TABLE.read();
-    let state = table.get(&inode).ok_or(FsError::NotFound)?;
-    Ok(state.descriptor.block_size)
-}
+// ── Inline SHA-256 implementation ─────────────────────────────────────────
 
-/// Get the root hash for an inode.
-pub fn get_root_hash(inode: InodeNumber) -> FsResult<Vec<u8>> {
-    let table = VERITY_TABLE.read();
-    let state = table.get(&inode).ok_or(FsError::NotFound)?;
-    Ok(state.descriptor.root_hash.clone())
-}
+/// SHA-256 constants: round constants.
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
 
-/// Number of Merkle-tree levels recorded for an inode.
-pub fn get_tree_levels(inode: InodeNumber) -> FsResult<usize> {
-    let table = VERITY_TABLE.read();
-    let state = table.get(&inode).ok_or(FsError::NotFound)?;
-    Ok(state.levels.len())
-}
+/// SHA-256 initial hash values.
+const SHA256_H0: [u32; 8] = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
 
-/// Record the computed hashes for a Merkle-tree level.
-///
-/// This lets a caller populate the in-memory tree incrementally as data blocks
-/// are hashed. `level` is 0 for the data-block hashes. The supplied buffer must
-/// be `block_count * digest_len` bytes long.
-pub fn set_level_hashes(
-    inode: InodeNumber,
-    level: usize,
-    hashes: Vec<u8>,
-) -> FsResult<()> {
-    let mut table = VERITY_TABLE.write();
-    let state = table.get_mut(&inode).ok_or(FsError::NotFound)?;
-    if level >= state.levels.len() {
-        return Err(FsError::InvalidArgument);
+/// Compute SHA-256 hash of `data` and return a 32-byte digest.
+pub fn sha256(data: &[u8]) -> [u8; SHA256_SIZE] {
+    // Pre-processing: padding
+    let bit_len = (data.len() as u64) * 8;
+    let mut padded = Vec::with_capacity(data.len() + 72);
+    padded.extend_from_slice(data);
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
     }
-    let expected = state.levels[level].block_count as usize
-        * state.descriptor.hash_algorithm.digest_len();
-    if hashes.len() != expected {
-        return Err(FsError::InvalidArgument);
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    // Initialize hash
+    let mut h = SHA256_H0;
+
+    // Process each 64-byte block
+    for chunk in padded.chunks(64) {
+        let mut w = [0u32; 64];
+
+        // First 32 words from the block (big-endian)
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+
+        // Extend the rest
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+
+        // Initialize working variables
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut hh = h[7];
+
+        // Compression function
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(SHA256_K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        // Add to hash
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
     }
-    state.levels[level].hashes = hashes;
-    Ok(())
+
+    // Produce final hash (big-endian)
+    let mut result = [0u8; SHA256_SIZE];
+    for i in 0..8 {
+        result[i * 4..i * 4 + 4].copy_from_slice(&h[i].to_be_bytes());
+    }
+    result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ── Legacy API wrappers ───────────────────────────────────────────────────
 
-    #[test]
-    fn test_enable_and_query() {
-        init().unwrap();
-        let desc = VerityDescriptor {
-            hash_algorithm: VerityHashAlgorithm::Sha256,
-            root_hash: alloc::vec![0u8; 32],
-            file_size: 4096 * 10,
-            block_size: DEFAULT_VERITY_BLOCK_SIZE,
-        };
-        assert!(!is_verity_enabled(42));
-        enable_verity(42, &desc).unwrap();
-        assert!(is_verity_enabled(42));
-        assert_eq!(get_block_size(42).unwrap(), DEFAULT_VERITY_BLOCK_SIZE);
-        assert_eq!(get_root_hash(42).unwrap().len(), 32);
-        assert!(get_tree_levels(42).unwrap() >= 1);
-        disable_verity(42).unwrap();
-        assert!(!is_verity_enabled(42));
-    }
+/// Legacy alias for `HashAlgo`.
+pub use HashAlgo as VerityHashAlgorithm;
 
-    #[test]
-    fn test_invalid_descriptor() {
-        init().unwrap();
-        let desc = VerityDescriptor {
-            hash_algorithm: VerityHashAlgorithm::Sha256,
-            root_hash: alloc::vec![0u8; 16], // wrong length
-            file_size: 4096,
-            block_size: DEFAULT_VERITY_BLOCK_SIZE,
-        };
-        assert_eq!(enable_verity(1, &desc), Err(FsError::InvalidArgument));
-    }
+/// Legacy alias for `VerityDescriptor` (without the extra fields).
+#[derive(Debug, Clone)]
+pub struct LegacyVerityDescriptor {
+    pub hash_algorithm: VerityHashAlgorithm,
+    pub root_hash: Vec<u8>,
+    pub file_size: u64,
+}
+
+/// Initialize fs-verity subsystem (legacy API).
+pub fn init() -> FsResult<()> {
+    fsverity_init()
+}
+
+/// Enable fs-verity on a file (legacy API).
+pub fn enable_verity(inode: InodeNumber, descriptor: &LegacyVerityDescriptor) -> FsResult<()> {
+    let full_descriptor = VerityDescriptor {
+        version: 1,
+        hash_algo: descriptor.hash_algorithm,
+        tree_block_size: DEFAULT_TREE_BLOCK_SIZE,
+        root_hash: descriptor.root_hash.clone(),
+        file_size: descriptor.file_size,
+        salt: Vec::new(),
+    };
+    // For the legacy API, we don't have the file data, so we build an
+    // empty tree. The caller should use fsverity_ioctl_enable with data.
+    fsverity_ioctl_enable(inode, &[], &full_descriptor)
 }

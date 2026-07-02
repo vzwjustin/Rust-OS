@@ -27,6 +27,11 @@ if [ -z "$DISPLAY_MODE" ]; then
     fi
 fi
 
+# Prefer KVM hardware acceleration, falling back to TCG automatically if
+# /dev/kvm isn't available (QEMU's "kvm:tcg" fallback syntax). Override with
+# RUSTOS_QEMU_ACCEL=tcg to force software emulation.
+ACCEL_MODE="${RUSTOS_QEMU_ACCEL:-kvm:tcg}"
+
 qemu-system-x86_64 \
     -drive format=raw,file="$KERNEL_IMAGE" \
     -m 256M \
@@ -34,6 +39,5 @@ qemu-system-x86_64 \
     -serial stdio \
     -display "$DISPLAY_MODE" \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -machine pc \
-    -cpu qemu64,+lm,+nx \
-    -enable-kvm
+    -machine pc,accel="$ACCEL_MODE" \
+    -cpu qemu64,+lm,+nx

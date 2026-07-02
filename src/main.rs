@@ -176,9 +176,7 @@ mod gnome;
 mod gnome_overlay;
 mod installer;
 mod mutter;
-mod mutter_bridge;
-mod mutter_port; // TEMP: build-verification only // bridges framebuffer::Rect <-> mutter_port::mtk::Rectangle
-                 // Include GNOME foundation subsystems
+// Include GNOME foundation subsystems
 mod dbus;
 mod user_sched;
 mod wayland;
@@ -1220,6 +1218,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
         early_serial_write_str("RustOS: Phase 8 complete\r\n");
 
+        // Enable timer interrupt now that filesystem init is done
+        early_serial_write_str("RustOS: Enabling timer interrupt...\r\n");
+        interrupts::enable_timer_interrupt();
+        early_serial_write_str("RustOS: Timer interrupt enabled\r\n");
+
         // Initialize Linux compatibility layer (file_ops, process_ops, etc.)
         early_serial_write_str("RustOS: Initializing Linux compatibility layer...\r\n");
         linux_compat::init_linux_compat();
@@ -1279,6 +1282,16 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Register block devices in /dev (devfs must be mounted first in Phase 8)
         crate::fs::devfs::register_block_devices();
+
+        // Device-manager pass: populate /dev nodes for devices registered in
+        // the unified device model (drivers::base) that devfs doesn't
+        // already hardcode (e.g. /dev/input0). Must run after devfs is
+        // mounted and after the per-subsystem base::register_device_simple()
+        // calls above/earlier in boot have populated the registry, and
+        // before spawn_userspace_init() so /dev/tty1 (hardcoded in
+        // DevFs::new()) and any input nodes exist before init's getty
+        // service tries to use them.
+        crate::drivers::device_manager::populate_dev_nodes();
 
         // Scan for Linux md (RAID) arrays on storage devices and register
         // them as block devices (major 9).  Runs after storage detection
@@ -1742,6 +1755,48 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             );
         }
 
+        // Gate entry into the userspace session loop on init (PID 1) actually
+        // reaching steady state, rather than the coincidental same-instant
+        // timing of `spawn_userspace_init()` returning. Stage-1 init
+        // (`userspace/init/src/main.rs`) writes `/run/init.ready` once all of
+        // its services have been launched (forked/exec'd) at least once,
+        // right before entering its reap loop. Poll for that marker for up to
+        // ~2s using the same tick-based `crate::time` primitives used
+        // elsewhere in the boot sequence (`crate::time::sleep_ms` /
+        // `crate::time::uptime_ms`); on timeout, fall through to the existing
+        // kernel-desktop fallback path exactly as the `!userspace_spawned`
+        // case already does.
+        if userspace_spawned {
+            const INIT_READY_TIMEOUT_MS: u64 = 2000;
+            const INIT_READY_POLL_INTERVAL_MS: u64 = 20;
+            const INIT_READY_PATH: &str = "/run/init.ready";
+
+            let start_ms = crate::time::uptime_ms();
+            let deadline = start_ms + INIT_READY_TIMEOUT_MS;
+            let mut ready = false;
+            loop {
+                let stat_result = crate::vfs::vfs_stat(INIT_READY_PATH);
+                if stat_result.is_ok() {
+                    ready = true;
+                    break;
+                }
+                if crate::time::uptime_ms() >= deadline {
+                    break;
+                }
+                crate::time::sleep_ms(INIT_READY_POLL_INTERVAL_MS);
+            }
+
+            if ready {
+                crate::serial_println!("Boot: init readiness observed (/run/init.ready)");
+            } else {
+                crate::serial_println!(
+                    "Boot: timed out waiting for init readiness ({}ms), falling back to kernel desktop",
+                    INIT_READY_TIMEOUT_MS
+                );
+                userspace_spawned = false;
+            }
+        }
+
         // Kernel installer wizard is fallback when userspace GTK installer did not spawn
         if installer::is_install_mode() && !userspace_spawned {
             crate::serial_println!("Boot: entering kernel installer wizard (no userspace init)");
@@ -1764,17 +1819,13 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             );
         }
 
-        // Enable timer interrupts only after boot-critical process, desktop, and
-        // userspace handoff infrastructure exists. IRQ0 can enter scheduler and
-        // bottom-half paths, so unmasking it earlier makes boot timing-sensitive.
-        early_serial_write_str("RustOS: Enabling timer interrupt...\r\n");
-        interrupts::enable_timer_interrupt();
-        early_serial_write_str("RustOS: Timer interrupt enabled\r\n");
-
-        // Start health monitoring after the boot-critical subsystems are initialized.
-        health::init_health_monitoring();
-
-        // Launch appropriate desktop environment
+        // Launch appropriate desktop environment.
+        //
+        // Prefer the real userspace session (GNOME via Wayland/Mutter,
+        // signaled by /run/init.ready above) whenever it spawned — the
+        // kernel-rendered window_manager shell (`desktop::render_desktop()`,
+        // `src/desktop/window_manager.rs`) is only a fallback for when
+        // userspace init didn't spawn or timed out waiting for readiness.
         if userspace_spawned {
             // Userspace init (GNOME) is running - don't launch the kernel
             // desktop.  Enter a minimal compositor/idle loop that services
@@ -1784,11 +1835,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             userspace_session_loop()
         } else if use_graphics_desktop && desktop_result.window_manager_ready {
             crate::serial_println!(
-                "desktop: {}x{}x{} gpu={}",
+                "desktop: {}x{}x{} gpu={} (window_manager shell active, userspace_spawned={})",
                 graphics_result.width,
                 graphics_result.height,
                 graphics_result.bpp,
-                graphics_result.gpu_accelerated
+                graphics_result.gpu_accelerated,
+                userspace_spawned
             );
 
             // Enter modern desktop main loop
@@ -2275,7 +2327,12 @@ fn userspace_init_idle_loop() -> ! {
     }
 }
 
-/// Minimal compositor/idle loop for userspace sessions (GNOME).
+/// Fallback compositor/idle loop for userspace sessions (GNOME) when the
+/// kernel window_manager desktop (`modern_desktop_main_loop`) is NOT the
+/// active path — see the boot-mode selection comment above the call sites in
+/// `main()` for the current precedence (window_manager shell is preferred
+/// whenever the 32bpp framebuffer desktop is available; this loop only runs
+/// as a fallback when it isn't).
 ///
 /// Unlike `modern_desktop_main_loop`, this does NOT render a kernel desktop.
 /// It only:
@@ -2435,23 +2492,24 @@ fn modern_desktop_main_loop() -> ! {
         // Forward kernel input events to connected Wayland clients
         wayland::poll_input();
 
-        // Launch the in-kernel Mutter client once the compositor is ready
-        if update_counter == 1 {
-            log_debug!(
-                "mutter",
-                "readiness: overlay={} wayland={} handshake={} should_launch={}",
-                crate::gnome_overlay::is_ready(),
-                wayland::is_ready(),
-                wayland::server::is_handshake_ready(),
-                mutter::should_launch()
-            );
-        }
-        if mutter::should_launch() {
-            log_debug!("mutter", "launching in-kernel Mutter client");
-            if let Err(e) = mutter::launch_client() {
-                log_debug!("mutter", "client launch failed: {}", e);
-            }
-        }
+        // NOTE: `mutter.rs`'s synthetic Wayland client (bare top bar + dock +
+        // 5 flat icon squares) is intentionally NOT launched here. This loop
+        // renders the full `desktop::render_desktop()` (window_manager.rs)
+        // GNOME-Shell-style kernel desktop below, which already draws a
+        // proper panel, dock, activities overview, app grid, and quick
+        // settings. Launching mutter's client on top would paint a second,
+        // visually inferior top bar/dock directly over this one (both start
+        // at (0,0)). `window_manager.rs` is the single source of shell
+        // chrome for this loop; `wayland::render_clients()` below still
+        // composites any *other* real Wayland client surfaces on top of it.
+        //
+        // Remaining integration gap: real Wayland client windows (once a
+        // full userspace GNOME session draws actual app windows over this
+        // socket) are blitted by `wayland::render_clients()` but are not yet
+        // represented as tracked `desktop::Window` entries in
+        // `window_manager.rs` (no shared window list, no window-manager
+        // decorations/focus/snapping for them). Fully unifying Wayland
+        // client surfaces with window_manager's window model is future work.
 
         // ====================================================================
         // Desktop Update Phase
@@ -2463,8 +2521,6 @@ fn modern_desktop_main_loop() -> ! {
         // Update desktop state periodically (clock, stats, file listings)
         if update_counter.is_multiple_of(500) {
             desktop::update_desktop();
-            // Refresh the in-kernel Mutter client's top bar (clock updates)
-            mutter::update_client();
         }
 
         // ====================================================================

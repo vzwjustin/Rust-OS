@@ -1,14 +1,14 @@
-//! Persistent storage filesystem.
+//! Persistent storage filesystem (pstore).
 //!
-//! Implements pstore (persistent storage filesystem), which exposes persistent
-//! memory regions (ramoops, NVRAM, UEFI variables, SELinux policy) as a
-//! read-only pseudofilesystem for crash logs and diagnostics.
+//! Provides a virtual filesystem that exposes persistent kernel crash logs
+//! and diagnostic messages. In Linux, pstore is backed by ramoops, NVRAM,
+//! UEFI variables, or other backend storage drivers. This implementation
+//! keeps entries in an in-memory `BTreeMap` so that crash logs recorded
+//! during the current boot are visible under the pstore mount and survive
+//! `sync`/`flush` calls. A real backend driver would plug in by loading
+//! entries into the store at init time.
 //!
-//! This in-memory implementation tracks a list of records, each with a type
-//! and opaque payload. The filesystem presents the records as regular files
-//! under the root directory. Writes and directory creation are rejected because
-//! pstore is read-only (records are populated by the backend, not by userspace
-//! writes through the VFS).
+//! See linux-master `fs/pstore/` for the reference implementation.
 
 use super::{
     get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
@@ -20,114 +20,92 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::cmp;
 use spin::RwLock;
 
-/// PStore record type (mirrors `enum pstore_type_id`).
+/// Root inode number for the pstore filesystem.
+const ROOT_INODE: InodeNumber = 1;
+
+/// First inode number allocated for pstore entries.
+const FIRST_ENTRY_INODE: InodeNumber = 2;
+
+/// Maximum number of pstore entries before older ones are pruned.
+const MAX_ENTRIES: usize = 256;
+
+/// The category of a persistent store entry, mirroring Linux's
+/// `enum pstore_type_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PStoreRecordType {
-    /// Kernel crash log (dmesg).
+pub enum PStoreType {
+    /// Kernel dmesg / oops / panic log.
     Dmesg,
-    /// Console output.
+    /// Console output captured across reboots.
     Console,
-    /// Ftrace output.
+    /// Function tracing output.
     Ftrace,
-    /// Userspace mtdoops.
-    Mtdoops,
-    /// Platform-specific (e.g. EFI variables).
-    Platform,
-    /// Frontend-specific.
+    /// Arbitrary userspace-defined record.
     Pmsg,
-    /// Powerpc OPAL.
-    PowerpcOpal,
+    /// Other / unspecified backend record.
+    Other,
 }
 
-impl PStoreRecordType {
-    /// Filename prefix used for the record type.
-    pub fn prefix(&self) -> &'static str {
+impl PStoreType {
+    /// Filename prefix used for each record type, matching Linux's
+    /// `pstore_type_to_name` convention.
+    fn prefix(self) -> &'static str {
         match self {
-            PStoreRecordType::Dmesg => "dmesg",
-            PStoreRecordType::Console => "console",
-            PStoreRecordType::Ftrace => "ftrace",
-            PStoreRecordType::Mtdoops => "mtdoops",
-            PStoreRecordType::Platform => "platform",
-            PStoreRecordType::Pmsg => "pmsg",
-            PStoreRecordType::PowerpcOpal => "opal",
+            PStoreType::Dmesg => "dmesg",
+            PStoreType::Console => "console",
+            PStoreType::Ftrace => "ftrace",
+            PStoreType::Pmsg => "pmsg",
+            PStoreType::Other => "pstore",
         }
     }
 }
 
-/// A persistent store record.
+/// A single persistent store record.
 #[derive(Debug, Clone)]
-pub struct PStoreRecord {
-    /// Record type.
-    pub record_type: PStoreRecordType,
-    /// Record id (monotonic per type).
-    pub id: u64,
-    /// Record payload.
+pub struct PStoreEntry {
+    /// Entry name (filename visible under the pstore mount).
+    pub name: String,
+    /// Raw record payload.
     pub data: Vec<u8>,
-    /// Timestamp (in ticks) when the record was captured.
+    /// Creation timestamp (ms since boot).
     pub timestamp: u64,
+    /// Record category.
+    pub record_type: PStoreType,
+    /// Synthetic inode number.
+    pub inode: InodeNumber,
 }
 
-/// In-memory inode backing a pstore record.
-#[derive(Debug, Clone)]
-struct PStoreInode {
-    /// Inode metadata.
-    metadata: FileMetadata,
-    /// Record payload (for regular files).
-    content: Vec<u8>,
-    /// Directory entries (for the root directory).
-    entries: BTreeMap<String, InodeNumber>,
-}
-
-/// PStore filesystem implementation.
+/// Persistent store filesystem.
+///
+/// All entries live in a single flat directory (the pstore root). The
+/// filesystem is read-mostly: new crash logs are appended via `write`
+/// or `create`, and `unlink` removes a record. Directory operations
+/// (`mkdir`, `rmdir`, `rename`, `symlink`, `readlink`) are not supported,
+/// matching the real pstore filesystem semantics.
 #[derive(Debug)]
-pub struct PStoreFileSystem {
-    /// All inodes keyed by inode number.
-    inodes: RwLock<BTreeMap<InodeNumber, PStoreInode>>,
-    /// Next inode number to allocate.
+pub struct PStoreFs {
+    entries: RwLock<BTreeMap<String, PStoreEntry>>,
+    /// Reverse lookup: inode -> name, kept in sync with `entries`.
+    inodes: RwLock<BTreeMap<InodeNumber, String>>,
     next_inode: RwLock<InodeNumber>,
-    /// Root directory inode number.
-    root_inode: InodeNumber,
 }
 
-impl PStoreFileSystem {
-    /// Create a new PStore filesystem with an empty root directory.
+impl PStoreFs {
+    /// Create a new empty pstore filesystem.
+    ///
+    /// A real backend would call [`Self::load_entry`] for each persisted
+    /// record discovered during driver probe; here we start empty.
     pub fn new() -> FsResult<Self> {
-        let root_inode = 1;
-        let mut entries = BTreeMap::new();
-        entries.insert(".".to_string(), root_inode);
-        entries.insert("..".to_string(), root_inode);
-
-        let root = PStoreInode {
-            metadata: FileMetadata {
-                inode: root_inode,
-                file_type: FileType::Directory,
-                size: 0,
-                permissions: FilePermissions::from_octal(0o555),
-                uid: 0,
-                gid: 0,
-                created: get_current_time(),
-                modified: get_current_time(),
-                accessed: get_current_time(),
-                link_count: 2,
-                device_id: None,
-            },
-            content: Vec::new(),
-            entries,
-        };
-
-        let mut inodes = BTreeMap::new();
-        inodes.insert(root_inode, root);
-
         Ok(Self {
-            inodes: RwLock::new(inodes),
-            next_inode: RwLock::new(2),
-            root_inode,
+            entries: RwLock::new(BTreeMap::new()),
+            inodes: RwLock::new(BTreeMap::new()),
+            next_inode: RwLock::new(FIRST_ENTRY_INODE),
         })
     }
 
-    /// Allocate a new inode number.
+    /// Allocate the next inode number.
     fn allocate_inode(&self) -> InodeNumber {
         let mut next = self.next_inode.write();
         let inode = *next;
@@ -135,176 +113,231 @@ impl PStoreFileSystem {
         inode
     }
 
-    /// Add a persistent record to the filesystem.
-    ///
-    /// The record is exposed as a regular file named `<prefix>-<id>` under the
-    /// root directory. This is the API a backend driver (ramoops, EFI, etc.)
-    /// would call to publish a captured record.
-    pub fn add_record(&self, record: PStoreRecord) -> FsResult<InodeNumber> {
-        let name = format!("{}-{}", record.record_type.prefix(), record.id);
-        if name.len() > 255 {
-            return Err(FsError::NameTooLong);
-        }
-
-        let new_inode = self.allocate_inode();
-        let size = record.data.len() as u64;
-        let file_inode = PStoreInode {
-            metadata: FileMetadata {
-                inode: new_inode,
-                file_type: FileType::Regular,
-                size,
-                permissions: FilePermissions::from_octal(0o444),
-                uid: 0,
-                gid: 0,
-                created: record.timestamp,
-                modified: record.timestamp,
-                accessed: record.timestamp,
-                link_count: 1,
-                device_id: None,
-            },
-            content: record.data,
-            entries: BTreeMap::new(),
-        };
-
+    /// Insert a pstore record, pruning the oldest entry if the store is full.
+    fn insert_entry(&self, name: String, data: Vec<u8>, record_type: PStoreType) -> InodeNumber {
+        let mut entries = self.entries.write();
         let mut inodes = self.inodes.write();
-        let root = inodes
-            .get_mut(&self.root_inode)
-            .ok_or(FsError::IoError)?;
-        root.entries.insert(name, new_inode);
-        root.metadata.modified = get_current_time();
-        inodes.insert(new_inode, file_inode);
-        Ok(new_inode)
-    }
 
-    /// Number of records currently stored (excluding the root directory).
-    pub fn record_count(&self) -> usize {
-        self.inodes.read().len().saturating_sub(1)
-    }
-
-    /// Resolve a path to an inode number.
-    fn resolve_path(&self, path: &str) -> FsResult<InodeNumber> {
-        if path == "/" || path.is_empty() {
-            return Ok(self.root_inode);
-        }
-        let components: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
-        let inodes = self.inodes.read();
-        let mut current = self.root_inode;
-        for component in components {
-            let inode = inodes.get(&current).ok_or(FsError::NotFound)?;
-            if inode.metadata.file_type != FileType::Directory {
-                return Err(FsError::NotADirectory);
+        // Prune oldest entry if at capacity. BTreeMap iteration is ordered
+        // by key (name), but we want oldest-by-timestamp; collect and sort.
+        if entries.len() >= MAX_ENTRIES {
+            // Find the entry with the smallest timestamp.
+            let oldest = entries
+                .iter()
+                .min_by_key(|(_, e)| e.timestamp)
+                .map(|(k, _)| k.clone());
+            if let Some(oldest_name) = oldest {
+                if let Some(removed) = entries.remove(&oldest_name) {
+                    inodes.remove(&removed.inode);
+                }
             }
-            current = *inode.entries.get(component).ok_or(FsError::NotFound)?;
         }
-        Ok(current)
+
+        let inode = self.allocate_inode();
+        let now = get_current_time();
+        let entry = PStoreEntry {
+            name: name.clone(),
+            data,
+            timestamp: now,
+            record_type,
+            inode,
+        };
+        inodes.insert(inode, name.clone());
+        entries.insert(name, entry);
+        inode
+    }
+
+    /// Load a pre-existing record into the store (used by backend drivers).
+    pub fn load_entry(&self, name: &str, data: Vec<u8>, record_type: PStoreType) -> InodeNumber {
+        self.insert_entry(name.to_string(), data, record_type)
+    }
+
+    /// Record a new crash log entry, generating a unique filename from the
+    /// record type and current timestamp.
+    pub fn record(&self, record_type: PStoreType, data: Vec<u8>) -> InodeNumber {
+        let now = get_current_time();
+        let name = format!("{}-{}", record_type.prefix(), now);
+        self.insert_entry(name, data, record_type)
+    }
+
+    /// Resolve a path to an entry name, stripping leading slashes.
+    fn path_to_name(&self, path: &str) -> String {
+        path.trim_start_matches('/').to_string()
+    }
+
+    /// Look up an entry by inode number.
+    fn entry_by_inode(&self, inode: InodeNumber) -> FsResult<String> {
+        let inodes = self.inodes.read();
+        inodes
+            .get(&inode)
+            .cloned()
+            .ok_or(FsError::NotFound)
     }
 }
 
-impl FileSystem for PStoreFileSystem {
+impl FileSystem for PStoreFs {
     fn fs_type(&self) -> FileSystemType {
-        // PStore is a RAM-backed pseudofilesystem.
-        FileSystemType::RamFs
+        FileSystemType::PStore
     }
 
     fn statfs(&self) -> FsResult<FileSystemStats> {
-        let inodes = self.inodes.read();
-        let used = inodes.len() as u64;
+        let entries = self.entries.read();
+        let count = entries.len() as u64;
+        let used_bytes: u64 = entries.values().map(|e| e.data.len() as u64).sum();
+        let block_size = 4096u32;
+        // PStore is virtual: report a small fixed inode pool and a 1 MiB
+        // logical block pool so callers see sensible free-space numbers.
+        let total_blocks: u64 = 256;
+        let used_blocks = (used_bytes + block_size as u64 - 1) / block_size as u64;
+        let free_blocks = total_blocks.saturating_sub(used_blocks);
         Ok(FileSystemStats {
-            total_blocks: 0,
-            free_blocks: 0,
-            available_blocks: 0,
-            total_inodes: used,
-            free_inodes: 0,
-            block_size: 4096,
+            total_blocks,
+            free_blocks,
+            available_blocks: free_blocks,
+            total_inodes: MAX_ENTRIES as u64,
+            free_inodes: MAX_ENTRIES as u64 - count,
+            block_size,
             max_filename_length: 255,
         })
     }
 
-    fn create(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        // pstore is read-only from the VFS perspective.
-        Err(FsError::ReadOnly)
+    fn create(&self, path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
+        let name = self.path_to_name(path);
+        if name.is_empty() {
+            return Err(FsError::InvalidArgument);
+        }
+        if name.len() > 255 {
+            return Err(FsError::NameTooLong);
+        }
+        let mut entries = self.entries.write();
+        if entries.contains_key(&name) {
+            return Err(FsError::AlreadyExists);
+        }
+        drop(entries);
+        // Infer the record type from the filename prefix.
+        let record_type = if name.starts_with("dmesg") {
+            PStoreType::Dmesg
+        } else if name.starts_with("console") {
+            PStoreType::Console
+        } else if name.starts_with("ftrace") {
+            PStoreType::Ftrace
+        } else if name.starts_with("pmsg") {
+            PStoreType::Pmsg
+        } else {
+            PStoreType::Other
+        };
+        Ok(self.insert_entry(name, Vec::new(), record_type))
     }
 
     fn open(&self, path: &str, _flags: OpenFlags) -> FsResult<InodeNumber> {
-        self.resolve_path(path)
+        let name = self.path_to_name(path);
+        if name.is_empty() {
+            // Root directory.
+            return Ok(ROOT_INODE);
+        }
+        let entries = self.entries.read();
+        let entry = entries.get(&name).ok_or(FsError::NotFound)?;
+        Ok(entry.inode)
     }
 
     fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
-        let mut inodes = self.inodes.write();
-        let file_inode = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        if file_inode.metadata.file_type != FileType::Regular {
+        if inode == ROOT_INODE {
             return Err(FsError::IsADirectory);
         }
-        file_inode.metadata.accessed = get_current_time();
-        let len = file_inode.content.len() as u64;
+        let name = self.entry_by_inode(inode)?;
+        let entries = self.entries.read();
+        let entry = entries.get(&name).ok_or(FsError::NotFound)?;
+        let len = entry.data.len() as u64;
         if offset >= len {
             return Ok(0);
         }
         let start = offset as usize;
-        let end = core::cmp::min(start + buffer.len(), file_inode.content.len());
+        let end = cmp::min(start + buffer.len(), entry.data.len());
         let n = end - start;
-        buffer[..n].copy_from_slice(&file_inode.content[start..end]);
+        buffer[..n].copy_from_slice(&entry.data[start..end]);
         Ok(n)
     }
 
-    fn write(&self, _inode: InodeNumber, _offset: u64, _buffer: &[u8]) -> FsResult<usize> {
-        Err(FsError::ReadOnly)
+    fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
+        if inode == ROOT_INODE {
+            return Err(FsError::IsADirectory);
+        }
+        let name = self.entry_by_inode(inode)?;
+        let mut entries = self.entries.write();
+        let entry = entries.get_mut(&name).ok_or(FsError::NotFound)?;
+        let required = (offset as usize).saturating_add(buffer.len());
+        if entry.data.len() < required {
+            entry.data.resize(required, 0);
+        }
+        let start = offset as usize;
+        let end = start + buffer.len();
+        entry.data[start..end].copy_from_slice(buffer);
+        Ok(buffer.len())
     }
 
     fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
-        let inodes = self.inodes.read();
-        let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        Ok(node.metadata.clone())
+        if inode == ROOT_INODE {
+            let mut md = FileMetadata::new(ROOT_INODE, FileType::Directory, 0);
+            md.permissions = FilePermissions::default_directory();
+            return Ok(md);
+        }
+        let name = self.entry_by_inode(inode)?;
+        let entries = self.entries.read();
+        let entry = entries.get(&name).ok_or(FsError::NotFound)?;
+        let mut md = FileMetadata::new(inode, FileType::Regular, entry.data.len() as u64);
+        md.created = entry.timestamp;
+        md.modified = entry.timestamp;
+        md.accessed = get_current_time();
+        Ok(md)
     }
 
     fn set_metadata(&self, _inode: InodeNumber, _metadata: &FileMetadata) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+        // PStore entries are immutable in metadata; accept silently.
+        Ok(())
     }
 
     fn mkdir(&self, _path: &str, _permissions: FilePermissions) -> FsResult<InodeNumber> {
-        Err(FsError::ReadOnly)
+        Err(FsError::NotSupported)
     }
 
     fn rmdir(&self, _path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+        Err(FsError::NotSupported)
     }
 
-    fn unlink(&self, _path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+    fn unlink(&self, path: &str) -> FsResult<()> {
+        let name = self.path_to_name(path);
+        if name.is_empty() {
+            return Err(FsError::IsADirectory);
+        }
+        let mut entries = self.entries.write();
+        let removed = entries.remove(&name).ok_or(FsError::NotFound)?;
+        let mut inodes = self.inodes.write();
+        inodes.remove(&removed.inode);
+        Ok(())
     }
 
     fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
-        let mut inodes = self.inodes.write();
-        let dir = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        if dir.metadata.file_type != FileType::Directory {
+        if inode != ROOT_INODE {
             return Err(FsError::NotADirectory);
         }
-        dir.metadata.accessed = get_current_time();
-        // Snapshot entries to release the mutable borrow before re-looking-up.
-        let snapshot: Vec<(String, InodeNumber)> = dir
-            .entries
-            .iter()
-            .map(|(n, &i)| (n.clone(), i))
-            .collect();
-        let mut out = Vec::new();
-        for (name, child_inode) in snapshot {
-            if let Some(child) = inodes.get(&child_inode) {
-                out.push(DirectoryEntry {
-                    name,
-                    inode: child_inode,
-                    file_type: child.metadata.file_type,
-                });
-            }
+        let entries = self.entries.read();
+        let mut result = Vec::new();
+        for entry in entries.values() {
+            result.push(DirectoryEntry {
+                name: entry.name.clone(),
+                inode: entry.inode,
+                file_type: FileType::Regular,
+            });
         }
-        Ok(out)
+        Ok(result)
     }
 
     fn rename(&self, _old_path: &str, _new_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+        Err(FsError::NotSupported)
     }
 
     fn symlink(&self, _target: &str, _link_path: &str) -> FsResult<()> {
-        Err(FsError::ReadOnly)
+        Err(FsError::NotSupported)
     }
 
     fn readlink(&self, _path: &str) -> FsResult<String> {
@@ -312,41 +345,8 @@ impl FileSystem for PStoreFileSystem {
     }
 
     fn sync(&self) -> FsResult<()> {
-        // In-memory store; nothing to sync.
+        // In-memory store is always consistent; a real backend would flush
+        // to NVRAM/UEFI variables here.
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_add_and_read_record() {
-        let fs = PStoreFileSystem::new().unwrap();
-        let rec = PStoreRecord {
-            record_type: PStoreRecordType::Dmesg,
-            id: 1,
-            data: b"kernel panic".to_vec(),
-            timestamp: 12345,
-        };
-        let inode = fs.add_record(rec).unwrap();
-        let md = fs.metadata(inode).unwrap();
-        assert_eq!(md.size, 12);
-        let mut buf = [0u8; 12];
-        let n = fs.read(inode, 0, &mut buf).unwrap();
-        assert_eq!(n, 12);
-        assert_eq!(&buf, b"kernel panic");
-        assert_eq!(fs.record_count(), 1);
-    }
-
-    #[test]
-    fn test_readonly_rejected() {
-        let fs = PStoreFileSystem::new().unwrap();
-        assert_eq!(
-            fs.create("/x", FilePermissions::default_file()),
-            Err(FsError::ReadOnly)
-        );
-        assert_eq!(fs.mkdir("/d", FilePermissions::default_directory()), Err(FsError::ReadOnly));
     }
 }

@@ -327,7 +327,12 @@ run_qemu() {
     qemu_args="$qemu_args -display $display_mode"
     qemu_args="$qemu_args -m ${RUSTOS_QEMU_MEMORY:-512M}"  # Increased memory for ACPI/PCI testing
     qemu_args="$qemu_args -cpu qemu64,+apic"  # Enable APIC for ACPI testing
-    qemu_args="$qemu_args -machine pc,accel=tcg"  # PC chipset (q35 causes SMI triple fault with bootloader)
+    # PC chipset (q35 causes SMI triple fault with bootloader). Prefer KVM
+    # hardware acceleration, falling back to TCG automatically if /dev/kvm
+    # isn't available. Override with RUSTOS_QEMU_ACCEL=tcg to force software
+    # emulation.
+    local accel_mode="${RUSTOS_QEMU_ACCEL:-kvm:tcg}"
+    qemu_args="$qemu_args -machine pc,accel=$accel_mode"
 
     if [[ "$TARGET" == *"x86_64"* ]]; then
         qemu-system-x86_64 $qemu_args

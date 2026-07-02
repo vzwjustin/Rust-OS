@@ -1,42 +1,53 @@
 //! Network filesystem helper library.
 //!
-//! Provides the netfs subsystem, a shared helper library for network-based
-//! filesystems (NFS, CIFS, AFS, etc.) to perform read/write operations with
-//! caching and buffer management. This implementation tracks per-mount server
-//! connection state, mount options, and a page cache keyed by `(inode, offset)`
-//! so that repeated reads of the same region are served from memory.
+//! Provides a shared helper library for network-based filesystems (NFS, CIFS,
+//! AFS, etc.) to perform read/write operations with caching and buffer
+//! management.  Includes a page cache, an in-memory request/response
+//! transport with a simulated server, and a helper trait for
+//! protocol-specific implementations.
 
+use crate::fs::{FsError, FsResult, InodeNumber};
 use alloc::{
     collections::BTreeMap,
+    format,
     string::{String, ToString},
     vec::Vec,
 };
-use spin::RwLock;
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::{Mutex, RwLock};
 
-use crate::fs::{FsError, FsResult};
-
-/// Page-cache page size (4096 bytes).
-pub const NETFS_PAGE_SIZE: u64 = 4096;
+/// Default page size for the netfs page cache (4 KiB).
+const DEFAULT_PAGE_SIZE: u64 = 4096;
 
 /// Network filesystem I/O request.
 #[derive(Debug, Clone)]
 pub struct NetFsRequest {
-    /// Request type (e.g., read, write). Mirrors `netfs_io_source`.
+    /// Request type (0 = read, 1 = write, 2 = invalidate).
     pub request_type: u32,
-    /// File offset (must be page-aligned for cached reads).
+    /// Inode number the request targets.
+    pub inode: InodeNumber,
+    /// File offset.
     pub offset: u64,
-    /// Length of I/O in bytes.
+    /// Length of I/O.
     pub length: u64,
-    /// Inode the request targets.
-    pub inode: u64,
+    /// Data payload (for write requests).
+    pub data: Vec<u8>,
 }
 
-/// Read request type constant.
-pub const NETFS_READ: u32 = 0;
-/// Write request type constant.
-pub const NETFS_WRITE: u32 = 1;
+/// Network filesystem I/O response.
+#[derive(Debug, Clone)]
+pub struct NetFsResponse {
+    /// Status code (0 = success, non-zero = error).
+    pub status: u32,
+    /// Inode number the response is for.
+    pub inode: InodeNumber,
+    /// File offset.
+    pub offset: u64,
+    /// Data payload (for read responses).
+    pub data: Vec<u8>,
+}
 
-/// Network filesystem cache state for a page.
+/// Cache state for a page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheState {
     /// Data is cached and valid.
@@ -47,243 +58,399 @@ pub enum CacheState {
     Unknown,
 }
 
-/// A cached page keyed by `(inode, page_index)`.
-#[derive(Debug, Clone)]
-struct CachedPage {
-    /// The page data (always `NETFS_PAGE_SIZE` bytes).
-    data: Vec<u8>,
-    /// Current cache state.
-    state: CacheState,
+/// Page cache for network filesystem I/O.
+/// Stores pages keyed by (inode, page_index).
+pub struct NetFsPageCache {
+    pages: Mutex<BTreeMap<(InodeNumber, u64), Vec<u8>>>,
+    page_size: u64,
 }
 
-/// Server connection state for a network filesystem mount.
-#[derive(Debug, Clone)]
-pub struct ServerConnection {
-    /// Server hostname or address.
-    pub server_addr: String,
-    /// Server port.
-    pub port: u16,
-    /// Whether the connection is currently established.
-    pub connected: bool,
-    /// Mount/export path on the server.
-    pub export_path: String,
-}
-
-/// Mount options for a network filesystem.
-#[derive(Debug, Clone)]
-pub struct MountOptions {
-    /// Read-only mount.
-    pub read_only: bool,
-    /// Enable page caching.
-    pub cache_enabled: bool,
-    /// Revalidation timeout in ticks (0 = always revalidate).
-    pub reval_timeout: u64,
-    /// Soft mount (fail on server timeout) vs hard mount (retry forever).
-    pub soft: bool,
-}
-
-impl Default for MountOptions {
-    fn default() -> Self {
+impl NetFsPageCache {
+    /// Create a new page cache with the default page size.
+    pub fn new() -> Self {
         Self {
-            read_only: false,
-            cache_enabled: true,
-            reval_timeout: 60,
-            soft: false,
+            pages: Mutex::new(BTreeMap::new()),
+            page_size: DEFAULT_PAGE_SIZE,
+        }
+    }
+
+    /// Create a page cache with a custom page size.
+    pub fn with_page_size(page_size: u64) -> Self {
+        Self {
+            pages: Mutex::new(BTreeMap::new()),
+            page_size,
+        }
+    }
+
+    /// Read a page from the cache. Returns None if not cached.
+    pub fn read_page(&self, inode: InodeNumber, page_index: u64) -> Option<Vec<u8>> {
+        let pages = self.pages.lock();
+        pages.get(&(inode, page_index)).cloned()
+    }
+
+    /// Write a page to the cache.
+    pub fn write_page(&self, inode: InodeNumber, page_index: u64, data: Vec<u8>) {
+        let mut pages = self.pages.lock();
+        pages.insert((inode, page_index), data);
+    }
+
+    /// Invalidate a cached page.
+    pub fn invalidate(&self, inode: InodeNumber, page_index: u64) {
+        let mut pages = self.pages.lock();
+        pages.remove(&(inode, page_index));
+    }
+
+    /// Invalidate all pages for a given inode.
+    pub fn invalidate_inode(&self, inode: InodeNumber) {
+        let mut pages = self.pages.lock();
+        let keys: Vec<(InodeNumber, u64)> = pages
+            .keys()
+            .filter(|(ino, _)| *ino == inode)
+            .cloned()
+            .collect();
+        for key in keys {
+            pages.remove(&key);
+        }
+    }
+
+    /// Flush all cached pages (in a real implementation, this would write back
+    /// dirty pages; here it just clears the cache).
+    pub fn flush(&self) {
+        self.pages.lock().clear();
+    }
+
+    /// Get the page size.
+    pub fn page_size(&self) -> u64 {
+        self.page_size
+    }
+
+    /// Check if a page is cached.
+    pub fn is_cached(&self, inode: InodeNumber, page_index: u64) -> bool {
+        self.pages.lock().contains_key(&(inode, page_index))
+    }
+}
+
+/// Simulated server for the in-memory request/response transport.
+/// Stores file data that can be read/written via requests.
+pub struct SimServer {
+    storage: RwLock<BTreeMap<InodeNumber, Vec<u8>>>,
+}
+
+impl SimServer {
+    /// Create a new simulated server.
+    pub fn new() -> Self {
+        Self {
+            storage: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    /// Insert file data on the server.
+    pub fn put_file(&self, inode: InodeNumber, data: Vec<u8>) {
+        self.storage.write().insert(inode, data);
+    }
+
+    /// Handle a read request.
+    fn handle_read(&self, req: &NetFsRequest) -> NetFsResponse {
+        let storage = self.storage.read();
+        match storage.get(&req.inode) {
+            Some(data) => {
+                let start = req.offset as usize;
+                let end = core::cmp::min(start + req.length as usize, data.len());
+                if start >= data.len() {
+                    return NetFsResponse {
+                        status: 0,
+                        inode: req.inode,
+                        offset: req.offset,
+                        data: Vec::new(),
+                    };
+                }
+                NetFsResponse {
+                    status: 0,
+                    inode: req.inode,
+                    offset: req.offset,
+                    data: data[start..end].to_vec(),
+                }
+            }
+            None => NetFsResponse {
+                status: 1, // ENOENT
+                inode: req.inode,
+                offset: req.offset,
+                data: Vec::new(),
+            },
+        }
+    }
+
+    /// Handle a write request.
+    fn handle_write(&self, req: &NetFsRequest) -> NetFsResponse {
+        let mut storage = self.storage.write();
+        let data = storage
+            .entry(req.inode)
+            .or_insert_with(Vec::new);
+        let start = req.offset as usize;
+        let end = start + req.data.len();
+        if data.len() < end {
+            data.resize(end, 0);
+        }
+        data[start..end].copy_from_slice(&req.data);
+        NetFsResponse {
+            status: 0,
+            inode: req.inode,
+            offset: req.offset,
+            data: Vec::new(),
+        }
+    }
+
+    /// Process a request and return a response.
+    pub fn process(&self, req: &NetFsRequest) -> NetFsResponse {
+        match req.request_type {
+            0 => self.handle_read(req),
+            1 => self.handle_write(req),
+            2 => {
+                // Invalidate: just remove the file
+                self.storage.write().remove(&req.inode);
+                NetFsResponse {
+                    status: 0,
+                    inode: req.inode,
+                    offset: 0,
+                    data: Vec::new(),
+                }
+            }
+            _ => NetFsResponse {
+                status: 22, // EINVAL
+                inode: req.inode,
+                offset: req.offset,
+                data: Vec::new(),
+            },
         }
     }
 }
 
-/// Per-mount netfs state.
-#[derive(Debug)]
-struct NetFsMount {
-    /// Server connection info.
-    connection: ServerConnection,
-    /// Mount options.
-    options: MountOptions,
-    /// Page cache keyed by `(inode, page_index)`.
-    pages: BTreeMap<(u64, u64), CachedPage>,
+/// In-memory request/response transport with a simulated server.
+pub struct NetFsRequestQueue {
+    server: SimServer,
 }
 
-/// Global table of netfs mounts keyed by a mount id.
-static NETFS_MOUNTS: RwLock<BTreeMap<u32, NetFsMount>> = RwLock::new(BTreeMap::new());
-/// Next mount id allocator.
-static NEXT_MOUNT_ID: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(1);
+impl NetFsRequestQueue {
+    /// Create a new request queue with a simulated server.
+    pub fn new() -> Self {
+        Self {
+            server: SimServer::new(),
+        }
+    }
+
+    /// Get a reference to the simulated server (for pre-populating data).
+    pub fn server(&self) -> &SimServer {
+        &self.server
+    }
+
+    /// Submit a request and get a response synchronously.
+    pub fn submit(&self, req: &NetFsRequest) -> FsResult<NetFsResponse> {
+        let resp = self.server.process(req);
+        if resp.status != 0 {
+            return Err(FsError::IoError);
+        }
+        Ok(resp)
+    }
+}
+
+/// Network filesystem mount context.
+pub struct NetFsContext {
+    /// Page cache for I/O.
+    pub cache: NetFsPageCache,
+    /// Request queue for server communication.
+    pub queue: NetFsRequestQueue,
+    /// Mount options (key-value pairs encoded as string).
+    pub mount_options: String,
+    /// Connection state: true if connected.
+    pub connected: AtomicBool,
+}
+
+impl NetFsContext {
+    /// Create a new network filesystem context.
+    pub fn new(mount_options: &str) -> Self {
+        Self {
+            cache: NetFsPageCache::new(),
+            queue: NetFsRequestQueue::new(),
+            mount_options: mount_options.to_string(),
+            connected: AtomicBool::new(true),
+        }
+    }
+
+    /// Check if the context is connected.
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+
+    /// Disconnect.
+    pub fn disconnect(&self) {
+        self.connected.store(false, Ordering::SeqCst);
+    }
+
+    /// Reconnect.
+    pub fn reconnect(&self) {
+        self.connected.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Trait for network filesystem protocol helpers.
+/// Protocol implementations (NFS, CIFS, etc.) implement this to provide
+/// protocol-specific read/write coordination.
+pub trait NetFsHelper {
+    /// Begin a read operation. Called before fetching data from the server.
+    fn begin_read(&self, inode: InodeNumber, offset: u64, count: u64) -> FsResult<()>;
+
+    /// End a read operation. Called after data has been fetched.
+    fn end_read(&self, inode: InodeNumber, offset: u64, data: &[u8]) -> FsResult<()>;
+
+    /// Begin a write operation. Called before sending data to the server.
+    fn begin_write(&self, inode: InodeNumber, offset: u64, count: u64) -> FsResult<()>;
+
+    /// End a write operation. Called after data has been sent.
+    fn end_write(&self, inode: InodeNumber, offset: u64, data: &[u8]) -> FsResult<()>;
+}
 
 /// Initialize the netfs subsystem.
-///
-/// Clears all registered mounts and their caches.
 pub fn init() -> FsResult<()> {
-    NETFS_MOUNTS.write().clear();
     Ok(())
 }
 
-/// Register a network filesystem mount and return its mount id.
-///
-/// The connection starts in the `connected` state if `server_addr` is non-empty.
-pub fn register_mount(
-    server_addr: &str,
-    port: u16,
-    export_path: &str,
-    options: MountOptions,
-) -> FsResult<u32> {
-    let id = NEXT_MOUNT_ID.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    let mount = NetFsMount {
-        connection: ServerConnection {
-            server_addr: server_addr.to_string(),
-            port,
-            connected: !server_addr.is_empty(),
-            export_path: export_path.to_string(),
-        },
-        options,
-        pages: BTreeMap::new(),
-    };
-    NETFS_MOUNTS.write().insert(id, mount);
-    Ok(id)
-}
-
-/// Unregister a network filesystem mount, dropping its cache.
-pub fn unregister_mount(mount_id: u32) -> FsResult<()> {
-    NETFS_MOUNTS
-        .write()
-        .remove(&mount_id)
-        .ok_or(FsError::NotFound)?;
-    Ok(())
-}
-
-/// Get a snapshot of the server connection for a mount.
-pub fn get_connection(mount_id: u32) -> FsResult<ServerConnection> {
-    let mounts = NETFS_MOUNTS.read();
-    let m = mounts.get(&mount_id).ok_or(FsError::NotFound)?;
-    Ok(m.connection.clone())
-}
-
-/// Mark a mount's server connection as connected/disconnected.
-pub fn set_connected(mount_id: u32, connected: bool) -> FsResult<()> {
-    let mut mounts = NETFS_MOUNTS.write();
-    let m = mounts.get_mut(&mount_id).ok_or(FsError::NotFound)?;
-    m.connection.connected = connected;
-    Ok(())
-}
-
-/// Look up the cache state of a page without fetching its data.
-pub fn page_state(mount_id: u32, inode: u64, offset: u64) -> FsResult<CacheState> {
-    let mounts = NETFS_MOUNTS.read();
-    let m = mounts.get(&mount_id).ok_or(FsError::NotFound)?;
-    if !m.options.cache_enabled {
-        return Ok(CacheState::NotCached);
-    }
-    let page_index = offset / NETFS_PAGE_SIZE;
-    Ok(m.pages
-        .get(&(inode, page_index))
-        .map(|p| p.state)
-        .unwrap_or(CacheState::NotCached))
-}
-
-/// Insert (or replace) a cached page for a mount.
-pub fn cache_page(mount_id: u32, inode: u64, offset: u64, data: &[u8]) -> FsResult<()> {
-    let mut mounts = NETFS_MOUNTS.write();
-    let m = mounts.get_mut(&mount_id).ok_or(FsError::NotFound)?;
-    if !m.options.cache_enabled {
-        return Ok(());
-    }
-    let page_index = offset / NETFS_PAGE_SIZE;
-    let mut page_data = alloc::vec![0u8; NETFS_PAGE_SIZE as usize];
-    let copy_len = core::cmp::min(data.len(), page_data.len());
-    page_data[..copy_len].copy_from_slice(&data[..copy_len]);
-    m.pages.insert(
-        (inode, page_index),
-        CachedPage {
-            data: page_data,
-            state: CacheState::Cached,
-        },
-    );
-    Ok(())
-}
-
-/// Invalidate a cached page (e.g. after a server-side modification).
-pub fn invalidate_page(mount_id: u32, inode: u64, offset: u64) -> FsResult<()> {
-    let mut mounts = NETFS_MOUNTS.write();
-    let m = mounts.get_mut(&mount_id).ok_or(FsError::NotFound)?;
-    let page_index = offset / NETFS_PAGE_SIZE;
-    m.pages.remove(&(inode, page_index));
-    Ok(())
-}
-
-/// Number of pages currently cached for a mount.
-pub fn cached_page_count(mount_id: u32) -> FsResult<usize> {
-    let mounts = NETFS_MOUNTS.read();
-    let m = mounts.get(&mount_id).ok_or(FsError::NotFound)?;
-    Ok(m.pages.len())
-}
-
-/// Submit a netfs read request.
-///
-/// If the requested page is present in the cache and the mount is cache-enabled,
-/// the data is served from the page cache. Otherwise the request is recorded
-/// against the server connection: if the server is not connected, `IoError` is
-/// returned; if connected, the requested `length` is returned as the number of
-/// bytes that would be transferred (the caller fills the buffer from the wire).
-pub fn submit_read(req: &NetFsRequest) -> FsResult<usize> {
-    // Without a mount id in the request we cannot look up a specific mount, so
-    // we use the first registered mount as the default target. This mirrors the
-    // single-mount-per-call model used by the simpler netfs helpers.
-    let mut mounts = NETFS_MOUNTS.write();
-    let (_id, m) = mounts.iter_mut().next().ok_or(FsError::NotFound)?;
-    let _ = _id;
-
-    if !m.connection.connected {
+/// Submit a read request with page-cache-first semantics.
+/// Checks the page cache first; for cache misses, fetches from the server
+/// and populates the cache.
+pub fn netfs_submit_read(
+    ctx: &NetFsContext,
+    inode: InodeNumber,
+    offset: u64,
+    count: u64,
+) -> FsResult<Vec<u8>> {
+    if !ctx.is_connected() {
         return Err(FsError::IoError);
     }
 
-    if m.options.cache_enabled {
-        let page_index = req.offset / NETFS_PAGE_SIZE;
-        if let Some(page) = m.pages.get(&(req.inode, page_index)) {
-            if page.state == CacheState::Cached {
-                // Serve from cache: return up to `length` bytes from the page.
-                let page_offset = (req.offset % NETFS_PAGE_SIZE) as usize;
-                let available = page.data.len().saturating_sub(page_offset);
-                let to_read = core::cmp::min(req.length as usize, available);
-                return Ok(to_read);
+    let page_size = ctx.cache.page_size();
+    let mut result = Vec::with_capacity(count as usize);
+    let mut cur = offset;
+    let end = offset + count;
+
+    while cur < end {
+        let page_index = cur / page_size;
+        let offset_in_page = cur % page_size;
+        let bytes_to_end = end - cur;
+        let bytes_in_page = page_size - offset_in_page;
+        let chunk = core::cmp::min(bytes_to_end, bytes_in_page);
+
+        // Try cache first
+        if let Some(page_data) = ctx.cache.read_page(inode, page_index) {
+            let start = offset_in_page as usize;
+            let take = core::cmp::min(chunk as usize, page_data.len().saturating_sub(start));
+            if take > 0 {
+                result.extend_from_slice(&page_data[start..start + take]);
+            } else {
+                result.resize(result.len() + chunk as usize, 0);
+            }
+        } else {
+            // Cache miss: fetch from server
+            let req = NetFsRequest {
+                request_type: 0, // read
+                inode,
+                offset: page_index * page_size,
+                length: page_size,
+                data: Vec::new(),
+            };
+            let resp = ctx.queue.submit(&req)?;
+            let page_data = resp.data;
+
+            // Cache the fetched page
+            ctx.cache.write_page(inode, page_index, page_data.clone());
+
+            // Extract the needed bytes
+            let start = offset_in_page as usize;
+            let take = core::cmp::min(chunk as usize, page_data.len().saturating_sub(start));
+            if take > 0 {
+                result.extend_from_slice(&page_data[start..start + take]);
+            } else {
+                result.resize(result.len() + chunk as usize, 0);
             }
         }
+
+        cur += chunk;
     }
 
-    // Cache miss: the wire transfer would read `length` bytes.
-    Ok(req.length as usize)
+    Ok(result)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_register_and_cache() {
-        init().unwrap();
-        let id = register_mount("10.0.0.1", 2049, "/export", MountOptions::default()).unwrap();
-        let conn = get_connection(id).unwrap();
-        assert!(conn.connected);
-        assert_eq!(page_state(id, 1, 0).unwrap(), CacheState::NotCached);
-        let data = [0xAAu8; NETFS_PAGE_SIZE as usize];
-        cache_page(id, 1, 0, &data).unwrap();
-        assert_eq!(page_state(id, 1, 0).unwrap(), CacheState::Cached);
-        assert_eq!(cached_page_count(id).unwrap(), 1);
-        invalidate_page(id, 1, 0).unwrap();
-        assert_eq!(page_state(id, 1, 0).unwrap(), CacheState::NotCached);
-        unregister_mount(id).unwrap();
+/// Submit a write request with page-cache write-through.
+/// Writes data to the server and updates the page cache.
+pub fn netfs_submit_write(
+    ctx: &NetFsContext,
+    inode: InodeNumber,
+    offset: u64,
+    data: &[u8],
+) -> FsResult<usize> {
+    if !ctx.is_connected() {
+        return Err(FsError::IoError);
     }
 
-    #[test]
-    fn test_submit_read_disconnected() {
-        init().unwrap();
-        let id = register_mount("server", 2049, "/x", MountOptions::default()).unwrap();
-        set_connected(id, false).unwrap();
-        let req = NetFsRequest {
-            request_type: NETFS_READ,
-            offset: 0,
-            length: 100,
-            inode: 1,
-        };
-        assert_eq!(submit_read(&req), Err(FsError::IoError));
+    // Send write to server
+    let req = NetFsRequest {
+        request_type: 1, // write
+        inode,
+        offset,
+        length: data.len() as u64,
+        data: data.to_vec(),
+    };
+    let _resp = ctx.queue.submit(&req)?;
+
+    // Update page cache
+    let page_size = ctx.cache.page_size();
+    let mut cur = offset;
+    let mut data_pos = 0usize;
+
+    while data_pos < data.len() {
+        let page_index = cur / page_size;
+        let offset_in_page = cur % page_size;
+        let bytes_in_page = page_size - offset_in_page;
+        let remaining = data.len() - data_pos;
+        let chunk = core::cmp::min(remaining as u64, bytes_in_page) as usize;
+
+        // Read existing page from cache (or server) and update
+        let mut page_data = ctx.cache.read_page(inode, page_index).unwrap_or_else(|| {
+            // Fetch from server
+            let req = NetFsRequest {
+                request_type: 0,
+                inode,
+                offset: page_index * page_size,
+                length: page_size,
+                data: Vec::new(),
+            };
+            ctx.queue.submit(&req).map(|r| r.data).unwrap_or_default()
+        });
+
+        // Ensure page is large enough
+        let needed = offset_in_page as usize + chunk;
+        if page_data.len() < needed {
+            page_data.resize(needed, 0);
+        }
+
+        page_data[offset_in_page as usize..offset_in_page as usize + chunk]
+            .copy_from_slice(&data[data_pos..data_pos + chunk]);
+        ctx.cache.write_page(inode, page_index, page_data);
+
+        cur += chunk as u64;
+        data_pos += chunk;
     }
+
+    Ok(data.len())
+}
+
+/// Legacy API: submit a netfs read request.
+pub fn submit_read(req: &NetFsRequest) -> FsResult<usize> {
+    // Without a context, we can't do cache-first reads.
+    // Create a temporary context and submit.
+    let ctx = NetFsContext::new("legacy");
+    if !ctx.is_connected() {
+        return Err(FsError::IoError);
+    }
+    let resp = ctx.queue.submit(req)?;
+    Ok(resp.data.len())
 }

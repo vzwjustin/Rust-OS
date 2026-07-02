@@ -96,14 +96,16 @@ codegen-units = 1
 # Bootimage configuration
 [package.metadata.bootimage]
 test-args = [
-    "-machine", "pc,accel=tcg",
+    # "kvm:tcg" makes QEMU try hardware acceleration first and transparently
+    # fall back to TCG software emulation if /dev/kvm isn't accessible.
+    "-machine", "pc,accel=kvm:tcg",
     "-cpu", "qemu64,+apic,+rdrand",
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     "-serial", "stdio",
     "-display", "none",
 ]
 run-args = [
-    "-machine", "pc,accel=tcg",
+    "-machine", "pc,accel=kvm:tcg",
     "-cpu", "qemu64,+apic,+rdrand",
 ]
 test-success-exit-code = 33

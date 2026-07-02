@@ -7,6 +7,7 @@ pub mod app_grid;
 pub mod background;
 pub mod bg_crossfade;
 pub mod bg_slide_show;
+pub mod clutter_compat;
 pub mod datetime_source;
 pub mod gettext_portable;
 pub mod idle_monitor;
@@ -89,13 +90,13 @@ pub enum DesktopStatus {
 pub struct Desktop {
     status: DesktopStatus,
     config: DesktopConfig,
-    /// Per-frame state, routed through `mutter_port::clutter::frame::Frame`.
+    /// Per-frame state, routed through `clutter_compat::frame::Frame`.
     /// Tracks the frame count and (optionally) the expected presentation
     /// time, frame deadline, and dispatch result. The frame count
     /// replaces the old `frame_counter: usize` field; the presentation
     /// time and deadline fields are available for future frame-clock
     /// integration.
-    frame: crate::mutter_port::clutter::frame::Frame,
+    frame: crate::desktop::clutter_compat::frame::Frame,
     event_queue: Vec<DesktopEvent, 32>,
     framebuffer_info: Option<FramebufferInfo>,
     video_mode: Option<u16>,
@@ -108,7 +109,7 @@ impl Desktop {
         Self {
             status: DesktopStatus::Uninitialized,
             config,
-            frame: crate::mutter_port::clutter::frame::Frame::new(),
+            frame: crate::desktop::clutter_compat::frame::Frame::new(),
             event_queue: Vec::new(),
             framebuffer_info: None,
             video_mode: None,
@@ -258,7 +259,7 @@ impl Desktop {
         // Increment the frame count through the ported Mutter `Frame`
         // struct. The old `frame_counter = frame_counter.wrapping_add(1)`
         // is replaced by `frame.frame_count` increment, routed through
-        // the `Frame` type from `mutter_port::clutter::frame`.
+        // the `Frame` type from `clutter_compat::frame`.
         self.frame.frame_count = self.frame.frame_count.wrapping_add(1);
 
         if let Some(ref mut wm) = self.window_manager {
@@ -279,7 +280,7 @@ impl Desktop {
         &self.config
     }
 
-    /// Get the current frame count (routed through `mutter_port::clutter::frame::Frame`).
+    /// Get the current frame count (routed through `clutter_compat::frame::Frame`).
     pub fn frame_count(&self) -> i64 {
         self.frame.count()
     }

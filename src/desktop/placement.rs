@@ -6,18 +6,58 @@
 //! advance by titlebar height, and start a new cascade when the next frame
 //! would leave the work area.
 //!
-//! Geometry ops (rect clamping/intersection) are routed through
-//! `crate::mutter_bridge`, which delegates to the ported
-//! `mutter_port::mtk::rectangle::Rectangle` algebra so the kernel and the
-//! mutter port share one geometry implementation.
+//! Geometry ops (rect clamping) are done locally via
+//! `clamp_rect_to_work_area` below (saturating-arithmetic rect
+//! intersection against the framebuffer's `Rect`).
 
 use crate::graphics::framebuffer::Rect;
-use crate::mutter_bridge;
 
 use super::window_manager::{Window, WindowState};
 
 const CASCADE_FUZZ: usize = 15;
 const CASCADE_INTERVAL: usize = 50;
+
+/// Clamp a rectangle to fit inside a work area: returns the intersection
+/// of `rect` and `work_area`. If they don't intersect, the result is a
+/// rect clamped to the nearest work-area edge with its size capped to
+/// the work-area size (matching the semantics of the original
+/// saturating-arithmetic placement code this was ported alongside).
+///
+/// (Relocated inline from the former `mutter_bridge::clamp_rect_to_work_area`,
+/// which wrapped the now-removed `mutter_port::mtk::rectangle::Rectangle`
+/// port's `intersect`. This is the same saturating usize rect algebra,
+/// implemented directly against `Rect` without the `i32` MTK adapter.)
+fn clamp_rect_to_work_area(rect: Rect, work_area: Rect) -> Rect {
+    let ix = rect.x.max(work_area.x);
+    let iy = rect.y.max(work_area.y);
+    let rect_right = rect.x.saturating_add(rect.width);
+    let rect_bottom = rect.y.saturating_add(rect.height);
+    let work_right = work_area.x.saturating_add(work_area.width);
+    let work_bottom = work_area.y.saturating_add(work_area.height);
+    let ix2 = rect_right.min(work_right);
+    let iy2 = rect_bottom.min(work_bottom);
+
+    if ix < ix2 && iy < iy2 {
+        // Rects intersect: return the intersection.
+        Rect::new(ix, iy, ix2 - ix, iy2 - iy)
+    } else {
+        // No intersection: clamp the origin into the work area and cap
+        // the size, mirroring the original saturating-arithmetic
+        // behavior for a non-overlapping rect.
+        let max_x = work_area
+            .x
+            .saturating_add(work_area.width.saturating_sub(rect.width));
+        let max_y = work_area
+            .y
+            .saturating_add(work_area.height.saturating_sub(rect.height));
+        Rect::new(
+            rect.x.clamp(work_area.x, max_x),
+            rect.y.clamp(work_area.y, max_y),
+            rect.width.min(work_area.width),
+            rect.height.min(work_area.height),
+        )
+    }
+}
 
 fn abs_diff(a: usize, b: usize) -> usize {
     a.max(b) - a.min(b)
@@ -156,7 +196,7 @@ pub fn cascade_window_rect(
         }
     }
 
-    mutter_bridge::clamp_rect_to_work_area(
+    clamp_rect_to_work_area(
         Rect::new(cascade_x, cascade_y, requested.width, requested.height),
         work_area,
     )

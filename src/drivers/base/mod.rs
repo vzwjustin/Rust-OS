@@ -525,6 +525,36 @@ pub fn list_devices_on_bus(bus: &str) -> Vec<String> {
         .collect()
 }
 
+/// Lightweight snapshot of a registered device's identifying/classifying
+/// fields, for consumers (e.g. the device-manager `/dev` population pass in
+/// [`crate::drivers::device_manager`]) that need to iterate every device
+/// without holding the registry lock or depending on `DeviceRecord`'s full
+/// (non-`Clone`) probe/bind bookkeeping fields.
+#[derive(Debug, Clone)]
+pub struct DeviceSummary {
+    pub id: u32,
+    pub name: String,
+    pub bus: String,
+    pub class: String,
+    pub compatible: String,
+}
+
+/// Snapshot every currently registered device. Mirrors the collection-return
+/// convention used by [`list_devices_on_bus`].
+pub fn all_devices() -> Vec<DeviceSummary> {
+    DEVICES
+        .read()
+        .values()
+        .map(|d| DeviceSummary {
+            id: d.id,
+            name: d.name.clone(),
+            bus: d.bus.clone(),
+            class: d.class.clone(),
+            compatible: d.compatible.clone(),
+        })
+        .collect()
+}
+
 /// Whether a device with the given name is registered.
 pub fn device_exists(name: &str) -> bool {
     DEVICES.read().values().any(|d| d.name == name)

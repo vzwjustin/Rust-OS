@@ -235,50 +235,30 @@ pub fn copy_signal(flags: u64, child: &mut ProcessControlBlock, parent: &Process
 /// Copy or share namespaces according to clone flags.
 ///
 /// Each `CLONE_NEW*` flag requests a fresh namespace of that type; without it
-/// the child shares the parent's namespace. The actual namespace cloning is
-/// handled by `crate::namespace::clone_ns()` in `copy_process`, which updates
-/// the global per-PID namespace table. This helper mirrors the resulting
-/// namespace set into the child's `ProcessControlBlock` so the PCB carries a
-/// direct handle to its namespaces (matching the Linux `task_struct->nsproxy`
-/// field) and validates the requested flags.
+/// the child shares the parent's namespace.  The parent's *current* namespace
+/// set is read from the global `namespace::NS_PROXIES` map (which stays
+/// up-to-date across `unshare`/`setns` calls), cloned into a child `NsProxy`,
+/// and stored both in the child PCB (`child.nsproxy`) and back into the global
+/// map so that runtime namespace lookups continue to work.
 pub fn copy_namespaces(
     flags: u64,
     child: &mut ProcessControlBlock,
     parent: &ProcessControlBlock,
 ) -> Result<(), i32> {
-    // CLONE_NEWUSER must not be requested together with CLONE_THREAD.
-    if flags & CLONE_NEWUSER != 0 && flags & CLONE_THREAD != 0 {
-        return Err(EINVAL);
-    }
+    // Read the parent's live namespace set from the global map.  The PCB's
+    // `nsproxy` field is a snapshot taken at fork time and may be stale if the
+    // parent subsequently called `unshare(2)` or `setns(2)`, which only
+    // update the global map.
+    let parent_ns = crate::namespace::get_nsproxy(parent.pid);
 
-    // Determine which (if any) new namespaces were requested.
-    let new_ns_mask = flags
-        & (CLONE_NEWNS
-            | CLONE_NEWUTS
-            | CLONE_NEWIPC
-            | CLONE_NEWUSER
-            | CLONE_NEWPID
-            | CLONE_NEWNET
-            | CLONE_NEWCGROUP) as u64;
+    // Build the child's namespace set based on the CLONE_NEW* flags.
+    let child_ns = crate::namespace::copy_namespaces(flags, &parent_ns, child.pid);
 
-    // The child's namespace set is sourced from the global namespace table,
-    // which `clone_ns` (called just before this in copy_process) has already
-    // populated for `child.pid`. If the table has no entry yet, fall back to
-    // the parent's recorded nsproxy (share semantics) or the parent's global
-    // entry.
-    let child_ns = crate::namespace::get_nsproxy(child.pid);
-    if new_ns_mask == 0 {
-        // Sharing: prefer the parent's PCB handle, then the global table.
-        if let Some(parent_ns) = &parent.nsproxy {
-            child.nsproxy = Some(parent_ns.clone());
-        } else {
-            let parent_global = crate::namespace::get_nsproxy(parent.pid);
-            child.nsproxy = Some(parent_global);
-        }
-    } else {
-        // New namespaces were created — record the freshly cloned set.
-        child.nsproxy = Some(child_ns);
-    }
+    // Wire the handles into the child PCB.
+    child.nsproxy = child_ns.clone();
+
+    // Keep the global map in sync so get_nsproxy()/unshare()/setns() work.
+    crate::namespace::set_nsproxy(child.pid, child_ns);
 
     Ok(())
 }
@@ -351,11 +331,7 @@ pub fn copy_process(
         copy_files(flags, child, &parent_snap);
         copy_sighand(flags, child, &parent_snap);
         copy_signal(flags, child, &parent_snap);
-        crate::namespace::clone_ns(parent_pid, child_pid, flags);
-        // Wire the resulting namespace set into the child's PCB. `clone_ns`
-        // above has populated the global per-PID table; `copy_namespaces`
-        // snapshots it into `child.nsproxy`.
-        copy_namespaces(flags, child, &parent_snap).expect("copy_namespaces validation failed");
+        copy_namespaces(flags, child, &parent_snap);
 
         // ── 4. CPU context ──────────────────────────────────────────────────
         copy_thread(child, regs, stack, flags);

@@ -1,102 +1,253 @@
-//! DEBUGFS (Debug File System) implementation
+//! debugfs virtual filesystem implementation
 //!
-//! DEBUGFS is a pseudo-filesystem that exposes kernel debugging interfaces to userspace.
-//! This in-memory implementation provides a writable tree for debug data.
+//! debugfs is a callback-based pseudo-filesystem that exposes kernel
+//! debugging interfaces to userspace. Files are created programmatically
+//! with optional read/write callbacks; when a callback is absent the
+//! cached content buffer is used instead.
+//!
+//! Public API:
+//! - `create_file(name, parent, read_cb, write_cb)` — register a debug file
+//! - `create_dir(name, parent)` — register a debug directory
+//! - `remove(name)` — remove a file or directory by path
 
 use super::{
     get_current_time, DirectoryEntry, FileMetadata, FilePermissions, FileSystem, FileSystemStats,
     FileSystemType, FileType, FsError, FsResult, InodeNumber, OpenFlags,
 };
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
-use spin::RwLock;
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+use spin::Mutex;
 
-/// DEBUGFS inode entry
-#[derive(Debug, Clone)]
+/// Read callback signature: invoked on `read()`, returns content bytes.
+pub type DebugfsReadCallback = fn() -> FsResult<Vec<u8>>;
+
+/// Write callback signature: invoked on `write()`, receives the bytes.
+pub type DebugfsWriteCallback = fn(&[u8]) -> FsResult<()>;
+
+/// A debugfs inode.
+#[derive(Debug)]
 struct DebugfsInode {
-    inode: InodeNumber,
-    is_dir: bool,
-    size: u64,
-    permissions: FilePermissions,
-    data: Vec<u8>,
-    entries: BTreeMap<String, InodeNumber>,
+    /// File metadata.
+    metadata: FileMetadata,
+    /// Child entries for directories (name -> inode).
+    children: BTreeMap<String, InodeNumber>,
+    /// Cached content for regular files without a read callback.
+    content: Vec<u8>,
+    /// Optional read callback.
+    read_callback: Option<DebugfsReadCallback>,
+    /// Optional write callback.
+    write_callback: Option<DebugfsWriteCallback>,
 }
 
-/// DEBUGFS filesystem
+impl DebugfsInode {
+    fn new_dir(inode: InodeNumber, permissions: FilePermissions) -> Self {
+        let mut children = BTreeMap::new();
+        children.insert(".".to_string(), inode);
+        Self {
+            metadata: FileMetadata {
+                inode,
+                file_type: FileType::Directory,
+                size: 0,
+                permissions,
+                uid: 0,
+                gid: 0,
+                created: get_current_time(),
+                modified: get_current_time(),
+                accessed: get_current_time(),
+                link_count: 2,
+                device_id: None,
+            },
+            children,
+            content: Vec::new(),
+            read_callback: None,
+            write_callback: None,
+        }
+    }
+
+    fn new_file(inode: InodeNumber, permissions: FilePermissions) -> Self {
+        Self {
+            metadata: FileMetadata {
+                inode,
+                file_type: FileType::Regular,
+                size: 0,
+                permissions,
+                uid: 0,
+                gid: 0,
+                created: get_current_time(),
+                modified: get_current_time(),
+                accessed: get_current_time(),
+                link_count: 1,
+                device_id: None,
+            },
+            children: BTreeMap::new(),
+            content: Vec::new(),
+            read_callback: None,
+            write_callback: None,
+        }
+    }
+}
+
+/// debugfs filesystem instance.
 #[derive(Debug)]
 pub struct DebugfsFileSystem {
-    inodes: RwLock<BTreeMap<InodeNumber, DebugfsInode>>,
-    next_inode: RwLock<InodeNumber>,
+    inodes: Mutex<BTreeMap<InodeNumber, DebugfsInode>>,
+    next_inode: Mutex<InodeNumber>,
 }
 
 impl DebugfsFileSystem {
-    /// Create a new DEBUGFS filesystem with a root directory.
-    /// A full implementation would register debugfs subsystem handlers
-    /// and set up callbacks for dynamic file generation.
+    /// Root directory inode.
+    const ROOT_INODE: InodeNumber = 1;
+
+    /// Create a new debugfs instance with an empty root directory.
     pub fn new() -> FsResult<Self> {
         let mut inodes = BTreeMap::new();
-        inodes.insert(
-            1,
-            DebugfsInode {
-                inode: 1,
-                is_dir: true,
-                size: 0,
-                permissions: FilePermissions::default_directory(),
-                data: Vec::new(),
-                entries: BTreeMap::new(),
-            },
-        );
+        let mut root = DebugfsInode::new_dir(Self::ROOT_INODE, FilePermissions::default_directory());
+        root.children
+            .insert("..".to_string(), Self::ROOT_INODE);
+        inodes.insert(Self::ROOT_INODE, root);
         Ok(Self {
-            inodes: RwLock::new(inodes),
-            next_inode: RwLock::new(2),
+            inodes: Mutex::new(inodes),
+            next_inode: Mutex::new(2),
         })
     }
 
-    fn resolve_path(&self, path: &str) -> FsResult<InodeNumber> {
-        let path = path.trim_start_matches('/');
-        if path.is_empty() {
-            return Ok(1);
-        }
-        let inodes = self.inodes.read();
-        let mut current = 1u64;
-        for component in path.split('/') {
-            if component.is_empty() {
-                continue;
-            }
+    fn alloc_inode(&self) -> InodeNumber {
+        let mut next = self.next_inode.lock();
+        let inode = *next;
+        *next += 1;
+        inode
+    }
+
+    /// Resolve a path to an inode number.
+    fn resolve(&self, path: &str) -> FsResult<InodeNumber> {
+        let inodes = self.inodes.lock();
+        let mut current = Self::ROOT_INODE;
+        for part in path.split('/').filter(|s| !s.is_empty()) {
             let node = inodes.get(&current).ok_or(FsError::NotFound)?;
-            if !node.is_dir {
+            if node.metadata.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
-            current = *node.entries.get(component).ok_or(FsError::NotFound)?;
+            current = *node.children.get(part).ok_or(FsError::NotFound)?;
         }
         Ok(current)
     }
 
+    /// Resolve the parent directory inode and the trailing name.
     fn resolve_parent(&self, path: &str) -> FsResult<(InodeNumber, String)> {
-        let (parent_path, name) = match path.rfind('/') {
-            Some(idx) => (&path[..idx], &path[idx + 1..]),
-            None => ("", path),
-        };
-        if name.is_empty() {
-            return Err(FsError::InvalidPath);
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.is_empty() {
+            return Err(FsError::InvalidArgument);
         }
-        Ok((self.resolve_path(parent_path)?, String::from(name)))
+        let name = parts.last().unwrap().to_string();
+        if parts.len() == 1 {
+            return Ok((Self::ROOT_INODE, name));
+        }
+        let parent_path = format!("/{}", parts[..parts.len() - 1].join("/"));
+        Ok((self.resolve(&parent_path)?, name))
     }
 
-    fn allocate_inode(&self) -> InodeNumber {
-        let mut next = self.next_inode.write();
-        let id = *next;
-        *next += 1;
-        id
+    /// Create a debug file under `parent` with optional callbacks.
+    ///
+    /// `parent` is an inode number (use `ROOT_INODE` for top-level files).
+    pub fn create_file(
+        &self,
+        name: &str,
+        parent: InodeNumber,
+        read_cb: Option<DebugfsReadCallback>,
+        write_cb: Option<DebugfsWriteCallback>,
+    ) -> FsResult<InodeNumber> {
+        if name.is_empty() || name.len() > 255 {
+            return Err(FsError::InvalidArgument);
+        }
+        let mut inodes = self.inodes.lock();
+        let parent_node = inodes.get(&parent).ok_or(FsError::NotFound)?;
+        if parent_node.metadata.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        if parent_node.children.contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let inode = self.alloc_inode();
+        let mut file = DebugfsInode::new_file(inode, FilePermissions::from_octal(0o644));
+        file.read_callback = read_cb;
+        file.write_callback = write_cb;
+        inodes.insert(inode, file);
+
+        let parent_node = inodes.get_mut(&parent).unwrap();
+        parent_node.children.insert(name.to_string(), inode);
+        parent_node.metadata.modified = get_current_time();
+        Ok(inode)
+    }
+
+    /// Create a debug directory under `parent`.
+    pub fn create_dir(&self, name: &str, parent: InodeNumber) -> FsResult<InodeNumber> {
+        if name.is_empty() || name.len() > 255 {
+            return Err(FsError::InvalidArgument);
+        }
+        let mut inodes = self.inodes.lock();
+        let parent_node = inodes.get(&parent).ok_or(FsError::NotFound)?;
+        if parent_node.metadata.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        if parent_node.children.contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let inode = self.alloc_inode();
+        let mut dir = DebugfsInode::new_dir(inode, FilePermissions::default_directory());
+        dir.children.insert("..".to_string(), parent);
+        inodes.insert(inode, dir);
+
+        let parent_node = inodes.get_mut(&parent).unwrap();
+        parent_node.children.insert(name.to_string(), inode);
+        parent_node.metadata.link_count += 1;
+        parent_node.metadata.modified = get_current_time();
+        Ok(inode)
+    }
+
+    /// Recursively remove an inode and all its descendants.
+    fn remove_recursive(inodes: &mut BTreeMap<InodeNumber, DebugfsInode>, inode: InodeNumber) {
+        if let Some(node) = inodes.remove(&inode) {
+            for (_, child) in node.children.iter() {
+                if *child != inode {
+                    Self::remove_recursive(inodes, *child);
+                }
+            }
+        }
+    }
+
+    /// Remove a file or (recursively) a directory by path.
+    pub fn remove(&self, path: &str) -> FsResult<()> {
+        let target = self.resolve(path)?;
+        if target == Self::ROOT_INODE {
+            return Err(FsError::PermissionDenied);
+        }
+        let (parent_inode, name) = self.resolve_parent(path)?;
+        let mut inodes = self.inodes.lock();
+
+        let parent = inodes.get_mut(&parent_inode).ok_or(FsError::NotFound)?;
+        if !parent.children.remove(&name).is_some() {
+            return Err(FsError::NotFound);
+        }
+        parent.metadata.modified = get_current_time();
+
+        Self::remove_recursive(&mut inodes, target);
+        Ok(())
     }
 }
 
 impl FileSystem for DebugfsFileSystem {
     fn fs_type(&self) -> FileSystemType {
-        FileSystemType::Debugfs
+        FileSystemType::DebugFs
     }
 
     fn statfs(&self) -> FsResult<FileSystemStats> {
-        let inodes = self.inodes.read();
+        let inodes = self.inodes.lock();
         Ok(FileSystemStats {
             total_blocks: 0,
             free_blocks: 0,
@@ -109,217 +260,173 @@ impl FileSystem for DebugfsFileSystem {
     }
 
     fn create(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
+        // VFS-driven file creation (no callbacks).
         let (parent_inode, name) = self.resolve_parent(path)?;
-        let inode_num = self.allocate_inode();
-        let mut inodes = self.inodes.write();
-        if let Some(parent) = inodes.get(&parent_inode) {
-            if parent.entries.contains_key(&name) {
-                return Err(FsError::AlreadyExists);
-            }
+        let inode = self.create_file(&name, parent_inode, None, None)?;
+        // Apply requested permissions.
+        let mut inodes = self.inodes.lock();
+        if let Some(node) = inodes.get_mut(&inode) {
+            node.metadata.permissions = permissions;
         }
-        inodes.insert(
-            inode_num,
-            DebugfsInode {
-                inode: inode_num,
-                is_dir: false,
-                size: 0,
-                permissions,
-                data: Vec::new(),
-                entries: BTreeMap::new(),
-            },
-        );
-        if let Some(parent) = inodes.get_mut(&parent_inode) {
-            parent.entries.insert(name, inode_num);
-        }
-        Ok(inode_num)
+        Ok(inode)
     }
 
     fn open(&self, path: &str, _flags: OpenFlags) -> FsResult<InodeNumber> {
-        self.resolve_path(path)
+        self.resolve(path)
     }
 
     fn read(&self, inode: InodeNumber, offset: u64, buffer: &mut [u8]) -> FsResult<usize> {
-        let inodes = self.inodes.read();
-        let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        if node.is_dir {
-            return Err(FsError::IsADirectory);
-        }
-        let offset = offset as usize;
-        if offset >= node.data.len() {
+        // Snapshot the content (either from callback or cache) without
+        // holding the lock while invoking the callback, then copy out.
+        let content: Vec<u8> = {
+            let inodes = self.inodes.lock();
+            let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
+            if node.metadata.file_type != FileType::Regular {
+                return Err(FsError::IsADirectory);
+            }
+            if let Some(cb) = node.read_callback {
+                drop(inodes);
+                cb()?
+            } else {
+                node.content.clone()
+            }
+        };
+
+        let len = content.len() as u64;
+        if offset >= len {
             return Ok(0);
         }
-        let to_read = buffer.len().min(node.data.len() - offset);
-        buffer[..to_read].copy_from_slice(&node.data[offset..offset + to_read]);
-        Ok(to_read)
+        let start = offset as usize;
+        let end = core::cmp::min(content.len(), start + buffer.len());
+        let n = end - start;
+        buffer[..n].copy_from_slice(&content[start..end]);
+
+        // Update access time.
+        let mut inodes = self.inodes.lock();
+        if let Some(node) = inodes.get_mut(&inode) {
+            node.metadata.accessed = get_current_time();
+        }
+        Ok(n)
     }
 
     fn write(&self, inode: InodeNumber, offset: u64, buffer: &[u8]) -> FsResult<usize> {
-        let mut inodes = self.inodes.write();
+        // Invoke the write callback outside the lock if present.
+        let has_cb = {
+            let inodes = self.inodes.lock();
+            let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
+            if node.metadata.file_type != FileType::Regular {
+                return Err(FsError::IsADirectory);
+            }
+            node.write_callback.is_some()
+        };
+
+        if has_cb {
+            let cb = {
+                let inodes = self.inodes.lock();
+                inodes.get(&inode).and_then(|n| n.write_callback)
+            };
+            if let Some(cb) = cb {
+                cb(buffer)?;
+            }
+        }
+
+        // Persist bytes into the cached content.
+        let mut inodes = self.inodes.lock();
         let node = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        if node.is_dir {
-            return Err(FsError::IsADirectory);
+        let start = offset as usize;
+        let end = start + buffer.len();
+        if end > node.content.len() {
+            node.content.resize(end, 0);
         }
-        let offset = offset as usize;
-        let end = offset + buffer.len();
-        if end > node.data.len() {
-            node.data.resize(end, 0);
-        }
-        node.data[offset..end].copy_from_slice(buffer);
-        node.size = node.data.len() as u64;
+        node.content[start..end].copy_from_slice(buffer);
+        node.metadata.size = node.content.len() as u64;
+        node.metadata.modified = get_current_time();
         Ok(buffer.len())
     }
 
     fn metadata(&self, inode: InodeNumber) -> FsResult<FileMetadata> {
-        let inodes = self.inodes.read();
+        let inodes = self.inodes.lock();
         let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        let now = get_current_time();
-        Ok(FileMetadata {
-            inode,
-            file_type: if node.is_dir {
-                FileType::Directory
-            } else {
-                FileType::Regular
-            },
-            size: node.size,
-            permissions: node.permissions,
-            uid: 0,
-            gid: 0,
-            created: now,
-            modified: now,
-            accessed: now,
-            link_count: 1,
-            device_id: None,
-        })
+        Ok(node.metadata.clone())
     }
 
     fn set_metadata(&self, inode: InodeNumber, metadata: &FileMetadata) -> FsResult<()> {
-        let mut inodes = self.inodes.write();
+        let mut inodes = self.inodes.lock();
         let node = inodes.get_mut(&inode).ok_or(FsError::NotFound)?;
-        node.permissions = metadata.permissions;
-        node.size = metadata.size;
+        node.metadata.permissions = metadata.permissions;
+        node.metadata.modified = get_current_time();
         Ok(())
     }
 
     fn mkdir(&self, path: &str, permissions: FilePermissions) -> FsResult<InodeNumber> {
         let (parent_inode, name) = self.resolve_parent(path)?;
-        let inode_num = self.allocate_inode();
-        let mut inodes = self.inodes.write();
-        if let Some(parent) = inodes.get(&parent_inode) {
-            if parent.entries.contains_key(&name) {
-                return Err(FsError::AlreadyExists);
-            }
+        let inode = self.create_dir(&name, parent_inode)?;
+        let mut inodes = self.inodes.lock();
+        if let Some(node) = inodes.get_mut(&inode) {
+            node.metadata.permissions = permissions;
         }
-        inodes.insert(
-            inode_num,
-            DebugfsInode {
-                inode: inode_num,
-                is_dir: true,
-                size: 0,
-                permissions,
-                data: Vec::new(),
-                entries: BTreeMap::new(),
-            },
-        );
-        if let Some(parent) = inodes.get_mut(&parent_inode) {
-            parent.entries.insert(name, inode_num);
-        }
-        Ok(inode_num)
+        Ok(inode)
     }
 
     fn rmdir(&self, path: &str) -> FsResult<()> {
-        let (parent_inode, name) = self.resolve_parent(path)?;
-        let mut inodes = self.inodes.write();
-        let child_inode = {
-            let parent = inodes.get(&parent_inode).ok_or(FsError::NotFound)?;
-            *parent.entries.get(&name).ok_or(FsError::NotFound)?
-        };
+        let target = self.resolve(path)?;
         {
-            let child = inodes.get(&child_inode).ok_or(FsError::NotFound)?;
-            if !child.is_dir {
+            let inodes = self.inodes.lock();
+            let node = inodes.get(&target).ok_or(FsError::NotFound)?;
+            if node.metadata.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
-            if !child.entries.is_empty() {
+            // Must be empty (only . and ..).
+            if node.children.len() > 2 {
                 return Err(FsError::DirectoryNotEmpty);
             }
         }
-        inodes.remove(&child_inode);
-        if let Some(parent) = inodes.get_mut(&parent_inode) {
-            parent.entries.remove(&name);
-        }
-        Ok(())
+        self.remove(path)
     }
 
     fn unlink(&self, path: &str) -> FsResult<()> {
-        let (parent_inode, name) = self.resolve_parent(path)?;
-        let mut inodes = self.inodes.write();
-        let child_inode = {
-            let parent = inodes.get(&parent_inode).ok_or(FsError::NotFound)?;
-            *parent.entries.get(&name).ok_or(FsError::NotFound)?
-        };
+        let target = self.resolve(path)?;
         {
-            let child = inodes.get(&child_inode).ok_or(FsError::NotFound)?;
-            if child.is_dir {
+            let inodes = self.inodes.lock();
+            let node = inodes.get(&target).ok_or(FsError::NotFound)?;
+            if node.metadata.file_type == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
         }
-        inodes.remove(&child_inode);
-        if let Some(parent) = inodes.get_mut(&parent_inode) {
-            parent.entries.remove(&name);
-        }
-        Ok(())
+        self.remove(path)
     }
 
     fn readdir(&self, inode: InodeNumber) -> FsResult<Vec<DirectoryEntry>> {
-        let inodes = self.inodes.read();
+        let inodes = self.inodes.lock();
         let node = inodes.get(&inode).ok_or(FsError::NotFound)?;
-        if !node.is_dir {
+        if node.metadata.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
         let mut entries = Vec::new();
-        for (name, &child_inode) in &node.entries {
-            if let Some(child) = inodes.get(&child_inode) {
-                entries.push(DirectoryEntry {
-                    name: name.clone(),
-                    inode: child_inode,
-                    file_type: if child.is_dir {
-                        FileType::Directory
-                    } else {
-                        FileType::Regular
-                    },
-                });
-            }
+        for (name, &child_inode) in node.children.iter() {
+            let file_type = inodes
+                .get(&child_inode)
+                .map(|c| c.metadata.file_type)
+                .unwrap_or(FileType::Regular);
+            entries.push(DirectoryEntry {
+                name: name.clone(),
+                inode: child_inode,
+                file_type,
+            });
         }
         Ok(entries)
     }
 
-    fn rename(&self, old_path: &str, new_path: &str) -> FsResult<()> {
-        let (old_parent, old_name) = self.resolve_parent(old_path)?;
-        let (new_parent, new_name) = self.resolve_parent(new_path)?;
-        let mut inodes = self.inodes.write();
-        let child_inode = {
-            let parent = inodes.get(&old_parent).ok_or(FsError::NotFound)?;
-            *parent.entries.get(&old_name).ok_or(FsError::NotFound)?
-        };
-        if let Some(new_p) = inodes.get(&new_parent) {
-            if new_p.entries.contains_key(&new_name) {
-                return Err(FsError::AlreadyExists);
-            }
-        }
-        if let Some(old_p) = inodes.get_mut(&old_parent) {
-            old_p.entries.remove(&old_name);
-        }
-        if let Some(new_p) = inodes.get_mut(&new_parent) {
-            new_p.entries.insert(new_name, child_inode);
-        }
-        Ok(())
+    fn rename(&self, _old_path: &str, _new_path: &str) -> FsResult<()> {
+        Err(FsError::NotSupported)
     }
 
     fn symlink(&self, _target: &str, _link_path: &str) -> FsResult<()> {
         Err(FsError::NotSupported)
     }
 
-    fn readlink(&self, _path: &str) -> FsResult<alloc::string::String> {
-        Err(FsError::NotASymlink)
+    fn readlink(&self, _path: &str) -> FsResult<String> {
+        Err(FsError::NotSupported)
     }
 
     fn sync(&self) -> FsResult<()> {
